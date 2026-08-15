@@ -154,15 +154,19 @@ function highVolumeCheckpointRun() {
   return reviewed.run;
 }
 
-function diagnosticCheckpointRun(diagnosticObservationBoundary: Readonly<{ intervalId: string; sequence: number }>) {
+function diagnosticCheckpointRun(
+  diagnosticObservationBoundary: Readonly<{ intervalId: string; sequence: number }>,
+  lifecycle: "occurrence" | "condition" = "occurrence",
+  withinActiveMs: number | null = 100
+) {
   const initial = createScenarioFromDraft(input("draft-1", "ADD", 0), { scenarioId: "scenario-diagnostic-checkpoint" });
   const added = addScenarioCheckpoint(initial, {
     id: "checkpoint-diagnostic", kind: "checkpoint", name: "Lost update observed",
     assertions: [{
       id: "diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1,
-      ruleCode: "subscription.lost-updates", lifecycle: "occurrence", minimumSeverity: "warning",
+      ruleCode: lifecycle === "condition" ? "capture.disconnected" : "subscription.lost-updates", lifecycle, minimumSeverity: "warning",
       affected: { kind: "subscription", pageId: "page-1", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1" },
-      withinActiveMs: 100
+      ...(withinActiveMs === null ? {} : { withinActiveMs })
     }]
   });
   if (!added.ok) throw new Error(added.reason);
@@ -207,6 +211,58 @@ function delivered(stepOrdinal: number) {
 }
 
 describe("Local Injection Scenario runner", () => {
+  it("queries all condition severities before reducing the latest lifecycle transition", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-condition-severity" });
+    const authorization = journal.currentBoundary();
+    const affected = { kind: "subscription", pageId: "page-1", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1" } as const;
+    await journal.observe({ code: "capture.disconnected", severity: "warning", lifecycle: { kind: "condition", conditionId: "bridge" }, affected, observedAt: 1, observed: "Disconnected", limitation: "None", consequence: "Capture paused", route: { kind: "inspect-affected" } });
+    await journal.observe({ code: "capture.disconnected", severity: "information", lifecycle: { kind: "condition", conditionId: "bridge" }, affected, observedAt: 2, observed: "Still disconnected at lower severity", limitation: "None", consequence: "Capture degraded", route: { kind: "inspect-affected" } });
+    const query = vi.fn(journal.query.bind(journal));
+    const runner = createLocalInjectionScenarioRunner(diagnosticCheckpointRun(authorization, "condition"), {
+      clock, allocateInjectionId: () => "must-not-allocate", execute: async () => delivered(1),
+      checkpoint: {
+        feed,
+        observations: () => ({ priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }),
+        diagnostics: { currentBoundary: journal.currentBoundary.bind(journal), query, subscribe: journal.subscribe.bind(journal) }
+      }
+    });
+
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().activeCheckpoint).toMatchObject({ status: "waiting", diagnosticCurrentBoundary: journal.currentBoundary() }));
+    expect(query).toHaveBeenCalledWith(expect.objectContaining({ lifecycle: "condition" }));
+    expect(query.mock.calls[0]?.[0]).not.toHaveProperty("minimumSeverity");
+    clock.advance(100);
+    expect(runner.snapshot().run.trace[0]).toMatchObject({ status: "expired", diagnosticCurrentBoundary: journal.currentBoundary() });
+  });
+
+  for (const terminal of ["fail", "unavailable"] as const) {
+    it(`retains the exact Diagnostic Observation read cursor on ${terminal}`, async () => {
+      const clock = new FakeClock();
+      const feed = new FakeBoundaryFeed();
+      const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: `scenario-diagnostic-${terminal}-cursor` });
+      const authorization = journal.currentBoundary();
+      const through = await journal.observe({
+        code: "unrelated.rule", severity: "information", lifecycle: { kind: "occurrence", occurrenceId: "unrelated" },
+        affected: { kind: "page", pageId: "page-1" }, observedAt: 1, observed: "Unrelated", limitation: "None", consequence: "None", route: { kind: "inspect-affected" }
+      }).then((observation) => observation.observationBoundary);
+      const query = terminal === "unavailable"
+        ? vi.fn(async () => { throw new Error("journal unavailable"); })
+        : journal.query.bind(journal);
+      const runner = createLocalInjectionScenarioRunner(diagnosticCheckpointRun(authorization, "occurrence", null), {
+        clock, allocateInjectionId: () => "must-not-allocate", execute: async () => delivered(1),
+        checkpoint: {
+          feed,
+          observations: () => ({ priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }),
+          diagnostics: { currentBoundary: journal.currentBoundary.bind(journal), query, subscribe: journal.subscribe.bind(journal) }
+        }
+      });
+      runner.play(); clock.advance(0);
+      await vi.waitFor(() => expect(runner.snapshot().run.trace[0]).toMatchObject({ kind: "checkpoint", status: terminal, diagnosticCurrentBoundary: through }));
+    });
+  }
+
   it("appends a maximum-shaped compact diagnostic reference within its pre-admitted 8 MiB Trace", async () => {
     const component = "🧭".repeat(128);
     const code = "a".repeat(96);

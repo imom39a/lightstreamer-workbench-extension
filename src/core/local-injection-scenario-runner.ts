@@ -77,6 +77,7 @@ export type ScenarioRunnerSnapshot = Readonly<{
     startedActiveOffsetMs: number;
     deadlineActiveOffsetMs: number;
     boundary: EvidenceRef | null;
+    diagnosticCurrentBoundary: DiagnosticObservationBoundary | null;
     status: "waiting";
     assertions: ScenarioCheckpointEvaluation["assertions"];
   }> | null;
@@ -243,6 +244,7 @@ export function createLocalInjectionScenarioRunner(
       settledActiveOffsetMs: evaluation.activeOffsetMs,
       startedBoundary,
       resultBoundary: evaluation.boundary,
+      diagnosticCurrentBoundary: evaluation.diagnosticCurrentBoundary,
       evidenceAvailability: evaluation.boundary ? "RETAINED" as const : "NOT_APPLICABLE" as const,
       diagnosticAvailability: evaluation.assertions.some(({ relatedDiagnostics }) => relatedDiagnostics.length > 0) ? "RETAINED" as const : "NOT_APPLICABLE" as const,
       assertions: evaluation.assertions
@@ -289,7 +291,7 @@ export function createLocalInjectionScenarioRunner(
     const diagnosticLoad = ++diagnosticLoadGeneration;
     const withinDurations = diagnosticAssertions.flatMap((assertion) => assertion.withinActiveMs === undefined ? [] : [assertion.withinActiveMs]);
     const deadlineActiveOffsetMs = startedActiveOffsetMs + (withinDurations.length > 0 ? Math.min(...withinDurations) : 0);
-    activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: null, status: "waiting", assertions: Object.freeze([]) });
+    activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: null, diagnosticCurrentBoundary: null, status: "waiting", assertions: Object.freeze([]) });
     const reads = new Map<string, DiagnosticObservationRead>();
     let latest = diagnostics.currentBoundary();
     let loading = true;
@@ -304,7 +306,7 @@ export function createLocalInjectionScenarioRunner(
             through,
             codes: [assertion.ruleCode],
             lifecycle: assertion.lifecycle,
-            minimumSeverity: assertion.minimumSeverity,
+            ...(assertion.lifecycle === "occurrence" ? { minimumSeverity: assertion.minimumSeverity } : {}),
             affected: assertion.affected
           });
           return [assertion.id, read] as const;
@@ -360,7 +362,7 @@ export function createLocalInjectionScenarioRunner(
       if (settled || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
       const evaluation = evaluateScenarioCheckpoint(member, snapshot, { ...checkpointAdapter.observations(run), diagnosticReads }, activeNow(), startedActiveOffsetMs);
       if (evaluation.status === "waiting") {
-        activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: evaluation.boundary, status: "waiting", assertions: evaluation.assertions });
+        activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: evaluation.boundary, diagnosticCurrentBoundary: evaluation.diagnosticCurrentBoundary, status: "waiting", assertions: evaluation.assertions });
         if (phase !== "paused") phase = "checkpoint-waiting";
         publish();
         return;
@@ -406,7 +408,7 @@ export function createLocalInjectionScenarioRunner(
     startedBoundary = isBoundedEvidenceRef(initialBoundary.boundary) ? initialBoundary.boundary : null;
     const initial = evaluateScenarioCheckpoint(member, initialBoundary, { ...checkpointAdapter.observations(run), diagnosticReads }, activeNow(), startedActiveOffsetMs);
     if (initial.status === "waiting" && withinDurations.length > 0) {
-      activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: initial.boundary, status: "waiting", assertions: initial.assertions });
+      activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: initial.boundary, diagnosticCurrentBoundary: initial.diagnosticCurrentBoundary, status: "waiting", assertions: initial.assertions });
       const scheduleCheckpointDeadline = (): void => {
         const generation = ++scheduleGeneration;
         timer = adapter.clock.setTimer(() => {

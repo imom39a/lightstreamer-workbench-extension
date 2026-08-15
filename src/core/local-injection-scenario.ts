@@ -237,6 +237,7 @@ export type ScenarioTraceEntry = Readonly<{
   settledActiveOffsetMs: number;
   startedBoundary: EvidenceRef | null;
   resultBoundary: EvidenceRef | null;
+  diagnosticCurrentBoundary: DiagnosticObservationBoundary | null;
   evidenceAvailability: "RETAINED" | "UNAVAILABLE_AFTER_CLEAR" | "NOT_APPLICABLE";
   diagnosticAvailability: "RETAINED" | "UNAVAILABLE_AFTER_CLEAR" | "NOT_APPLICABLE";
   assertions: readonly import("./local-injection-scenario-checkpoint").ScenarioAssertionResult[];

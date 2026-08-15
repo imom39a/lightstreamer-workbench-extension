@@ -5137,7 +5137,9 @@ class Runtime implements WorkbenchRuntime {
   private diagnosticAffectedScopeId(affected: DiagnosticAffectedIdentity): string | null {
     const state = this.topologyProjection.snapshot();
     const structure = this.currentScopeStructure(state);
-    if (affected.kind === "unavailable" || affected.kind === "evidence" || ("pageId" in affected && this.currentPageEpoch !== null && affected.pageId !== this.currentPageEpoch)) return null;
+    if (affected.kind === "unavailable" || affected.kind === "evidence"
+      || this.currentPageEpoch === null
+      || affected.pageId !== this.currentPageEpoch) return null;
     for (const descriptor of structure.descriptors) {
       const located = locateScopeDescriptor(state, descriptor.locator);
       if (!located) continue;

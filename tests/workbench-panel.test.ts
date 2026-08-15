@@ -1929,7 +1929,8 @@ describe("React Workbench Diagnose panel", () => {
     };
     const result = { assertionId: assertion.id, kind: assertion.kind, status: "pass" as const, expected: {}, observed: { state: "observed", value: "error", certainty: "certain" as const, provenance: "diagnostic-observation" as const, evidence: null }, relatedEvidence: [], relatedDiagnostics: [observation] };
     const reviewedCheckpoint = { ...checkpoint, memberOrdinal: 2 };
-    const trace = { checkpointId: checkpoint.id, checkpointName: checkpoint.name, memberOrdinal: 2, kind: "checkpoint" as const, status: "pass" as const, startedActiveOffsetMs: 0, settledActiveOffsetMs: 0, startedBoundary: null, resultBoundary: null, evidenceAvailability: "NOT_APPLICABLE" as const, assertions: [result] };
+    const diagnosticCurrentBoundary = { intervalId: "diagnostic-interval", sequence: 9 };
+    const trace = { checkpointId: checkpoint.id, checkpointName: checkpoint.name, memberOrdinal: 2, kind: "checkpoint" as const, status: "pass" as const, startedActiveOffsetMs: 0, settledActiveOffsetMs: 0, startedBoundary: null, resultBoundary: null, diagnosticCurrentBoundary, evidenceAvailability: "NOT_APPLICABLE" as const, diagnosticAvailability: "RETAINED" as const, assertions: [result] };
     const diagnosticAuthorization = { intervalId: "diagnostic-review", sequence: 3 };
     const run = {
       ...reviewed.run!,
@@ -1940,13 +1941,15 @@ describe("React Workbench Diagnose panel", () => {
       }],
       trace: [trace]
     };
-    await act(async () => editRuntime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run, focusedMemberId: checkpoint.id, runner: { ...reviewed.runner!, run, phase: "complete", activeCheckpoint: null } } })));
+    await act(async () => editRuntime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run, priorRuns: [run], focusedMemberId: checkpoint.id, runner: { ...reviewed.runner!, run, phase: "complete", activeCheckpoint: null } } })));
     expect(region.textContent).toContain("Diagnostic Observation subscription.lost-updates");
     expect(region.textContent).toContain("observed observed \"error\" · certain · diagnostic-observation");
     expect(document.querySelector('[aria-label="Protected Scenario target and execution boundary"]')?.textContent).toContain("Diagnostic authorization seeddiagnostic-review · sequence 3");
     expect(document.querySelector('[aria-label="Scenario Run ledger"]')?.textContent).toContain("Evidence boundary empty · Diagnostic Observation cursor diagnostic-review · sequence 3");
     expect(region.textContent).toContain("Exact affected identity subscription · page page-1 · client client-1 · session session-1 · subscription subscription-1");
     expect(region.textContent).toContain("Diagnostic Observation boundary diagnostic-interval · sequence 7");
+    expect(region.textContent).toContain("Evidence boundary unavailable · Diagnostic Observation current cursor diagnostic-interval · sequence 9");
+    expect(document.querySelector('[aria-label="Prior Scenario Run ledgers"]')?.textContent).toContain("Diagnostic Observation current cursor diagnostic-interval · sequence 9");
     expect(region.textContent).toContain("Compact reference only · raw diagnostic messages are not copied into Scenario Trace");
     expect(region.textContent).toContain("Route inspect affected");
     const inspect = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Inspect Diagnostic Observation subscription.lost-updates");
@@ -1957,11 +1960,12 @@ describe("React Workbench Diagnose panel", () => {
     const recoveryObservation = { ...observation, id: "diag:capture.disconnected:recover", code: "capture.disconnected", route: { kind: "recover" as const, action: "reload-inspected-page" } };
     const recoveryTrace = { ...trace, assertions: [{ ...result, relatedDiagnostics: [recoveryObservation] }] };
     const recoveryRun = { ...run, trace: [recoveryTrace] };
-    await act(async () => editRuntime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run: recoveryRun, focusedMemberId: checkpoint.id, runner: { ...reviewed.runner!, run: recoveryRun, phase: "complete", activeCheckpoint: null } } })));
+    await act(async () => editRuntime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run: recoveryRun, membershipError: "Diagnostic Observation affected-object route is unavailable in the current topology.", focusedMemberId: checkpoint.id, runner: { ...reviewed.runner!, run: recoveryRun, phase: "complete", activeCheckpoint: null } } })));
     const unavailableRecovery = region.querySelector<HTMLButtonElement>('[aria-label="Recovery unavailable for Diagnostic Observation capture.disconnected"]');
     expect(unavailableRecovery).toBeTruthy();
     expect(unavailableRecovery?.disabled).toBe(true);
     expect(region.textContent).toContain("Recovery unavailable from Scenario Trace");
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("affected-object route is unavailable in the current topology");
     await act(async () => root.unmount());
   });
 
