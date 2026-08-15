@@ -17,6 +17,7 @@ import {
   removeScenarioCheckpoint,
   reviewScenario,
   SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES,
+  SCENARIO_MAX_ACCOUNTED_BYTES,
   SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES,
   type ScenarioDraftInput
 } from "../src/core/local-injection-scenario";
@@ -350,5 +351,19 @@ describe("Scenario Checkpoints", () => {
     expect(reviewed.run.members).toHaveLength(200);
     expect(scenario.accountedBytes).toBeLessThan(8 * 1024 * 1024);
     expect(performance.now() - started).toBeLessThan(5_000);
+  });
+
+  it("admits an exact diagnostic assertion at 8 MiB and refuses the crossing byte before mutation", () => {
+    const target = { pageEpoch: "page", clientId: "client", sessionId: "session", subscriptionId: "sub", deliveryPath: "listener" as const, listenerId: "listener", mode: "COMMAND", schemaFields: ["command", "key"] };
+    const draft: ScenarioDraftInput = { id: "draft", sourceEventId: null, sourceRawText: null, rawText: "{}", document: { command: "ADD", key: "order-1", isSnapshot: false, fields: { command: "ADD", key: "order-1" } }, ready: true, diagnostics: [], target, item: { name: "orders", position: 1 }, editor: { cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, scrollLeft: 0, compareOpen: false, serializedState: null }, restorationOrigin: { scopeId: null, selectionEventId: null, focusedEventId: null, contextId: null }, relativeDelayMs: 0 };
+    const scenario = createScenarioFromDraft(draft, { scenarioId: "diagnostic-capacity" });
+    const diagnostic: ScenarioCheckpoint = { id: "checkpoint-diagnostic", kind: "checkpoint", name: "Exact boundary", assertions: [{ id: "diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1, ruleCode: "subscription.lost-updates", lifecycle: "occurrence", minimumSeverity: "warning", affected: { kind: "subscription", pageId: "page", clientId: "client", sessionId: "session", subscriptionId: "sub" } }] };
+    const measured = addScenarioCheckpoint(scenario, diagnostic);
+    if (!measured.ok) throw new Error(measured.reason);
+    const retainedAtExactBoundary = SCENARIO_MAX_ACCOUNTED_BYTES - measured.scenario.accountedBytes;
+    expect(addScenarioCheckpoint(scenario, diagnostic, { retainedRunBytes: retainedAtExactBoundary })).toMatchObject({ ok: true, scenario: { accountedBytes: measured.scenario.accountedBytes } });
+    const refused = addScenarioCheckpoint(scenario, diagnostic, { retainedRunBytes: retainedAtExactBoundary + 1 });
+    expect(refused).toEqual({ ok: false, capacity: "bytes", reason: "Scenario and retained Runs would exceed 8 MiB of canonical accounted state; no membership changed." });
+    expect(scenario.members).toHaveLength(1);
   });
 });
