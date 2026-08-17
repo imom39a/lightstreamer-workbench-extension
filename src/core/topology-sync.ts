@@ -525,8 +525,15 @@ function isValidAbsoluteRecordSet(
           typeof record.clientActive === "boolean" &&
           typeof record.serverEstablished === "boolean"
         );
-      case "establishment":
       case "listener-attachment":
+        return (
+          (hasParent("subscription", record.parentId) &&
+            record.subscriptionId === record.parentId) ||
+          (hasParent("client", record.parentId) &&
+            record.clientId === record.parentId &&
+            record.subscriptionId === undefined)
+        );
+      case "establishment":
       case "item":
       case "command-generation":
       case "aggregate":

@@ -39,8 +39,13 @@ const issue16FixtureUrl = new URL(
   "/?scenario=issue-16",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
-
-type OfficialClientScenario = "authored" | "scenario" | "diagnostics" | "high-volume-loading" | "issue-16";
+type OfficialClientScenario =
+  | "authored"
+  | "scenario"
+  | "diagnostics"
+  | "high-volume-loading"
+  | "issue-16"
+  | "issue-16-scope";
 
 async function runOfficialClientPanelJourney(
   windowSize: string,
@@ -101,11 +106,18 @@ async function runOfficialClientPanelJourney(
     await pageCdp.request("Page.navigate", {
       url: scenario === "high-volume-loading"
         ? highVolumeFixtureUrl
-        : scenario === "issue-16"
+        : scenario === "issue-16" || scenario === "issue-16-scope"
           ? issue16FixtureUrl
           : authoredFixtureUrl
     });
-    if (scenario === "high-volume-loading") {
+    if (scenario === "issue-16-scope") {
+      await waitForCondition(
+        pageCdp,
+        `window.LSEW_ISSUE_16_TOTAL_EVENTS === 1692 &&
+          document.querySelectorAll("#fixture-events li").length >= 1_000`,
+        "the official issue-16 fixture to expose its multi-Subscription burst"
+      );
+    } else if (scenario === "high-volume-loading") {
       await waitForCondition(
         pageCdp,
         `window.LSEW_CONTINUOUS_EVIDENCE_TARGET === 20001 &&
@@ -210,6 +222,35 @@ async function runOfficialClientPanelJourney(
         "keepalive",
         expect.objectContaining({ code: expect.any(Number), message: expect.any(String) })
       ]));
+      expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      return;
+    }
+
+    if (scenario === "issue-16-scope") {
+      await waitForCondition(
+        panelCdp,
+        `document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]').length > 0 &&
+          document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]').length >= 4 &&
+          !document.querySelector('[aria-label="Structural runtime scope"]')?.textContent?.includes("0 clients · 0 subscriptions")`,
+        "the shipped panel to expose usable issue-16 Scope alongside retained Evidence"
+      );
+      const scopeBefore = await evaluateByValue<string>(
+        panelCdp,
+        `document.querySelector('[aria-label="Current runtime scope"]')?.textContent ?? ""`
+      );
+      await clickVisiblePanelElement(
+        panelCdp,
+        `document.querySelector('[aria-label="Structural runtime scope"] [role="treeitem"][aria-level="4"]')`,
+        "one issue-16 Item Scope"
+      );
+      await waitForCondition(
+        panelCdp,
+        `(() => {
+          const current = document.querySelector('[aria-label="Current runtime scope"]')?.textContent ?? "";
+          return current !== ${JSON.stringify("Inspected page")} && current !== ${JSON.stringify(scopeBefore)};
+        })()`,
+        "the issue-16 Item choice to change current Scope"
+       );
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
       return;
     }
@@ -1097,6 +1138,14 @@ async function pressScopeTreeItemEnter(cdp: CdpClient, scopeId: string): Promise
     }));
   })()`);
 }
+
+test("issue-16 burst keeps Scope populated and selectable beside retained Evidence", async () => {
+  await runOfficialClientPanelJourney(
+    "2664,927",
+    { width: 1440, height: 900 },
+    "issue-16-scope"
+  );
+});
 
 async function clickPanelButton(cdp: CdpClient, label: string): Promise<void> {
   await clickVisiblePanelElement(

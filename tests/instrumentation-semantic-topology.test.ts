@@ -17,6 +17,7 @@ import {
   snapshotPanelTopologyState
 } from "../src/extension/panel/topology-sync-adapter";
 import { createTopologyStructuredSnapshot } from "../src/extension/panel/topology-export";
+import { createTopologyCheckpointEvidenceCandidate } from "../src/extension/panel/topology-checkpoint-evidence-codec";
 import { renderTopologyHtmlReport } from "../src/extension/panel/topology-html-report";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
@@ -402,6 +403,7 @@ describe("semantic topology instrumentation", () => {
     client.subscribe(subscription);
 
     const records = syncRecords(host, listeners, frames);
+    expect(createTopologyCheckpointEvidenceCandidate(frames)).toMatchObject({ ok: true });
     const adapter = createPanelTopologySyncAdapter(() => undefined);
     const index = adapter.hydrate(records[0]?.pageEpoch ?? "page-test", records);
     const state = snapshotPanelTopologyState(index);
@@ -754,15 +756,21 @@ describe("semantic topology instrumentation", () => {
 
     expect((frames as TopologySyncFrame[]).map((frame) => frame.type)).toEqual([
       TOPOLOGY_SYNC_BEGIN,
+      TOPOLOGY_SYNC_CHUNK,
       TOPOLOGY_SYNC_COMPLETE
     ]);
     expect(frames.every(isTopologySyncFrame)).toBe(true);
     expect(frames[0]).toMatchObject({
-      recordCount: 0,
-      chunkCount: 0,
+      recordCount: 1,
+      chunkCount: 1,
       coverage: { status: "partial", reason: "limit-exceeded" }
     });
-    expect(frames[1]).toMatchObject({ reason: "limit-exceeded" });
+    expect(frames[1]).toMatchObject({
+      records: expect.arrayContaining([
+        expect.objectContaining({ kind: "page" })
+      ])
+    });
+    expect(frames[2]).toMatchObject({ reason: "limit-exceeded" });
   });
 
   it("retires session evidence, honors subscribed false, and advances establishment epochs on recovery", () => {

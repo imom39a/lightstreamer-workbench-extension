@@ -3501,16 +3501,54 @@ function packAbsoluteTopologyCheckpoint(
   structuralPartial: boolean,
   panelSessionId: PanelSessionId
 ): TopologySyncFrame[] {
-  if (structuralPartial || records.length > TOPOLOGY_SYNC_LIMITS.maxRecords) {
-    return partialTopologyFrames(
-      syncId,
-      pageEpoch,
-      cutoffCaptureSequence,
-      "limit-exceeded",
-      coverage,
-      panelSessionId
-    );
-  }
+  const fullCoverage = structuralPartial
+    ? partialTopologyCoverage(coverage, "limit-exceeded")
+    : coverage;
+  const fullFrames = tryPackTopologyFrames(
+    records,
+    syncId,
+    pageEpoch,
+    cutoffCaptureSequence,
+    fullCoverage,
+    structuralPartial ? "limit-exceeded" : undefined,
+    panelSessionId
+  );
+  if (fullFrames) return fullFrames;
+
+  const structuralRecords = records.filter(
+    (record) => record.kind !== "command-generation" && record.kind !== "inferred-child"
+  );
+  const structuralFrames = tryPackTopologyFrames(
+    structuralRecords,
+    syncId,
+    pageEpoch,
+    cutoffCaptureSequence,
+    partialTopologyCoverage(coverage, "limit-exceeded"),
+    "limit-exceeded",
+    panelSessionId
+  );
+  if (structuralFrames) return structuralFrames;
+
+  return partialTopologyFrames(
+    syncId,
+    pageEpoch,
+    cutoffCaptureSequence,
+    "limit-exceeded",
+    coverage,
+    panelSessionId
+  );
+}
+
+function tryPackTopologyFrames(
+  records: readonly TopologyAbsoluteRecord[],
+  syncId: string,
+  pageEpoch: string,
+  cutoffCaptureSequence: number,
+  coverage: TopologyCoverage,
+  reason: "limit-exceeded" | undefined,
+  panelSessionId: PanelSessionId
+): TopologySyncFrame[] | null {
+  if (records.length > TOPOLOGY_SYNC_LIMITS.maxRecords) return null;
   const recordChunks: TopologyAbsoluteRecord[][] = [];
   for (let offset = 0; offset < records.length; offset += 128) {
     recordChunks.push(records.slice(offset, offset + 128));
@@ -3533,7 +3571,7 @@ function packAbsoluteTopologyCheckpoint(
       chunkIndex,
       records: chunk
     }) as TopologySyncFrame),
-    { type: TOPOLOGY_SYNC_COMPLETE, ...metadata }
+    { type: TOPOLOGY_SYNC_COMPLETE, ...metadata, ...(reason ? { reason } : {}) }
   ];
   const totalBytes = frames.reduce((total, frame) => total + topologySyncUtf8Bytes(frame), 0);
   if (
@@ -3543,16 +3581,16 @@ function packAbsoluteTopologyCheckpoint(
       (frame) => !isTopologySyncFrame(frame) || topologySyncUtf8Bytes(frame) > TOPOLOGY_LIMITS.utf8Bytes
     )
   ) {
-    return partialTopologyFrames(
-      syncId,
-      pageEpoch,
-      cutoffCaptureSequence,
-      "limit-exceeded",
-      coverage,
-      panelSessionId
-    );
+    return null;
   }
   return frames;
+}
+
+function partialTopologyCoverage(
+  coverage: TopologyCoverage,
+  reason: "limit-exceeded"
+): TopologyCoverage {
+  return { ...coverage, status: "partial", reason };
 }
 
 function partialTopologyFrames(
