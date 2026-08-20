@@ -2745,7 +2745,6 @@ async function readFindProjectionResult(
 async function rarestFindSearchToken(index: IDBIndex, normalized: string): Promise<Readonly<{ token: string; count: number }>> {
   const tokens = [...new Set([
     normalized,
-    ...queryNgrams(normalized, 6),
     ...queryTrigrams(normalized)
   ])];
   const counts = await Promise.all(tokens.map(async (token) => ({
@@ -2959,15 +2958,8 @@ function querySearchTokens(value: string): string[] {
   const normalized = normalizeEvidenceSearchText(value);
   return [...new Set([
     ...normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean),
-    ...queryNgrams(normalized, 6),
     ...queryTrigrams(normalized)
   ])];
-}
-
-function queryNgrams(value: string, length: number): string[] {
-  const codePoints = Array.from(value);
-  if (codePoints.length < length) return [];
-  return codePoints.slice(0, codePoints.length - length + 1).map((_, index) => codePoints.slice(index, index + length).join(""));
 }
 
 function queryTrigrams(value: string): string[] {

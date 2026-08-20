@@ -334,13 +334,13 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
   });
 
-  it("uses a rare six-gram posting for a hyphenated Find substring", async () => {
-    const panelSessionId = `filter-impl-08-six-gram-${Date.now()}`;
+  it("uses a bounded exact-token posting for a hyphenated Find query", async () => {
+    const panelSessionId = `filter-impl-08-exact-token-${Date.now()}`;
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const durable = await createIndexedDbEventHistory({ panelSessionId });
     try {
       for (let sequence = 1; sequence <= 20; sequence += 1) {
-        const key = `order-${String(sequence).padStart(5, "0")}`;
+        const key = sequence <= 3 ? "order-00001" : `order-${String(sequence).padStart(5, "0")}`;
         await durable.offer({
           ...event(`order-${sequence}`, sequence, "value"),
           update: { isSnapshot: false, key, fields: { key } }
@@ -350,13 +350,13 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
         at: "LATEST_COMMITTED",
         page: { order: "OLDEST_FIRST", size: 1 },
         filter: emptyFilter(),
-        find: { text: "rder-00001" }
+        find: { text: "order-00001" }
       });
       expect(result).toMatchObject({
         ok: true,
         value: {
-          find: { total: 1, matches: [{ eventId: "order-1" }] },
-          telemetry: { findCursorBound: 1, findCursorReads: 1, shortFindFallback: false, fullRetainedScan: false }
+          find: { total: 3, matches: [{ eventId: "order-1" }, { eventId: "order-2" }, { eventId: "order-3" }] },
+          telemetry: { findCursorBound: 3, findCursorReads: 3, shortFindFallback: false, fullRetainedScan: false }
         }
       });
     } finally {
