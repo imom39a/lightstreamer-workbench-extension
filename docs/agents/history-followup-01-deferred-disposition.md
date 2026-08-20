@@ -47,19 +47,20 @@ than an acceptance claim.
 
 ## Reason for deferral
 
-The standing requirement for this lane is that Playwright and UI tests remain
-headless and that no visible Chrome is launched. The Project acceptance
-criteria require 3 independent samples for each of four workloads in visible
-Chrome for Testing 151 through the production React panel with native
-IndexedDB. Those requirements cannot both be satisfied in this run.
+The standing requirement for ordinary Playwright and UI tests is that they
+remain headless. The Project acceptance criteria require 3 independent samples
+for each of four workloads in visible Chrome for Testing 151 through the
+production React panel with native IndexedDB. The one explicitly authorized
+visible override was attempted, but failed before the first page launched, so
+those requirements are still not satisfied in this run.
 
 The repository's existing 100k activation runner cannot supply the missing
-proof: `scripts/event-history-100k-activation.mjs` launches with
-`headless: true`, declares `proofMode: "non-interactive"`, and records
-`compositorFrameMeasured: false`. The manual performance workflow likewise
-states that non-interactive layout-commit evidence does not claim a foreground
-compositor frame, and explicitly rejects the headed-visible-frame mode under
-the headless-only policy.
+proof: `scripts/event-history-100k-activation.mjs` defaults to `headless: true`
+and declares `proofMode: "non-interactive"`; only the exact history override
+selects `proofMode: "visible-cft151"`, and that attempt recorded
+`compositorFrameMeasured: false` before any cell completed. The manual
+performance workflow likewise states that non-interactive layout-commit
+evidence does not claim a foreground compositor frame.
 
 ## Exact missing cells
 
@@ -89,8 +90,9 @@ or visible-browser acceptance exists for any cell.
   disclaims compositor-frame proof.
 - `scripts/event-history-100k-activation.mjs` has the intended 4-workload ×
   3-sample matrix, fresh temporary profiles, native IndexedDB, bounded
-  identity evidence, and capacity/query assertions, but is unconditionally
-  headless and therefore cannot close this visible packet.
+  identity evidence, and capacity/query assertions. Its default path remains
+  headless; the exact visible override is now opt-in but failed before a cell
+  could close this packet.
 - No tracked `test-results/history-100k-07` report exists in this worktree.
   The pinned CFT151 cache and `node_modules` are also absent, so even the
   non-interactive runner could not be executed here.
