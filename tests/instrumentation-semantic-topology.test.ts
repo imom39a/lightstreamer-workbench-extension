@@ -415,6 +415,40 @@ describe("semantic topology instrumentation", () => {
     expect(hydratedSubscription?.listeners).toHaveLength(1);
   });
 
+  it("preserves retained callback delivery identity in a late-open checkpoint", () => {
+    const { host, listeners, frames } = createSemanticHarness();
+    const client = new host.LightstreamerClient();
+    const subscription = new host.Subscription("COMMAND", ["orders"], ["command", "key"]);
+    client.subscribe(subscription);
+    subscription.addListener({ onItemUpdate: () => undefined });
+    const update = {
+      forEachField(iterator: (name: string, position: number, value: string) => void) {
+        iterator("command", 1, "ADD");
+        iterator("key", 2, "order-1");
+      },
+      forEachChangedField(iterator: (name: string, position: number, value: string) => void) {
+        this.forEachField(iterator);
+      },
+      getItemName: () => "orders",
+      getItemPos: () => 1,
+      isSnapshot: () => false
+    };
+    subscription.listeners[0]?.onItemUpdate?.(update);
+
+    const records = syncRecords(host, listeners, frames);
+    const adapter = createPanelTopologySyncAdapter(() => undefined);
+    const index = adapter.hydrate(records[0]?.pageEpoch ?? "page-test", records);
+    const hydratedSubscription = snapshotPanelTopologyState(index)
+      .clients[0]?.sessions[0]?.subscriptions[0];
+
+    expect(hydratedSubscription).toMatchObject({
+      updateCount: 1,
+      deliveryCount: 1,
+      items: [expect.objectContaining({ updateCount: 1, deliveryCount: 1 })],
+      listeners: [expect.objectContaining({ id: "listener-1", deliveryCount: 1 })]
+    });
+  });
+
   it("retains seven-state semantic evidence in late-open client, session, and subscription records", () => {
     const { host, listeners, frames } = createSemanticHarness();
     const client = new host.LightstreamerClient();

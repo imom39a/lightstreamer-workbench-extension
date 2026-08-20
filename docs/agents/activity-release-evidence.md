@@ -99,3 +99,27 @@ The gated read-only baseline comparison on the approval date proved that all fiv
 - `CI=1 npm run test:ui -- tests/ui/activity-impl-11.spec.ts tests/ui/activity-material.spec.ts`: 21/21 passed headlessly.
 
 The broader baseline comparison exposed 15 differences belonging to newer Scenario/checkpoint work. Those unrelated images were deliberately not updated under the Activity approval. Activity therefore satisfies its explicit Material UI approval and baseline-decision gate without changing any baseline file.
+
+## Activity 12 release closure — 2026-08-20
+
+The two bounded release follow-ups are closed. This pass is classified as **Bounded UI**: it corrects the retained runtime counts shown inside the accepted Scope/Evidence workspace, but adds no control, workflow, permanent surface, keyboard contract, semantic treatment, geometry, or visual-baseline change. The affected official-client scenario exercises the corrected user-visible subscription, item, and listener totals. The already-approved Activity visual contract remains unchanged; its five maintained baseline comparisons and 21-test focused matrix passed earlier on the same approval date.
+
+The real-panel failure was a checkpoint-hydration defect rather than capture loss. The production boundary retained all 1,692 fixture Evidence records, but a late-open panel reconstructed only the last compacted item callback. Subscription delivery totals and cumulative item/listener child totals were therefore lost. The repaired bounded checkpoint model now retains cumulative logical-update and delivery counters by exact subscription, item, listener, and attachment identity, hydrates those counters without replaying compacted events, deduplicates logical updates, and continues the same counters for post-checkpoint live Evidence. A focused unit regression was red before the fix and green afterward.
+
+The serialized-suite blocker was process starvation rather than a slow product test. A stale orphaned `npm run test:release`/Vitest tree had remained alive for approximately six days, consuming about 116% CPU and 2.0 GiB. The exact stale process chain was terminated; no source file or user data was removed. With the worktree stable and no competing release runner, the unchanged authoritative command completed normally.
+
+Final verification used CI/headless browser mode throughout:
+
+- Focused checkpoint regression: 1/1 passed; adjacent topology suites: 33/33 passed.
+- `npm run typecheck`: passed.
+- `npm run build`: passed, including MV3 CSP and self-contained-script audits.
+- `CI=1 npm run test:ui:extension`: passed; the production DevTools panel selected the semantic Scope, Evidence, and Context workspace.
+- Focused official-client issue-16 journey: 1/1 passed in 20.2 seconds, including 15 subscriptions, `50 real · 50 deliveries`, and the 30-update item Scope.
+- `CI=1 npm run fixture:test:browser`: 7/7 passed in 46.9 seconds; the fixture was stopped cleanly afterward.
+- `npm run test:release`: 120/120 files passed, 1,525 tests passed, 1 skipped, no failures; Vitest duration 120.27 seconds and wall time 2:00.88.
+- `CI=1 npm run test:ui -- --grep-invert "visual baseline"`: 89/89 functional browser tests passed in 2.8 minutes.
+- `npm run docs:check`: passed for 4 documents and 10 maintained commands.
+- `npm run release:package -- --skip-tests`: passed typecheck, build, audits, and deterministic v2.0.1 packaging; ZIP size 427,176 bytes against the 1 MiB budget.
+- `git diff --check`: passed.
+
+The broader visual-baseline comparison still contains the 15 previously identified Scenario/checkpoint differences. They are unrelated to Activity and were not rewritten under the Activity approval. Activity's maintained baselines remain exact, independent visual QA remains **APPROVED**, and the primary maintainer's explicit Material UI/baseline approval remains recorded above. With both bounded follow-ups green, `activity-impl-12` and the parent Observed Activity delivery are complete.

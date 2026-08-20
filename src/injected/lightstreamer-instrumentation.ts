@@ -45,7 +45,9 @@ type InstrumentationState = {
   captureSequence: number;
   currentCaptureTimestamp: number;
   topologyRecords: Map<string, TopologyAbsoluteRecord>;
-  topologyCounters: Map<string, { updateCount: number; lostUpdates: number }>;
+  topologyCounters: Map<string, { updateCount: number; deliveryCount: number; lostUpdates: number }>;
+  topologyItemCounters: Map<string, { updateCount: number; deliveryCount: number }>;
+  topologyListenerCounters: Map<string, number>;
   topologyObservedDispatches: Set<string>;
   topologyEstablishmentEpochs: Map<string, number>;
   topologyCommandEpochs: Map<string, number>;
@@ -188,7 +190,9 @@ export function installLightstreamerInstrumentation(
     captureSequence: 0,
     currentCaptureTimestamp: 0,
     topologyRecords: new Map<string, TopologyAbsoluteRecord>(),
-    topologyCounters: new Map<string, { updateCount: number; lostUpdates: number }>(),
+    topologyCounters: new Map<string, { updateCount: number; deliveryCount: number; lostUpdates: number }>(),
+    topologyItemCounters: new Map<string, { updateCount: number; deliveryCount: number }>(),
+    topologyListenerCounters: new Map<string, number>(),
     topologyObservedDispatches: new Set<string>(),
     topologyEstablishmentEpochs: new Map<string, number>(),
     topologyCommandEpochs: new Map<string, number>(),
@@ -1050,6 +1054,13 @@ function updateListenerAttachmentRecord(
   const clientPayload = captureObject(payload.client);
   const subscriptionPayload = captureObject(payload.subscription);
   const listenerId = topologyString(topology.listener?.id);
+  const listenerCounterKey = listenerId ? `${subscriptionId}\u0000${listenerId}` : null;
+  const deliveryCount = listenerCounterKey
+    ? state.topologyListenerCounters.get(listenerCounterKey) ?? 0
+    : 0;
+  if (listenerCounterKey) {
+    state.topologyListenerCounters.set(listenerCounterKey, deliveryCount);
+  }
   for (const [recordKey, record] of state.topologyRecords) {
     if (
       record.kind === "listener-attachment" &&
@@ -1077,7 +1088,8 @@ function updateListenerAttachmentRecord(
       active: true,
       client: clientPayload,
       subscription: subscriptionPayload,
-      listener: listenerPayload
+      listener: listenerPayload,
+      deliveryCount
     })
   });
   synchronizeAttachmentCounts(state, subscriptionId, topology.captureSequence);
@@ -1113,6 +1125,24 @@ function updateItemAndCounterRecords(
   const subscriptionPayload = captureObject(payload.subscription);
   const updatePayload = captureObject(payload.update);
   const itemIdentity = itemTopologyIdentity(subscriptionId, itemPayload);
+  const itemCounterKey = itemIdentity ? `${subscriptionId}\u0000${itemIdentity}` : null;
+  const itemCounters = itemCounterKey
+    ? state.topologyItemCounters.get(itemCounterKey) ?? { updateCount: 0, deliveryCount: 0 }
+    : null;
+  const logicalDispatchId = topologyString(topology.dispatch?.id);
+  const isNewLogicalUpdate =
+    kind === "item-update" &&
+    topology.kind !== "second-level-observed" &&
+    (!logicalDispatchId || !state.topologyObservedDispatches.has(logicalDispatchId));
+  if (itemCounters && isNewLogicalUpdate) {
+    itemCounters.updateCount += 1;
+  }
+  if (itemCounters && kind === "item-update" && captureObject(payload.listener)?.id) {
+    itemCounters.deliveryCount += 1;
+  }
+  if (itemCounterKey && itemCounters) {
+    state.topologyItemCounters.set(itemCounterKey, itemCounters);
+  }
   if (itemIdentity && ["item-update", "end-of-snapshot", "lost-updates", "clear-snapshot"].includes(kind)) {
     putTopologyRecord(state, {
       kind: "item",
@@ -1126,24 +1156,37 @@ function updateItemAndCounterRecords(
         client: clientPayload,
         subscription: subscriptionPayload,
         item: itemPayload,
-        update: updatePayload
+        update: updatePayload,
+        listener: captureObject(payload.listener),
+        raw: captureObject(payload.raw),
+        updateCount: itemCounters?.updateCount ?? 0,
+        deliveryCount: itemCounters?.deliveryCount ?? 0
       })
     });
   }
 
-  const counters = state.topologyCounters.get(subscriptionId) ?? { updateCount: 0, lostUpdates: 0 };
+  const counters = state.topologyCounters.get(subscriptionId) ?? { updateCount: 0, deliveryCount: 0, lostUpdates: 0 };
   if (kind === "item-update" && topology.kind !== "second-level-observed") {
-    const dispatchId = topologyString(topology.dispatch?.id);
-    if (!dispatchId || !state.topologyObservedDispatches.has(dispatchId)) {
+    if (isNewLogicalUpdate) {
       counters.updateCount += 1;
-      if (dispatchId) {
-        state.topologyObservedDispatches.add(dispatchId);
+      if (logicalDispatchId) {
+        state.topologyObservedDispatches.add(logicalDispatchId);
         while (state.topologyObservedDispatches.size > TOPOLOGY_SYNC_LIMITS.maxBufferedLive) {
           state.topologyObservedDispatches.delete(
             state.topologyObservedDispatches.values().next().value as string
           );
         }
       }
+    }
+  }
+  if (kind === "item-update" && captureObject(payload.listener)?.id) {
+    counters.deliveryCount += 1;
+    const listenerId = topologyString(captureObject(payload.listener)?.id);
+    if (listenerId) {
+      const listenerKey = `${subscriptionId}\u0000${listenerId}`;
+      const deliveryCount = (state.topologyListenerCounters.get(listenerKey) ?? 0) + 1;
+      state.topologyListenerCounters.set(listenerKey, deliveryCount);
+      updateListenerDeliveryRecord(state, subscriptionId, listenerId, topology.captureSequence, deliveryCount);
     }
   } else if (kind === "lost-updates") {
     const update = captureObject(payload.update);
@@ -1291,7 +1334,7 @@ function updateAggregateRecord(
   sequence: number,
   state: InstrumentationState
 ): void {
-  const counters = state.topologyCounters.get(subscriptionId) ?? { updateCount: 0, lostUpdates: 0 };
+  const counters = state.topologyCounters.get(subscriptionId) ?? { updateCount: 0, deliveryCount: 0, lostUpdates: 0 };
   putTopologyRecord(state, {
     kind: "aggregate",
     id: `aggregate:${subscriptionId}`,
@@ -1302,6 +1345,7 @@ function updateAggregateRecord(
     values: {
       listenerCount: countListenerAttachments(state, subscriptionId),
       updateCount: counters.updateCount,
+      deliveryCount: counters.deliveryCount,
       lostUpdates: counters.lostUpdates
     }
   });
@@ -1326,10 +1370,43 @@ function deleteSubscriptionTopology(state: InstrumentationState, subscriptionId:
     }
   }
   state.topologyCounters.delete(subscriptionId);
+  for (const key of state.topologyItemCounters.keys()) {
+    if (key.startsWith(`${subscriptionId}\u0000`)) {
+      state.topologyItemCounters.delete(key);
+    }
+  }
+  for (const key of state.topologyListenerCounters.keys()) {
+    if (key.startsWith(`${subscriptionId}\u0000`)) {
+      state.topologyListenerCounters.delete(key);
+    }
+  }
   for (const [generationKey, generationId] of state.topologyCommandGenerations) {
     if (generationKey.startsWith(`${subscriptionId}\u0000`)) {
       retireCommandGeneration(state, generationKey, generationId);
     }
+  }
+}
+
+function updateListenerDeliveryRecord(
+  state: InstrumentationState,
+  subscriptionId: string,
+  listenerId: string,
+  sequence: number,
+  deliveryCount: number
+): void {
+  for (const [recordKey, record] of state.topologyRecords) {
+    if (
+      record.kind !== "listener-attachment" ||
+      record.subscriptionId !== subscriptionId ||
+      record.values?.listenerId !== listenerId
+    ) {
+      continue;
+    }
+    putTopologyRecord(state, {
+      ...record,
+      captureSequence: sequence,
+      values: { ...record.values, deliveryCount }
+    });
   }
 }
 

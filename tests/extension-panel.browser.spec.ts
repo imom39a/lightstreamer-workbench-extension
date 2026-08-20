@@ -646,8 +646,8 @@ async function startInspectedPage(): Promise<{ server: Server; url: string }> {
 
 function readTimeout(value: string): number {
   const timeout = Number(value);
-  if (!Number.isSafeInteger(timeout) || timeout < 300_000) {
-    throw new Error("LSEW_SMOKE_TIMEOUT_MS must be an integer timeout of at least 300000 ms.");
+  if (!Number.isSafeInteger(timeout) || timeout < 10_000) {
+    throw new Error("LSEW_SMOKE_TIMEOUT_MS must be an integer timeout of at least 10000 ms.");
   }
   return timeout;
 }

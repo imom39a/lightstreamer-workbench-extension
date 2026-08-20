@@ -26,6 +26,7 @@ export type SemanticEventResolver = (
 type CheckpointAggregate = {
   listenerCount?: number;
   updateCount?: number;
+  deliveryCount?: number;
   lostUpdates?: number;
   logicalUpdateIds: Set<string>;
 };
@@ -39,9 +40,15 @@ type CheckpointSubscriptionEvidence = {
   clientId: string | null;
   establishments: TopologyEstablishment[];
   establishmentEpoch: number;
+  itemCounters: Map<string, { updateCount: number | null; deliveryCount: number | null }>;
+  itemLogicalUpdateIds: Map<string, Set<string>>;
   listenerAttachments: Map<
     string,
-    Array<{ id: string; registrationCount: number | null }>
+    Array<{
+      id: string;
+      registrationCount: number | null;
+      deliveryCount: number | null;
+    }>
   >;
   commandGenerations: TopologyCommandGeneration[];
   commandGenerationEpochs: Map<string, number>;
@@ -77,6 +84,7 @@ export function createPanelTopologySyncAdapter(
           aggregates.set(record.subscriptionId, {
             listenerCount: numberValue(values.listenerCount),
             updateCount: numberValue(values.updateCount),
+            deliveryCount: numberValue(values.deliveryCount),
             lostUpdates: numberValue(values.lostUpdates),
             logicalUpdateIds: new Set()
           });
@@ -124,6 +132,9 @@ function applyAggregateLiveEvent(
       aggregate.updateCount += 1;
     }
   }
+  if (event.kind === "item-update" && event.listener && aggregate.deliveryCount !== undefined) {
+    aggregate.deliveryCount += 1;
+  }
   if (event.kind === "lost-updates" && aggregate.lostUpdates !== undefined) {
     aggregate.lostUpdates += event.update?.lostUpdates ?? 0;
   }
@@ -159,22 +170,40 @@ export function snapshotPanelTopologyState(
       ...subscription,
       listenerCount: aggregate?.listenerCount ?? subscription.listenerCount,
       updateCount: aggregate?.updateCount ?? subscription.updateCount,
+      deliveryCount: aggregate?.deliveryCount ?? subscription.deliveryCount,
       lostUpdateCount: aggregate?.lostUpdates ?? subscription.lostUpdateCount,
       establishments: checkpoint?.establishments ?? subscription.establishments,
       commandGenerations:
         checkpoint?.commandGenerations ?? subscription.commandGenerations,
       listeners: subscription.listeners.map((listener) => {
         const attachments = checkpoint?.listenerAttachments.get(listener.id) ?? [];
+        const deliveryCount = attachments.reduce(
+          (count, attachment) =>
+            Math.max(count, attachment.deliveryCount ?? 0),
+          listener.deliveryCount
+        );
         return attachments.length === 0
           ? listener
           : {
               ...listener,
+              deliveryCount,
               attachmentIds: attachments.map(({ id }) => id),
               registrationCount: Math.max(
                 listener.registrationCount,
                 ...attachments.map(({ registrationCount }) => registrationCount ?? 0)
               )
             };
+      }),
+      items: subscription.items.map((item) => {
+        const itemId = checkpointItemId(subscription.id, item.position, item.name);
+        const counters = itemId ? checkpoint?.itemCounters.get(itemId) : undefined;
+        return counters
+          ? {
+              ...item,
+              updateCount: counters.updateCount ?? item.updateCount,
+              deliveryCount: counters.deliveryCount ?? item.deliveryCount
+            }
+          : item;
       })
     };
   };
@@ -225,6 +254,8 @@ function checkpointEvidence(
       clientId: clientIds.get(subscriptionId) ?? null,
       establishments: [],
       establishmentEpoch: 0,
+      itemCounters: new Map(),
+      itemLogicalUpdateIds: new Map(),
       listenerAttachments: new Map(),
       commandGenerations: [],
       commandGenerationEpochs: new Map(),
@@ -271,10 +302,16 @@ function checkpointEvidence(
         const attachments = target.listenerAttachments.get(listenerId) ?? [];
         attachments.push({
           id: record.id,
-          registrationCount: numberValue(values.registrationCount) ?? null
+          registrationCount: numberValue(values.registrationCount) ?? null,
+          deliveryCount: numberValue(values.deliveryCount) ?? null
         });
         target.listenerAttachments.set(listenerId, attachments);
       }
+    } else if (record.kind === "item") {
+      target.itemCounters.set(record.id, {
+        updateCount: numberValue(values.updateCount) ?? null,
+        deliveryCount: numberValue(values.deliveryCount) ?? null
+      });
     } else if (record.kind === "command-generation") {
       const itemId = stringValue(values.itemId) ?? null;
       const key = stringValue(values.key) ?? null;
@@ -382,7 +419,8 @@ function applyLiveEvidence(
             numberValue(observation.listenerAttachment?.registrationCount) ??
             event.listener?.registrationCount ??
             numberValue(observation.listener?.registrationCount) ??
-            null
+            null,
+          deliveryCount: target.listenerAttachments.get(listenerId)?.[0]?.deliveryCount ?? null
         }
       ]);
     }
@@ -407,6 +445,8 @@ function applyLiveEvidence(
     }
   }
 
+  applyLiveAggregateCounters(target, subscriptionId, observation, event);
+
   applyLiveCommandGeneration(target, subscriptionId, observation, event);
   applyLiveInferredChild(target, observation, event);
 }
@@ -425,6 +465,8 @@ function ensureSubscriptionEvidence(
     clientId,
     establishments: [],
     establishmentEpoch: 0,
+    itemCounters: new Map(),
+    itemLogicalUpdateIds: new Map(),
     listenerAttachments: new Map(),
     commandGenerations: [],
     commandGenerationEpochs: new Map(),
@@ -432,6 +474,59 @@ function ensureSubscriptionEvidence(
   };
   evidence.set(subscriptionId, created);
   return created;
+}
+
+function applyLiveAggregateCounters(
+  target: CheckpointSubscriptionEvidence,
+  subscriptionId: string,
+  observation: TopologyObservation,
+  event: LightstreamerEventEnvelope
+): void {
+  if (event.kind !== "item-update") return;
+  const itemId = semanticItemId(subscriptionId, event, observation);
+  if (itemId) {
+    const counters = target.itemCounters.get(itemId) ?? {
+      updateCount: 0,
+      deliveryCount: 0
+    };
+    const logicalId = event.logicalEventId ?? event.id;
+    const logicalIds = target.itemLogicalUpdateIds.get(itemId) ?? new Set<string>();
+    if (!logicalIds.has(logicalId)) {
+      logicalIds.add(logicalId);
+      if (counters.updateCount !== null) {
+        counters.updateCount += 1;
+      }
+    }
+    if (
+      event.listener &&
+      typeof event.raw?.callback === "string" &&
+      counters.deliveryCount !== null
+    ) {
+      counters.deliveryCount += 1;
+    }
+    while (logicalIds.size > 4_096) {
+      const oldest = logicalIds.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      logicalIds.delete(oldest);
+    }
+    target.itemLogicalUpdateIds.set(itemId, logicalIds);
+    target.itemCounters.set(itemId, counters);
+  }
+
+  const listenerId = event.listener?.id;
+  if (!listenerId || typeof event.raw?.callback !== "string") return;
+  const attachments = target.listenerAttachments.get(listenerId);
+  if (!attachments) return;
+  target.listenerAttachments.set(
+    listenerId,
+    attachments.map((attachment) => ({
+      ...attachment,
+      deliveryCount:
+        attachment.deliveryCount === null
+          ? null
+          : attachment.deliveryCount + 1
+    }))
+  );
 }
 
 function applyLiveCommandGeneration(
@@ -487,6 +582,16 @@ function applyLiveCommandGeneration(
 
 function commandGenerationEpochKey(itemId: string | null, key: string): string {
   return `${itemId ?? "unknown-item"}\u0000${key}`;
+}
+
+function checkpointItemId(
+  subscriptionId: string,
+  position: number | null,
+  name: string | null
+): string | null {
+  return position !== null || name
+    ? `item:${subscriptionId}:${position ?? name}`
+    : null;
 }
 
 function applyLiveInferredChild(
@@ -685,7 +790,11 @@ function eventFromAbsoluteRecord(
           { name: stringValue(values.itemName) ?? record.id },
           plainObject(values.item)
         ),
-        update: plainObject(values.update) ?? {}
+        update: plainObject(values.update) ?? {},
+        ...(plainObject(values.listener)
+          ? { listener: plainObject(values.listener) }
+          : {}),
+        ...(plainObject(values.raw) ? { raw: plainObject(values.raw) } : {})
       };
       break;
     }
