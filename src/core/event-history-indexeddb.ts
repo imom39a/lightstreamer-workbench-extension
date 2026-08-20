@@ -97,10 +97,11 @@ const SEARCH_TOKEN_TRIGRAM_WORD_MAX_LENGTH = 8;
 const SEARCH_TOKEN_TRIGRAM_IDENTIFIER_MAX_LENGTH = 16;
 const SEARCH_TOKEN_PARTIAL_MARKER = "\u0000lsew-search-partial-v1";
 const SEARCH_TOKEN_FULL_INDEX_RECORD_LIMIT = 128;
-// Large journal erasure is charged to the harness's existing 30-second close
-// stage; ordinary commits and explicit interval clears retain their 2-second
-// transaction ceiling.
-const CLOSE_TRANSACTION_TIMEOUT_MS = 30_000;
+// Large journal erasure is charged to the close stage. A 100k normal-tier
+// journal can carry hundreds of MiB of IndexedDB index rows, so give the
+// browser a bounded two-minute window to clear it while ordinary commits and
+// explicit interval clears retain the 2-second transaction ceiling.
+const CLOSE_TRANSACTION_TIMEOUT_MS = 120_000;
 
 const LIVE_PANEL_LEASE_PREFIX = "lsew-events-panel-live-v2-";
 const LIVE_PANEL_LEASE_TTL_MS = 30_000;
