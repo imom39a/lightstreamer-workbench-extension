@@ -277,8 +277,8 @@ export async function runHistory100kActivationCell(
     const oldest = (await history.read!({ order: "asc", limit: 1 }));
     const newest = (await history.read!({ order: "desc", limit: 1 }));
     const retainedRangeIdentity = oldest.ok && newest.ok
-      && oldest.value.evidence[0]?.identity.sequence === (status.retainedRange?.first.sequence ?? -1)
-      && newest.value.evidence[0]?.identity.sequence === (status.retainedRange?.last.sequence ?? -1);
+      && oldest.value.evidence[0]?.sequence === (status.retainedRange?.first.sequence ?? -1)
+      && newest.value.evidence[0]?.sequence === (status.retainedRange?.last.sequence ?? -1);
     const expectedDigest = expected.snapshot();
     const publishedDigest = published.snapshot();
     const retainedDigest = retained.snapshot();
