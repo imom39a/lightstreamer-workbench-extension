@@ -364,6 +364,53 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     }
   });
 
+  it("does not omit a Find match from a single partial projection", async () => {
+    const panelSessionId = `filter-impl-08-partial-single-${Date.now()}`;
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    try {
+      const eventId = "history-100k-07-small-lifecycle-1-small-lifecycle-128";
+      await durable.offer(event(eventId, 1, "needle")).settled;
+      const result = await durable.query!({
+        at: "LATEST_COMMITTED",
+        page: { order: "OLDEST_FIRST", size: 1 },
+        filter: emptyFilter(),
+        find: { text: "small-lifecycle-128" }
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        value: { find: { total: 1, matches: [{ eventId }] } }
+      });
+    } finally {
+      await durable.close();
+    }
+  });
+
+  it("falls back to an exact bounded projection scan when trigram coverage is partial", async () => {
+    const panelSessionId = `filter-impl-08-partial-search-index-${Date.now()}`;
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    try {
+      const candidates = Array.from({ length: 129 }, (_, index) => event(`history-100k-07-small-lifecycle-1-small-lifecycle-${index}`, index + 1, "needle"));
+      await Promise.all(candidates.map((candidate) => durable.offer(candidate).settled));
+      const result = await durable.query!({
+        at: "LATEST_COMMITTED",
+        page: { order: "OLDEST_FIRST", size: 1 },
+        filter: emptyFilter(),
+        find: { text: "100k-07-small-lifecycle-1-small-lifecycle-128" }
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          find: { total: 1, matches: [{ eventId: "history-100k-07-small-lifecycle-1-small-lifecycle-128" }] },
+          telemetry: { fullRetainedScan: true, shortFindFallback: false }
+        }
+      });
+    } finally {
+      await durable.close();
+    }
+  });
+
   it("fails closed when a selected projection is missing or corrupt", async () => {
     const panelSessionId = `filter-impl-08-projection-failure-${Date.now()}`;
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });

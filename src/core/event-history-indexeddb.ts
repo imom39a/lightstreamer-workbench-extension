@@ -87,6 +87,16 @@ export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 2_097_152;
 /** Commit transactions may fan out to Evidence, projection, posting, and aggregate indexes. */
 export const AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS = 30_000;
 const EVIDENCE_FACET_COUNT = 12;
+// Persist exact words for every projection, but only materialize trigrams for
+// short semantic tokens. High-cardinality replay identifiers and JSON values
+// otherwise create hundreds of multi-entry index rows per Evidence record.
+// Projections that omit some trigrams carry a reserved marker; Find detects
+// that marker and uses its exact bounded projection scan instead of returning
+// an incomplete candidate set.
+const SEARCH_TOKEN_TRIGRAM_WORD_MAX_LENGTH = 8;
+const SEARCH_TOKEN_TRIGRAM_IDENTIFIER_MAX_LENGTH = 16;
+const SEARCH_TOKEN_PARTIAL_MARKER = "\u0000lsew-search-partial-v1";
+const SEARCH_TOKEN_FULL_INDEX_RECORD_LIMIT = 128;
 // Large journal erasure is charged to the harness's existing 30-second close
 // stage; ordinary commits and explicit interval clears retain their 2-second
 // transaction ceiling.
@@ -884,7 +894,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
             registerJournalOwnedCandidate(candidate, entry.serialized.payload);
             const committed = toCommittedEvidence(candidate, interval, nextSequence + index);
-            return prepareEvidence(committed, entry.serialized);
+            return prepareEvidence(committed, entry.serialized, retainedCount + index >= SEARCH_TOKEN_FULL_INDEX_RECORD_LIMIT);
           });
           evidence = prepared.map((entry) => entry.evidence);
           candidates = evidence.map((entry) => entry.candidate);
@@ -2666,9 +2676,17 @@ async function readFindProjectionResult(
     keepNearby(projection);
   };
   const codePoints = Array.from(normalized);
-  if (codePoints.length < 3) {
-    telemetry.shortFindFallback = true;
+  const searchIndex = store.index("searchTokens");
+  // A projection with the partial marker deliberately omits some trigrams.
+  // Do not let a rare retained token make the result incomplete: the exact
+  // projection scan is still bounded by the latched retained range.
+  const partialProjectionCount = codePoints.length < 3
+    ? 0
+    : await requestToPromise<number>(searchIndex.count(queryOnlyRange(SEARCH_TOKEN_PARTIAL_MARKER)), "checking partial Find index coverage");
+  if (codePoints.length < 3 || partialProjectionCount > 0) {
+    telemetry.shortFindFallback = codePoints.length < 3;
     telemetry.fullRetainedScan = true;
+    if (partialProjectionCount > 0) telemetry.findCursorBound = telemetry.cursorWorkBound;
     const state = { reads: 0, bound: telemetry.cursorWorkBound };
     await new Promise<void>((resolve, reject) => {
       const request = store.openCursor(queryBoundRange(first, last));
@@ -2686,11 +2704,10 @@ async function readFindProjectionResult(
       };
     });
   } else {
-    const index = store.index("searchTokens");
-    const { token, count } = await rarestFindSearchToken(index, normalized);
+    const { token, count } = await rarestFindSearchToken(searchIndex, normalized);
     telemetry.findCursorBound = count;
     await new Promise<void>((resolve, reject) => {
-      const request = index.openCursor(queryOnlyRange(token));
+      const request = searchIndex.openCursor(queryOnlyRange(token));
       const state = { reads: 0, bound: count };
       request.onerror = () => reject(request.error ?? new Error("Find search-token scan failed."));
       request.onsuccess = () => {
@@ -2896,7 +2913,7 @@ function deterministicQueryRecord(entry: CommittedEvidence, interval: HistoryInt
   return Object.freeze({ identity, timestamp: entry.candidate.timestamp, summary: entry.candidate.kind, searchText: canonicalEvidenceSearchText(entry.candidate, context), facets: Object.freeze(extractEvidenceFacets(entry.candidate, context).facets) });
 }
 
-function prepareEvidence(entry: CommittedEvidence, serialized: ReturnType<typeof serializeJournalEvidenceCandidate>): PreparedEvidence {
+function prepareEvidence(entry: CommittedEvidence, serialized: ReturnType<typeof serializeJournalEvidenceCandidate>, boundedSearchIndex = false): PreparedEvidence {
   if (entry.candidate.kind === "topology-checkpoint") {
     return {
       evidence: entry,
@@ -2913,7 +2930,7 @@ function prepareEvidence(entry: CommittedEvidence, serialized: ReturnType<typeof
   return {
     evidence: entry,
     serialized,
-    projection: queryProjectionWithExtraction(candidate, entry.intervalId, entry.sequence, context, extracted),
+    projection: queryProjectionWithExtraction(candidate, entry.intervalId, entry.sequence, context, extracted, boundedSearchIndex),
     postings: facetPostingsFromExtraction(extracted, candidate.id, entry.intervalId, entry.sequence),
     aggregateValues: extracted.selectableValues.slice(0, EVIDENCE_FACET_COUNT).map((value) => ({
       facet: value.facet,
@@ -2941,7 +2958,8 @@ function queryProjectionWithExtraction(
   intervalId: string,
   sequence: number,
   context: { identity: EvidenceIdentity; pageId: string; listenerOwner: string; summary: string },
-  extracted: EvidenceFacetExtraction
+  extracted: EvidenceFacetExtraction,
+  boundedSearchIndex = false
 ): QueryProjection {
   const searchText = canonicalEvidenceSearchTextWithExtraction(candidate, context, extracted);
   return {
@@ -2949,17 +2967,31 @@ function queryProjectionWithExtraction(
     timestamp: candidate.timestamp,
     summary: candidate.kind,
     searchText,
-    searchTokens: querySearchTokens(searchText),
+    searchTokens: querySearchTokens(searchText, boundedSearchIndex),
     facets: extracted.facets
   };
 }
 
-function querySearchTokens(value: string): string[] {
+function querySearchTokens(value: string, boundedSearchIndex = false): string[] {
   const normalized = normalizeEvidenceSearchText(value);
+  // Qualified facet identities are opaque ownership keys, not user-facing
+  // search terms. Keep their exact words for residual matching, but avoid
+  // indexing their nested page/session identity trigrams.
+  const identityTokens = boundedSearchIndex ? normalized.split(/\s+/u).filter((token) => token.includes('["owner-v1"')) : [];
+  const indexText = boundedSearchIndex ? normalized.split(/\s+/u).filter((token) => !token.includes('["owner-v1"')).join(" ") : normalized;
+  const words = [...new Set(normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean))];
+  const trigramWords = [...new Set(indexText.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean))].filter(searchTokenSupportsTrigrams);
+  const partial = boundedSearchIndex && (identityTokens.length > 0 || trigramWords.length !== words.length);
   return [...new Set([
-    ...normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean),
-    ...queryTrigrams(normalized)
+    ...words,
+    ...(partial ? [SEARCH_TOKEN_PARTIAL_MARKER] : []),
+    ...trigramWords.flatMap(queryTrigrams)
   ])];
+}
+
+function searchTokenSupportsTrigrams(word: string): boolean {
+  if (word.length <= SEARCH_TOKEN_TRIGRAM_WORD_MAX_LENGTH) return true;
+  return word.length <= SEARCH_TOKEN_TRIGRAM_IDENTIFIER_MAX_LENGTH && /[-\d]/u.test(word);
 }
 
 function queryTrigrams(value: string): string[] {
