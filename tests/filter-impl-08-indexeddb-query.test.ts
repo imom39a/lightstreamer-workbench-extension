@@ -370,7 +370,11 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     const durable = await createIndexedDbEventHistory({ panelSessionId });
     try {
       const eventId = "history-100k-07-small-lifecycle-1-small-lifecycle-128";
-      await durable.offer(event(eventId, 1, "needle")).settled;
+      const candidates = [
+        ...Array.from({ length: 128 }, (_, index) => event(`full-index-${index}`, index + 1, "baseline")),
+        event(eventId, 129, "needle")
+      ];
+      await Promise.all(candidates.map((candidate) => durable.offer(candidate).settled));
       const result = await durable.query!({
         at: "LATEST_COMMITTED",
         page: { order: "OLDEST_FIRST", size: 1 },
