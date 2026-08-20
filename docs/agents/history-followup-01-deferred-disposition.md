@@ -1,7 +1,7 @@
 # `history-followup-01` deferred disposition
 
-**Disposition:** Deferred — the visible Chrome 100k timing packet is not
-complete.
+**Disposition:** Deferred, non-blocking — the visible Chrome 100k timing
+packet is not complete.
 
 **Date:** 2026-08-20
 **Lane:** `codex/history-followup-01`
@@ -9,6 +9,41 @@ complete.
 **Project item:** `history-followup-01 — Complete the visible Chrome 100k timing packet`
 **Project item ID:** `PVTI_lAHOABNB-84BfMBxzg2dtRc`
 **Project mutation:** None.
+
+## Authorized visible override attempt — 2026-08-20
+
+The product owner authorized one narrowly scoped visible-CFT151 invocation so
+this lane would not remain blocked by the standing headless-only test policy.
+The default policy remains headless; only the explicit
+`--visible-cft151-override` script flag selects visible Chrome and the exact
+`history-100k-activation` purpose. No retry was made after the first cell
+failed, and the failure does not block the independent performance lane.
+
+Command:
+
+```text
+LSEW_BROWSER_CACHE_DIR=/tmp/lsew-perf-followup-01/.cache/lsew-browsers
+LSEW_HISTORY_100K_TIMEOUT_MS=1140000
+npm run measure:event-history:100k:visible-override
+```
+
+The preserved report is
+`/tmp/lsew-history-followup-01-visible-override/test-results/history-100k-07/activation.json`
+(Markdown companion: `activation.md`). It records:
+
+- `verdict: FAIL`, `headless: false`, `proofMode: visible-cft151`,
+  `visibleCft151Override: true`;
+- CFT `151.0.7922.138`, native IndexedDB, one fresh temporary profile, and
+  the required unattended/remote-debugging flags;
+- zero completed cells because `small-lifecycle/1` failed before page launch:
+  Playwright rejected the duplicate `--user-data-dir` argument;
+- no screenshot or compositor-frame evidence, and no 12-cell timing claim.
+
+The follow-up repair in commit `5b4afba` lets Playwright own the persistent
+profile directory and is covered by syntax/diff checks, but it was intentionally
+not rerun in this bounded lane. The visible packet therefore remains In
+Progress; the explicit override produced auditable failure evidence rather
+than an acceptance claim.
 
 ## Reason for deferral
 
