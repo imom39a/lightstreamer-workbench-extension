@@ -95,8 +95,9 @@ try {
           headless,
           viewport: { width: 900, height: 700 },
           colorScheme: sample % 2 === 0 ? "light" : "dark",
+          // launchPersistentContext(profile) owns the unique user-data-dir;
+          // Playwright rejects a duplicate --user-data-dir in args.
           args: chromeTestArguments({
-            profile,
             headless,
             visibleCft151Override,
             purpose: VISIBLE_CFT151_OVERRIDE_PURPOSE,
