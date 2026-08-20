@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * Headless Chrome for Testing 151 gate for the production 100k normal tier.
- * This is deliberately separate from the historical 1k/1,692 timing baseline:
- * every cell gets a fresh temporary profile and identity evidence is bounded.
- * The evidence is non-interactive and does not claim a visible compositor frame.
+ * Chrome for Testing 151 gate for the production 100k normal tier.
+ * The default remains non-interactive headless evidence. The separately
+ * scoped --visible-cft151-override command is the only route to visible mode.
+ * Every cell gets a fresh temporary profile and bounded identity evidence.
  */
 import { createServer } from "node:http";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -16,7 +16,11 @@ import { execFileSync } from "node:child_process";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { chromium } from "playwright";
 import { build } from "esbuild";
-import { chromeTestArguments } from "./chrome-test-policy.mjs";
+import { chromeTestArguments, VISIBLE_CFT151_OVERRIDE_PURPOSE } from "./chrome-test-policy.mjs";
+import { parseHistory100kActivationArguments } from "./event-history-100k-activation-options.mjs";
+
+const { visibleCft151Override } = parseHistory100kActivationArguments();
+const headless = !visibleCft151Override;
 
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const outputDir = resolve(rootDir, process.env.LSEW_HISTORY_100K_OUTPUT ?? "test-results/history-100k-07");
@@ -27,9 +31,11 @@ const workloadNames = (process.env.LSEW_HISTORY_100K_WORKLOADS ?? "small-lifecyc
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
+const timeoutMs = Number(process.env.LSEW_HISTORY_100K_TIMEOUT_MS ?? "1200000");
 
 if (!Number.isSafeInteger(samples) || samples < 3) throw new Error("100k activation requires at least three independent samples.");
 if (workloadNames.length !== 4) throw new Error("100k activation requires all four workload shapes.");
+if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("100k activation timeout must be a positive integer in milliseconds.");
 
 const cacheDir = resolve(rootDir, process.env.LSEW_BROWSER_CACHE_DIR ?? ".cache/lsew-browsers");
 const chromeExecutable = resolvePinnedChrome(cacheDir);
@@ -39,6 +45,7 @@ await access(extensionPath, constants.R_OK).catch(() => {
 });
 const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-history-100k-07-"));
 const bundlePath = join(temporaryRoot, "activation-harness.js");
+const deadlineAt = Date.now() + timeoutMs;
 const server = createServer(async (request, response) => {
   if (request.url === "/activation-harness.js") {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
@@ -73,19 +80,26 @@ try {
   const cells = [];
   const profiles = [];
   const diagnostics = [];
+  let matrixFailure = null;
+  matrix:
   for (const workload of workloadNames) {
     for (let sample = 1; sample <= samples; sample += 1) {
-      const profile = await mkdtemp(join(temporaryRoot, `profile-${workload}-${sample}-`));
-      profiles.push({ workload, sample, profile, isolated: true });
+      let profile = null;
       let context;
       try {
+        assertRemaining(`${workload}/${sample} profile setup`);
+        profile = await mkdtemp(join(temporaryRoot, `profile-${workload}-${sample}-`));
+        profiles.push({ workload, sample, profile, isolated: true });
         context = await chromium.launchPersistentContext(profile, {
           executablePath: chromeExecutable,
-          headless: true,
+          headless,
           viewport: { width: 900, height: 700 },
           colorScheme: sample % 2 === 0 ? "light" : "dark",
           args: chromeTestArguments({
-            headless: true,
+            profile,
+            headless,
+            visibleCft151Override,
+            purpose: VISIBLE_CFT151_OVERRIDE_PURPOSE,
             disableNativeOcclusion: true,
             exposeGc: true,
             additional: [
@@ -96,28 +110,48 @@ try {
           })
         });
         const page = context.pages()[0] ?? await context.newPage();
-        page.setDefaultTimeout(1_800_000);
+        page.setDefaultTimeout(Math.min(1_800_000, remainingMs()));
         page.on("console", (message) => {
           if (message.type() === "warning" || message.type() === "error") diagnostics.push(`${workload}/${sample}: console ${message.type()}: ${message.text()}`);
         });
         page.on("pageerror", (error) => diagnostics.push(`${workload}/${sample}: pageerror: ${error.message}`));
-        await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "load" });
-        await page.waitForFunction(() => Boolean(window.__LSEW_HISTORY_100K_ACTIVATION__));
-        const cell = await page.evaluate(async ({ workload: selectedWorkload, sample: selectedSample }) => {
-          return window.__LSEW_HISTORY_100K_ACTIVATION__?.run(selectedWorkload, selectedSample);
-        }, { workload, sample });
+        await runWithinDeadline(
+          () => page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "load" }),
+          `${workload}/${sample} page load`
+        );
+        await runWithinDeadline(
+          () => page.waitForFunction(() => Boolean(window.__LSEW_HISTORY_100K_ACTIVATION__)),
+          `${workload}/${sample} harness readiness`
+        );
+        const cell = await runWithinDeadline(
+          () => page.evaluate(async ({ workload: selectedWorkload, sample: selectedSample }) => {
+            return window.__LSEW_HISTORY_100K_ACTIVATION__?.run(selectedWorkload, selectedSample);
+          }, { workload, sample }),
+          `${workload}/${sample} activation`
+        );
         if (!cell) throw new Error("100k activation harness did not return a cell.");
         const screenshotPath = join(outputDir, `${workload}-${sample}.png`);
-        await page.screenshot({ path: screenshotPath, fullPage: true });
+        await runWithinDeadline(
+          () => page.screenshot({ path: screenshotPath, fullPage: true }),
+          `${workload}/${sample} screenshot`
+        );
         cells.push({ ...cell, screenshot: screenshotPath });
+      } catch (error) {
+        matrixFailure = `${workload}/${sample}: ${error instanceof Error ? error.message : String(error)}`;
+        break matrix;
       } finally {
-        await context?.close();
-        await rm(profile, { recursive: true, force: true });
+        try {
+          await context?.close();
+        } catch (error) {
+          diagnostics.push(`${workload}/${sample}: context close: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (profile !== null) await rm(profile, { recursive: true, force: true });
       }
     }
   }
 
   const failures = [];
+  if (matrixFailure !== null) failures.push(`Matrix aborted without retry: ${matrixFailure}`);
   for (const cell of cells) {
     for (const [name, value] of Object.entries(cell.correctness)) {
       if (value !== true) failures.push(`${cell.workload}/${cell.sample} correctness ${name} failed`);
@@ -137,19 +171,33 @@ try {
   const sourceDirty = execFileSync("git", ["status", "--porcelain"], { cwd: rootDir, encoding: "utf8" }).trim().length > 0;
   if (sourceDirty) failures.push("Source worktree is dirty; activation evidence must be captured from the committed integration SHA.");
 
+  let product;
+  try {
+    product = browserProduct(chromeExecutable);
+  } catch (error) {
+    product = "unavailable";
+    failures.push(`Chrome product version failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const report = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     verdict: failures.length === 0 ? "PASS" : "FAIL",
     runner: {
       kind: "real-chrome",
-      headless: true,
-      proofMode: "non-interactive",
+      headless,
+      proofMode: visibleCft151Override ? "visible-cft151" : "non-interactive",
+      visibleCft151Override,
       compositorFrameMeasured: false,
       fakeIndexedDbUsed: false,
-      product: await browserProduct(chromeExecutable),
+      product,
       chromeMajor: 151,
-      policyFlags: chromeTestArguments({ headless: true, additional: ["--remote-debugging-port=0"] }),
+      policyFlags: chromeTestArguments({
+        profile: "<fresh-temporary-profile>",
+        headless,
+        visibleCft151Override,
+        purpose: VISIBLE_CFT151_OVERRIDE_PURPOSE,
+        additional: ["--remote-debugging-port=0"]
+      }),
       profileIsolation: profiles.map(({ workload, sample, isolated }) => ({ workload, sample, isolated, freshTemporaryProfile: true }))
     },
     source: {
@@ -177,6 +225,29 @@ try {
   await rm(temporaryRoot, { recursive: true, force: true });
 }
 
+function remainingMs() {
+  return Math.max(1, deadlineAt - Date.now());
+}
+
+function assertRemaining(label) {
+  if (deadlineAt <= Date.now()) throw new Error(`${label} exceeded the ${timeoutMs} ms matrix deadline.`);
+}
+
+async function runWithinDeadline(task, label) {
+  assertRemaining(label);
+  let timer;
+  try {
+    return await Promise.race([
+      task(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} exceeded the ${timeoutMs} ms matrix deadline.`)), remainingMs());
+      })
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function resolvePinnedChrome(directory) {
   const installed = new Cache(directory)
     .getInstalledBrowsers()
@@ -187,19 +258,8 @@ function resolvePinnedChrome(directory) {
   return executable;
 }
 
-async function browserProduct(executable) {
-  const profile = await mkdtemp(join(tmpdir(), "lsew-history-100k-product-"));
-  const context = await chromium.launchPersistentContext(profile, {
-    executablePath: executable,
-    headless: true,
-    args: chromeTestArguments({ headless: true, additional: ["--remote-debugging-port=0"] })
-  });
-  try {
-    return await context.browser()?.version();
-  } finally {
-    await context.close();
-    await rm(profile, { recursive: true, force: true });
-  }
+function browserProduct(executable) {
+  return execFileSync(executable, ["--version"], { encoding: "utf8" }).trim();
 }
 
 function renderMarkdown(report) {
@@ -207,9 +267,11 @@ function renderMarkdown(report) {
     "# History 100k activation proof",
     "",
     `Verdict: **${report.verdict}**`,
-    `Chrome: **${report.runner.product}**; headless: **${report.runner.headless}**; proof: **${report.runner.proofMode}**; compositor frame measured: **${report.runner.compositorFrameMeasured}**; fake IndexedDB: **${report.runner.fakeIndexedDbUsed}**`,
+    `Chrome: **${report.runner.product}**; headless: **${report.runner.headless}**; visible CFT151 override: **${report.runner.visibleCft151Override}**; proof: **${report.runner.proofMode}**; compositor frame measured: **${report.runner.compositorFrameMeasured}**; fake IndexedDB: **${report.runner.fakeIndexedDbUsed}**`,
     `Profiles: **${report.runner.profileIsolation.length}** fresh temporary profiles; no profile reuse`,
-    "This is non-interactive headless evidence. It does not claim desktop-window visibility or a foreground compositor frame.",
+    report.runner.visibleCft151Override
+      ? "This is the explicitly authorized visible-CFT151 lane. It records visible Chrome evidence but does not claim a separately measured compositor frame."
+      : "This is non-interactive headless evidence. It does not claim desktop-window visibility or a foreground compositor frame.",
     "",
     "Canonical logical bytes are recorded separately from physical origin usage and quota estimates; none is treated as a reservation.",
     "",

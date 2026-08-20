@@ -22,11 +22,15 @@ export const CHROME_TEST_ONBOARDING_FEATURES = Object.freeze([
   "ProfilePickerOnStartup"
 ]);
 
+export const VISIBLE_CFT151_OVERRIDE_PURPOSE = "history-100k-activation";
+
 export function chromeTestArguments({
   profile = null,
   // Retained for compatibility with older callers. The repository policy is
-  // unconditionally headless and never honors a visible-mode request.
+  // headless unless the separately scoped history-100k override is explicit.
   headless: _requestedHeadless = true,
+  visibleCft151Override = false,
+  purpose = null,
   platform: _platform = process.platform,
   noProxyServer = false,
   disableNativeOcclusion = false,
@@ -37,6 +41,15 @@ export function chromeTestArguments({
 } = {}) {
   if (profile !== null && (typeof profile !== "string" || profile.length === 0)) {
     throw new Error("Chrome test policy profile must be a non-empty path when supplied.");
+  }
+  if (typeof visibleCft151Override !== "boolean") {
+    throw new Error("Chrome test policy visible CFT151 override must be boolean.");
+  }
+  if (visibleCft151Override && purpose !== VISIBLE_CFT151_OVERRIDE_PURPOSE) {
+    throw new Error("Visible CFT151 mode is restricted to the history-100k activation purpose.");
+  }
+  if (visibleCft151Override && _requestedHeadless !== false) {
+    throw new Error("Visible CFT151 mode requires an explicit headless:false request.");
   }
   if (!Array.isArray(additional) || additional.some((argument) => typeof argument !== "string" || argument.length === 0)) {
     throw new Error("Chrome test policy additional arguments must be non-empty strings.");
@@ -50,7 +63,7 @@ export function chromeTestArguments({
     ...CHROME_TEST_ONBOARDING_FEATURES
   ];
   const argumentsList = [
-    "--headless=new",
+    ...(visibleCft151Override ? [] : ["--headless=new"]),
     "--no-sandbox",
     "--disable-dev-shm-usage",
     ...(noProxyServer ? ["--no-proxy-server"] : []),

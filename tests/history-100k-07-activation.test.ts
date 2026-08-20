@@ -7,6 +7,10 @@ import {
 } from "../src/core/event-history-capacity";
 import { historyConditionFor } from "../src/extension/panel/history-condition";
 import type { HistoryStatus } from "../src/core/event-history-authoritative";
+import {
+  HISTORY_100K_VISIBLE_CFT151_OVERRIDE_ARG,
+  parseHistory100kActivationArguments
+} from "../scripts/event-history-100k-activation-options.mjs";
 
 const interval = { id: "panel:history-100k-07", ordinal: 1 } as const;
 
@@ -75,5 +79,13 @@ describe("history-100k-07 production activation contract", () => {
     expect(condition?.detail).toContain("80,000 / 100,000 Evidence records");
     expect(condition?.detail).toContain("/ 268,435,456 bytes (256 MiB)");
     expect(condition?.detail).not.toMatch(/arbitrary|any size|unlimited/i);
+  });
+
+  it("defaults the activation command to headless and requires the one visible override flag", () => {
+    expect(parseHistory100kActivationArguments()).toEqual({ visibleCft151Override: false });
+    expect(parseHistory100kActivationArguments([HISTORY_100K_VISIBLE_CFT151_OVERRIDE_ARG]))
+      .toEqual({ visibleCft151Override: true });
+    expect(() => parseHistory100kActivationArguments(["--visible"]))
+      .toThrow(/unknown history 100k activation argument/i);
   });
 });

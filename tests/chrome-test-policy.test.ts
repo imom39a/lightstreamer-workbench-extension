@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CHROME_TEST_ONBOARDING_FEATURES,
   REQUIRED_CHROME_TEST_ARGUMENTS,
+  VISIBLE_CFT151_OVERRIDE_PURPOSE,
   chromeTestArguments
 } from "../scripts/chrome-test-policy.mjs";
 
@@ -34,5 +35,33 @@ describe("central unattended Chrome policy", () => {
   it("cannot activate a process under the headless-only policy", () => {
     expect(() => chromeTestArguments({ platform: "darwin", activateOnLaunch: true })).toThrow(/headless|activation/u);
     expect(() => chromeTestArguments({ platform: "linux", activateOnLaunch: true })).toThrow(/headless|activation/u);
+  });
+
+  it("keeps visible mode restricted to the explicit history-100k CFT151 override", () => {
+    const args = chromeTestArguments({
+      profile: "/tmp/lsew-visible-policy-profile",
+      headless: false,
+      visibleCft151Override: true,
+      purpose: VISIBLE_CFT151_OVERRIDE_PURPOSE,
+      disableNativeOcclusion: true,
+      additional: ["--remote-debugging-port=0"]
+    });
+
+    expect(args).not.toContain("--headless=new");
+    expect(args).toContain("--user-data-dir=/tmp/lsew-visible-policy-profile");
+    expect(args).toContain("--remote-debugging-port=0");
+    for (const required of REQUIRED_CHROME_TEST_ARGUMENTS) expect(args).toContain(required);
+  });
+
+  it("rejects visible mode without its explicit purpose and headless opt-out", () => {
+    expect(() => chromeTestArguments({
+      headless: false,
+      visibleCft151Override: true
+    })).toThrow(/history-100k|purpose/u);
+    expect(() => chromeTestArguments({
+      headless: true,
+      visibleCft151Override: true,
+      purpose: VISIBLE_CFT151_OVERRIDE_PURPOSE
+    })).toThrow(/headless:false/u);
   });
 });
