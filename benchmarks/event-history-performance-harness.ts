@@ -959,6 +959,16 @@ export type FilterQueryOperationTelemetry = Readonly<{
   residualScan: boolean;
 }>;
 
+export function longTasksStartingDuringQuery(
+  entries: readonly Readonly<Pick<PerformanceEntry, "startTime" | "duration">>[],
+  startedAt: number,
+  completedAt: number
+): readonly number[] {
+  return entries
+    .filter((entry) => entry.startTime >= startedAt && entry.startTime <= completedAt)
+    .map((entry) => entry.duration);
+}
+
 /** The structured query fixture has three keys only when the adapter retains all 10,000 events. */
 export function filterQueryExpectedSequences(count: number): readonly number[] {
   return [1, 3_843, 7_685].filter((sequence) => sequence <= count);
@@ -1144,12 +1154,13 @@ async function runFilterQueryCell(
         observer?.observe({ entryTypes: ["longtask"] });
         const started = performance.now();
         result = await history.query!(request);
+        const completed = performance.now();
         publishQueryProgress(`filter-query-${name}`, `${name}-sample-${index + 1}-complete`, events.length, events.length, name);
-        samples.push(performance.now() - started);
+        samples.push(completed - started);
         await delay(0);
         entries.push(...(observer?.takeRecords() ?? []));
         observer?.disconnect();
-        longTasks.push(...entries.filter((entry) => entry.duration > 50).map((entry) => entry.duration));
+        longTasks.push(...longTasksStartingDuringQuery(entries, started, completed).filter((duration) => duration > 50));
         operationTelemetry.push(result.ok ? result.value.telemetry : null);
         if (index < 2) gc.push(await collectGarbageBetweenQuerySamples(name, (index + 1) as 1 | 2, guard));
       }

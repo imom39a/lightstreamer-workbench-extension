@@ -2598,13 +2598,11 @@ function readSearchProjections(store: IDBObjectStore, intervalId: string, first:
     telemetry.fullRetainedScan = true;
     return readQueryProjections(store, intervalId, first, last, null, telemetry).then(residual);
   }
-  const trigrams = [...new Set(queryTrigrams(normalized))];
   const index = store.index("searchTokens");
-  return Promise.all(trigrams.map(async (trigram) => ({ trigram, count: await requestToPromise<number>(index.count(queryOnlyRange(trigram)), "counting Find trigram candidates") })))
-    .then((counts) => counts.sort((left, right) => left.count - right.count || left.trigram.localeCompare(right.trigram))[0]!)
-    .then(({ trigram, count: rarestCount }) => {
+  return rarestFindSearchToken(index, normalized)
+    .then(({ token, count: rarestCount }) => {
       telemetry.findCursorBound = rarestCount;
-      return readProjectionCursor(index, queryOnlyRange(trigram), intervalId, telemetry, rarestCount, "Find");
+      return readProjectionCursor(index, queryOnlyRange(token), intervalId, telemetry, rarestCount, "Find");
     })
     .then((values) => residual(values.filter((value) => value.sequence >= first && value.sequence <= last)));
 }
@@ -2688,18 +2686,13 @@ async function readFindProjectionResult(
       };
     });
   } else {
-    const trigrams = [...new Set(queryTrigrams(normalized))];
     const index = store.index("searchTokens");
-    const counts = await Promise.all(trigrams.map(async (trigram) => ({
-      trigram,
-      count: await requestToPromise<number>(index.count(queryOnlyRange(trigram)), "counting Find trigram candidates")
-    })));
-    const { trigram, count } = counts.sort((left, right) => left.count - right.count || left.trigram.localeCompare(right.trigram))[0]!;
+    const { token, count } = await rarestFindSearchToken(index, normalized);
     telemetry.findCursorBound = count;
     await new Promise<void>((resolve, reject) => {
-      const request = index.openCursor(queryOnlyRange(trigram));
+      const request = index.openCursor(queryOnlyRange(token));
       const state = { reads: 0, bound: count };
-      request.onerror = () => reject(request.error ?? new Error("Find trigram scan failed."));
+      request.onerror = () => reject(request.error ?? new Error("Find search-token scan failed."));
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor) { resolve(); return; }
@@ -2747,6 +2740,21 @@ async function readFindProjectionResult(
       ...(nextWindow.length > 0 ? { nextWindow: Object.freeze(nextWindow.map((projection) => querySelectionRecord(projection, interval))) } : {})
     })
   };
+}
+
+async function rarestFindSearchToken(index: IDBIndex, normalized: string): Promise<Readonly<{ token: string; count: number }>> {
+  const tokens = [...new Set([
+    normalized,
+    ...queryNgrams(normalized, 6),
+    ...queryTrigrams(normalized)
+  ])];
+  const counts = await Promise.all(tokens.map(async (token) => ({
+    token,
+    count: await requestToPromise<number>(index.count(queryOnlyRange(token)), "counting Find search-token candidates")
+  })));
+  const positiveCounts = counts.filter(({ count }) => count > 0);
+  return (positiveCounts.length > 0 ? positiveCounts : counts)
+    .sort((left, right) => left.count - right.count || left.token.localeCompare(right.token))[0] ?? { token: normalized, count: 0 };
 }
 
 /**
@@ -2949,7 +2957,17 @@ function queryProjectionWithExtraction(
 
 function querySearchTokens(value: string): string[] {
   const normalized = normalizeEvidenceSearchText(value);
-  return [...new Set([...normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean), ...queryTrigrams(normalized)])];
+  return [...new Set([
+    ...normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean),
+    ...queryNgrams(normalized, 6),
+    ...queryTrigrams(normalized)
+  ])];
+}
+
+function queryNgrams(value: string, length: number): string[] {
+  const codePoints = Array.from(value);
+  if (codePoints.length < length) return [];
+  return codePoints.slice(0, codePoints.length - length + 1).map((_, index) => codePoints.slice(index, index + length).join(""));
 }
 
 function queryTrigrams(value: string): string[] {

@@ -334,6 +334,36 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
   });
 
+  it("uses a rare six-gram posting for a hyphenated Find substring", async () => {
+    const panelSessionId = `filter-impl-08-six-gram-${Date.now()}`;
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    try {
+      for (let sequence = 1; sequence <= 20; sequence += 1) {
+        const key = `order-${String(sequence).padStart(5, "0")}`;
+        await durable.offer({
+          ...event(`order-${sequence}`, sequence, "value"),
+          update: { isSnapshot: false, key, fields: { key } }
+        }).settled;
+      }
+      const result = await durable.query!({
+        at: "LATEST_COMMITTED",
+        page: { order: "OLDEST_FIRST", size: 1 },
+        filter: emptyFilter(),
+        find: { text: "rder-00001" }
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          find: { total: 1, matches: [{ eventId: "order-1" }] },
+          telemetry: { findCursorBound: 1, findCursorReads: 1, shortFindFallback: false, fullRetainedScan: false }
+        }
+      });
+    } finally {
+      await durable.close();
+    }
+  });
+
   it("fails closed when a selected projection is missing or corrupt", async () => {
     const panelSessionId = `filter-impl-08-projection-failure-${Date.now()}`;
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });

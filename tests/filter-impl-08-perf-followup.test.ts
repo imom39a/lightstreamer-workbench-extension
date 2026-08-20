@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   filterQueryExpectedSequences,
   filterQueryOperationTelemetry,
-  heapWorkloadShapes
+  heapWorkloadShapes,
+  longTasksStartingDuringQuery
 } from "../benchmarks/event-history-performance-harness";
 import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
@@ -43,6 +44,14 @@ describe("filter-impl-08 performance follow-up", () => {
   it("rejects missing memory telemetry instead of fabricating bounded work", () => {
     expect(() => filterQueryOperationTelemetry({ telemetry: undefined }, "recent50", "memory"))
       .toThrow(/did not expose bounded telemetry/u);
+  });
+
+  it("attributes only Long Tasks that start during the measured query", () => {
+    expect(longTasksStartingDuringQuery([
+      { startTime: 100, duration: 60 },
+      { startTime: 205, duration: 293 },
+      { startTime: 300, duration: 270 }
+    ], 100, 200)).toEqual([60]);
   });
 
   it("reports real bounded memory query telemetry from commit-time indexes", async () => {

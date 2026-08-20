@@ -1294,8 +1294,6 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const entriesBySequence = new Map(evidenceEntriesAtRead.map((entry) => [entry.sequence, entry]));
     const records: SelectionRecord[] = useMaterializedFallback
       ? evidenceEntriesAtRead.map((entry) => {
-          const cached = deterministicRecordCache.get(entry);
-          if (cached && (!request.includePayload || cached.payload !== undefined)) return cached;
           const record = toDeterministicEvidenceRecord(entry, intervalAtRead, false);
           deterministicRecordCache.set(entry, record);
           if (!memoryQueryIndex.bySequence.has(entry.sequence)) addMemoryQueryRecord(memoryQueryIndex, record);
@@ -1305,8 +1303,6 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const materializeIndexedRecord = (record: DeterministicEvidenceRecord, includePayload = false): DeterministicEvidenceRecord => {
       const entry = committedBySequence.get(record.identity.sequence);
       if (entry === undefined) return record;
-      const cached = deterministicRecordCache.get(entry);
-      if (!includePayload && cached !== undefined && cached.payload === undefined) return cached;
       const materialized = toDeterministicEvidenceRecord(entry, intervalAtRead, includePayload);
       if (!includePayload) deterministicRecordCache.set(entry, materialized);
       return materialized;
@@ -1462,13 +1458,13 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       }
       const hydratedPage = request.includePayload === true
         ? page.map((record) => {
-            const materialized = useMaterializedFallback ? record : materializeIndexedRecord(record);
+            const materialized = materializeIndexedRecord(record);
             const entry = committedBySequence.get(materialized.identity.sequence) ?? entriesBySequence.get(materialized.identity.sequence);
             return entry === undefined
               ? materialized
               : Object.freeze({ ...materialized, payload: copyCandidate(entry.candidate) });
           })
-        : page.map((record) => useMaterializedFallback ? record : materializeIndexedRecord(record));
+        : page.map((record) => materializeIndexedRecord(record));
       const nextCursor = hasMore
         ? encodeEvidenceQueryCursor(readPoint, request, page.at(-1)!.identity)
         : null;
@@ -2072,12 +2068,13 @@ function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: Histo
     const searchText = journalCandidateSearchText(entry.candidate);
     return Object.freeze({ identity, timestamp: 0, summary: "Topology checkpoint", searchText, facets: Object.freeze({}) });
   }
-  const facets = extractEvidenceFacets(entry.candidate, { identity, pageId: identity.pageId, listenerOwner: identity.ownerId }).facets;
+  const context = { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind };
+  const facets = extractEvidenceFacets(entry.candidate, context).facets;
   return Object.freeze({
     identity,
     timestamp: entry.candidate.timestamp,
     summary: entry.candidate.kind,
-    searchText: canonicalEvidenceSearchText(entry.candidate, { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind }),
+    searchText: canonicalEvidenceSearchText(entry.candidate, context),
     facets: Object.freeze(facets),
     ...(includePayload ? { payload: copyCandidate(entry.candidate) } : {})
   });
