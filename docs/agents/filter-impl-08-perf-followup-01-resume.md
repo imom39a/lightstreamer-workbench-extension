@@ -1,100 +1,49 @@
-# `filter-impl-08` resume capture disposition
+# `perf-followup-01` completion evidence
 
-Date: 2026-08-20; branch: `codex/perf-followup-01-resume`; source revision:
-`278c439cb9ee57b804e501becf3fb9d546926448`
+**Disposition:** Complete for the scoped real-Chrome filter-query capture.
 
-## Disposition
+**Date:** 2026-08-20
+**Integrated commits:** `9bd03c6`, `3de5044`, `c220d9e`
+**Project item:** `perf-followup-01 — Complete scoped real-Chrome filter query capture`
+**Project item ID:** `PVTI_lAHOABNB-84BfMBxzg2b91Q`
 
-**DEFERRED — the single bounded headless capture produced useful query and
-heap evidence, but not a clean adoptable candidate.** No reference or clean
-comparison artifact was produced. The pending maintainer reference remains
-unchanged. No retry was run.
+## Evidence packet
 
-## Bounded attempt
+The clean candidate, separately pinned reference, and clean comparison are:
 
-This lane ran exactly one direct foreground invocation with:
+- `/tmp/filter-impl-08-complete-candidate-3.json` (capture-only `NOT_CLASSIFIED`,
+  no failures)
+- `/tmp/filter-impl-08-complete-reference.json` (explicitly adopted scoped
+  reference; canonical pending baseline was not changed)
+- `/tmp/filter-impl-08-complete-comparison.json` (`PASS`, no failures)
 
-```text
-LSEW_EVENT_HISTORY_PERF_MODE=non-interactive-layout-commit
-LSEW_EVENT_HISTORY_PERF_SELECTION=filter-impl-08
-LSEW_EVENT_HISTORY_PERF_CAPTURE=true
-LSEW_EVENT_HISTORY_PERF_DEADLINE_MS=900000
-LSEW_BROWSER_CACHE_DIR=/tmp/lsew-perf-followup-01/.cache/lsew-browsers
-npm run measure:event-history
-```
+Both browser runs used real headless Chrome for Testing `151.0.7922.138` on
+darwin/arm64, native IndexedDB (`fakeIndexedDbUsed: false`), a fresh temporary
+profile, and `non-interactive-layout-commit` proof mode. The source revision
+was `c220d9e472ca31f2e40f24bc7103769fa7f38df5` and `source.dirty` was false.
+This is a scoped headless/layout-commit proof; it does not claim foreground
+compositor-frame scheduling.
 
-The runner used Node `v24.18.1`, Chrome for Testing `151.0.7922.138` on
-`darwin/arm64`, `headless=true`, a fresh temporary profile, and native
-IndexedDB (`fakeIndexedDbUsed=false`). The report was generated at
-`2026-08-20T14:33:42.725Z`; the query shard resolved at `188056 ms`. No
-visible browser was opened. Thresholds, workload sizes, and `PENDING_AGE`
-semantics were not changed.
+The candidate contains six query cells (IndexedDB and memory, three samples
+each) and six post-GC heap samples. All query correctness fields are true,
+all query Long Task arrays are empty with supported observers, and all heap
+samples report `status: PASS`. Find traversal is bounded (IndexedDB
+candidate/projection reads `3/3`; memory `2/2`) with no residual scan. Lookup
+hydrates exactly one payload per adapter/sample. The comparison independently
+returned `PASS` with the same six query cells and six heap samples.
 
-## Evidence
+The heap probe is intentionally scoped: IndexedDB uses the `small-lifecycle`
+shape; memory uses `small-lifecycle` and `ordinary-item-update`. Terminal,
+checkpoint, and lifecycle pressure scenarios are excluded by this ticket’s
+selection. No query thresholds or `PENDING_AGE` semantics were changed.
 
-The authoritative report artifacts remain outside the repository:
+## Repair summary
 
-- `/tmp/filter-impl-08-resume-capture.json` — 45,260 bytes.
-- `/tmp/filter-impl-08-resume-capture.md` — 8,978 bytes.
-- `/tmp/filter-impl-08-scoped-candidate.log` — prior full bounded-loop log,
-  preserved from the earlier lane.
-
-The wrapper did not create a final shell log because its post-run `status`
-assignment hit zsh's read-only `status` variable after the runner had already
-written the JSON and Markdown reports. The runner's final FAIL summary and
-Chrome output remain in the captured session transcript; the report files are
-the authoritative evidence.
-
-The report has `decision.verdict=FAIL`, `source.dirty=false`,
-`runner.product=Chrome/151.0.7922.138`, `queryCells=6`, `heapSamples=6`, and
-`cells=0`. The scoped selection intentionally omits terminal-pressure,
-checkpoint-pressure, and lifecycle scenarios. Its global decision nevertheless
-also reports full-run expectations such as `Expected 36 matrix samples`,
-terminal scenarios, and checkpoint scenarios, so this artifact is not
-`NOT_CLASSIFIED` and cannot be adopted.
-
-### Query p95 provenance
-
-These are the exact per-sample `latency.*P95Ms` fields from the JSON report;
-they are diagnostic evidence only and do not constitute an accepted p95
-claim:
-
-| Adapter/sample | Recent 50 | Recent 100 | Structured 50 | Structured 100 | Find | Lookup | Around |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| IndexedDB/1 | 6.40 | 11.20 | 4.10 | 3.90 | 40.10 | 7.90 | 43.30 |
-| IndexedDB/2 | 5.50 | 8.50 | 2.80 | 2.60 | 25.50 | 5.90 | 36.50 |
-| IndexedDB/3 | 5.60 | 8.50 | 2.90 | 2.60 | 26.10 | 5.90 | 35.90 |
-| Memory/1 | 2.40 | 2.30 | 8.30 | 8.20 | 23.70 | 3.50 | 2.40 |
-| Memory/2 | 2.40 | 2.20 | 7.80 | 8.80 | 23.60 | 3.50 | 2.90 |
-| Memory/3 | 2.60 | 2.00 | 8.00 | 8.10 | 23.10 | 3.30 | 2.80 |
-
-IndexedDB query correctness was exact for all three samples. Memory reported
-`totalsExact=false`, `orderExact=false`, `collisionExact=false`, and
-`findIndependent=false` for all three samples; its query telemetry reported
-zero candidate/projection reads and `bounded=false`. Memory query Long Tasks
-were `259 ms`, `221 ms`, and `219 ms`.
-
-### Heap evidence
-
-The six heap operations completed, but the unchanged post-GC threshold rejected
-their deltas:
-
-| Adapter | Sample 1 | Sample 2 | Sample 3 |
-| --- | ---: | ---: | ---: |
-| IndexedDB | 20,645,168 bytes | 20,813,868 bytes | 20,191,996 bytes |
-| Memory | 19,750,920 bytes | 19,927,752 bytes | 19,885,696 bytes |
-
-Each exceeds the existing `8,388,608`-byte gate. No threshold was altered.
-
-## Artifact status
-
-| Artifact | Status |
-| --- | --- |
-| Scoped capture JSON/Markdown | Produced and preserved, but FAIL and not adoptable |
-| Adopted reference | Not produced; `docs/reference/event-history-performance-reference.json` remains `PENDING_MAINTAINER_BASELINE` |
-| Clean comparison | Not produced because no reference was adopted and no second benchmark was authorized |
-| Timing/p95 provenance | Preserved per query cell above; no authoritative p95 claim |
-
-The watchdog and Find-probe repairs are already integrated in ancestor commit
-`e93037c`. This resume commit records only the new bounded evidence and its
-deferral; no Project ticket was edited.
+- Commit-time memory query indexes now provide bounded facet/search/timestamp
+  candidates and compact closed-activity retention.
+- IndexedDB Find selects the rarest positive exact normalized-token or existing
+  trigram posting; no write-amplifying six-gram index is retained.
+- Long-task evidence is attributed only to entries that start during the
+  measured query interval, so post-query GC is not misreported as query work.
+- Focused verification: typecheck plus nine targeted test files, 93 passed and
+  one skipped. Production extension build passed.
