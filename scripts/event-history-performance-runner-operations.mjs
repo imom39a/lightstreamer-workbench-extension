@@ -616,6 +616,7 @@ function progressAgeCeilingMs(progress) {
   if (!progress) return null;
   const stage = typeof progress.stage === "string" ? progress.stage : "";
   const substage = typeof progress.substage === "string" ? progress.substage : "";
+  const stageAndSubstage = `${stage} ${substage}`;
   if (progress.phase === "terminal"
     && progress.trigger === "PENDING_AGE"
     && stage === "PENDING_AGE-read"
@@ -629,10 +630,10 @@ function progressAgeCeilingMs(progress) {
       : DEFAULT_PROGRESS_AGE_CEILING_MS;
   const stageCeiling = /cleanup|close|read/u.test(stage)
     ? 30_000
-    : /query/u.test(stage)
-      ? 30_000
-      : /offer|receipt|commit/u.test(stage)
-        ? 120_000
+    : /offer|receipt|commit/u.test(stageAndSubstage)
+      ? 120_000
+      : /query/u.test(stage)
+        ? 30_000
         : null;
   const frameCeiling = /frame/u.test(stage) ? 30_000 : null;
   const ceilings = [phaseCeiling, stageCeiling, frameCeiling].filter((ceiling) => ceiling !== null);

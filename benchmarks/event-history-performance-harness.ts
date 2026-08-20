@@ -1132,7 +1132,7 @@ async function runFilterQueryCell(
         totalsExact: recent50.result.value.totals.matching === count && recent100.result.value.totals.matching === count && structured50.result.value.totals.matching === 3 && structured100.result.value.totals.matching === 3 && aroundMeasurement.result.value.totals.matching === count && aroundMeasurement.result.value.totals.inScope === 1_000,
         orderExact: exactPage(recent50, 50, recentExpected) && exactPage(recent100, 100, recentExpected) && exactPage(structured50, 50, structuredExpected) && exactPage(structured100, 100, structuredExpected),
         collisionExact: structured.page.evidence.length === 3 && structured.page.evidence.every((record: any, index: number) => record.identity.eventId === `${runId}-event-${structuredExpected[index]}`),
-        findIndependent: findMeasurement.result.value.find?.total === 3 && findMeasurement.result.value.find?.matches?.map((entry: any) => entry.identity.sequence).join(",") === "1,3843,7685" && findMeasurement.result.value.totals.matching === 0,
+        findIndependent: findMeasurement.result.value.find?.total === 3 && findMeasurement.result.value.find?.matches?.map((entry: any) => entry.sequence).join(",") === "1,3843,7685" && findMeasurement.result.value.totals.matching === 0,
         lookupExact: lookupMeasurement.result.value.lookup?.state === "RETAINED" && lookupMeasurement.result.value.lookup.evidence.payload !== undefined,
         aroundExact: aroundMeasurement.result.value.totals.matching === count
           && aroundMeasurement.result.value.totals.inScope === 1_000

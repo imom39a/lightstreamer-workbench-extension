@@ -273,3 +273,6 @@ not claim foreground scheduling or compositor proof.
 
 The supplied headed artifact remains truthful environmental evidence: it is a
 `TIMED_OUT` run at the real-rAF compositor boundary with no PASS or p95 claim.
+
+The bounded `filter-impl-08` real-Chrome follow-up is recorded in
+[`filter-impl-08-perf-followup-01.md`](filter-impl-08-perf-followup-01.md).

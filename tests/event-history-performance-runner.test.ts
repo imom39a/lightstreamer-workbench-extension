@@ -587,6 +587,38 @@ describe("Event History heap measurement plan", () => {
     })).resolves.toEqual({ accepted: true });
   });
 
+  it("allows the scoped filter fixture receipt stage to cross the query stage ceiling", async () => {
+    let now = 0;
+    const progress = strictProgress("scoped-filter-operation", {
+      stage: "filter-query-fixture",
+      substage: "receipt-settlement",
+      sample: 1,
+      cellIndex: null,
+      adapter: "indexeddb",
+      workload: null,
+      shape: null,
+      workloadPhase: "query",
+      offered: 10_000,
+      settled: null,
+      query: null
+    });
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "scoped-filter-operation", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "scoped-filter-operation", state: "pending", heartbeat: 1, progress: { ...progress, sequence: 1 } }),
+      evaluated({ operationId: "scoped-filter-operation", state: "pending", heartbeat: 2, progress: { ...progress, sequence: 2 } }),
+      evaluated({ operationId: "scoped-filter-operation", state: "resolved", heartbeat: 3, progress: { ...progress, sequence: 3 }, result: { accepted: true } }),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", {
+      operationId: "scoped-filter-operation",
+      deadlineMs: 200_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 31_000; }
+    })).resolves.toEqual({ accepted: true });
+  });
+
   it("fails closed when pending-age receipt settlement exceeds 120 seconds", async () => {
     let now = 0;
     const progress = strictProgress("pending-age-timeout", {
