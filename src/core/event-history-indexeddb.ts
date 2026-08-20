@@ -84,6 +84,8 @@ export type { EventHistory };
 
 export const AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT = 256;
 export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 2_097_152;
+/** Commit transactions may fan out to Evidence, projection, posting, and aggregate indexes. */
+export const AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS = 30_000;
 const EVIDENCE_FACET_COUNT = 12;
 // Large journal erasure is charged to the harness's existing 30-second close
 // stage; ordinary commits and explicit interval clears retain their 2-second
@@ -3059,7 +3061,7 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
       ? { first: toRef(evidence[0]), last: toRef(last!) }
       : null;
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, phase, terminal, next, boundary, range, previousCount + evidence.length, replayPayloadBytes, accountedBytes));
-  await transactionDone(transaction, "committing Evidence");
+  await transactionDone(transaction, "committing Evidence", AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS);
   for (const [key, aggregate] of aggregateCacheUpdates) aggregateCache.set(key, aggregate);
 }
 

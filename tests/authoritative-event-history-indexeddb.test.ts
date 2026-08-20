@@ -19,6 +19,7 @@ import {
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE,
+  AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS,
   createIndexedDbEventHistory,
   transactionDone,
   type IndexedDbEventHistoryOptions
@@ -833,6 +834,30 @@ describe("IndexedDB authoritative EventHistory", () => {
       transaction.onabort?.();
       await expect(completed).rejects.toThrow(/Timed out while committing Evidence/);
       expect(publications).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a commit transaction alive beyond the request watchdog with a bounded upper timeout", async () => {
+    expect(AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS).toBeGreaterThan(2_000);
+    expect(AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+    vi.useFakeTimers();
+    try {
+      const transaction = transactionStub(() => undefined);
+      const completed = transactionDone(
+        transaction,
+        "committing Evidence",
+        AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS
+      );
+
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(transaction.abort).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS - 2_001);
+      expect(transaction.abort).toHaveBeenCalledTimes(1);
+      transaction.onabort?.();
+      await expect(completed).rejects.toThrow(/Timed out while committing Evidence/);
     } finally {
       vi.useRealTimers();
     }
