@@ -88,3 +88,14 @@ Final integrated evidence after this review:
 - Focused headless Activity Playwright matrix: 21/21 passed.
 - Complete non-baseline headless Playwright suite: 75/75 passed in 2.1 minutes.
 - No headed browser was opened and no tracked visual baseline was rewritten.
+
+## Primary-maintainer approval — 2026-08-20
+
+The primary maintainer explicitly approved the Activity Material UI and intentional baseline updates: **“I approve the Activity Material UI and intentional baseline updates.”**
+
+The gated read-only baseline comparison on the approval date proved that all five maintained Activity baselines already match production exactly, so no Activity image required rewriting:
+
+- `CI=1 npm run test:ui -- --grep 'visual baseline: activity-'`: 5/5 passed headlessly.
+- `CI=1 npm run test:ui -- tests/ui/activity-impl-11.spec.ts tests/ui/activity-material.spec.ts`: 21/21 passed headlessly.
+
+The broader baseline comparison exposed 15 differences belonging to newer Scenario/checkpoint work. Those unrelated images were deliberately not updated under the Activity approval. Activity therefore satisfies its explicit Material UI approval and baseline-decision gate without changing any baseline file.
