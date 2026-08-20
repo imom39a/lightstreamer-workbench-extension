@@ -147,6 +147,47 @@
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   },
   {
+    "id": "normal-storage-headroom-warning-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "visualEvidenceOnly": true,
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
+  },
+  {
+    "id": "compact-storage-headroom-warning-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "visualEvidenceOnly": true,
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
+  },
+  {
+    "id": "shallow-storage-headroom-warning-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "visualEvidenceOnly": true,
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
+  },
+  {
+    "id": "wide-storage-headroom-warning-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "visualEvidenceOnly": true,
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
+  },
+  {
+    "id": "shallow-storage-headroom-warning-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "visualEvidenceOnly": true,
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
+  },
+  {
     "id": "activity-10k-normal-light",
     "viewport": { "width": 900, "height": 700 },
     "theme": "light",

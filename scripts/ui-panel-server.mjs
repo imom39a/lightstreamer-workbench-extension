@@ -62,6 +62,10 @@ const params = new URLSearchParams(window.location.search);
 const scenarioId = params.get("scenario") ?? "live-selected";
 if (!isWorkbenchScenarioId(scenarioId)) throw new Error("Unknown Workbench scenario: " + scenarioId);
 const theme = params.get("theme") === "auto" ? "auto" : params.get("theme") === "light" ? "light" : "dark";
+// Visual evidence may render the same deterministic scenario with the
+// advisory estimate omitted as a clean base. This is a test-harness override,
+// not a production storage mode.
+const storageMode = params.get("storage") ?? "scenario";
 const root = document.querySelector("#app");
 if (!(root instanceof HTMLElement)) throw new Error("Workbench scenario requires #app.");
 
@@ -122,7 +126,7 @@ const runtime = createWorkbenchRuntime({
   history,
   scenarioClock,
   storage: history.storage,
-  ...(scenario.storageEstimate ? {
+  ...(scenario.storageEstimate && storageMode !== "clean" ? {
     storageEstimate: {
       source: "navigator.storage.estimate",
       status: "AVAILABLE",

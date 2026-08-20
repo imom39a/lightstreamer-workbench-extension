@@ -20,7 +20,7 @@ describe("Workbench visual-evidence runner", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(result.stdout).toContain("--print-review-scope");
-    expect(matrix).toHaveLength(66);
+    expect(matrix).toHaveLength(71);
   });
 
   it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
@@ -64,14 +64,30 @@ describe("Workbench visual-evidence runner", () => {
         scenario.production?.setup?.startsWith("diagnostic-")
       )
       .map((scenario: { id: string }) => scenario.id);
+    const storageIds = matrix
+      .filter((scenario: { production?: { setup?: string } }) =>
+        scenario.production?.setup === "storage-headroom"
+      )
+      .map((scenario: { id: string }) => scenario.id);
 
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(diagnosticIds).toHaveLength(12);
+    expect(storageIds).toHaveLength(5);
     expect(JSON.parse(result.stdout)).toMatchObject({
-      contactSheetScenarioIds: expect.arrayContaining(diagnosticIds),
-      accessibilityScenarioIds: diagnosticIds,
-      focusScenarioIds: diagnosticIds
+      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...storageIds]),
+      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...storageIds]),
+      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...storageIds])
     });
+  });
+
+  it("defines isolated clean-base and low-headroom production references", () => {
+    const storageScenarios = matrix.filter((scenario: { production?: { setup?: string }; reference?: { source?: string; storageMode?: string }; visualEvidenceOnly?: boolean }) =>
+      scenario.production?.setup === "storage-headroom"
+    );
+    expect(storageScenarios).toHaveLength(5);
+    expect(storageScenarios.every((scenario: { reference?: { source?: string; storageMode?: string }; visualEvidenceOnly?: boolean }) =>
+      scenario.reference?.source === "production" && scenario.reference.storageMode === "clean" && scenario.visualEvidenceOnly === true
+    )).toBe(true);
   });
 });

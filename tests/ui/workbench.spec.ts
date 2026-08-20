@@ -1285,6 +1285,7 @@ test("Workbench keeps low storage headroom advisory, global, and keyboard reacha
   for (const scene of scenes) {
     await openScenario(page, "storage-headroom-warning", scene, scene.theme);
     const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+    const diagnosticList = page.getByLabel("Workbench diagnostic entries");
     await expect(diagnostics.getByText("Warning · Estimated storage headroom is low", { exact: true })).toHaveCount(1);
     await expect(diagnostics.getByText("Affected: Extension origin", { exact: true })).toHaveCount(1);
     await expect(diagnostics).toContainText("advisory only");
@@ -1296,17 +1297,85 @@ test("Workbench keeps low storage headroom advisory, global, and keyboard reacha
     await expect(diagnostics).toBeFocused();
     await expectShellFits(page);
     await expectNoSeriousAxeViolations(page, testInfo);
-    await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}`);
+    if (scene.height === 320) {
+      const geometry = await diagnosticList.evaluate((owner) => {
+        const footer = owner.closest(".workbench-react__status");
+        const statusLine = footer?.querySelector(".workbench-react__status-line");
+        const ownerRect = owner.getBoundingClientRect();
+        const footerRect = footer?.getBoundingClientRect();
+        const statusLineRect = statusLine?.getBoundingClientRect();
+        const overflowOwners = footer
+          ? [...footer.querySelectorAll("*")].filter((element) => {
+              if (!(element instanceof HTMLElement)) return false;
+              const style = getComputedStyle(element);
+              return ["auto", "scroll"].includes(style.overflowY) && element.scrollHeight > element.clientHeight;
+            }).length
+          : 0;
+        return {
+          ownerTop: ownerRect.top,
+          ownerBottom: ownerRect.bottom,
+          clientHeight: owner.clientHeight,
+          scrollHeight: owner.scrollHeight,
+          footerBottom: footerRect?.bottom ?? 0,
+          statusLineTop: statusLineRect?.top ?? 0,
+          overflowOwners
+        };
+      });
+      expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+      expect(geometry.overflowOwners).toBe(1);
+      expect(geometry.ownerTop).toBeGreaterThanOrEqual(0);
+      expect(geometry.ownerBottom).toBeLessThanOrEqual(geometry.footerBottom + 1);
+      expect(Math.abs(geometry.ownerBottom - geometry.statusLineTop)).toBeLessThanOrEqual(1);
+
+      // The top screenshot intentionally shows the scroll viewport, not the
+      // full diagnostic card. The separate scroll owner must expose trailing
+      // content without moving or covering the fixed footer status line.
+      await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}`);
+      await diagnosticList.focus();
+      await expect(diagnosticList).toBeFocused();
+      await page.keyboard.press("End");
+      await expect.poll(() => diagnosticList.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(0);
+      const reachability = await diagnosticList.evaluate((owner) => {
+        const recovery = owner.querySelector(".workbench-react__status-recovery");
+        const footer = owner.closest(".workbench-react__status");
+        const statusLine = footer?.querySelector(".workbench-react__status-line");
+        const ownerRect = owner.getBoundingClientRect();
+        const recoveryRect = recovery?.getBoundingClientRect();
+        const statusLineRect = statusLine?.getBoundingClientRect();
+        return {
+          recoveryVisible: Boolean(recoveryRect && recoveryRect.top >= ownerRect.top && recoveryRect.bottom <= ownerRect.bottom),
+          recoveryBottom: recoveryRect?.bottom ?? 0,
+          ownerBottom: ownerRect.bottom,
+          statusLineTop: statusLineRect?.top ?? 0
+        };
+      });
+      expect(reachability.recoveryVisible).toBe(true);
+      expect(reachability.recoveryBottom).toBeLessThanOrEqual(reachability.ownerBottom + 1);
+      expect(Math.abs(reachability.ownerBottom - reachability.statusLineTop)).toBeLessThanOrEqual(1);
+      await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}-scrolled`);
+      await page.keyboard.press("Home");
+      await expect.poll(() => diagnosticList.evaluate((owner) => owner.scrollTop)).toBe(0);
+    } else {
+      await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}`);
+    }
   }
 
-  await page.emulateMedia({ forcedColors: "active" });
+  await openScenario(page, "storage-headroom-warning", { width: 900, height: 320 }, "dark");
+  await page.emulateMedia({ colorScheme: "dark", forcedColors: "active" });
   const forcedColorsDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  const forcedColorsDiagnosticList = page.getByLabel("Workbench diagnostic entries");
   await expect(forcedColorsDiagnostics.getByText("Warning · Estimated storage headroom is low", { exact: true })).toHaveCount(1);
   await expect(forcedColorsDiagnostics).toContainText("advisory only");
+  await forcedColorsDiagnostics.focus();
   await expect(forcedColorsDiagnostics).toBeFocused();
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachNamedScenarioScreenshot(page, testInfo, "storage-headroom-forced-colors");
+  await forcedColorsDiagnosticList.focus();
+  await page.keyboard.press("End");
+  await expect.poll(() => forcedColorsDiagnosticList.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(0);
+  await expect(forcedColorsDiagnosticList.locator(".workbench-react__status-recovery")).toBeVisible();
+  await page.keyboard.press("Home");
 });
 
 test("Workbench explains server errors and keepalives contextually without a health verdict", async ({ page }, testInfo) => {

@@ -8,10 +8,11 @@ type VisualCase = Readonly<{
   viewport: { width: number; height: number };
   theme: "dark" | "light";
   forcedColors?: boolean;
+  visualEvidenceOnly?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
   production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" };
 }>;
-const matrix = rawMatrix as readonly VisualCase[];
+const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
 
 for (const visual of matrix) {
   test(`visual baseline: ${visual.id} · ${visual.theme} · ${visual.viewport.width}x${visual.viewport.height}`, async ({ page }) => {
