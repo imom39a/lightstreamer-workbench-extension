@@ -276,3 +276,5 @@ The supplied headed artifact remains truthful environmental evidence: it is a
 
 The bounded `filter-impl-08` real-Chrome follow-up is recorded in
 [`filter-impl-08-perf-followup-01.md`](filter-impl-08-perf-followup-01.md).
+The single-capture resume disposition is recorded in
+[`filter-impl-08-perf-followup-01-resume.md`](filter-impl-08-perf-followup-01-resume.md).
