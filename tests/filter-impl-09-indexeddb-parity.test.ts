@@ -52,7 +52,13 @@ function expectPublicParity(actual: EvidenceSnapshot, expected: EvidenceSnapshot
   expect(comparablePublicResult(actual)).toEqual(comparablePublicResult(expected));
   expect(actual.storage).toBe("INDEXED_DB");
   expect(expected.storage).toBe("MEMORY_FALLBACK");
-  expect(expected.telemetry).toBeUndefined();
+  expect(expected.telemetry).toEqual(expect.objectContaining({
+    elapsedMs: expect.any(Number),
+    candidateBound: expect.any(Number),
+    projectionReads: expect.any(Number),
+    fullRetainedScan: expect.any(Boolean),
+    residualScan: expect.any(Boolean)
+  }));
   expect(actual.telemetry).toEqual(expect.objectContaining({
     elapsedMs: expect.any(Number),
     payloadHydrations: expect.any(Number),
@@ -346,7 +352,7 @@ describe("filter-impl-09 durable public-result parity", () => {
     try {
       const fallbackResult = await fallback.query!(requestAt("LATEST_COMMITTED", emptyFilter(), [{ facet: "key", size: 10 }]));
       expect(fallbackResult).toMatchObject({ ok: true, value: { storage: "MEMORY_FALLBACK", coverage: "LIMITED" } });
-      expect(fallbackResult.ok && fallbackResult.value.telemetry).toBeUndefined();
+      expect(fallbackResult.ok && fallbackResult.value.telemetry).toEqual(expect.objectContaining({ fullRetainedScan: true, residualScan: true }));
     } finally { await fallback.close(); }
   });
 

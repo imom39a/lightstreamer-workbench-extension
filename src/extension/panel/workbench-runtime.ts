@@ -910,6 +910,7 @@ const emptyEvidence: EvidenceData = Object.freeze({
   records: Object.freeze([])
 });
 const MAX_EVIDENCE_EVENT_CACHE = 256;
+const MAX_CLOSED_ACTIVITY_EVIDENCE = 1_000;
 
 const emptyInvestigation: WorkbenchEvidenceInvestigationSnapshot = Object.freeze({
   scope: Object.freeze({ kind: "PAGE" as const }),
@@ -2072,6 +2073,7 @@ class Runtime implements WorkbenchRuntime {
           });
         }
         this.activityOpen = false;
+        this.compactClosedActivityEvidence();
         this.cancelActivityPublication();
         if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
         const activityOrigin = this.activityOriginCheckpoint;
@@ -2112,6 +2114,7 @@ class Runtime implements WorkbenchRuntime {
           if (activityDocument) this.recordInvestigationCheckpoint(activityDocument);
           this.canonicalFilter = result.filter;
           this.activityOpen = false;
+          this.compactClosedActivityEvidence();
           if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
           this.recordInvestigationCheckpoint();
           this.refreshEvidence("filter");
@@ -2754,6 +2757,7 @@ class Runtime implements WorkbenchRuntime {
     if (!this.activityEvidenceKeys.has(activityKey)) {
       this.activityEvidenceKeys.add(activityKey);
       this.activityEvidence.push(Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, event }));
+      this.compactClosedActivityEvidence();
     }
     // The canonical page projection is intentionally payload-light. Retain
     // the already-observed immutable envelope as a presentation cache so
@@ -5329,6 +5333,15 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
+  /** Keep closed Activity lightweight; opening it rehydrates the full journal. */
+  private compactClosedActivityEvidence(): void {
+    if (this.activityOpen) return;
+    this.activityHydrated = false;
+    if (this.activityEvidence.length <= MAX_CLOSED_ACTIVITY_EVIDENCE) return;
+    const removed = this.activityEvidence.splice(0, this.activityEvidence.length - MAX_CLOSED_ACTIVITY_EVIDENCE);
+    for (const entry of removed) this.activityEvidenceKeys.delete(`${entry.intervalId}\u0000${entry.sequence}`);
+  }
+
   private activitySnapshot(scope: WorkbenchSnapshot["scope"]): WorkbenchActivitySnapshot {
     const target = findTopologySelection(this.topologyProjection.snapshot(), this.scopeId ?? "page");
     const activityScope = activityScopeFor(target);
@@ -5447,7 +5460,8 @@ class Runtime implements WorkbenchRuntime {
     this.activityEvidence.splice(0, this.activityEvidence.length, ...rebuilt);
     this.activityEvidenceKeys.clear();
     for (const entry of rebuilt) this.activityEvidenceKeys.add(`${entry.intervalId}\u0000${entry.sequence}`);
-    this.activityHydrated = true;
+    this.activityHydrated = this.activityOpen;
+    this.compactClosedActivityEvidence();
     if (this.activityOpen) this.publish();
   }
 

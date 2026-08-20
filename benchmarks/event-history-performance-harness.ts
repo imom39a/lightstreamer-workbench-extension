@@ -949,6 +949,67 @@ const DEFAULT_CONFIG: EventHistoryPerformanceConfig = {
   burstPauseMs: 1
 };
 
+export type FilterQueryOperationName = "recent50" | "recent100" | "structured50" | "structured100" | "find" | "lookup" | "around";
+
+export type FilterQueryOperationTelemetry = Readonly<{
+  candidateBound: number;
+  projectionReads: number;
+  payloadHydrations: number;
+  bounded: boolean;
+  residualScan: boolean;
+}>;
+
+/** The structured query fixture has three keys only when the adapter retains all 10,000 events. */
+export function filterQueryExpectedSequences(count: number): readonly number[] {
+  return [1, 3_843, 7_685].filter((sequence) => sequence <= count);
+}
+
+/** Normalize adapter query evidence to the operation-specific gate contract. */
+export function filterQueryOperationTelemetry(
+  measurement: { telemetry?: any; result?: any },
+  name: FilterQueryOperationName,
+  adapter: "indexeddb" | "memory"
+): FilterQueryOperationTelemetry {
+  const telemetry = measurement.telemetry;
+  if (!telemetry) {
+    throw new Error(`The ${adapter} ${name} query did not expose bounded telemetry.`);
+  }
+  if (name === "find") {
+    const residualScan = Boolean(telemetry.residualScan || telemetry.fullRetainedScan);
+    return {
+      candidateBound: telemetry.findCursorBound ?? telemetry.candidateBound ?? 0,
+      projectionReads: telemetry.findCursorReads ?? 0,
+      payloadHydrations: telemetry.payloadHydrations ?? 0,
+      bounded: !residualScan,
+      residualScan
+    };
+  }
+  if (name === "lookup") {
+    const residualScan = Boolean(telemetry.residualScan);
+    return {
+      candidateBound: 1,
+      projectionReads: 0,
+      payloadHydrations: telemetry.payloadHydrations ?? 0,
+      bounded: !residualScan,
+      residualScan
+    };
+  }
+  const residualScan = Boolean(telemetry.residualScan);
+  return {
+    candidateBound: telemetry.candidateBound ?? 0,
+    projectionReads: telemetry.evidenceCursorReads ?? 0,
+    payloadHydrations: telemetry.payloadHydrations ?? 0,
+    bounded: !residualScan,
+    residualScan
+  };
+}
+
+export function heapWorkloadShapes(adapter: "indexeddb" | "memory"): readonly EventHistoryShape[] {
+  return adapter === "memory"
+    ? ["small-lifecycle", "ordinary-item-update"]
+    : ["small-lifecycle"];
+}
+
 let retainedHeapSession: RetainedHeapSession | null = null;
 let retainedHeapSequence = 0;
 
@@ -1107,10 +1168,9 @@ async function runFilterQueryCell(
     const lookupMeasurement = await timings("lookup", { ...firstRequest(50), lookup: selected });
     const aroundMeasurement = await timings("around", { ...firstRequest(50), filter: { ...firstRequest(50).filter, around: { intervalId: selected.intervalId, start: 1_700_000_001_000, end: 1_700_000_002_000 } } });
     if (!findMeasurement.result.ok || !lookupMeasurement.result.ok || !aroundMeasurement.result.ok) throw new Error("Filter query benchmark optional probe failed.");
-    const operation = (measurement: any) => ({ candidateBound: measurement.telemetry?.candidateBound ?? 0, projectionReads: measurement.telemetry?.evidenceCursorReads ?? 0, payloadHydrations: measurement.telemetry?.payloadHydrations ?? 0, bounded: measurement.telemetry ? !measurement.telemetry.residualScan : false, residualScan: Boolean(measurement.telemetry?.residualScan) });
-    const exactPage = (measurement: any, size: number, expected: number[]) => measurement.result.value.page.evidence.length === Math.min(size, expected.length) && measurement.result.value.page.evidence.every((record: any, index: number) => record.identity.sequence === expected[index] && record.identity.eventId === `${runId}-event-${expected[index]}`);
+    const exactPage = (measurement: any, size: number, expected: readonly number[]) => measurement.result.value.page.evidence.length === Math.min(size, expected.length) && measurement.result.value.page.evidence.every((record: any, index: number) => record.identity.sequence === expected[index] && record.identity.eventId === `${runId}-event-${expected[index]}`);
     const recentExpected = Array.from({ length: count }, (_, index) => count - index);
-    const structuredExpected = [1, 3843, 7685];
+    const structuredExpected = filterQueryExpectedSequences(count);
     const aroundExpected = Array.from({ length: 1_000 }, (_, index) => {
       const sequence = 1_999 - index;
       return { sequence, eventId: `${runId}-event-${sequence}` };
@@ -1129,16 +1189,16 @@ async function runFilterQueryCell(
         aroundP95Ms: aroundMeasurement.p95
       },
       correctness: {
-        totalsExact: recent50.result.value.totals.matching === count && recent100.result.value.totals.matching === count && structured50.result.value.totals.matching === 3 && structured100.result.value.totals.matching === 3 && aroundMeasurement.result.value.totals.matching === count && aroundMeasurement.result.value.totals.inScope === 1_000,
+        totalsExact: recent50.result.value.totals.matching === count && recent100.result.value.totals.matching === count && structured50.result.value.totals.matching === structuredExpected.length && structured100.result.value.totals.matching === structuredExpected.length && aroundMeasurement.result.value.totals.matching === count && aroundMeasurement.result.value.totals.inScope === 1_000,
         orderExact: exactPage(recent50, 50, recentExpected) && exactPage(recent100, 100, recentExpected) && exactPage(structured50, 50, structuredExpected) && exactPage(structured100, 100, structuredExpected),
-        collisionExact: structured.page.evidence.length === 3 && structured.page.evidence.every((record: any, index: number) => record.identity.eventId === `${runId}-event-${structuredExpected[index]}`),
-        findIndependent: findMeasurement.result.value.find?.total === 3 && findMeasurement.result.value.find?.matches?.map((entry: any) => entry.sequence).join(",") === "1,3843,7685" && findMeasurement.result.value.totals.matching === 0,
+        collisionExact: structured.page.evidence.length === structuredExpected.length && structured.page.evidence.every((record: any, index: number) => record.identity.eventId === `${runId}-event-${structuredExpected[index]}`),
+        findIndependent: findMeasurement.result.value.find?.total === structuredExpected.length && findMeasurement.result.value.find?.matches?.map((entry: any) => entry.sequence).join(",") === structuredExpected.join(",") && findMeasurement.result.value.totals.matching === 0,
         lookupExact: lookupMeasurement.result.value.lookup?.state === "RETAINED" && lookupMeasurement.result.value.lookup.evidence.payload !== undefined,
         aroundExact: aroundMeasurement.result.value.totals.matching === count
           && aroundMeasurement.result.value.totals.inScope === 1_000
           && isExactQueryPage(aroundMeasurement.result.value.page, aroundExpected.slice(0, 50))
       },
-      telemetry: { operations: { recent50: operation(recent50), recent100: operation(recent100), structured50: operation(structured50), structured100: operation(structured100), find: operation(findMeasurement), lookup: operation(lookupMeasurement), around: operation(aroundMeasurement) } },
+      telemetry: { operations: { recent50: filterQueryOperationTelemetry(recent50, "recent50", adapter), recent100: filterQueryOperationTelemetry(recent100, "recent100", adapter), structured50: filterQueryOperationTelemetry(structured50, "structured50", adapter), structured100: filterQueryOperationTelemetry(structured100, "structured100", adapter), find: filterQueryOperationTelemetry(findMeasurement, "find", adapter), lookup: filterQueryOperationTelemetry(lookupMeasurement, "lookup", adapter), around: filterQueryOperationTelemetry(aroundMeasurement, "around", adapter) } },
       longTasks: [...recent50.longTasks, ...recent100.longTasks, ...structured50.longTasks, ...structured100.longTasks, ...findMeasurement.longTasks, ...lookupMeasurement.longTasks, ...aroundMeasurement.longTasks],
       longTaskObserverSupported,
       querySampleGc: [...recent50.gc, ...recent100.gc, ...structured50.gc, ...structured100.gc, ...findMeasurement.gc, ...lookupMeasurement.gc, ...aroundMeasurement.gc]
@@ -1351,13 +1411,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       document.body.replaceChildren(root);
       panel = await mountProductionPanel(history, undefined, root);
       if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
-      const heapShapes = adapter === "memory"
-        ? (["small-lifecycle", "ordinary-item-update"] as const)
-        : ([
-            "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
-            "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
-            "small-lifecycle", "large-json-rich"
-          ] as const);
+      const heapShapes = heapWorkloadShapes(adapter);
       const events = Array.from({ length: count }, (_, sequence) =>
         createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
       );

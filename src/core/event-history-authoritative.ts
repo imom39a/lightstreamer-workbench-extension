@@ -5,16 +5,18 @@ import {
   type EvidenceFilterReadProblem,
   type EvidenceIdentity,
   MAX_EVIDENCE_PAGE_SIZE,
+  type EvidenceFindRequest,
   type EvidenceQueryRequest,
   type EvidenceReadPoint,
   type EvidenceSnapshot,
-  type FacetDiscoveryResult
+  type FacetDiscoveryResult,
+  type EvidenceQueryTelemetry
 } from "./evidence-filter-contract";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { discoverFacet, type DiscoveryInstrumentation } from "./evidence-filter-discovery";
-import { canonicalEvidenceSearchText, extractEvidenceFacets } from "./evidence-facets";
+import { canonicalEvidenceSearchText, extractEvidenceFacets, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
 import {
   deserializeJournalEvidenceCandidate,
   journalCandidateSearchText,
@@ -351,6 +353,294 @@ type MemoryEventHistoryOptions = Readonly<{
   discovery?: DiscoveryInstrumentation;
 }> & HistoryCapacityOptions;
 
+type MemoryQueryIndex = {
+  records: DeterministicEvidenceRecord[];
+  bySequence: Map<number, DeterministicEvidenceRecord>;
+  facetPostings: Map<string, Set<number>>;
+  searchPostings: Map<string, Set<number>>;
+  timestampOrder: number[];
+};
+
+type MutableEvidenceQueryTelemetry = {
+  -readonly [Key in keyof EvidenceQueryTelemetry]: EvidenceQueryTelemetry[Key];
+};
+
+function createMemoryQueryIndex(): MemoryQueryIndex {
+  return { records: [], bySequence: new Map(), facetPostings: new Map(), searchPostings: new Map(), timestampOrder: [] };
+}
+
+function memoryFacetPostingKey(facet: string, value: string): string {
+  return `${facet}\u0000${value}`;
+}
+
+function memoryQueryTokens(value: string): readonly string[] {
+  const normalized = normalizeEvidenceSearchText(value);
+  if (!normalized) return [];
+  return [...new Set(normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean))];
+}
+
+function memoryIndexedSearchText(candidate: LightstreamerEventEnvelope, extracted: EvidenceFacetExtraction): string {
+  const values: string[] = [];
+  const append = (value: unknown): void => {
+    if (typeof value === "string") {
+      if (value.length > 2_048) return;
+      values.push(value);
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      values.push(String(value));
+    } else if (Array.isArray(value)) {
+      for (const item of value) append(item);
+    }
+  };
+  append(candidate.id);
+  append(candidate.kind);
+  append(candidate.kind.replaceAll("-", " "));
+  append(candidate.source);
+  append(candidate.direction);
+  append(candidate.client?.id);
+  append(candidate.client?.status);
+  append(candidate.client?.sessionId);
+  append(candidate.subscription?.id);
+  append(candidate.subscription?.mode);
+  append(candidate.subscription?.itemGroup);
+  append(candidate.subscription?.items);
+  append(candidate.subscription?.fields);
+  append(candidate.subscription?.dataAdapter);
+  append(candidate.listener?.id);
+  append(candidate.item?.name);
+  append(candidate.item?.position);
+  append(candidate.update?.key);
+  append(candidate.update?.command);
+  append(candidate.update?.isSnapshot === true ? "SNAPSHOT" : candidate.update?.isSnapshot === false ? "LIVE" : undefined);
+  for (const field of [candidate.update?.fields, candidate.update?.changedFields]) {
+    if (!field || typeof field !== "object") continue;
+    for (const [key, value] of Object.entries(field)) {
+      append(key);
+      append(value);
+    }
+  }
+  for (const facet of Object.values(extracted.facets)) {
+    if (!facet) continue;
+    append(facet.label);
+    append(facet.value);
+  }
+  return normalizeEvidenceSearchText(values.join(" "));
+}
+
+function toMemoryIndexedRecord(entry: CommittedEvidence, interval: HistoryInterval): DeterministicEvidenceRecord {
+  const identity = evidenceIdentity(toRef(entry), interval);
+  if (entry.candidate.kind === "topology-checkpoint") {
+    return Object.freeze({ identity, timestamp: 0, summary: "Topology checkpoint", searchText: journalCandidateSearchText(entry.candidate), facets: Object.freeze({}) });
+  }
+  const context = { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind };
+  const extraction = extractEvidenceFacets(entry.candidate, context);
+  return Object.freeze({
+    identity,
+    timestamp: entry.candidate.timestamp,
+    summary: entry.candidate.kind,
+    searchText: memoryIndexedSearchText(entry.candidate, extraction),
+    facets: Object.freeze(extraction.facets)
+  });
+}
+
+function addMemoryQueryRecord(index: MemoryQueryIndex, record: DeterministicEvidenceRecord): void {
+  index.records.push(record);
+  index.bySequence.set(record.identity.sequence, record);
+  for (const [facet, value] of Object.entries(record.facets)) {
+    if (!value) continue;
+    const key = memoryFacetPostingKey(facet, value.identity);
+    const posting = index.facetPostings.get(key) ?? new Set<number>();
+    posting.add(record.identity.sequence);
+    index.facetPostings.set(key, posting);
+  }
+  for (const token of memoryQueryTokens(record.searchText)) {
+    const posting = index.searchPostings.get(token) ?? new Set<number>();
+    posting.add(record.identity.sequence);
+    index.searchPostings.set(token, posting);
+  }
+  const lastSequence = index.timestampOrder.at(-1);
+  const last = lastSequence === undefined ? undefined : index.bySequence.get(lastSequence);
+  if (last !== undefined && (last.timestamp < record.timestamp || (last.timestamp === record.timestamp && last.identity.sequence < record.identity.sequence))) {
+    index.timestampOrder.push(record.identity.sequence);
+    return;
+  }
+  let low = 0;
+  let high = index.timestampOrder.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    const candidate = index.bySequence.get(index.timestampOrder[middle]!);
+    if (!candidate || candidate.timestamp < record.timestamp || (candidate.timestamp === record.timestamp && candidate.identity.sequence < record.identity.sequence)) low = middle + 1;
+    else high = middle;
+  }
+  index.timestampOrder.splice(low, 0, record.identity.sequence);
+}
+
+function clearMemoryQueryIndex(index: MemoryQueryIndex): void {
+  index.records.length = 0;
+  index.bySequence.clear();
+  index.facetPostings.clear();
+  index.searchPostings.clear();
+  index.timestampOrder.length = 0;
+}
+
+type MemoryPostingSelection = Readonly<{
+  sequences: Set<number> | null;
+  reads: number;
+  candidates: number;
+  driver: string | null;
+}>;
+
+function intersectMemoryPostings(postings: readonly Set<number>[]): Set<number> {
+  if (postings.length === 0) return new Set();
+  const ordered = [...postings].sort((left, right) => left.size - right.size);
+  const result = new Set(ordered[0]);
+  for (const posting of ordered.slice(1)) {
+    for (const sequence of result) if (!posting.has(sequence)) result.delete(sequence);
+  }
+  return result;
+}
+
+function memoryIndexedFilterCandidates(index: MemoryQueryIndex, filter: EvidenceQueryRequest["filter"]): MemoryPostingSelection {
+  const facetGroups: Set<number>[] = [];
+  let reads = 0;
+  let driver: string | null = null;
+  for (const [facet, bucket] of Object.entries(filter.criteria)) {
+    const includes = bucket?.include ?? [];
+    if (includes.length === 0) continue;
+    const union = new Set<number>();
+    for (const value of includes) {
+      if (value.type.startsWith("structural-")) return { sequences: null, reads, candidates: 0, driver: null };
+      const posting = index.facetPostings.get(memoryFacetPostingKey(facet, value.identity));
+      reads += 1;
+      if (posting) for (const sequence of posting) union.add(sequence);
+    }
+    facetGroups.push(union);
+    driver ??= `facet:${facet}`;
+  }
+  const text = normalizeEvidenceSearchText(filter.text);
+  if (text.length >= 3) {
+    const posting = index.searchPostings.get(text);
+    reads += 1;
+    if (!posting) return { sequences: null, reads, candidates: 0, driver: null };
+    facetGroups.push(posting);
+    driver ??= "search";
+  }
+  if (facetGroups.length === 0) return { sequences: null, reads, candidates: 0, driver };
+  const sequences = intersectMemoryPostings(facetGroups);
+  return { sequences, reads, candidates: sequences.size, driver };
+}
+
+function memoryTimestampRange(index: MemoryQueryIndex, records: ReadonlyMap<number, DeterministicEvidenceRecord>, around: NonNullable<EvidenceQueryRequest["filter"]["around"]>, firstSequence: number, lastSequence: number): number[] {
+  const lowerBound = (timestamp: number): number => {
+    let low = 0;
+    let high = index.timestampOrder.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      const candidate = records.get(index.timestampOrder[middle]!);
+      if (!candidate || candidate.timestamp < timestamp) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  const result: number[] = [];
+  for (let position = lowerBound(around.start); position < index.timestampOrder.length; position += 1) {
+    const sequence = index.timestampOrder[position]!;
+    const record = records.get(sequence);
+    if (!record) continue;
+    if (record.timestamp >= around.end) break;
+    if (sequence >= firstSequence && sequence <= lastSequence && record.identity.intervalId === around.intervalId) result.push(sequence);
+  }
+  return result;
+}
+
+function memoryFindWindow(
+  index: MemoryQueryIndex,
+  firstSequence: number,
+  lastSequence: number,
+  sequence: number,
+  materialize: (record: DeterministicEvidenceRecord) => DeterministicEvidenceRecord = (record) => record
+): readonly DeterministicEvidenceRecord[] {
+  const lower = Math.max(firstSequence, sequence - 50);
+  const upper = Math.min(lastSequence, lower + 99);
+  const result: DeterministicEvidenceRecord[] = [];
+  for (let current = lower; current <= upper; current += 1) {
+    const record = index.bySequence.get(current);
+    if (record) result.push(materialize(record));
+  }
+  return Object.freeze(result);
+}
+
+function memorySequenceBounds(index: MemoryQueryIndex, firstSequence: number, lastSequence: number): Readonly<{ start: number; end: number }> {
+  const lowerBound = (sequence: number): number => {
+    let low = 0;
+    let high = index.records.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (index.records[middle]!.identity.sequence < sequence) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  return { start: lowerBound(firstSequence), end: lowerBound(lastSequence + 1) };
+}
+
+function memoryFindResultWithIndexedWindow(
+  index: MemoryQueryIndex,
+  records: readonly SelectionRecord[],
+  firstSequence: number,
+  lastSequence: number,
+  request: EvidenceFindRequest,
+  eligible?: (record: SelectionRecord) => boolean,
+  materialize: (record: DeterministicEvidenceRecord) => DeterministicEvidenceRecord = (record) => record
+) {
+  const result = findEvidence(records, request, eligible);
+  const target = result.current?.sequence ?? result.first?.sequence;
+  const nextWindow = result.next === null ? [] : memoryFindWindow(index, firstSequence, lastSequence, result.next.sequence, materialize);
+  return Object.freeze({
+    ...result,
+    window: target === undefined ? Object.freeze([]) : memoryFindWindow(index, firstSequence, lastSequence, target, materialize),
+    ...(nextWindow.length > 0 ? { nextWindow } : {})
+  });
+}
+
+function memoryQueryTelemetry(): MutableEvidenceQueryTelemetry {
+  return {
+    postingReads: 0,
+    postingCandidates: 0,
+    postingDriver: null,
+    postingDriverCandidateCount: 0,
+    evidenceCursorReads: 0,
+    payloadHydrations: 0,
+    lookupPayloadHydrations: 0,
+    candidateBound: 0,
+    pageBound: 0,
+    retainedCount: 0,
+    cursorWorkBound: 0,
+    aroundCursorBound: 0,
+    findCursorBound: 0,
+    findCursorReads: 0,
+    fullRetainedScan: false,
+    shortFindFallback: false,
+    residualScan: false,
+    aroundIndexReads: 0,
+    aroundCandidates: 0,
+    aroundAnchorValidated: false,
+    elapsedMs: 0,
+    projectionReads: 0,
+    projectionCoverageReads: 0,
+    fullEvidencePayloadHydrations: 0,
+    discoveryProjectionReads: 0,
+    discoveryCandidateCount: 0,
+    discoveryMaterializedValues: 0,
+    discoveryPostingValidationReads: 0,
+    discoveryEvidencePayloadHydrations: 0,
+    discoveryAggregateReads: 0,
+    discoveryAggregateObservationReads: 0,
+    discoveryCompactIdentityCount: 0,
+    discoveryMaterializedCandidates: 0,
+    discoveryMaterializationBound: 0
+  };
+}
+
 /**
  * Opens the production contract implementation. The primary IndexedDB journal is
  * selected before the first offer; startup failure selects the lower-capacity
@@ -439,6 +729,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   const terminalReceipts: PendingCandidate[] = [];
   const committedReceipts: Array<{ entry: PendingCandidate; evidence: EvidenceRef }> = [];
   const deterministicRecordCache = new WeakMap<object, DeterministicEvidenceRecord>();
+  const memoryQueryIndex = createMemoryQueryIndex();
+  const committedBySequence = new Map<number, CommittedEvidence>();
   const idleWaiters: Array<() => void> = [];
   let intervalOrdinal = 1;
   let interval = createInterval(sessionId, intervalOrdinal);
@@ -868,6 +1160,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         awaitingCount -= batch.length;
         awaitingBytes -= batch.reduce((total, entry) => total + entry.bytes, 0);
         committed.push(...evidence);
+        for (const committedEntry of evidence) {
+          committedBySequence.set(committedEntry.sequence, committedEntry);
+          if (committedEntry.candidate.kind === "topology-checkpoint") continue;
+          const queryRecord = toMemoryIndexedRecord(committedEntry, interval);
+          addMemoryQueryRecord(memoryQueryIndex, queryRecord);
+        }
         retainedCount += evidence.length;
         retainedBytes += batch.reduce((sum, entry) => sum + entry.bytes, 0);
         accepted += evidence.length;
@@ -944,11 +1242,14 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     if (request.signal?.aborted) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was read.") });
     }
+    const queryStartedAt = Date.now();
+    const telemetry = memoryQueryTelemetry();
+    telemetry.pageBound = request.page.size;
 
     // This is the sole read point. Everything below reads this immutable slice,
     // so a later commit cannot enter this result or change its totals.
     const intervalAtRead = interval;
-    const currentEntriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
+    const currentEntriesAtRead = committed;
     const currentReadPoint = evidenceReadPoint(intervalAtRead, currentEntriesAtRead, committedEvidenceBoundary);
     const readPoint = request.at === "LATEST_COMMITTED" ? currentReadPoint : request.at;
     if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, currentReadPoint)) {
@@ -958,17 +1259,6 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
 
-    const entriesAtRead = entriesAtReadPoint(currentEntriesAtRead, readPoint);
-    const evidenceEntriesAtRead = entriesAtRead.filter((entry) => entry.candidate.kind !== "topology-checkpoint");
-    const records: SelectionRecord[] = evidenceEntriesAtRead.map((entry) => {
-      const cached = deterministicRecordCache.get(entry);
-      if (cached && (!request.includePayload || cached.payload !== undefined)) return cached;
-      // Query metadata is compact and payload-free. Hydration is performed
-      // only after page selection (or for the explicit lookup below).
-      const record = toDeterministicEvidenceRecord(entry, intervalAtRead, false);
-      deterministicRecordCache.set(entry, record);
-      return record;
-    });
     const around = normalizeAround(request.filter.around, readPoint.retainedRange);
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
     let cursor: ReturnType<typeof decodeEvidenceQueryCursor>;
@@ -977,25 +1267,77 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     } catch (error) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", error instanceof Error ? error.message : "The page cursor is invalid.") });
     }
+    const unsupported = filter.unsupported.length > 0;
+    const findTextLength = request.find === undefined ? 0 : Array.from(normalizeEvidenceSearchText(request.find.text)).length;
+    const filterText = normalizeEvidenceSearchText(filter.text);
+    const indexedFilterTextSupported = filterText.length === 0 || (filterText.length >= 3 && memoryQueryIndex.searchPostings.has(filterText));
+    const indexedFindTextSupported = request.find === undefined
+      || (findTextLength >= 3 && memoryQueryIndex.searchPostings.has(normalizeEvidenceSearchText(request.find.text)));
+    const hasStructuralInclude = Object.values(filter.criteria).some((bucket) => bucket?.include.some((value) => value.type.startsWith("structural-")) === true);
+    const canUseIndexedFind = request.find !== undefined
+      && request.find.current === undefined
+      && request.find.scopeToFilter !== true
+      && filterText.length === 0
+      && around === null;
+    const useMaterializedFallback = unsupported
+      || cursor !== null
+      || (request.discover?.length ?? 0) > 0
+      || (request.find !== undefined && (!canUseIndexedFind || findTextLength < 3))
+      || !indexedFilterTextSupported
+      || !indexedFindTextSupported
+      || hasStructuralInclude;
+    const firstSequence = readPoint.retainedRange?.first.sequence ?? 1;
+    const lastSequence = readPoint.committedEvidenceBoundary?.sequence ?? 0;
+    const sequenceBounds = memorySequenceBounds(memoryQueryIndex, firstSequence, lastSequence);
+    const entriesAtRead = useMaterializedFallback ? entriesAtReadPoint(currentEntriesAtRead, readPoint) : [];
+    const evidenceEntriesAtRead = useMaterializedFallback ? entriesAtRead.filter((entry) => entry.candidate.kind !== "topology-checkpoint") : [];
+    const entriesBySequence = new Map(evidenceEntriesAtRead.map((entry) => [entry.sequence, entry]));
+    const records: SelectionRecord[] = useMaterializedFallback
+      ? evidenceEntriesAtRead.map((entry) => {
+          const cached = deterministicRecordCache.get(entry);
+          if (cached && (!request.includePayload || cached.payload !== undefined)) return cached;
+          const record = toDeterministicEvidenceRecord(entry, intervalAtRead, false);
+          deterministicRecordCache.set(entry, record);
+          if (!memoryQueryIndex.bySequence.has(entry.sequence)) addMemoryQueryRecord(memoryQueryIndex, record);
+          return record;
+        })
+      : [];
+    const materializeIndexedRecord = (record: DeterministicEvidenceRecord, includePayload = false): DeterministicEvidenceRecord => {
+      const entry = committedBySequence.get(record.identity.sequence);
+      if (entry === undefined) return record;
+      const cached = deterministicRecordCache.get(entry);
+      if (!includePayload && cached !== undefined && cached.payload === undefined) return cached;
+      const materialized = toDeterministicEvidenceRecord(entry, intervalAtRead, includePayload);
+      if (!includePayload) deterministicRecordCache.set(entry, materialized);
+      return materialized;
+    };
+    telemetry.retainedCount = useMaterializedFallback ? records.length : sequenceBounds.end - sequenceBounds.start;
     if (filter.around?.anchor) {
       const anchor = filter.around.anchor;
-      const anchorIndex = evidenceEntriesAtRead.findIndex((entry) => sameEvidenceIdentity(evidenceIdentity(toRef(entry), intervalAtRead), anchor));
-      if (anchor.intervalId !== intervalAtRead.id || anchorIndex < 0 || (filter.around.anchorSequence !== undefined && filter.around.anchorSequence !== anchor.sequence)) {
+      const anchorRecord = memoryQueryIndex.bySequence.get(anchor.sequence);
+      const anchorEntry = committedBySequence.get(anchor.sequence);
+      const anchorAvailable = anchorRecord !== undefined && anchorEntry !== undefined && sameEvidenceIdentity(anchorRecord.identity, anchor)
+        && anchorRecord.identity.intervalId === intervalAtRead.id;
+      if (!anchorAvailable || (filter.around.anchorSequence !== undefined && filter.around.anchorSequence !== anchor.sequence)) {
         return Promise.resolve({ ok: false, problem: evidenceReadProblem("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.") });
       }
     }
-    const unsupported = filter.unsupported.length > 0;
     const discoveries = new Map<string, FacetDiscoveryResult>();
-    let lookupRecords = records;
+    let lookupRecords: SelectionRecord[] = records;
     if (request.lookup !== undefined) {
-      const selectedIndex = records.findIndex((record) => sameEvidenceIdentity(record.identity, request.lookup!));
-      if (selectedIndex >= 0) {
-        const selected = records[selectedIndex]!;
-        const entry = evidenceEntriesAtRead.find((candidate) => candidate.sequence === selected.identity.sequence && candidate.eventId === selected.identity.eventId);
-        if (entry !== undefined) {
-          lookupRecords = records.slice();
-          lookupRecords[selectedIndex] = Object.freeze({ ...selected, payload: copyCandidate(entry.candidate) });
-        }
+      const selected = memoryQueryIndex.bySequence.get(request.lookup.sequence);
+      const entry = selected && sameEvidenceIdentity(selected.identity, request.lookup)
+        && selected.identity.sequence >= firstSequence && selected.identity.sequence <= lastSequence
+        ? committedBySequence.get(selected.identity.sequence)
+        : undefined;
+      if (selected && entry !== undefined) {
+        const selectedWithPayload = Object.freeze({ ...materializeIndexedRecord(selected), payload: copyCandidate(entry.candidate) });
+        lookupRecords = useMaterializedFallback
+          ? records.map((record) => record.identity.sequence === selected.identity.sequence ? selectedWithPayload : record)
+          : [selectedWithPayload];
+        telemetry.payloadHydrations += 1;
+        telemetry.lookupPayloadHydrations += 1;
+        telemetry.fullEvidencePayloadHydrations = (telemetry.fullEvidencePayloadHydrations ?? 0) + 1;
       }
     }
     if (unsupported) {
@@ -1006,7 +1348,13 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       }
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
       const find = request.find === undefined ? null : findEvidence(records, request.find);
-      return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", null, lookup, find) });
+      telemetry.candidateBound = records.length;
+      telemetry.evidenceCursorReads = records.length;
+      telemetry.projectionReads = records.length;
+      telemetry.fullRetainedScan = true;
+      telemetry.residualScan = true;
+      telemetry.elapsedMs = Math.max(0, Date.now() - queryStartedAt);
+      return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", null, lookup, find, telemetry) });
     }
 
     try {
@@ -1014,31 +1362,93 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       let inScope = 0;
       const page: DeterministicEvidenceRecord[] = [];
       let hasMore = false;
-      let cursorFound = cursor === null;
-      const orderedStart = request.page.order === "NEWEST_FIRST" ? records.length - 1 : 0;
-      const orderedEnd = request.page.order === "NEWEST_FIRST" ? -1 : records.length;
-      const orderedStep = request.page.order === "NEWEST_FIRST" ? -1 : 1;
-      for (let index = orderedStart; index !== orderedEnd; index += orderedStep) {
-        const record = records[index]!;
-        if (request.signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
-        const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
-          timestamp: record.timestamp,
-          intervalId: record.identity.intervalId,
-          searchText: record.searchText,
-          facets: record.facets as unknown as FilterRecord["facets"]
-        });
-        if (!evaluation.matches) continue;
-        matching += 1;
-        if (!isInAround(record, around)) continue;
-        inScope += 1;
-        if (cursor !== null && !cursorFound) {
-          if (sameEvidenceIdentity(record.identity, cursor.anchor)) cursorFound = true;
-          continue;
+      const retainedRecordCount = telemetry.retainedCount;
+      const matchesFilter = (record: SelectionRecord): boolean => evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+        timestamp: record.timestamp,
+        intervalId: record.identity.intervalId,
+        searchText: record.searchText,
+        facets: record.facets as unknown as FilterRecord["facets"]
+      }).matches;
+      const ordered = (values: readonly SelectionRecord[]): SelectionRecord[] => [...values].sort((left, right) => request.page.order === "NEWEST_FIRST"
+        ? right.identity.sequence - left.identity.sequence
+        : left.identity.sequence - right.identity.sequence);
+      const canUseIndexedSelection = cursor === null && (request.discover?.length ?? 0) === 0;
+      const indexedFilter = canUseIndexedSelection ? memoryIndexedFilterCandidates(memoryQueryIndex, filter) : null;
+      if (indexedFilter !== null && indexedFilter.sequences === null && filterText.length === 0 && Object.values(filter.criteria).every((bucket) => !bucket || (bucket.include.length === 0 && bucket.exclude.length === 0))) {
+        if (around === null) {
+          matching = retainedRecordCount;
+          inScope = matching;
+          if (request.page.order === "NEWEST_FIRST") {
+            for (let index = sequenceBounds.end - 1; index >= sequenceBounds.start && page.length < request.page.size; index -= 1) page.push(memoryQueryIndex.records[index]!);
+          } else {
+            for (let index = sequenceBounds.start; index < sequenceBounds.end && page.length < request.page.size; index += 1) page.push(memoryQueryIndex.records[index]!);
+          }
+          hasMore = retainedRecordCount > page.length;
+          telemetry.candidateBound = page.length;
+          telemetry.evidenceCursorReads = page.length;
+          telemetry.projectionReads = page.length;
+        } else {
+          const rangeSequences = memoryTimestampRange(memoryQueryIndex, memoryQueryIndex.bySequence, around, firstSequence, lastSequence);
+          const rangeRecords = rangeSequences.flatMap((sequence) => {
+            const record = memoryQueryIndex.bySequence.get(sequence);
+            return record ? [record] : [];
+          });
+          matching = retainedRecordCount;
+          inScope = rangeRecords.length;
+          page.push(...ordered(rangeRecords).slice(0, request.page.size));
+          hasMore = rangeRecords.length > page.length;
+          telemetry.candidateBound = rangeRecords.length;
+          telemetry.evidenceCursorReads = rangeRecords.length;
+          telemetry.projectionReads = rangeRecords.length;
+          telemetry.aroundCursorBound = rangeRecords.length;
+          telemetry.aroundIndexReads = rangeRecords.length;
+          telemetry.aroundCandidates = rangeRecords.length;
         }
-        if (page.length < request.page.size) page.push(record);
-        else hasMore = true;
+      } else if (indexedFilter !== null && indexedFilter.sequences !== null) {
+        const candidateRecords = [...indexedFilter.sequences].flatMap((sequence) => {
+          if (sequence < firstSequence || sequence > lastSequence) return [];
+          const record = memoryQueryIndex.bySequence.get(sequence);
+          return record && record.identity.intervalId === readPoint.interval.id ? [record] : [];
+        });
+        const matchingRecords = candidateRecords.filter(matchesFilter);
+        const inScopeRecords = matchingRecords.filter((record) => isInAround(record, around));
+        matching = matchingRecords.length;
+        inScope = inScopeRecords.length;
+        page.push(...ordered(inScopeRecords).slice(0, request.page.size));
+        hasMore = inScopeRecords.length > page.length;
+        telemetry.postingReads = indexedFilter.reads;
+        telemetry.postingCandidates = indexedFilter.candidates;
+        telemetry.postingDriver = indexedFilter.driver?.startsWith("facet:") ? indexedFilter.driver.slice("facet:".length) : null;
+        telemetry.postingDriverCandidateCount = indexedFilter.candidates;
+        telemetry.candidateBound = candidateRecords.length;
+        telemetry.evidenceCursorReads = candidateRecords.length;
+        telemetry.projectionReads = candidateRecords.length;
+      } else {
+        telemetry.candidateBound = retainedRecordCount;
+        telemetry.evidenceCursorReads = retainedRecordCount;
+        telemetry.projectionReads = retainedRecordCount;
+        telemetry.fullRetainedScan = true;
+        telemetry.residualScan = true;
+        let cursorFound = cursor === null;
+        const orderedStart = request.page.order === "NEWEST_FIRST" ? records.length - 1 : 0;
+        const orderedEnd = request.page.order === "NEWEST_FIRST" ? -1 : records.length;
+        const orderedStep = request.page.order === "NEWEST_FIRST" ? -1 : 1;
+        for (let index = orderedStart; index !== orderedEnd; index += orderedStep) {
+          const record = records[index]!;
+          if (request.signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+          if (!matchesFilter(record)) continue;
+          matching += 1;
+          if (!isInAround(record, around)) continue;
+          inScope += 1;
+          if (cursor !== null && !cursorFound) {
+            if (sameEvidenceIdentity(record.identity, cursor.anchor)) cursorFound = true;
+            continue;
+          }
+          if (page.length < request.page.size) page.push(record);
+          else hasMore = true;
+        }
+        if (cursor !== null && !cursorFound) throw new Error("The page cursor anchor is stale or is not part of the filtered Evidence result.");
       }
-      if (cursor !== null && !cursorFound) throw new Error("The page cursor anchor is stale or is not part of the filtered Evidence result.");
       for (const discoveryRequest of request.discover ?? []) {
         if (request.signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
         try {
@@ -1052,30 +1462,53 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       }
       const hydratedPage = request.includePayload === true
         ? page.map((record) => {
-            const entry = evidenceEntriesAtRead.find((candidate) => candidate.sequence === record.identity.sequence && candidate.eventId === record.identity.eventId);
+            const materialized = useMaterializedFallback ? record : materializeIndexedRecord(record);
+            const entry = committedBySequence.get(materialized.identity.sequence) ?? entriesBySequence.get(materialized.identity.sequence);
             return entry === undefined
-              ? record
-              : Object.freeze({ ...record, payload: copyCandidate(entry.candidate) });
+              ? materialized
+              : Object.freeze({ ...materialized, payload: copyCandidate(entry.candidate) });
           })
-        : page;
+        : page.map((record) => useMaterializedFallback ? record : materializeIndexedRecord(record));
       const nextCursor = hasMore
         ? encodeEvidenceQueryCursor(readPoint, request, page.at(-1)!.identity)
         : null;
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
-      const find = request.find === undefined ? null : findEvidence(records, request.find, request.find.scopeToFilter
-        ? (record) => {
-            const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
-              timestamp: record.timestamp,
-              intervalId: record.identity.intervalId,
-              searchText: record.searchText,
-              facets: record.facets as unknown as FilterRecord["facets"]
-            });
-            return evaluation.matches && isInAround(record, around);
-          }
-        : undefined);
+      let find: EvidenceSnapshot["find"] = null;
+      if (request.find !== undefined) {
+        const eligible = request.find.scopeToFilter
+          ? (record: SelectionRecord) => matchesFilter(record) && isInAround(record, around)
+          : undefined;
+        if (useMaterializedFallback) {
+          telemetry.findCursorBound = records.length;
+          telemetry.findCursorReads = records.length;
+          find = findEvidence(records, request.find, eligible);
+        } else {
+          const findSelection = memoryIndexedFilterCandidates(memoryQueryIndex, {
+            ...filter,
+            text: request.find.text,
+            criteria: {},
+            around: null,
+            unsupported: []
+          });
+          const findRecords = findSelection.sequences === null
+            ? []
+            : [...findSelection.sequences].flatMap((sequence) => {
+                if (sequence < firstSequence || sequence > lastSequence) return [];
+                const record = memoryQueryIndex.bySequence.get(sequence);
+                return record && record.identity.intervalId === readPoint.interval.id ? [materializeIndexedRecord(record)] : [];
+          });
+          telemetry.findCursorBound = findSelection.candidates;
+          telemetry.findCursorReads = findRecords.length;
+          telemetry.candidateBound = findRecords.length;
+          telemetry.projectionReads = findRecords.length;
+          telemetry.evidenceCursorReads = findRecords.length;
+          find = memoryFindResultWithIndexedWindow(memoryQueryIndex, findRecords, firstSequence, lastSequence, request.find, eligible, materializeIndexedRecord);
+        }
+      }
+      telemetry.elapsedMs = Math.max(0, Date.now() - queryStartedAt);
       return Promise.resolve({
         ok: true,
-        value: makeEvidenceSnapshot(readPoint, hydratedPage, matching, inScope, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find)
+        value: makeEvidenceSnapshot(readPoint, hydratedPage, matching, inScope, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find, telemetry)
       });
     } catch (error) {
       if (request.signal?.aborted || (error instanceof Error && error.message === "EVIDENCE_QUERY_CANCELLED")) {
@@ -1121,6 +1554,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         intervalOrdinal += 1;
         interval = nextInterval;
         committed.length = 0;
+        committedBySequence.clear();
+        clearMemoryQueryIndex(memoryQueryIndex);
         retainedBytes = 0;
         retainedCount = 0;
         lastNearLimit = false;
@@ -1666,6 +2101,7 @@ function makeEvidenceSnapshot(
   nextCursor: string | null = null
   , lookup: EvidenceSnapshot["lookup"] = null
   , find: EvidenceSnapshot["find"] = null
+  , telemetry: EvidenceSnapshot["telemetry"] = undefined
 ): EvidenceSnapshot {
   return Object.freeze({
     readPoint,
@@ -1676,7 +2112,8 @@ function makeEvidenceSnapshot(
     find,
     evaluation,
     coverage,
-    storage: storageName
+    storage: storageName,
+    ...(telemetry === undefined ? {} : { telemetry: Object.freeze({ ...telemetry }) })
   });
 }
 

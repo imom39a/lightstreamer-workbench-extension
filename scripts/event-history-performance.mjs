@@ -461,9 +461,7 @@ async function main() {
       telemetry: { storageEstimate: "Per-cell navigator.storage.estimate() telemetry is non-authoritative; unavailable/error states are retained and excluded from verdict gates." }
     };
     const decision = captureMode
-      ? classificationMode === "capture-only"
-        ? classifyEventHistoryPerformance(report, undefined, "capture-only")
-        : classifyEventHistoryPerformance(report, undefined, "non-interactive-capture-only")
+      ? classifyEventHistoryPerformance(report, undefined, classificationMode)
       : classifyEventHistoryPerformance(report, reference, classificationMode);
     const complete = {
       ...report,
