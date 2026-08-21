@@ -189,7 +189,10 @@ export async function openAuthoritativeEventDatabase(
   return openAtCurrentSchema(name);
 }
 
-export function deleteAuthoritativeEventDatabase(name = FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID): Promise<void> {
+export function deleteAuthoritativeEventDatabase(
+  name = FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID,
+  timeoutMs = INDEXEDDB_REQUEST_TIMEOUT_MS
+): Promise<void> {
   if (typeof indexedDB === "undefined") {
     return Promise.resolve();
   }
@@ -198,7 +201,7 @@ export function deleteAuthoritativeEventDatabase(name = FALLBACK_AUTHORITATIVE_E
     const request = indexedDB.deleteDatabase(name);
     const timeout = globalThis.setTimeout(() => {
       settle(() => reject(new Error(`Deleting ${name} timed out.`)));
-    }, INDEXEDDB_REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
 
     function settle(done: () => void): void {
       if (settled) return;

@@ -97,11 +97,10 @@ const SEARCH_TOKEN_TRIGRAM_WORD_MAX_LENGTH = 8;
 const SEARCH_TOKEN_TRIGRAM_IDENTIFIER_MAX_LENGTH = 16;
 const SEARCH_TOKEN_PARTIAL_MARKER = "\u0000lsew-search-partial-v1";
 const SEARCH_TOKEN_FULL_INDEX_RECORD_LIMIT = 128;
-// Large journal erasure is charged to the close stage. A 100k normal-tier
-// journal can carry hundreds of MiB of IndexedDB index rows, so give the
-// browser a bounded two-minute window to clear it while ordinary commits and
-// explicit interval clears retain the 2-second transaction ceiling.
-const CLOSE_TRANSACTION_TIMEOUT_MS = 120_000;
+// Controlled close erases a session by deleting its IndexedDB database after
+// the connection is closed. Deletion avoids a giant read/write clear over all
+// derived indexes; keep a bounded window for the browser's delete request.
+const CLOSE_DATABASE_DELETE_TIMEOUT_MS = 120_000;
 
 const LIVE_PANEL_LEASE_PREFIX = "lsew-events-panel-live-v2-";
 const LIVE_PANEL_LEASE_TTL_MS = 30_000;
@@ -271,7 +270,7 @@ export async function createIndexedDbEventHistory(
       const loaded = await loadJournal(database, canonicalPanelSessionId);
       const closeJournal = async (): Promise<void> => {
         await options.closeJournal?.();
-        await deleteAuthoritativeEventDatabase(databaseName);
+        await deleteAuthoritativeEventDatabase(databaseName, CLOSE_DATABASE_DELETE_TIMEOUT_MS);
       };
       const baseHistory = createHistory(database, loaded, {
         ...options,
@@ -1100,7 +1099,6 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       try {
         const applied = await options.clearJournal?.();
         if (applied !== false) {
-          await clearJournalRecords(database, loaded.panelSessionId, interval, nextSequence, committedEvidenceBoundary, CLOSE_TRANSACTION_TIMEOUT_MS);
           dataDisposition = "ERASED";
           database.db.close();
           await options.closeJournal?.();
