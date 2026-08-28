@@ -134,6 +134,10 @@ Geometry-driven parking and deliberate collapse are distinct:
 
 Responsive state is addressed by stable semantic identity rather than pixel position. Evidence restoration uses an event identity plus virtual-list anchor and offset. Editor restoration retains exact text, cursor, selection, folds, scroll, validation markers, and undo state.
 
+## Integrated Activity fit
+
+The [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#workspace) belongs to the Evidence pane, remains compact in shallow geometry, and is parked with Evidence. It adds neither a separate source lane nor a content scroll owner. The collapsed Activity summary shares Context's existing scroll and relocation behavior. Evidence remains the dominant surface at every supported geometry.
+
 ## Scroll ownership
 
 - The Workbench shell never becomes a scrolling document.

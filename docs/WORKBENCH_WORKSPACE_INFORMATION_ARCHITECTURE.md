@@ -16,7 +16,7 @@ The model combines:
 - the runtime-object dossier and explicit target clarity of prototype B, **Runtime Lens**;
 - ordinary compact master/detail Back restoration, without prototype C's maintained investigation-step taxonomy.
 
-The architecture has no permanent Timeline, Topology, and COMMAND State peer destinations.
+The architecture has no permanent Timeline, Topology, and COMMAND State peer destinations. The [integrated Activity amendment](WORKBENCH_INTEGRATED_ACTIVITY.md) places one compact shared timeline above Ordered Evidence and one collapsed scoped Activity summary in existing Context; it retires the separate Activity doorway after preserving its useful details.
 
 ## Workspace anatomy
 

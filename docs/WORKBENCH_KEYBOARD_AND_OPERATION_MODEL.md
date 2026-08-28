@@ -52,6 +52,10 @@ Evidence is an interactive grid or list composite with stable event identities a
 
 Selecting Evidence updates visible Context without moving focus. At wide, normal, and shallow geometry, Enter transfers focus into the existing Context lens. At compact geometry, Enter performs the explicit Evidence-to-Context surface replacement. Selection alone never replaces compact Evidence.
 
+### Integrated Activity in Evidence
+
+The [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#interaction) provides pointer and keyboard range selection through the existing Filter. Pending range editing owns Escape only until commit or cancel. Marker activation selects existing Evidence; captured status/problem inspection deliberately opens Context and compact Back restores the selected row. Tab remains the cross-surface command; the timeline adds no global shortcut layer.
+
 ### Context
 
 Context retains the selected event or runtime object while focus moves elsewhere.

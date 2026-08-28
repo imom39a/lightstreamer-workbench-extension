@@ -19,6 +19,7 @@ The following accepted contracts provide detailed rules:
 - [Workbench Panel Density and Docked Layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md) — Elastic Triad.
 - [Workbench Keyboard and Operation Model](WORKBENCH_KEYBOARD_AND_OPERATION_MODEL.md) — Roving Instrument.
 - [Workbench Visual Semantics](WORKBENCH_VISUAL_SEMANTICS.md) — Plain Ledger.
+- [Integrated Activity in Evidence](WORKBENCH_INTEGRATED_ACTIVITY.md) — the compact shared timeline, scoped Context summary, and narrow timeline provenance amendment.
 
 The [panel verification procedure](agents/ui-verification.md) and [independent visual-QA procedure](agents/ui-visual-qa.md) explain how to collect evidence. They do not replace this standard or redefine its change classes. Research and disposable prototypes are decision evidence, not normative product contracts.
 
@@ -87,7 +88,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 
 - Use **Plain Ledger**: explicit text first, stable placement second, typography and limited shape third, and color only as reinforcement.
 - Keep Capture operation, observation Coverage, Live/Frozen position, runtime lifecycle, provenance, Snapshot/Live phase, COMMAND operation, diagnostics, Injection readiness/outcome, and interaction state independent.
-- Keep `SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` textual at every density. Do not use provenance colors or treat Local as success.
+- Keep `SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` textual at every density. Do not use provenance colors or treat Local as success, except the explicit shape-and-text-reinforced LOCAL mark within the [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#narrow-provenance-amendment).
 - Keep `ADD`, `UPDATE`, and `DELETE` neutral. A COMMAND verb is not diagnostic severity.
 - Reserve generic selection fill plus a leading marker for selection and an independent outline for focus.
 - Pair every material diagnostic with severity text, affected Evidence or object, consequence, and one relevant inspection or recovery route.

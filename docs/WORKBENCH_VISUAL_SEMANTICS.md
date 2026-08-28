@@ -57,7 +57,7 @@ The visual system needs a small set of semantic roles, not component-specific pa
 - **Outcome:** confirmed success foreground/background pair. Success is reserved for a proven operation boundary, never provenance or COMMAND operation.
 - **Actions:** ordinary control and primary consequential action. Accent color does not imply domain success.
 
-Do not add provenance colors, per-COMMAND colors, Snapshot colors, lifecycle rainbows, or application-identifier colors. If a new color role is proposed, its meaning must remain valid for every component that uses it and must still be communicated without color.
+Do not add provenance colors, per-COMMAND colors, Snapshot colors, lifecycle rainbows, or application-identifier colors. The sole approved provenance-color amendment is the [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#narrow-provenance-amendment): neutral SERVER marks and purple outlined LOCAL diamonds, reinforced by visible text, accessible names and non-color shape. It does not apply to Evidence rows or other surfaces. If another color role is proposed, its meaning must remain valid for every component that uses it and must still be communicated without color.
 
 ## Operating strip
 
