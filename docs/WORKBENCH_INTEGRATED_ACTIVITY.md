@@ -38,4 +38,6 @@ This is the maintainer-approved amendment to the earlier blanket prohibition on 
 
 Production tickets are `activity-main-01` through `activity-main-03` in [Project 2](https://github.com/users/imom39a/projects/2). They carry forward the approved functional slices and public Activity projection/runtime plus rendered Evidence, Filter and Context test seams. Work starts from `82bd61b6dabf8060da8d00be0a2245dbad50b5af` on `feat/integrated-activity-timeline`.
 
+The [production verification record](agents/integrated-activity-release-evidence.md) records implemented behavior, independent reviews, deliberate baseline changes, and the actual release-gate results.
+
 This is **Material UI**. Apply the full [UI Standard](WORKBENCH_UI_STANDARD.md), including compact 563×700, normal 900×700, shallow 900×320 and wide 1440×900, Light/Dark, non-color/forced-colors, keyboard and axe checks, independent visual QA, and explicit review of affected visual baselines. A successful prototype or intermediate test is not production completion.
