@@ -50,13 +50,17 @@ export function ActivityTimeline({ projection, filter, frozen, selectedEventId, 
   };
   const preview = (range: ActivityTimeRange) => setDraft({ range, intervalId: projection.intervalId, revision: filter.revision });
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.target !== event.currentTarget || !available || !domain) return;
-    if (event.key === "Escape" && draftRange) {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "Escape" && (draftRange || gesture.current)) {
       event.preventDefault();
       event.stopPropagation();
+      const pointerId = gesture.current?.pointerId;
+      gesture.current = null;
       setDraft(null);
+      if (pointerId !== undefined && event.currentTarget.hasPointerCapture?.(pointerId)) event.currentTarget.releasePointerCapture(pointerId);
       return;
     }
+    if (!available || !domain) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       applyRange(selectedRange ?? domain);
@@ -93,11 +97,11 @@ export function ActivityTimeline({ projection, filter, frozen, selectedEventId, 
   return <section className="workbench-activity-timeline" aria-label="Activity timeline" aria-busy={loading}>
     <header>
       <button type="button" aria-expanded={!collapsed} aria-controls="workbench-activity-timeline-content" onClick={() => { setDraft(null); gesture.current = null; setCollapsed(!collapsed); }}><span aria-hidden="true">{collapsed ? "▸" : "▾"}</span> Timeline</button>
-      <span className="workbench-activity-timeline__origin" title="Elapsed time since first retained event; Scope and Filter do not change this origin.">{collapsed && selectedRange && origin !== null ? `Range ${activityRangeLabel(selectedRange, origin)}` : "Elapsed since first retained event"}</span>
+      <span className="workbench-activity-timeline__origin" title="Elapsed time since first retained timestamped event; untimed topology checkpoints provide no clock. Scope and Filter do not change this origin.">{collapsed && selectedRange && origin !== null ? `Range ${activityRangeLabel(selectedRange, origin)}` : "Elapsed since first retained timestamped event"}</span>
       <span className="workbench-activity-timeline__legend" role="group" aria-label="Update source legend"><span><i aria-hidden="true" />SERVER</span><span><i className="workbench-activity-timeline__local" aria-hidden="true" />LOCAL</span></span>
     </header>
     {!collapsed ? <div id="workbench-activity-timeline-content">
-      <div className="workbench-activity-timeline__axis" role="group" aria-label="Elapsed time since first retained event">{available && domain && origin !== null ? [0, .25, .5, .75, 1].map(fraction => <span key={fraction} style={{ left: `${fraction * 100}%` }}>{activityElapsed(domain.start + fraction * (domain.end - domain.start), origin)}</span>) : null}</div>
+      <div className="workbench-activity-timeline__axis" role="group" aria-label="Elapsed time since first retained timestamped event">{available && domain && origin !== null ? [0, .25, .5, .75, 1].map(fraction => <span key={fraction} style={{ left: `${fraction * 100}%` }}>{activityElapsed(domain.start + fraction * (domain.end - domain.start), origin)}</span>) : null}</div>
       <div className="workbench-activity-timeline__track" role="group" tabIndex={available ? 0 : -1} aria-disabled={!available} aria-label="Select Activity time range" aria-describedby="workbench-activity-timeline-help workbench-activity-timeline-range" onKeyDown={onKeyDown} onPointerDown={onPointerDown} onPointerMove={event => { const range = pointerRange(event); if (range) preview(range); }} onPointerUp={event => { const range = pointerRange(event); const revision = gesture.current?.revision; gesture.current = null; if (range) applyRange(range, revision); }} onPointerCancel={() => { gesture.current = null; setDraft(null); }}>
         {selectedRange && domain ? <span className="workbench-activity-timeline__range" aria-hidden="true" style={{ left: `${position(selectedRange.start)}%`, width: `${position(selectedRange.end) - position(selectedRange.start)}%` }} /> : null}
         {available && singleBurst ? <span className="workbench-activity-timeline__burst workbench-activity-timeline__burst-visual" aria-hidden="true" style={{ left: `${position(singleBurst.start)}%`, width: `${Math.max(.3, position(singleBurst.end) - position(singleBurst.start))}%` }} /> : null}

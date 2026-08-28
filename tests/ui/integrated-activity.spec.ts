@@ -44,7 +44,7 @@ async function openIntegratedActivity(
   await expect(
     page
       .locator('[aria-label="Activity timeline"]')
-      .locator('[aria-label="Elapsed time since first retained event"]')
+      .locator('[aria-label="Elapsed time since first retained timestamped event"]')
       .last(),
   ).toContainText(settledElapsed);
   await expect(
@@ -213,6 +213,45 @@ test("Activity pointer range applies a bounded live-Evidence Filter", async ({
   await expect(
     page.getByRole("button", { name: "Reset Filter" }),
   ).toBeVisible();
+});
+
+test("Activity Escape cancels a pointer drag before pointerup can commit the Filter", async ({ page }) => {
+  await openIntegratedActivity(page);
+  const evidence = page.getByRole("region", { name: "Ordered Evidence" });
+  const timeline = page.locator('[aria-label="Activity timeline"]');
+  const range = timeline.getByRole("group", { name: "Select Activity time range" });
+  const box = await range.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + box!.width * .72, box!.y + box!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width * .88, box!.y + box!.height / 2);
+  await expect(timeline).toContainText("Preview");
+  await page.keyboard.press("Escape");
+  await expect(timeline).not.toContainText("Preview");
+  await page.mouse.up();
+  await expect(timeline).toContainText("All retained time");
+  await expect(evidence).toContainText(/Matching\s*1,714/);
+  await expect(evidence).toContainText(/In Scope\s*1,714/);
+  await expect(evidence.getByRole("button", { name: "Reset Filter" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Back investigation" })).toBeDisabled();
+  await expect(range).toBeFocused();
+});
+
+test("Activity held source marker reveals its original Evidence after passive density changes", async ({ page }) => {
+  await openIntegratedActivity(page, { scenario: "integrated-activity-held-source", settledElapsed: "+2.001s" });
+  const timeline = page.locator('[aria-label="Activity timeline"]');
+  const source = timeline.getByRole("button", { name: /^Select SERVER Item Update at .*; Evidence activity-held-source-3$/ });
+  await source.focus();
+  await expect(source).toBeFocused();
+  expect(await page.evaluate(() => window.__appendDeferredWorkbenchEvents())).toBe(1);
+  await expect(timeline).toContainText("+300.001s");
+  await expect(timeline.getByRole("img", { name: /^3 SERVER Logical Updates, aggregate interval / })).toBeVisible();
+  await expect(source).toBeFocused();
+  await source.click();
+  await expect(page.locator('[data-evidence-id="activity-held-source-3"]')).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("heading", { name: "activity-held-source-3 · Item Update" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back investigation" })).toBeDisabled();
+  await expect(page.getByText("View FOLLOW LIVE", { exact: true })).toBeVisible();
 });
 
 test("Frozen Activity keeps the selected Evidence row focused through passive Capture", async ({

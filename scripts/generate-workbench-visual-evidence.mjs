@@ -152,7 +152,7 @@ try {
       classification: "Material UI",
       changedWorkflow: "The integrated Workbench matrix covers the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, diagnostics, and compact operating actions in the shipped panel shell.",
       acceptanceCriteria: [
-        "One shared SERVER/LOCAL timeline belongs above Evidence, uses elapsed time since the first retained event, and preserves exact range and captured-event routes without a separate Activity page.",
+        "One shared SERVER/LOCAL timeline belongs above Evidence, uses elapsed time since the first retained timestamped event, and preserves exact range and captured-event routes without a separate Activity page.",
         "One collapsed Activity summary in Context retains exact SERVER/LOCAL counts, bounded SERVER busiest identities and captured facts, including 10,000-record, limited and memory-fallback states.",
         "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
         "Contextual diagnostics present server errors and bounded keepalive aggregation without a health verdict; duplicate, overlap, listener churn, and subscription lint remain scope-relevant and route to supporting Evidence.",

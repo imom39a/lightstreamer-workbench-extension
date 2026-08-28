@@ -78,7 +78,7 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     expect(track.getAttribute("aria-disabled")).toBe("true");
     expect(timeline.textContent).toContain("Timeline unavailable across a clock change");
     expect(timeline.querySelector('[aria-label="Captured Activity events"]')).toBeNull();
-    expect(timeline.querySelector('[aria-label="Elapsed time since first retained event"]')!.textContent).toBe("");
+    expect(timeline.querySelector('[aria-label="Elapsed time since first retained timestamped event"]')!.textContent).toBe("");
     expect(panel.getSnapshot().evidence.events).toHaveLength(4);
   });
 
@@ -89,7 +89,7 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     expect(timeline).not.toBeNull();
     expect(timeline!.textContent).toContain("SERVER");
     expect(timeline!.textContent).toContain("LOCAL");
-    expect(timeline!.textContent).toContain("since first retained event");
+    expect(timeline!.textContent).toContain("since first retained timestamped event");
     expect(timeline!.textContent).not.toContain(String(origin));
     expect(evidence.querySelector('[aria-label="Ordered Lightstreamer Evidence"]')).not.toBeNull();
     expect(panel.getSnapshot().activity?.open).toBe(false);
@@ -268,7 +268,7 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     expect(after.evidence.investigation.filter.criteria.provenance!.include.map(value => value.value)).toEqual(["SERVER"]);
     expect(after.evidence.investigation.filter.around).toEqual({ intervalId: before.activity!.projection.intervalId, start: origin, end: origin + 101 });
     expect(after.evidence.events.map(event => event.id)).toEqual(["first", "snapshot"]);
-    expect(document.querySelector('[aria-label="Elapsed time since first retained event"]')!.textContent).toContain("+1.0s");
+    expect(document.querySelector('[aria-label="Elapsed time since first retained timestamped event"]')!.textContent).toContain("+1.0s");
     const back = Array.from(document.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "Back investigation");
     expect(back).toBeDefined();
     await act(async () => back!.click());
@@ -290,6 +290,31 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     await act(async () => toggle.click());
     expect(document.querySelector('[aria-label="Activity timeline"]')!.textContent).toContain("All retained time");
     expect(panel.getSnapshot().evidence.investigation.filter.around).toBeNull();
+  });
+
+  it("cancels an owned pointer range with Escape so a later pointerup cannot apply its Filter", async () => {
+    const panel = await mount();
+    const before = panel.getSnapshot().evidence.investigation.filter;
+    const track = document.querySelector<HTMLElement>('[aria-label="Select Activity time range"]')!;
+    vi.spyOn(track, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 24, width: 100, height: 24, toJSON: () => ({}) });
+    const pointer = (type: string, clientX: number) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX });
+      Object.defineProperty(event, "pointerId", { value: 1 });
+      track.dispatchEvent(event);
+    };
+    await act(async () => pointer("pointerdown", 20));
+    await act(async () => pointer("pointermove", 70));
+    expect(document.querySelector('[aria-label="Activity timeline"]')!.textContent).toContain("Preview");
+    const cancel = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => track.dispatchEvent(cancel));
+    expect(cancel.defaultPrevented).toBe(true);
+    expect(document.querySelector('[aria-label="Activity timeline"]')!.textContent).not.toContain("Preview");
+    await act(async () => pointer("pointerup", 70));
+    await settle();
+    expect(panel.getSnapshot().evidence.investigation.filter).toEqual(before);
+    const unowned = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => track.dispatchEvent(unowned));
+    expect(unowned.defaultPrevented).toBe(false);
   });
 
   it("retains the focused snapshot caption as passive Capture extends its exact burst", async () => {

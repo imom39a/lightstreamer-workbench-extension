@@ -8,7 +8,7 @@ The originals contained JPEG bytes despite a `.png` filename; the archive
 uses `.jpg` filenames without changing those bytes.
 
 The [accepted production contract](../../WORKBENCH_INTEGRATED_ACTIVITY.md)
-governs meaning: elapsed time starts at the first retained event, rather than
+governs meaning: elapsed time starts at the first retained timestamped event, rather than
 the prototype's illustrative “capture start.” Production also retains exact
 captured records and scoped facts in existing Evidence and Context.
 

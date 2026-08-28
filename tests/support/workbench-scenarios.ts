@@ -27,6 +27,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "activity-ranking-pages",
   "integrated-activity-main",
   "integrated-activity-single-snapshot",
+  "integrated-activity-held-source",
   "live-high-scope",
   "filter-high-cardinality",
   "filter-active-zero",
@@ -306,6 +307,22 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         id,
         initialEvents: initial,
         deferredEvents: [{ ...source, id: highVolumeEventId(9), logicalEventId: "activity-rebucket-logical-9", timestamp: source.timestamp + 200_000 }],
+        captureStatus: "capturing"
+      };
+    }
+    case "integrated-activity-held-source": {
+      const source = highVolumeEvents(1, 1)[0]!;
+      const startedAt = Math.floor(source.timestamp / 10_000) * 10_000;
+      const capturedUpdate = (sequence: number, offset: number): LightstreamerEventEnvelope => ({
+        ...source,
+        id: `activity-held-source-${sequence}`,
+        logicalEventId: `activity-held-source-logical-${sequence}`,
+        timestamp: startedAt + offset
+      });
+      return {
+        id,
+        initialEvents: [capturedUpdate(1, 0), capturedUpdate(2, 1_000), capturedUpdate(3, 2_000)],
+        deferredEvents: [capturedUpdate(4, 300_000)],
         captureStatus: "capturing"
       };
     }

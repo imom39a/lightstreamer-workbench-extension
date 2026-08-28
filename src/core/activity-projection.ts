@@ -322,11 +322,16 @@ function project(input: ActivityProjectionInput): ActivityProjection {
   if (scope.kind === "ITEM" || scope.kind === "LISTENER") return Object.freeze({ ...base, state: "UNAVAILABLE", reason: `Activity does not support ${scope.kind} Scope; choose its owning Subscription.` });
   if (ordered.some((entry) => entry.intervalId !== readPoint.intervalId)) return Object.freeze({ ...base, state: "UNAVAILABLE", reason: "Activity cannot combine multiple History Intervals." });
   if (!readPoint.committedEvidenceBoundary) return Object.freeze({ ...base, state: readPoint.coverage === "UNAVAILABLE" ? "UNAVAILABLE" : "EMPTY_INTERVAL", reason: readPoint.coverage === "UNAVAILABLE" ? "Observation Coverage is unavailable." : "The current History Interval has no Committed Evidence Boundary." });
+  // Public callers may retain a later live prefix while presenting a Frozen
+  // boundary. Every Activity fact must stay at that committed read point.
+  const retained = ordered.length === 0 || ordered.at(-1)!.sequence <= readPoint.committedEvidenceBoundary!.sequence
+    ? ordered
+    : ordered.filter((entry) => entry.sequence <= readPoint.committedEvidenceBoundary!.sequence);
   if (input.aggregate) {
-    try { input.aggregate(ordered); } catch (error) { return Object.freeze({ ...base, state: "AGGREGATION_FAILED", reason: error instanceof Error ? error.message : "Activity aggregation failed." }); }
+    try { input.aggregate(retained); } catch (error) { return Object.freeze({ ...base, state: "AGGREGATION_FAILED", reason: error instanceof Error ? error.message : "Activity aggregation failed." }); }
   }
-  const scoped = ordered.filter((entry) => scopeMatches(entry.event, scope));
-  const matching = ordered.filter((entry) => matchesActivityEvidence(entry, input.filter, scope));
+  const scoped = retained.filter((entry) => scopeMatches(entry.event, scope));
+  const matching = retained.filter((entry) => matchesActivityEvidence(entry, input.filter, scope));
   const activityMarkers = markers(matching);
   const laneSummary = connectionLanes(matching, activityMarkers);
   const server = matching.filter(({ event }) => isServerUpdate(event));
@@ -340,12 +345,17 @@ function project(input: ActivityProjectionInput): ActivityProjection {
     local: localLogicalSummary.qualification
   });
   const segments = clockSegments([...serverLogical, ...localLogical].sort((a, b) => a.sequence - b.sequence));
+  // Buckets remain update-only. This separate qualification uses every timed
+  // retained Activity entry, including lifecycle Evidence hidden by Scope or
+  // Filter, so the ruler never implies a trustworthy elapsed clock after a
+  // known regression.
+  const completeHistoryClockAmbiguous = hasClockRegression(retained);
   const range = readPoint.retainedRange;
   const duration = segments.length
     ? chooseDuration([...serverLogical, ...localLogical], segments, range)
     : null;
   const buckets = duration === null ? [] : makeBuckets(serverLogical, localLogical, matching, duration, segments, range, readPoint.terminal);
-  const timeline = activityTimeline(serverLogical, localLogical, matching, activityMarkers, buckets, segments, range);
+  const timeline = activityTimeline(serverLogical, localLogical, matching, activityMarkers, buckets, segments, range, completeHistoryClockAmbiguous);
   const state: ActivityState = readPoint.coverage === "UNAVAILABLE" ? "UNAVAILABLE" : matching.length === 0 ? "EMPTY_MATCH" : readPoint.coverage === "LIMITED" || readPoint.terminal ? "LIMITED" : "AVAILABLE";
   const reason = state === "UNAVAILABLE"
     ? "Observation Coverage is unavailable."
@@ -363,7 +373,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
     : null;
   const rankingRangeReason = segments.length > 1 ? "Supporting Evidence interval unavailable across a clock discontinuity; identity Filter remains available." : null;
   const allRankings = rankings(serverLogical, server, scope, plottedRange, rankingRangeReason);
-  const filterRemovedScopedEvidence = matching.length === 0 && ordered.some((entry) => scopeMatches(entry.event, scope)) && (
+  const filterRemovedScopedEvidence = matching.length === 0 && retained.some((entry) => scopeMatches(entry.event, scope)) && (
     input.filter.text.length > 0 || input.filter.around !== null || input.filter.unsupported.length > 0 || Object.keys(input.filter.criteria).length > 0
   );
   const emptyMatchCause = state === "EMPTY_MATCH"
@@ -429,7 +439,8 @@ function activityTimeline(
   activityMarkers: readonly ActivityMarker[],
   buckets: readonly ActivityBucket[],
   segments: readonly Readonly<{ index: number; startSequence: number; endSequence: number | null }>[],
-  retainedRange: ActivityReadPoint["retainedRange"]
+  retainedRange: ActivityReadPoint["retainedRange"],
+  completeHistoryClockAmbiguous: boolean
 ): ActivityTimeline {
   const domain = retainedRange && retainedRange.first.timestamp <= retainedRange.last.timestamp
     ? Object.freeze({ start: retainedRange.first.timestamp, end: retainedRange.last.timestamp + 1 })
@@ -531,7 +542,7 @@ function activityTimeline(
     sourcePointsOverflow,
     markers: Object.freeze(timelineMarkers),
     markersOverflow,
-    clockAmbiguous: segments.length > 1
+    clockAmbiguous: completeHistoryClockAmbiguous || segments.length > 1
   });
 }
 
@@ -695,6 +706,15 @@ function clockSegments(entries: readonly ActivityEvidence[]): Array<{ index: num
   }
   if (previous && result.length) result[result.length - 1].endSequence = previous.sequence;
   return result;
+}
+
+function hasClockRegression(entries: readonly ActivityEvidence[]): boolean {
+  let previousTimestamp: number | null = null;
+  for (const entry of entries) {
+    if (previousTimestamp !== null && entry.event.timestamp < previousTimestamp) return true;
+    previousTimestamp = entry.event.timestamp;
+  }
+  return false;
 }
 
 function makeBuckets(

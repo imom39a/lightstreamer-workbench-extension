@@ -322,6 +322,61 @@ describe("Observed Activity projection", () => {
     expect(projection.buckets.filter((bucket) => bucket.segment === 1).reduce((n, bucket) => n + bucket.logicalUpdates, 0)).toBe(2);
   });
 
+  it("keeps a filtered non-update clock regression visible without changing logical segments", () => {
+    const entries = [
+      evidence(1, 1_000),
+      evidence(2, 500, { kind: "client-status" }),
+      evidence(3, 2_000)
+    ];
+    const projection = rebuildActivityProjection({
+      evidence: entries,
+      scope: { kind: "PAGE" },
+      filter: { ...createFilter(1), around: { intervalId: "interval-1", start: 1_000, end: 3_000 } },
+      readPoint: readPoint(entries)
+    });
+
+    expect(projection.logicalUpdateTotal).toBe(2);
+    expect(projection.clockSegments).toHaveLength(1);
+    expect(projection.timeline.clockAmbiguous).toBe(true);
+  });
+
+  it("keeps a scoped-out clock regression visible without changing logical segments", () => {
+    const entries = [
+      evidence(1, 1_000),
+      evidence(2, 500, { kind: "client-status", client: { id: "other-client", sessionId: "other-session" } }),
+      evidence(3, 2_000)
+    ];
+    const projection = rebuildActivityProjection({
+      evidence: entries,
+      scope: { kind: "CLIENT", clientId: "client-1" },
+      filter: createFilter(1),
+      readPoint: readPoint(entries)
+    });
+
+    expect(projection.logicalUpdateTotal).toBe(2);
+    expect(projection.clockSegments).toHaveLength(1);
+    expect(projection.timeline.clockAmbiguous).toBe(true);
+  });
+
+  it("excludes a future clock regression from a Frozen committed boundary", () => {
+    const entries = [evidence(1, 1_000), evidence(2, 1_100), evidence(3, 800)];
+    const projection = rebuildActivityProjection({
+      evidence: entries,
+      scope: { kind: "PAGE" },
+      filter: createFilter(1),
+      readPoint: {
+        ...readPoint(entries),
+        committedEvidenceBoundary: { intervalId: "interval-1", sequence: 2, eventId: "event-2" },
+        retainedRange: { first: { timestamp: 1_000, sequence: 1 }, last: { timestamp: 1_100, sequence: 2 } }
+      }
+    });
+
+    expect(projection.timeline.clockAmbiguous).toBe(false);
+    expect(projection.clockSegments).toHaveLength(1);
+    expect(projection.logicalUpdateTotal).toBe(2);
+    expect(projection.timeline.domain).toEqual({ start: 1_000, end: 1_101 });
+  });
+
   it("does not calculate bucket intervals across a backward clock discontinuity", () => {
     const entries = [evidence(1, 100_000), evidence(2, 101_000), evidence(3, 1_000), evidence(4, 2_000)];
     const projection = rebuildActivityProjection({

@@ -324,6 +324,74 @@ describe("compact Activity timeline runtime seam", () => {
     runtime.dispose();
   });
 
+  it("keeps a held focused source point actionable after a later projection no longer represents it", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update(1), update(2), update(3)] });
+    const runtime = createWorkbenchRuntime({ history, activityPublicationDelayMs: 0 });
+    await settle();
+    runtime.dispatch({ type: "open-activity" });
+    await settle();
+    const before = runtime.getSnapshot();
+    const anchor = before.activity!.projection.timeline.sourcePoints.find((point) => point.eventId === "timeline-3")!;
+    runtime.dispatch({ type: "select-activity-evidence", ...anchor, source: "LOCAL" });
+    runtime.dispatch({ type: "select-activity-evidence", ...anchor, sequence: anchor.sequence + 1, eventId: "forged-future" });
+    await settle();
+    expect(runtime.getSnapshot().evidence.selectedEventId).toBeNull();
+    history.offer(update(301));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await settle();
+
+    const beforeSelection = runtime.getSnapshot();
+    expect(beforeSelection.activity!.projection.timeline.sourcePoints).not.toContainEqual(expect.objectContaining({ eventId: "timeline-3" }));
+    runtime.dispatch({ type: "select-activity-evidence", ...anchor, inspect: true });
+    await settle();
+
+    const after = runtime.getSnapshot();
+    expect(after.evidence.selectedEventId).toBe("timeline-3");
+    expect(after.selectedEvidence?.id).toBe("timeline-3");
+    expect(after.contextId).toBe("context:timeline-3");
+    expect(after.activity?.filter).toEqual(beforeSelection.activity?.filter);
+    runtime.dispose();
+  });
+
+  it("keeps the timestamped retained bounds usable around untimed topology checkpoints", async () => {
+    const checkpoint = (id: string) => ({
+      kind: "topology-checkpoint" as const,
+      id,
+      checkpoint: { pageEpoch: "checkpoint-page" }
+    });
+    const history = createAuthoritativeHistory({
+      precommitted: [checkpoint("checkpoint-before"), update(1), checkpoint("checkpoint-between"), update(2), checkpoint("checkpoint-after")]
+    });
+    const runtime = createWorkbenchRuntime({ history });
+    await settle();
+    const initial = runtime.getSnapshot().activity!;
+    const filter = runtime.getSnapshot().evidence.investigation.filter;
+
+    expect(initial.readPoint.retainedRange).toEqual({
+      first: { timestamp: 1_000, sequence: 2 },
+      last: { timestamp: 2_000, sequence: 4 }
+    });
+    expect(initial.readPoint.committedEvidenceBoundary?.sequence).toBe(5);
+    expect(initial.projection.timeline).toMatchObject({ originTimestamp: 1_000, domain: { start: 1_000, end: 2_001 } });
+    expect(initial.projection.logicalUpdateTotal).toBe(2);
+
+    runtime.dispatch({
+      type: "apply-filter-mutations",
+      expectedRevision: filter.revision,
+      operations: [{ type: "set-around", around: { intervalId: initial.readPoint.intervalId, start: 2_000, end: 2_001 } }]
+    });
+    runtime.dispatch({ type: "freeze-evidence" });
+    await history.offer(update(3)).settled;
+    await settle();
+
+    const frozen = runtime.getSnapshot().activity!;
+    expect(frozen.readPoint.retainedRange).toEqual(initial.readPoint.retainedRange);
+    expect(frozen.projection.timeline).toMatchObject({ originTimestamp: 1_000, domain: { start: 1_000, end: 2_001 } });
+    expect(frozen.projection.logicalUpdateTotal).toBe(1);
+    runtime.dispose();
+  });
+
+
   it("pages an off-window LOCAL timeline anchor into Evidence while preserving an active range, Find, and Frozen boundary", async () => {
     const earlyLocal = { ...update(1), id: "early-local", source: "synthetic" as const, synthetic: true, logicalEventId: "early-local" };
     const history = createInMemoryEventHistory({ panelSessionId: "authoritative-test" });

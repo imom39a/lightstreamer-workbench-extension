@@ -2311,19 +2311,27 @@ class Runtime implements WorkbenchRuntime {
   }
 
   /**
-   * Selects an exact compact-timeline anchor only while it remains represented
-   * by the current scoped, filtered Activity projection and its read point.
+   * Selects an exact retained compact-timeline anchor at the current canonical
+   * Scope, Filter, and committed/Frozen read point. Display density may change
+   * passively after a control has focused an exact mark.
    */
   private selectActivityEvidence(anchor: Readonly<Pick<ActivityTimelineSourcePoint, "intervalId" | "eventId" | "sequence" | "timestamp" | "source"> & { inspect?: boolean }>): void {
     const projection = this.activitySnapshot(this.scopeSnapshot()).projection;
-    const sameAnchor = (candidate: Readonly<Pick<ActivityTimelineSourcePoint, "intervalId" | "eventId" | "sequence" | "timestamp" | "source">>): boolean =>
+    const boundary = projection.readPoint.committedEvidenceBoundary;
+    const entry = this.activityEvidence.find((candidate) =>
       candidate.intervalId === anchor.intervalId &&
-      candidate.eventId === anchor.eventId &&
-      candidate.sequence === anchor.sequence &&
-      candidate.timestamp === anchor.timestamp &&
-      candidate.source === anchor.source;
-    const represented = projection.timeline.sourcePoints.some(sameAnchor) || projection.timeline.markers.some(sameAnchor);
-    if (!represented || projection.readPoint.intervalId !== anchor.intervalId) return;
+      candidate.sequence === anchor.sequence
+    );
+    if (
+      entry === undefined ||
+      boundary === null ||
+      projection.readPoint.intervalId !== anchor.intervalId ||
+      entry.sequence > boundary.sequence ||
+      entry.event.id !== anchor.eventId ||
+      entry.event.timestamp !== anchor.timestamp ||
+      (entry.event.synthetic || entry.event.source === "synthetic" ? "LOCAL" : "SERVER") !== anchor.source ||
+      !matchesActivityEvidence(entry, this.canonicalFilter, projection.scope)
+    ) return;
     const offset = this.activityEvidenceOffset(anchor, projection);
     if (offset === null) return;
 
