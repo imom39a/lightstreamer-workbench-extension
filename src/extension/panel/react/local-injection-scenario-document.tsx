@@ -23,7 +23,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
     if (!previousPicker.current && state.pickerOpen) {
       document.querySelector<HTMLElement>('[aria-label="Scenario Evidence picker"] button:not(:disabled)')?.focus();
     } else if (previousPicker.current && !state.pickerOpen) {
-      addButton.current?.focus();
+      (addButton.current ?? heading.current)?.focus();
     } else if (openedScenarioId.current !== state.scenario.id) {
       heading.current?.focus();
       openedScenarioId.current = state.scenario.id;

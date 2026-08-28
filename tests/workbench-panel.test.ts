@@ -1837,6 +1837,26 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
+  it("restores the Scenario heading when its picker closes in a terminal phase", async () => {
+    const reviewed = reviewedScenario();
+    const complete = {
+      ...reviewed,
+      phase: "complete" as const,
+      pickerOpen: true,
+      run: { ...reviewed.run!, status: "complete" as const, nextOrdinal: 2 },
+      runner: { ...reviewed.runner!, phase: "complete" as const, nextOrdinal: 2, run: { ...reviewed.run!, status: "complete" as const, nextOrdinal: 2 } }
+    };
+    const runtime = createTestRuntime(snapshot({ scenario: complete }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Scenario Evidence picker"]')).toBeTruthy());
+
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...complete, pickerOpen: false } })));
+    const heading = document.querySelector<HTMLHeadingElement>('[aria-label="Local Injection Scenario"] h1')!;
+    expect(document.activeElement).toBe(heading);
+    await act(async () => root.unmount());
+  });
+
   it("restores deliberate Scenario control focus to its semantic successor and closes drift controls", async () => {
     const runtime = createTestRuntime(snapshot({ scenario: reviewedScenario() }));
     const root = createRoot(document.querySelector("#app")!);

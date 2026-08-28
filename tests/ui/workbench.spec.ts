@@ -2422,6 +2422,19 @@ test("reviewed same-target Scenario steps exactly one Injection and retains its 
   }
 });
 
+test("completed Scenario restores focus to its document heading", async ({ page }) => {
+  await openScenario(page, "local-injection-scenario-complete", { width: 1440, height: 900 }, "light");
+  const heading = page.getByRole("heading", { name: "Local Injection Scenario", exact: true });
+
+  await expect(heading).toBeVisible();
+  const headingFocus = await heading.evaluate((element) => ({
+    active: document.activeElement === element,
+    focusVisible: element.matches(":focus-visible")
+  }));
+  expect(headingFocus.active).toBe(true);
+  expect(headingFocus.focusVisible).toBe(true);
+});
+
 test("Scenario clock controls preserve focus, hidden pause, manual stepping, and stopped remainder", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-scenario-review", { width: 563, height: 700 }, "light");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
