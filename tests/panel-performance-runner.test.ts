@@ -38,6 +38,8 @@ describe("panel performance evidence runner", () => {
     expect(result.stdout).toContain("--inspect-harness");
   });
 
+  // This synchronously starts a cold esbuild subprocess; it is a functional
+  // module-resolution check, not a panel-latency benchmark.
   it("pins the measured standalone harness to React's production build", () => {
     const result = run(["--inspect-harness"]);
 
@@ -45,7 +47,7 @@ describe("panel performance evidence runner", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ reactBuild: "production" });
     expect(result.stdout).toContain("react.production");
     expect(result.stdout).not.toContain("react.development");
-  });
+  }, 15_000);
 
   it("waits for the current semantic Workbench root instead of a transient Find control", () => {
     const source = readFileSync(runner, "utf8");
