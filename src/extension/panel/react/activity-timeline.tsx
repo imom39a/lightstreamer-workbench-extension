@@ -1,4 +1,4 @@
-import { useRef, useState, type JSX, type KeyboardEvent, type PointerEvent } from "react";
+import { useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent, type PointerEvent } from "react";
 import type { ActivityProjection, ActivityTimeRange } from "../../../core/activity-projection";
 import { createTypedFilterValue, type Filter, type FilterMutation } from "../../../core/filter-algebra";
 import { activityElapsed, activityRangeLabel } from "./activity-timeline-format";
@@ -15,10 +15,25 @@ export function ActivityTimeline({ projection, filter, frozen, selectedEventId, 
   onShowEvidence(): void;
   onFilter(expectedRevision: number, operations: readonly FilterMutation[]): void;
 }>): JSX.Element {
-  const [collapsed, setCollapsed] = useState(false);
+  const root = useRef<HTMLElement | null>(null);
+  const [collapsedPreference, setCollapsedPreference] = useState<boolean | null>(null);
+  const [heightPressure, setHeightPressure] = useState(false);
+  const [focusedPresentation, setFocusedPresentation] = useState<boolean | null>(null);
+  const collapsed = collapsedPreference ?? focusedPresentation ?? heightPressure;
   const [focusedBurst, setFocusedBurst] = useState<string | null>(null);
   const [draft, setDraft] = useState<Readonly<{ range: ActivityTimeRange; intervalId: string; revision: number }> | null>(null);
   const gesture = useRef<Readonly<{ pointerId: number; start: number; domain: ActivityTimeRange; left: number; width: number; intervalId: string; revision: number }> | null>(null);
+  useLayoutEffect(() => {
+    const pane = root.current?.parentElement;
+    if (!pane) return;
+    // The pane's allocated height is independent of this strip's expansion.
+    const measure = () => { const height = pane.getBoundingClientRect().height; if (height > 0) setHeightPressure(height < 320); };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, []);
   const timeline = projection.timeline;
   const domain = timeline?.domain;
   const origin = timeline?.originTimestamp;
@@ -94,9 +109,9 @@ export function ActivityTimeline({ projection, filter, frozen, selectedEventId, 
     event.currentTarget.setPointerCapture?.(event.pointerId);
     preview({ start: at, end: at + 1 });
   };
-  return <section className="workbench-activity-timeline" aria-label="Activity timeline" aria-busy={loading}>
+  return <section ref={root} className="workbench-activity-timeline" aria-label="Activity timeline" aria-busy={loading} onFocusCapture={() => setFocusedPresentation(previous => previous ?? collapsed)} onBlurCapture={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setFocusedPresentation(null); }}>
     <header>
-      <button type="button" aria-expanded={!collapsed} aria-controls="workbench-activity-timeline-content" onClick={() => { setDraft(null); gesture.current = null; setCollapsed(!collapsed); }}><span aria-hidden="true">{collapsed ? "▸" : "▾"}</span> Timeline</button>
+      <button type="button" aria-expanded={!collapsed} aria-controls="workbench-activity-timeline-content" onClick={() => { setDraft(null); gesture.current = null; setCollapsedPreference(!collapsed); }}><span aria-hidden="true">{collapsed ? "▸" : "▾"}</span> Timeline</button>
       <span className="workbench-activity-timeline__origin" title="Elapsed time since first retained timestamped event; untimed topology checkpoints provide no clock. Scope and Filter do not change this origin.">{collapsed && selectedRange && origin !== null ? `Range ${activityRangeLabel(selectedRange, origin)}` : "Elapsed since first retained timestamped event"}</span>
       <span className="workbench-activity-timeline__legend" role="group" aria-label="Update source legend"><span><i aria-hidden="true" />SERVER</span><span><i className="workbench-activity-timeline__local" aria-hidden="true" />LOCAL</span></span>
     </header>

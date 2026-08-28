@@ -985,6 +985,8 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
       throw new Error("The separate Activity doorway must be retired.");
     }
     if (setup === "activity-main" || setup === "activity-main-chooser") {
+      const disclosure = timeline.getByRole("button", { name: "Timeline", exact: true });
+      if (await disclosure.getAttribute("aria-expanded") === "false") await disclosure.click();
       if (setup === "activity-main") {
         await timeline.getByRole("button", { name: /^Select LOCAL Item Update at .*; Evidence activity-main-local-1$/ }).click();
         await page.locator('[data-evidence-id="activity-main-local-1"][aria-selected="true"]').waitFor();

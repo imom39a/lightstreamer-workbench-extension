@@ -103,6 +103,7 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     expect(disclosure).not.toBeNull();
     expect(disclosure!.open).toBe(false);
     expect(disclosure!.querySelector('summary')!.textContent).toBe("Activity summary — Inspected page");
+    expect(Array.from(context.querySelectorAll('[aria-label="Evidence metadata"] dt')).map(term => term.textContent)).not.toContain("Activity");
     expect(Array.from(document.querySelectorAll('button')).some(button => button.textContent === "Open Scope Context")).toBe(true);
     await act(async () => disclosure!.querySelector('summary')!.click());
     await settle();

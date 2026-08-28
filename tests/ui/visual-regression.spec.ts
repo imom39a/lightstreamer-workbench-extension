@@ -65,6 +65,8 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expect(timeline).toHaveAttribute("aria-busy", "false");
       await expect(page.getByRole("button", { name: "Open Activity", exact: true })).toHaveCount(0);
       if (visual.production.setup === "activity-main" || visual.production.setup === "activity-main-chooser") {
+        const disclosure = timeline.getByRole("button", { name: "Timeline", exact: true });
+        if (await disclosure.getAttribute("aria-expanded") === "false") await disclosure.click();
         if (visual.production.setup === "activity-main") {
           await timeline.getByRole("button", { name: /^Select LOCAL Item Update at .*; Evidence activity-main-local-1$/ }).click();
           await expect(page.locator('[data-evidence-id="activity-main-local-1"]')).toHaveAttribute("aria-selected", "true");

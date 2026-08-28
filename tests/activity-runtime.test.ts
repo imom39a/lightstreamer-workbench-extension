@@ -172,13 +172,16 @@ describe("Activity runtime seam", () => {
     runtime.dispose();
   });
 
-  it("includes a concise labelled Activity summary in supported runtime dossiers", async () => {
+  it("publishes exact Activity counts without a duplicate runtime-dossier Activity fact", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
     const runtime = createWorkbenchRuntime({ history });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
-    expect(runtime.getSnapshot().context.kind).toBe("runtime");
-    expect(runtime.getSnapshot().context.fields).toContainEqual(["Activity", expect.stringContaining("2 Logical Updates")]);
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.context.kind).toBe("runtime");
+    expect(snapshot.context.fields.some(([name]) => name === "Activity")).toBe(false);
+    // These logical records have no captured listener-delivery identity.
+    expect(snapshot.activity?.projection).toMatchObject({ logicalUpdateTotal: 2, updateDeliveryTotal: 0 });
     runtime.dispose();
   });
 

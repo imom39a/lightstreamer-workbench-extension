@@ -253,6 +253,7 @@ document.documentElement.dataset.reactScenario = scenarioId;
 document.documentElement.dataset.reactSceneReady = "true";
 window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
 window.__setWorkbenchVisible = (visible) => runtime.dispatch({ type: "set-visible", visible });
+window.__setWorkbenchCaptureStatus = (status) => runtime.dispatch({ type: "set-capture-status", status });
 window.__setWorkbenchStorageMode = (mode) => runtime.dispatch({
   type: "set-storage-state",
   storage: mode === "memory"

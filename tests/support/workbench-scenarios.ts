@@ -28,6 +28,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "integrated-activity-main",
   "integrated-activity-single-snapshot",
   "integrated-activity-held-source",
+  "integrated-activity-pager-growth",
   "live-high-scope",
   "filter-high-cardinality",
   "filter-active-zero",
@@ -310,6 +311,8 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         captureStatus: "capturing"
       };
     }
+    case "integrated-activity-pager-growth":
+      return { id, initialEvents: highVolumeEvents(1, 60), deferredEvents: highVolumeEvents(61, 1), captureStatus: "capturing" };
     case "integrated-activity-held-source": {
       const source = highVolumeEvents(1, 1)[0]!;
       const startedAt = Math.floor(source.timestamp / 10_000) * 10_000;

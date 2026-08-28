@@ -5173,7 +5173,7 @@ class Runtime implements WorkbenchRuntime {
           ? this.presentEvidence(this.selectedEventEnvelope)
           : null,
       contextId: this.contextId,
-      context: this.contextSnapshot(evidence.events, scope, activity.projection),
+      context: this.contextSnapshot(evidence.events, scope),
       commandProjections: this.commandProjectionSnapshot(),
       diagnostics: this.diagnosticSnapshot(scope, activity.projection),
       historyCondition: this.historyCondition,
@@ -5724,8 +5724,7 @@ class Runtime implements WorkbenchRuntime {
 
   private contextSnapshot(
     events: readonly LightstreamerEventEnvelope[],
-    scope: WorkbenchSnapshot["scope"],
-    activityProjection: ActivityProjection
+    scope: WorkbenchSnapshot["scope"]
   ): WorkbenchContextSnapshot {
     const diagnostics = this.contextDiagnosticSnapshot(scope);
     const diagnosticFilter = Object.freeze({
@@ -5749,8 +5748,7 @@ class Runtime implements WorkbenchRuntime {
         scope.coverage,
         this.captureSnapshot(),
         events.length,
-        this.liveEvidence.total,
-        activityProjection
+        this.liveEvidence.total
       );
       return Object.freeze({ ...dossier, diagnostics, diagnosticFilter });
     }
@@ -6400,8 +6398,7 @@ function runtimeObjectDossier(
   topologyCoverage: WorkbenchSnapshot["scope"]["coverage"],
   capture: WorkbenchCaptureSnapshot,
   visibleEvidenceCount: number,
-  matchingEvidenceCount: number,
-  activityProjection: ActivityProjection
+  matchingEvidenceCount: number
 ): WorkbenchContextSnapshot {
   const fields: Array<readonly [string, string]> = [];
   const add = (name: string, value: unknown): void => {
@@ -6503,10 +6500,6 @@ function runtimeObjectDossier(
   );
   add("Visible Evidence", visibleEvidenceCount);
   add("Matching retained Evidence", matchingEvidenceCount);
-  add(
-    "Activity",
-    `${activityProjection.logicalUpdateTotal.toLocaleString()} Logical Updates · ${activityProjection.updateDeliveryTotal.toLocaleString()} Update Deliveries · ${activityProjection.state}`
-  );
 
   return Object.freeze({
     kind: "runtime",

@@ -356,6 +356,7 @@ const SCOPE_MIN_WIDTH = 216;
 const SCOPE_MAX_WIDTH = 420;
 const EVIDENCE_MIN_WIDTH = 520;
 const EVIDENCE_MIN_HEIGHT = 220;
+const EVIDENCE_STACK_BUDGET = 244;
 const CONTEXT_MIN_WIDTH = 320;
 const CONTEXT_MIN_HEIGHT = 210;
 const CONTEXT_MAX_SIZE = 520;
@@ -485,6 +486,9 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const [scopeWidth, setScopeWidth] = useState(228);
   const [wideContextWidth, setWideContextWidth] = useState(350);
   const [normalContextHeight, setNormalContextHeight] = useState(260);
+  const workspace = useRef<HTMLElement | null>(null);
+  const pressureChrome = useRef<string | null>(null);
+  const [workspaceHeight, setWorkspaceHeight] = useState(0);
   const [shallowContextWidth, setShallowContextWidth] = useState(320);
   const [scopeCollapsed, setScopeCollapsed] = useState(false);
   const [contextCollapsed, setContextCollapsed] = useState(false);
@@ -726,8 +730,13 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const renderedScopeWidth = geometry === "wide"
     ? clamp(scopeWidth, SCOPE_MIN_WIDTH, wideSideBudget - CONTEXT_MIN_WIDTH)
     : scopeWidth;
+  const chromeLayoutKey = JSON.stringify([findOpen, snapshot.diagnostics.map(diagnostic => [
+    diagnostic.severity, diagnostic.title, diagnostic.affected, diagnostic.detail,
+    diagnostic.limitation, diagnostic.consequence, diagnostic.recovery, diagnostic.route?.label
+  ])]);
+  const availableWorkspaceHeight = workspaceHeight || viewport.height - PERSISTENT_CHROME_HEIGHT;
   const contextMaximum = geometry === "normal"
-    ? Math.max(CONTEXT_MIN_HEIGHT, viewport.height - PERSISTENT_CHROME_HEIGHT - EVIDENCE_MIN_HEIGHT - SPLITTER_SIZE)
+    ? Math.max(CONTEXT_MIN_HEIGHT, availableWorkspaceHeight - EVIDENCE_STACK_BUDGET - SPLITTER_SIZE)
     : geometry === "shallow"
       ? Math.max(CONTEXT_MIN_WIDTH, viewport.width - EVIDENCE_MIN_WIDTH - SPLITTER_SIZE)
       : geometry === "wide"
@@ -736,6 +745,32 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const contextMinimum = geometry === "normal" ? CONTEXT_MIN_HEIGHT : CONTEXT_MIN_WIDTH;
   const contextPreference = geometry === "normal" ? normalContextHeight : geometry === "shallow" ? shallowContextWidth : wideContextWidth;
   const contextSize = clamp(contextPreference, contextMinimum, Math.min(CONTEXT_MAX_SIZE, contextMaximum));
+
+  useLayoutEffect(() => {
+    const element = workspace.current;
+    if (!element) return;
+    const measure = () => {
+      const height = element.getBoundingClientRect().height;
+      if (height <= 0) return;
+      setWorkspaceHeight(height);
+      if (geometry === "normal") {
+        if (!contextCollapsed && height < EVIDENCE_STACK_BUDGET + CONTEXT_MIN_HEIGHT + SPLITTER_SIZE) {
+          pressureChrome.current = chromeLayoutKey;
+          setGeometry(previous => previous === "normal" ? classifyGeometry(window.innerWidth, 0) : previous);
+        } else pressureChrome.current = null;
+      } else if (pressureChrome.current !== null && pressureChrome.current !== chromeLayoutKey) {
+        // Retry after real chrome changes, never merely because Shallow rendered
+        // a shorter footer. A failed retry records these inputs before demoting.
+        pressureChrome.current = null;
+        setGeometry(decideGeometry(window.innerWidth, window.innerHeight, "normal"));
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [workspaceAvailable, geometry, contextCollapsed, chromeLayoutKey]);
 
   useLayoutEffect(() => {
     if (["error", "refused", "cancelled"].includes(snapshot.evidenceCopy.state)) {
@@ -772,6 +807,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
 
   useLayoutEffect(() => {
     const updateGeometry = () => {
+      pressureChrome.current = null;
       const nextViewport = { width: window.innerWidth, height: window.innerHeight };
       setViewport(nextViewport);
       setGeometry((previous) => decideGeometry(nextViewport.width, nextViewport.height, previous));
@@ -1610,7 +1646,19 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <div className="workbench-react__operating-actions">
           <button type="button" aria-label="Back investigation" disabled={!snapshot.evidence.restoration.canBack} onClick={() => dispatch(runtime, { type: "back-investigation" })}>Back</button>
           <button type="button" aria-label="Forward investigation" disabled={!snapshot.evidence.restoration.canForward} onClick={() => dispatch(runtime, { type: "forward-investigation" })}>Forward</button>
-          {findOpen ? <div className="workbench-react__find" role="search" aria-label="Find in ordered Evidence">
+          <button className="workbench-react__evidence-operation" type="button" ref={findTrigger} aria-expanded={findOpen} onClick={(event) => findOpen ? closeFind() : openFind(event.currentTarget)}>Find</button>
+          <button className="workbench-react__evidence-operation" type="button" ref={filterTrigger} aria-expanded={filterOpen} aria-controls="workbench-filter" onClick={(event) => filterOpen ? closeFilter() : openFilter(event.currentTarget)}>Filter</button>
+          <label className="workbench-react__eyebrow" htmlFor="workbench-theme">Theme</label>
+          <select
+            id="workbench-theme"
+            aria-label="Workbench theme"
+            value={snapshot.theme}
+            onChange={(event) => dispatch(runtime, { type: "set-theme", theme: event.currentTarget.value as "auto" | "dark" | "light" })}
+          ><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select>
+          <button ref={moreActionsTrigger} type="button" disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-context" : undefined} aria-expanded={workspaceAvailable && contextMode === "actions"} onClick={openActions}>More actions</button>
+        </div>
+      </header>
+      {findOpen ? <div className="workbench-react__find" role="search" aria-label="Find in ordered Evidence">
             <label className="workbench-react__eyebrow" htmlFor="workbench-find">Find</label>
             <input
               id="workbench-find"
@@ -1629,18 +1677,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             <button type="button" onClick={() => dispatch(runtime, { type: "find-previous" })}>Previous</button>
             <button type="button" onClick={() => dispatch(runtime, { type: "find-next" })}>Next</button>
             <button type="button" onClick={closeFind}>Close Find</button>
-          </div> : <button className="workbench-react__evidence-operation" type="button" ref={findTrigger} onClick={(event) => openFind(event.currentTarget)}>Find</button>}
-          <button className="workbench-react__evidence-operation" type="button" ref={filterTrigger} aria-expanded={filterOpen} aria-controls="workbench-filter" onClick={(event) => filterOpen ? closeFilter() : openFilter(event.currentTarget)}>Filter</button>
-          <label className="workbench-react__eyebrow" htmlFor="workbench-theme">Theme</label>
-          <select
-            id="workbench-theme"
-            aria-label="Workbench theme"
-            value={snapshot.theme}
-            onChange={(event) => dispatch(runtime, { type: "set-theme", theme: event.currentTarget.value as "auto" | "dark" | "light" })}
-          ><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select>
-          <button ref={moreActionsTrigger} type="button" disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-context" : undefined} aria-expanded={workspaceAvailable && contextMode === "actions"} onClick={openActions}>More actions</button>
-        </div>
-      </header>
+          </div> : null}
       <nav className="workbench-react__scope-strip" aria-label="Current runtime scope">
         <button type="button" ref={scopeTrigger} disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-runtime-scope" : undefined} aria-expanded={workspaceAvailable && scopeIsPresented} onClick={(event) => openScope(event.currentTarget)}>Scope</button>
         {scopeCollapsed ? <button ref={scopeRestore} className="workbench-react__restore-pane workbench-react__restore-pane--scope" type="button" onClick={() => restorePane("scope")}>Restore Scope</button> : null}
@@ -1687,7 +1724,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <div className="workbench-react__document-boundary"><span>Source <strong>{rawEvidence.source}</strong></span><span>Phase <strong>{rawEvidence.phase}</strong></span><span>Mutable <strong>NO</strong></span></div>
         <p className="workbench-react__document-status" role="status">{copyStatus}</p>
         <pre tabIndex={0}>{JSON.stringify(rawEvidence.raw, null, 2)}</pre>
-      </section> : <main className="workbench-react__workspace">
+      </section> : <main ref={workspace} className="workbench-react__workspace">
         <nav className="workbench-react__pane workbench-react__scope" id="workbench-runtime-scope" aria-label="Structural runtime scope">
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Runtime Scope</span><strong>Inspected page</strong></div><div><button ref={scopeCollapse} className="workbench-react__scope-collapse" type="button" onClick={() => collapsePane("scope", "collapse")}>Collapse Scope</button><button className="workbench-react__scope-picker-close" type="button" onClick={closeScope}>Close Scope</button><button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
           <ScopeTree
@@ -1752,7 +1789,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             </section>}
           </form> : null}
           {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : <button type="button" disabled aria-label="Reveal selected Evidence unavailable">Reveal selected Evidence · Unavailable</button>}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div>{hiddenSelection.revealUnavailableReason ? <small>{hiddenSelection.revealUnavailableReason}</small> : null}</div> : null}
-          <div className="workbench-react__evidence-window" aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
+          <div className="workbench-react__evidence-window" data-complete-window={!evidence.hasOlder && !evidence.hasNewer || undefined} aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}
           {evidence.loading ? <div className="workbench-react__empty" role="status" aria-live="polite"><strong>Loading Evidence…</strong><span>Resolving the current Scope and Filter.</span></div> : events.length ? <div className="workbench-react__ledger" role="grid" aria-label="Ordered Lightstreamer Evidence" tabIndex={0} ref={evidenceLedger} onKeyDown={handleEvidenceKey}>
             <div className="workbench-react__ledger-header" role="row"><span role="columnheader">Time / #</span><span role="columnheader">Source</span><span role="columnheader">Phase</span><span role="columnheader">Op</span><span role="columnheader">Evidence / object</span><span role="columnheader">COMMAND key</span></div>

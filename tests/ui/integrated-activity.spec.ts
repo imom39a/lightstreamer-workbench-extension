@@ -41,6 +41,8 @@ async function openIntegratedActivity(
     "data-react-scene-ready",
     "true",
   );
+  const disclosure = page.getByRole("region", { name: "Activity timeline" }).getByRole("button", { name: "Timeline", exact: true });
+  if (await disclosure.getAttribute("aria-expanded") === "false") await disclosure.click();
   await expect(
     page
       .locator('[aria-label="Activity timeline"]')

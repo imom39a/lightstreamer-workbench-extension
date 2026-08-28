@@ -8,6 +8,8 @@ The maintainer reviewed prototype D, requested one shared SERVER/LOCAL track on 
 
 A compact timeline belongs directly above Ordered Evidence. It shares Evidence's geometry and disappears when Evidence is parked for another primary surface. It has no independent content scroll, permanent destination, or separate SERVER and LOCAL lanes. Evidence remains the dominant working area, including shallow and compact layouts.
 
+When Evidence has little vertical room, the existing Timeline disclosure defaults to its compact header. The SERVER/LOCAL legend and any active range stay visible. An explicit expand or collapse choice takes precedence, and a focused timeline control or chooser remains open through a geometry change. Find uses a compact row below the operating bar. Paging controls are omitted only when the entire matching window is present and all paging actions are unavailable; the Evidence counts remain visible.
+
 One collapsed-by-default **Activity summary** belongs in existing Context, labelled for its Scope and available alongside selected Evidence. It retains exact SERVER and LOCAL Logical Update and Update Delivery counts, the SERVER Snapshot/Live breakdown, and one bounded SERVER-only busiest Subscriptions/items list. Captured bandwidth and frequency facts remain contextual. Material diagnostics remain in the existing global footer; markers link to captured Evidence rather than duplicating diagnostic banners.
 
 Once these capabilities are available, remove the separate Open Activity doorway and its parallel bucket-table workflow. Do not add more activity pages, ranking charts, source-counter cards, or an investigation-step stack.
