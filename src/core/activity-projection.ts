@@ -16,6 +16,8 @@ export type ActivityEvidence = Readonly<{
   intervalId: string;
   sequence: number;
   event: LightstreamerEventEnvelope;
+  /** Canonical Evidence Filter data computed at acceptance, before payload release. */
+  filterRecord?: FilterRecord;
 }>;
 
 export type ActivityReadPoint = Readonly<{
@@ -26,7 +28,7 @@ export type ActivityReadPoint = Readonly<{
   terminal: boolean;
 }>;
 
-export type ActivityState = "AVAILABLE" | "EMPTY_MATCH" | "EMPTY_INTERVAL" | "LIMITED" | "UNAVAILABLE" | "AGGREGATION_FAILED";
+export type ActivityState = "LOADING" | "AVAILABLE" | "EMPTY_MATCH" | "EMPTY_INTERVAL" | "LIMITED" | "UNAVAILABLE" | "AGGREGATION_FAILED";
 export type ActivityCoverage = ActivityReadPoint["coverage"];
 
 export type ActivityMarker = Readonly<{
@@ -105,6 +107,31 @@ export type ActivityBucket = Readonly<{
   segment: number;
 }>;
 
+/**
+ * A bounded exact-time summary of one contiguous snapshot run. Bucket bounds
+ * remain density geometry; these bounds are the actual captured timestamps
+ * used when a renderer offers a snapshot range to Evidence.
+ */
+export type ActivitySnapshotBurst = Readonly<{
+  start: number;
+  end: number;
+  logicalUpdates: number;
+  segment: number;
+}>;
+
+export type ActivityTimeline = Readonly<{
+  /** Earliest retained Evidence timestamp; this is not a Capture-start claim. */
+  originTimestamp: number | null;
+  /** Stable retained-domain bounds for elapsed-time geometry, half-open. */
+  domain: ActivityTimeRange | null;
+  /** Exact matching update bounds, half-open, independent from density buckets. */
+  matchingRange: ActivityTimeRange | null;
+  snapshotBursts: readonly ActivitySnapshotBurst[];
+  snapshotBurstsTruncated: boolean;
+  /** More than one segment means elapsed duration is ambiguous across a clock regression. */
+  clockAmbiguous: boolean;
+}>;
+
 export type ActivityRanking = Readonly<{
   identity: string;
   label: string;
@@ -124,11 +151,14 @@ export type ActivityProjection = Readonly<{
   scope: ActivityScope;
   filterRevision: number;
   readPoint: ActivityReadPoint;
+  /** False while the current interval's accepted-Evidence feed is synchronizing. */
+  coherent?: boolean;
   intervalId: string;
   retainedRange: ActivityReadPoint["retainedRange"];
   committedEvidenceBoundary: ActivityReadPoint["committedEvidenceBoundary"];
   bucketDuration: number | null;
   buckets: readonly ActivityBucket[];
+  timeline: ActivityTimeline;
   logicalUpdateTotal: number;
   snapshotLogicalUpdateTotal: number;
   liveLogicalUpdateTotal: number;
@@ -154,6 +184,8 @@ export type ActivityProjectionInput = Readonly<{
   scope: ActivityScope;
   filter: Filter;
   readPoint: ActivityReadPoint;
+  /** False while the current interval's accepted-Evidence feed is synchronizing. */
+  coherent?: boolean;
   /** Test/diagnostic hook; production callers should let aggregation errors surface. */
   aggregate?: ((evidence: readonly ActivityEvidence[]) => void) | null;
 }>;
@@ -173,6 +205,7 @@ export function clipActivityTimeRange(
 
 export const MAX_ACTIVITY_BUCKETS = 120;
 const DURATIONS = Object.freeze([1_000, 2_000, 5_000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000, 86_400_000]);
+export const MAX_ACTIVITY_SNAPSHOT_BURSTS = 64;
 
 export function createActivityProjection(input: ActivityProjectionInput): ActivityProjection {
   return project(input);
@@ -239,6 +272,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
   const scope = input.scope;
   const ordered = [...input.evidence].sort((a, b) => a.sequence - b.sequence);
   const base = { ...emptyProjection(scope, input.filter.revision, readPoint), intervalId: readPoint.intervalId };
+  if (input.coherent === false) return Object.freeze({ ...base, state: "LOADING", reason: "Activity is synchronizing accepted Evidence for the current History Interval." });
   if (scope.kind === "ITEM" || scope.kind === "LISTENER") return Object.freeze({ ...base, state: "UNAVAILABLE", reason: `Activity does not support ${scope.kind} Scope; choose its owning Subscription.` });
   if (ordered.some((entry) => entry.intervalId !== readPoint.intervalId)) return Object.freeze({ ...base, state: "UNAVAILABLE", reason: "Activity cannot combine multiple History Intervals." });
   if (!readPoint.committedEvidenceBoundary) return Object.freeze({ ...base, state: readPoint.coverage === "UNAVAILABLE" ? "UNAVAILABLE" : "EMPTY_INTERVAL", reason: readPoint.coverage === "UNAVAILABLE" ? "Observation Coverage is unavailable." : "The current History Interval has no Committed Evidence Boundary." });
@@ -259,6 +293,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
     ? chooseDuration([...serverLogical, ...localLogical], segments, range)
     : null;
   const buckets = duration === null ? [] : makeBuckets(serverLogical, localLogical, matching, duration, segments, range, readPoint.terminal);
+  const timeline = activityTimeline(serverLogical, localLogical, matching, segments, range);
   const state: ActivityState = readPoint.coverage === "UNAVAILABLE" ? "UNAVAILABLE" : matching.length === 0 ? "EMPTY_MATCH" : readPoint.coverage === "LIMITED" || readPoint.terminal ? "LIMITED" : "AVAILABLE";
   const reason = state === "UNAVAILABLE"
     ? "Observation Coverage is unavailable."
@@ -298,6 +333,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
     emptyMatchCause,
     bucketDuration: duration,
     buckets: Object.freeze(buckets),
+    timeline,
     markers: Object.freeze(activityMarkers),
     rankings: Object.freeze(allRankings.slice(0, 10)),
     allRankings: Object.freeze(allRankings),
@@ -312,7 +348,81 @@ function project(input: ActivityProjectionInput): ActivityProjection {
 }
 
 function emptyProjection(scope: ActivityScope, revision: number, readPoint: ActivityReadPoint): ActivityProjection {
-  return Object.freeze({ state: "EMPTY_INTERVAL", reason: null, scope, filterRevision: revision, readPoint, intervalId: readPoint.intervalId, retainedRange: readPoint.retainedRange, committedEvidenceBoundary: readPoint.committedEvidenceBoundary, bucketDuration: null, buckets: Object.freeze([]), logicalUpdateTotal: 0, snapshotLogicalUpdateTotal: 0, liveLogicalUpdateTotal: 0, updateDeliveryTotal: 0, localLogicalUpdateTotal: 0, localUpdateDeliveryTotal: 0, matchingEvidence: 0, emptyMatchCause: null, markers: Object.freeze([]), rankings: Object.freeze([]), allRankings: Object.freeze([]), rankingOther: null, rankingRangeReason: null, clockSegments: Object.freeze([]), connectionLanes: Object.freeze([]), connectionOverflow: null, contextFacts: Object.freeze([]), excludedLayers: Object.freeze([]) });
+  return Object.freeze({ state: "EMPTY_INTERVAL", reason: null, scope, filterRevision: revision, readPoint, intervalId: readPoint.intervalId, retainedRange: readPoint.retainedRange, committedEvidenceBoundary: readPoint.committedEvidenceBoundary, bucketDuration: null, buckets: Object.freeze([]), timeline: emptyTimeline(readPoint.retainedRange), logicalUpdateTotal: 0, snapshotLogicalUpdateTotal: 0, liveLogicalUpdateTotal: 0, updateDeliveryTotal: 0, localLogicalUpdateTotal: 0, localUpdateDeliveryTotal: 0, matchingEvidence: 0, emptyMatchCause: null, markers: Object.freeze([]), rankings: Object.freeze([]), allRankings: Object.freeze([]), rankingOther: null, rankingRangeReason: null, clockSegments: Object.freeze([]), connectionLanes: Object.freeze([]), connectionOverflow: null, contextFacts: Object.freeze([]), excludedLayers: Object.freeze([]) });
+}
+
+function emptyTimeline(retainedRange: ActivityReadPoint["retainedRange"]): ActivityTimeline {
+  const domain = retainedRange && retainedRange.first.timestamp <= retainedRange.last.timestamp
+    ? Object.freeze({ start: retainedRange.first.timestamp, end: retainedRange.last.timestamp + 1 })
+    : null;
+  return Object.freeze({
+    originTimestamp: retainedRange?.first.timestamp ?? null,
+    domain,
+    matchingRange: null,
+    snapshotBursts: Object.freeze([]),
+    snapshotBurstsTruncated: false,
+    clockAmbiguous: false
+  });
+}
+
+function activityTimeline(
+  server: readonly ActivityEvidence[],
+  local: readonly ActivityEvidence[],
+  matching: readonly ActivityEvidence[],
+  segments: readonly Readonly<{ index: number; startSequence: number; endSequence: number | null }>[],
+  retainedRange: ActivityReadPoint["retainedRange"]
+): ActivityTimeline {
+  const domain = retainedRange && retainedRange.first.timestamp <= retainedRange.last.timestamp
+    ? Object.freeze({ start: retainedRange.first.timestamp, end: retainedRange.last.timestamp + 1 })
+    : null;
+  const logicalUpdates = [...server, ...local];
+  const matchingRange = segments.length <= 1 && logicalUpdates.length
+    ? Object.freeze({
+        start: Math.min(...logicalUpdates.map((entry) => entry.event.timestamp)),
+        end: Math.max(...logicalUpdates.map((entry) => entry.event.timestamp)) + 1
+      })
+    : null;
+  const segmentFor = (sequence: number): number =>
+    segments.find((segment) => sequence >= segment.startSequence && (segment.endSequence === null || sequence <= segment.endSequence))?.index ?? 0;
+  const runs: Array<ActivitySnapshotBurst & Readonly<{ sequence: number }>> = [];
+  let current: { start: number; end: number; logicalUpdates: number; segment: number; sequence: number } | null = null;
+  const countedSnapshotLogicalIds = new Set<string>();
+  for (const entry of [...matching].sort((left, right) => left.sequence - right.sequence)) {
+    if (entry.event.kind === "end-of-snapshot") {
+      if (current) runs.push(Object.freeze(current));
+      current = null;
+      continue;
+    }
+    if (!isServerUpdate(entry.event)) continue;
+    const snapshot = entry.event.update?.isSnapshot === true;
+    const segment = segmentFor(entry.sequence);
+    if (!snapshot) {
+      if (current) runs.push(Object.freeze(current));
+      current = null;
+      continue;
+    }
+    const identity = logicalIdentity(entry);
+    if (!identity || countedSnapshotLogicalIds.has(identity)) continue;
+    countedSnapshotLogicalIds.add(identity);
+    if (current && current.segment === segment) {
+      current.end = Math.max(current.end, entry.event.timestamp + 1);
+      current.logicalUpdates += 1;
+      current.sequence = entry.sequence;
+      continue;
+    }
+    if (current) runs.push(Object.freeze(current));
+    current = { start: entry.event.timestamp, end: entry.event.timestamp + 1, logicalUpdates: 1, segment, sequence: entry.sequence };
+  }
+  if (current) runs.push(Object.freeze(current));
+  const snapshotBurstsTruncated = runs.length > MAX_ACTIVITY_SNAPSHOT_BURSTS;
+  return Object.freeze({
+    originTimestamp: retainedRange?.first.timestamp ?? null,
+    domain,
+    matchingRange,
+    snapshotBursts: Object.freeze(runs.slice(0, MAX_ACTIVITY_SNAPSHOT_BURSTS).map(({ sequence: _sequence, ...burst }) => Object.freeze(burst))),
+    snapshotBurstsTruncated,
+    clockAmbiguous: segments.length > 1
+  });
 }
 
 function isServerUpdate(event: LightstreamerEventEnvelope): boolean { return event.kind === "item-update" && event.source === "server" && !event.synthetic; }
@@ -322,12 +432,15 @@ function deliveries(entries: readonly ActivityEvidence[]): number { return entri
 function uniqueLogical(entries: readonly ActivityEvidence[]): ActivityEvidence[] {
   const result = new Map<string, ActivityEvidence>();
   for (const entry of entries) {
-    const event = entry.event;
-    const identity = event.logicalEventId ? `identity:${event.logicalEventId}` : metricOwnerIdentity(entry);
+    const identity = logicalIdentity(entry);
     if (!identity) continue;
     if (!result.has(identity)) result.set(identity, entry);
   }
   return [...result.values()].sort((a, b) => a.sequence - b.sequence);
+}
+
+function logicalIdentity(entry: ActivityEvidence): string | null {
+  return entry.event.logicalEventId ? `identity:${entry.event.logicalEventId}` : metricOwnerIdentity(entry);
 }
 
 function metricOwnerIdentity(entry: ActivityEvidence): string | null {
@@ -339,6 +452,7 @@ function metricOwnerIdentity(entry: ActivityEvidence): string | null {
 export function matchesActivityEvidence(entry: ActivityEvidence, filter: Filter, scope: ActivityScope): boolean {
   const event = entry.event;
   if (!scopeMatches(event, scope)) return false;
+  if (entry.filterRecord) return evaluateFilter(filter, entry.filterRecord).matches;
   const facets = extractEvidenceFacets(event, { identity: { intervalId: entry.intervalId, pageId: entry.intervalId, ownerId: event.subscription?.id ?? event.client?.id ?? "page", sequence: entry.sequence, eventId: event.id } });
   const record: FilterRecord = { timestamp: event.timestamp, intervalId: entry.intervalId, searchText: `${event.id} ${event.kind} ${event.source}`, facets: facets.facets };
   return evaluateFilter(filter, record).matches;

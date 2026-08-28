@@ -29,6 +29,7 @@ import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
 import { ObservedActivityDocument } from "./observed-activity-document";
+import { ActivityTimeline, activityRangeLabel } from "./activity-timeline";
 
 import "./workbench-panel.css";
 
@@ -673,7 +674,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const historyStatus = snapshot.retention.historyStatus;
   const limited = coverage === "LIMITED" || coverage === "UNAVAILABLE";
   const appliedFilter = evidence.investigation.filter;
-  const appliedFilterSummary = filterSummary(appliedFilter);
+  const rangeOrigin = snapshot.activity?.projection.timeline?.originTimestamp;
+  const activeTimelineRange = appliedFilter.around;
+  const appliedFilterSummary = activeTimelineRange && rangeOrigin !== null && rangeOrigin !== undefined
+    ? [filterSummary({ ...appliedFilter, around: null }), `Range ${activityRangeLabel(activeTimelineRange, rangeOrigin)}`].filter(value => value !== "none").join(" · ")
+    : filterSummary(appliedFilter);
   const hasActiveFilter = appliedFilterSummary !== "none";
   const applySelectedFilterAction = (action: EvidenceFilterActionDescriptor) => {
     dispatch(runtime, {
@@ -1737,7 +1742,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </nav>
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
-          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>Matching {matching.toLocaleString()}</span><span>In Scope {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : snapshot.context.diagnostics.length ? <button type="button" aria-controls="workbench-context" onClick={openScopeContext}>Open Scope Context</button> : null}</div></header>
+          {snapshot.activity ? <ActivityTimeline projection={snapshot.activity.projection} filter={appliedFilter} onFilter={(expectedRevision, operations) => dispatch(runtime, { type: "apply-filter-mutations", expectedRevision, operations })} /> : null}
+          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>{activeTimelineRange ? "Before range" : "Matching"} {matching.toLocaleString()}</span><span>{activeTimelineRange ? "In range" : "In Scope"} {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : snapshot.context.diagnostics.length ? <button type="button" aria-controls="workbench-context" onClick={openScopeContext}>Open Scope Context</button> : null}</div></header>
           {filterOpen ? <form className={`workbench-react__filter${filterStep !== "composer" ? " workbench-react__filter--structured-open" : ""}${filterStep === "explorer" ? " workbench-react__filter--explorer-open" : ""}`} id="workbench-filter" aria-label="Filter ordered Evidence" onKeyDown={handleFilterEscape} onSubmit={(event) => {
             event.preventDefault();
             setFilterSubmitVersion(snapshot.version);

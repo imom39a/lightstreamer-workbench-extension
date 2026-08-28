@@ -9,6 +9,10 @@ import {
   toPersistableEventEnvelope,
   type LightstreamerEventEnvelope
 } from "../../core/event-envelope";
+import {
+  canonicalEvidenceSearchTextWithExtraction,
+  extractEvidenceFacets
+} from "../../core/evidence-facets";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
   DIAGNOSTIC_TEXT_MAX_LENGTH,
@@ -910,7 +914,6 @@ const emptyEvidence: EvidenceData = Object.freeze({
   records: Object.freeze([])
 });
 const MAX_EVIDENCE_EVENT_CACHE = 256;
-const MAX_CLOSED_ACTIVITY_EVIDENCE = 1_000;
 
 const emptyInvestigation: WorkbenchEvidenceInvestigationSnapshot = Object.freeze({
   scope: Object.freeze({ kind: "PAGE" as const }),
@@ -972,6 +975,15 @@ class Runtime implements WorkbenchRuntime {
   private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
   private readonly activityEvidence: ActivityEvidence[] = [];
   private readonly activityEvidenceKeys = new Set<string>();
+  /**
+   * One payload-free entry per accepted Lightstreamer Evidence in the current
+   * History Interval. This deliberately survives a closed Activity document;
+   * the complete raw Evidence remains solely in Event History.
+   */
+  private activityEvidenceRevision = 0;
+  private activityProjectionCache: Readonly<{ key: string; projection: ActivityProjection }> | null = null;
+  private activityEvidenceReadPointCache: Readonly<{ intervalId: string; through: number; evidence: readonly ActivityEvidence[] }> | null = null;
+  private activityEvidenceCoherent = false;
   private activityOpen = false;
   private activityTransition: WorkbenchActivitySnapshot["transition"] = Object.freeze({ sequence: 0, kind: "idle" });
   private activityDocumentState: ActivityDocumentState | null = null;
@@ -2487,6 +2499,11 @@ class Runtime implements WorkbenchRuntime {
     this.queueDiagnosticMutation(() => this.diagnosticObservations.clear());
     this.activityEvidence.splice(0, this.activityEvidence.length);
     this.activityEvidenceKeys.clear();
+    this.activityEvidenceRevision += 1;
+    this.activityProjectionCache = null;
+    this.activityEvidenceReadPointCache = null;
+    // Clear establishes a new, known-empty History Interval immediately.
+    this.activityEvidenceCoherent = true;
     this.activityHydrationPromise = null;
     this.activityHydrated = false;
     this.queryGeneration += 1;
@@ -2756,8 +2773,10 @@ class Runtime implements WorkbenchRuntime {
     const activityKey = `${entry.intervalId}\u0000${entry.sequence}`;
     if (!this.activityEvidenceKeys.has(activityKey)) {
       this.activityEvidenceKeys.add(activityKey);
-      this.activityEvidence.push(Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, event }));
-      this.compactClosedActivityEvidence();
+      this.activityEvidence.push(compactActivityEvidence(entry.intervalId, entry.sequence, event));
+      this.activityEvidenceRevision += 1;
+      this.activityProjectionCache = null;
+      this.activityEvidenceReadPointCache = null;
     }
     // The canonical page projection is intentionally payload-light. Retain
     // the already-observed immutable envelope as a presentation cache so
@@ -2801,6 +2820,7 @@ class Runtime implements WorkbenchRuntime {
     this.scenarioFollowerPhase = state.progress.phase;
     this.scheduleScenarioBoundaryPublication();
     if (state.progress.phase === "RECOVERING") {
+      this.activityEvidenceCoherent = false;
       const intervalId = state.interval?.id ?? state.progress.intervalId;
       if (
         this.projectionRecovery === null ||
@@ -2820,6 +2840,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     if (state.progress.phase === "LIVE") {
+      this.activityEvidenceCoherent = true;
       const recovery = this.projectionRecovery;
       if (recovery !== null) {
         this.topologyProjection = recovery.topology;
@@ -4521,6 +4542,11 @@ class Runtime implements WorkbenchRuntime {
         this.investigationState = "ready";
         this.investigationProblem = null;
         this.lastEvidenceQueryError = null;
+        // The initial request may be deliberately superseded by an immediate
+        // Scope or Filter action. Any first coherent authoritative result
+        // establishes the runtime's initial Evidence baseline and must enable
+        // later passive Capture publication.
+        if (!this.initialEvidenceSettled) this.initialEvidenceSettled = true;
         this.historyStatus = this.history.status();
         const committedContract = Object.freeze({
           scope: request.scope,
@@ -4560,7 +4586,6 @@ class Runtime implements WorkbenchRuntime {
           this.renderedEvidenceBoundary = evidenceRefFromIdentity(result.value.readPoint.committedEvidenceBoundary);
         }
         if (source === "initial") {
-          this.initialEvidenceSettled = true;
           this.refreshRuntimeDiagnosticObservations();
           this.snapshot = this.createSnapshot();
           if (this.passiveRefreshPending) {
@@ -4623,7 +4648,7 @@ class Runtime implements WorkbenchRuntime {
       // Find is a retained-history operation even while the visible page is
       // Frozen. Read its canonical match window at the current boundary, then
       // keep the Frozen page/read point when publishing that window.
-      at: this.mode === "frozen" && this.find.trim() !== ""
+      at: this.mode === "frozen" && this.find.trim() !== "" && source === "command"
         ? "LATEST_COMMITTED"
         : frozenReadPoint ?? "LATEST_COMMITTED",
       scope: structuralEvidenceScope(target),
@@ -4724,7 +4749,7 @@ class Runtime implements WorkbenchRuntime {
     source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility",
     offset: number
   ): void {
-    const frozenFindBase = this.mode === "frozen" && this.find.trim() !== ""
+    const frozenFindBase = this.mode === "frozen" && this.find.trim() !== "" && source === "command"
       ? this.frozenInvestigation
       : null;
     const projectedValue = frozenFindBase
@@ -5333,46 +5358,63 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  /** Keep closed Activity lightweight; opening it rehydrates the full journal. */
+  /**
+   * Activity now keeps its bounded, payload-free index for the full current
+   * History Interval. The document may close without losing its coherent
+   * readpoint or forcing a later raw-journal scan.
+   */
   private compactClosedActivityEvidence(): void {
-    if (this.activityOpen) return;
-    this.activityHydrated = false;
-    if (this.activityEvidence.length <= MAX_CLOSED_ACTIVITY_EVIDENCE) return;
-    const removed = this.activityEvidence.splice(0, this.activityEvidence.length - MAX_CLOSED_ACTIVITY_EVIDENCE);
-    for (const entry of removed) this.activityEvidenceKeys.delete(`${entry.intervalId}\u0000${entry.sequence}`);
+    // Intentionally retained through Clear. This is compact Activity metadata,
+    // not another captured-event payload cache.
   }
 
   private activitySnapshot(scope: WorkbenchSnapshot["scope"]): WorkbenchActivitySnapshot {
     const target = findTopologySelection(this.topologyProjection.snapshot(), this.scopeId ?? "page");
     const activityScope = activityScopeFor(target);
-    const entries = this.activityEvidence.filter((entry) => entry.intervalId === this.historyStatus.interval.id);
-    const first = entries.reduce<ActivityEvidence | undefined>((current, entry) => !current || entry.sequence < current.sequence ? entry : current, undefined);
-    const last = entries.reduce<ActivityEvidence | undefined>((current, entry) => !current || entry.sequence > current.sequence ? entry : current, undefined);
+    const frozenReadPoint = this.mode === "frozen" ? this.frozenInvestigation?.readPoint ?? null : null;
+    const frozenBoundary = frozenReadPoint?.committedEvidenceBoundary ?? null;
+    const intervalId = frozenReadPoint?.interval.id ?? this.historyStatus.interval.id;
+    const entries = !this.activityEvidenceCoherent
+      ? []
+      : frozenBoundary
+      ? this.activityEvidenceThrough(intervalId, frozenBoundary.sequence)
+      : frozenReadPoint
+        ? []
+        : this.activityEvidence;
+    const first = entries[0];
+    const last = entries.at(-1);
     const retained = first && last
       ? { first: { timestamp: first.event.timestamp, sequence: first.sequence }, last: { timestamp: last.event.timestamp, sequence: last.sequence } }
       : null;
-    const boundary = this.historyStatus.committedEvidenceBoundary;
+    const boundary = this.activityEvidenceCoherent ? frozenBoundary ?? this.historyStatus.committedEvidenceBoundary : null;
     const readPoint: ActivityReadPoint = {
-      intervalId: this.historyStatus.interval.id,
+      intervalId,
       committedEvidenceBoundary: boundary ? { intervalId: boundary.intervalId, sequence: boundary.sequence, eventId: boundary.eventId } : null,
       retainedRange: retained,
       coverage: this.captureSnapshot().coverage,
       terminal: this.historyStatus.phase === "STOPPED" || Boolean(this.historyStatus.terminal)
     };
     const projectionInput: ActivityProjectionInput = {
-      evidence: this.activityOpen || entries.length <= 1_000 ? entries : [],
+      evidence: entries,
       scope: activityScope,
       filter: this.canonicalFilter,
-      readPoint
+      readPoint,
+      coherent: this.activityEvidenceCoherent
     };
-    let projection: ActivityProjection;
-    try {
-      projection = this.activityProjectionFactory(projectionInput);
-    } catch (error) {
-      projection = failedActivityProjection(
-        projectionInput,
-        error instanceof Error ? error.message : "Activity aggregation failed."
-      );
+    const projectionKey = activityProjectionCacheKey(this.activityEvidenceRevision, projectionInput);
+    let projection = this.activityProjectionCache?.key === projectionKey
+      ? this.activityProjectionCache.projection
+      : null;
+    if (projection === null) {
+      try {
+        projection = this.activityProjectionFactory(projectionInput);
+        this.activityProjectionCache = Object.freeze({ key: projectionKey, projection });
+      } catch (error) {
+        projection = failedActivityProjection(
+          projectionInput,
+          error instanceof Error ? error.message : "Activity aggregation failed."
+        );
+      }
     }
     const coalesced = this.activityOpen && this.activityPublicationPending && this.activityPublishedProjection !== null;
     let presentedProjection = coalesced ? this.activityPublishedProjection! : projection;
@@ -5407,7 +5449,7 @@ class Runtime implements WorkbenchRuntime {
         }).state;
       } else if (document.view === "FROZEN") {
         const frozenSequence = document.readPoint.committedEvidenceBoundary?.sequence ?? 0;
-        const newer = entries.filter((entry) => entry.sequence > frozenSequence && matchesActivityEvidence(entry, document.filter, document.scope)).length;
+        const newer = this.activityEvidence.filter((entry) => entry.intervalId === document.readPoint.intervalId && entry.sequence > frozenSequence && matchesActivityEvidence(entry, document.filter, document.scope)).length;
         this.activityDocumentState = Object.freeze({ ...document, newerMatchingEvidence: newer });
       } else if (!coalesced) {
         this.activityDocumentState = reconcileActivityDocumentProjection(
@@ -5430,6 +5472,22 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
+  /** Returns a cached prefix for a Frozen committed boundary without replaying Event History. */
+  private activityEvidenceThrough(intervalId: string, through: number): readonly ActivityEvidence[] {
+    const cached = this.activityEvidenceReadPointCache;
+    if (cached?.intervalId === intervalId && cached.through === through) return cached.evidence;
+    let low = 0;
+    let high = this.activityEvidence.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (this.activityEvidence[middle]!.sequence <= through) low = middle + 1;
+      else high = middle;
+    }
+    const evidence = Object.freeze(this.activityEvidence.slice(0, low).filter((entry) => entry.intervalId === intervalId));
+    this.activityEvidenceReadPointCache = Object.freeze({ intervalId, through, evidence });
+    return evidence;
+  }
+
   private async hydrateActivityEvidence(): Promise<void> {
     // Activity is a projection of accepted Evidence, not a second query
     // surface. The paged investigation contract deliberately caps pages at
@@ -5437,17 +5495,18 @@ class Runtime implements WorkbenchRuntime {
     // hydration would rescan the complete journal once per page. Read the
     // already-latched authoritative candidates once, then merge any arrivals
     // accepted while that read was in flight below.
+    const requestedIntervalId = this.historyStatus.interval.id;
     const result = await this.evidencePipeline.read({
-      intervalId: this.historyStatus.interval.id,
+      intervalId: requestedIntervalId,
       order: "asc"
     });
     if (!result.ok) return;
     const hydrated: ActivityEvidence[] = result.value.evidence.flatMap((entry) =>
       isLightstreamerEvidenceCandidate(entry.candidate)
-        ? [{ intervalId: entry.intervalId, sequence: entry.sequence, event: entry.candidate }]
+        ? [compactActivityEvidence(entry.intervalId, entry.sequence, entry.candidate)]
         : []
     );
-    if (this.disposed) return;
+    if (this.disposed || this.historyStatus.interval.id !== requestedIntervalId) return;
     const latchedIntervalId = hydrated[0]?.intervalId ?? this.historyStatus.interval.id;
     const latchedBoundary = hydrated.reduce((highest, entry) => Math.max(highest, entry.sequence), 0);
     const retainedAfterLatch = this.activityEvidence.filter((entry) =>
@@ -5460,7 +5519,10 @@ class Runtime implements WorkbenchRuntime {
     this.activityEvidence.splice(0, this.activityEvidence.length, ...rebuilt);
     this.activityEvidenceKeys.clear();
     for (const entry of rebuilt) this.activityEvidenceKeys.add(`${entry.intervalId}\u0000${entry.sequence}`);
-    this.activityHydrated = this.activityOpen;
+    this.activityEvidenceRevision += 1;
+    this.activityProjectionCache = null;
+    this.activityEvidenceReadPointCache = null;
+    this.activityHydrated = true;
     this.compactClosedActivityEvidence();
     if (this.activityOpen) this.publish();
   }
@@ -7249,6 +7311,118 @@ export function activityScopeFor(target: TopologySelectionTarget | null): Activi
     return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
   }
   return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
+}
+
+/** Builds the Activity-only metadata index without retaining update payloads. */
+function compactActivityEvidence(intervalId: string, sequence: number, event: LightstreamerEventEnvelope): ActivityEvidence {
+  const client = event.client;
+  const subscription = event.subscription;
+  const listener = event.listener;
+  const item = event.item;
+  const update = event.update;
+  const raw = compactActivityRaw(event.raw);
+  const compact: LightstreamerEventEnvelope = Object.freeze({
+    id: event.id,
+    timestamp: event.timestamp,
+    direction: event.direction,
+    source: event.source,
+    ...(event.captureSource ? { captureSource: event.captureSource } : {}),
+    synthetic: event.synthetic,
+    kind: event.kind,
+    ...(event.logicalEventId ? { logicalEventId: event.logicalEventId } : {}),
+    ...(client ? { client: Object.freeze({
+      id: client.id,
+      ...(client.status !== undefined ? { status: client.status } : {}),
+      ...(client.sessionId !== undefined ? { sessionId: client.sessionId } : {}),
+      ...(client.requestedMaxBandwidth !== undefined ? { requestedMaxBandwidth: client.requestedMaxBandwidth } : {}),
+      ...(client.realMaxBandwidth !== undefined ? { realMaxBandwidth: client.realMaxBandwidth } : {}),
+      ...(client.semanticValueStates ? { semanticValueStates: compactSemanticStates(client.semanticValueStates, ["id", "sessionId"]) } : {})
+    }) } : {}),
+    ...(subscription ? { subscription: Object.freeze({
+      id: subscription.id,
+      ...(subscription.mode !== undefined ? { mode: subscription.mode } : {}),
+      ...(subscription.requestedMaxFrequency !== undefined ? { requestedMaxFrequency: subscription.requestedMaxFrequency } : {}),
+      ...(subscription.realMaxFrequency !== undefined ? { realMaxFrequency: subscription.realMaxFrequency } : {}),
+      ...(subscription.semanticValueStates ? { semanticValueStates: compactSemanticStates(subscription.semanticValueStates, ["id", "mode"]) } : {})
+    }) } : {}),
+    ...(listener ? { listener: Object.freeze({ id: listener.id, ...(listener.metricOwner !== undefined ? { metricOwner: listener.metricOwner } : {}) }) } : {}),
+    ...(item ? { item: Object.freeze({ ...(item.name !== undefined ? { name: item.name } : {}), ...(item.position !== undefined ? { position: item.position } : {}) }) } : {}),
+    ...(update ? { update: Object.freeze({
+      ...(update.isSnapshot !== undefined ? { isSnapshot: update.isSnapshot } : {}),
+      ...(update.command !== undefined ? { command: update.command } : {}),
+      ...(update.key !== undefined ? { key: update.key } : {}),
+      ...(update.lostUpdates !== undefined ? { lostUpdates: update.lostUpdates } : {})
+    }) } : {}),
+    ...(raw ? { raw } : {}),
+    ...(event.topology ? { topology: compactActivityTopology(event.topology) } : {})
+  });
+  const identity = { intervalId, pageId: intervalId, ownerId: event.subscription?.id ?? event.client?.id ?? "page", sequence, eventId: event.id };
+  const extracted = extractEvidenceFacets(event, { identity });
+  return Object.freeze({
+    intervalId,
+    sequence,
+    event: compact,
+    filterRecord: Object.freeze({
+      timestamp: event.timestamp,
+      intervalId,
+      searchText: canonicalEvidenceSearchTextWithExtraction(event, { identity }, extracted),
+      facets: extracted.facets
+    })
+  });
+}
+
+function compactSemanticStates(
+  states: NonNullable<LightstreamerEventEnvelope["client"]>["semanticValueStates"],
+  keys: readonly string[]
+): Record<string, NonNullable<NonNullable<LightstreamerEventEnvelope["client"]>["semanticValueStates"]>[string]> {
+  return Object.freeze(Object.fromEntries(keys.flatMap((key) => states?.[key] ? [[key, Object.freeze({ ...states[key] })]] : [])));
+}
+
+function compactActivityRaw(raw: LightstreamerEventEnvelope["raw"]): LightstreamerEventEnvelope["raw"] | undefined {
+  if (!raw) return undefined;
+  const selected = Object.fromEntries(["status", "code", "message"].flatMap((key) => {
+    const value = raw[key];
+    return typeof value === "string" || typeof value === "number" ? [[key, value]] : [];
+  }));
+  return Object.keys(selected).length ? Object.freeze(selected) as LightstreamerEventEnvelope["raw"] : undefined;
+}
+
+function compactActivityTopology(topology: NonNullable<LightstreamerEventEnvelope["topology"]>): NonNullable<LightstreamerEventEnvelope["topology"]> {
+  return Object.freeze({
+    version: topology.version,
+    kind: topology.kind,
+    pageEpoch: topology.pageEpoch,
+    captureSequence: topology.captureSequence,
+    ...(topology.timestamp === undefined ? {} : { timestamp: topology.timestamp }),
+    provenance: topology.provenance,
+    coverage: Object.freeze({ status: topology.coverage.status, getters: {} }),
+    ...(topology.client ? { client: compactActivityTopologyRecord(topology.client, ["id", "sessionId", "status"]) } : {}),
+    ...(topology.subscription ? { subscription: compactActivityTopologyRecord(topology.subscription, ["id"]) } : {}),
+    ...(topology.item ? { item: compactActivityTopologyRecord(topology.item, ["name", "position"]) } : {})
+  }) as NonNullable<LightstreamerEventEnvelope["topology"]>;
+}
+
+function compactActivityTopologyRecord(record: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
+  return Object.freeze(Object.fromEntries(keys.flatMap((key) => record[key] === undefined ? [] : [[key, record[key]]])));
+}
+
+function activityProjectionCacheKey(revision: number, input: ActivityProjectionInput): string {
+  const boundary = input.readPoint.committedEvidenceBoundary;
+  const range = input.readPoint.retainedRange;
+  return JSON.stringify([
+    revision,
+    input.scope,
+    input.filter.revision,
+    boundary?.intervalId ?? null,
+    boundary?.sequence ?? null,
+    range?.first.timestamp ?? null,
+    range?.first.sequence ?? null,
+    range?.last.timestamp ?? null,
+    range?.last.sequence ?? null,
+    input.readPoint.coverage,
+    input.readPoint.terminal,
+    input.coherent !== false
+  ]);
 }
 
 function eventFromDeterministicRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
