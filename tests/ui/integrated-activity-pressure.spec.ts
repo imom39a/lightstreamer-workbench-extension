@@ -87,6 +87,42 @@ test("Scenario Review is unobscured on initial shallow diagnostic presentation",
   await expect(scenario.getByRole("heading", { name: "Local Injection Scenario", exact: true })).toBeInViewport();
 });
 
+test("Shallow forced-color anomaly diagnostics keep Evidence summary controls below the timeline", async ({ page }, testInfo) => {
+  await openPanel(page, "diagnostic-anomalies", 320, true);
+  const timeline = page.getByRole("region", { name: "Activity timeline" });
+  const evidence = page.locator('[aria-label="Ordered Evidence"]');
+  const header = evidence.locator(":scope > .workbench-react__pane-header");
+  const controls = [
+    header.getByText("Shown 10", { exact: true }),
+    header.getByText("Matching 10", { exact: true }),
+    header.getByText("In Scope 10", { exact: true }),
+    header.getByRole("button", { name: "Open Scope Context", exact: true })
+  ];
+
+  await expect(timeline).toBeVisible();
+  for (const control of controls) {
+    await expect(control).toBeVisible();
+    const bounds = await control.evaluate(element => {
+      const controlBounds = element.getBoundingClientRect();
+      const headerBounds = element.closest(".workbench-react__pane-header")!.getBoundingClientRect();
+      const timelineBounds = document.querySelector('[aria-label="Activity timeline"]')!.getBoundingClientRect();
+      return {
+        controlTop: controlBounds.top,
+        controlBottom: controlBounds.bottom,
+        headerTop: headerBounds.top,
+        headerBottom: headerBounds.bottom,
+        timelineBottom: timelineBounds.bottom
+      };
+    });
+    expect(bounds.controlTop).toBeGreaterThanOrEqual(bounds.timelineBottom - .5);
+    expect(bounds.controlTop).toBeGreaterThanOrEqual(bounds.headerTop - .5);
+    expect(bounds.controlBottom).toBeLessThanOrEqual(bounds.headerBottom + .5);
+  }
+
+  await expect.poll(() => fullEvidenceRows(page)).toBeGreaterThanOrEqual(3);
+  await page.screenshot({ path: testInfo.outputPath("anomaly-diagnostics-summary-header.png") });
+});
+
 
 test("Pressure never folds a focused source mark or collision chooser", async ({ page }) => {
   await openPanel(page, "integrated-activity-main", 900);
