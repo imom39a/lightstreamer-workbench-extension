@@ -382,12 +382,18 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       scope: string;
       evidence: string;
       context: string;
+      activityTimelineCount: number;
+      activitySources: string;
+      activityReady: boolean;
       hasLegacyViews: boolean;
       panel: { width: number; height: number; viewportWidth: number; viewportHeight: number };
       }>(survivingPanel, `({
         scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
         evidence: document.querySelector('[aria-label="Ordered Evidence"]')?.textContent ?? "",
         context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
+        activityTimelineCount: document.querySelectorAll('[aria-label="Activity timeline"]').length,
+        activitySources: document.querySelector('[aria-label="Update source legend"]')?.textContent ?? "",
+        activityReady: document.querySelector('[aria-label="Activity timeline"]')?.getAttribute('aria-busy') === 'false',
         hasLegacyViews: Boolean(document.querySelector(".view-selector")),
         panel: (() => {
           const panel = document.querySelector(".workbench-react")?.getBoundingClientRect();
@@ -402,6 +408,10 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       assert.match(proof.scope, /Inspected page/);
       assert.match(proof.evidence, /Ordered Evidence/);
       assert.match(proof.context, /Observed Server COMMAND State/);
+      assert.equal(proof.activityTimelineCount, 1, "The shipped panel owns one integrated Activity timeline.");
+      assert.match(proof.activitySources, /SERVER/);
+      assert.match(proof.activitySources, /LOCAL/);
+      assert.equal(proof.activityReady, true, "The timeline reaches its coherent retained Evidence boundary.");
       assert.equal(proof.hasLegacyViews, false);
       assert.equal(proof.panel.width, proof.panel.viewportWidth);
       assert.equal(proof.panel.height, proof.panel.viewportHeight);

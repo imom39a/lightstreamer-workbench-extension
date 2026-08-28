@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
+import { createInMemoryEventHistory, type EventHistory } from "../src/core/event-history-authoritative";
 import { WorkbenchPanel } from "../src/extension/panel/react/workbench-panel";
 import { createWorkbenchRuntime, type WorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
 
@@ -21,12 +21,14 @@ function update(id: string, offset: number, local = false, snapshot = false): Li
 
 let root: Root | undefined;
 let runtime: WorkbenchRuntime | undefined;
+let mountedHistory: EventHistory | undefined;
 async function settle(): Promise<void> {
   await act(async () => { for (let index = 0; index < 12; index++) await Promise.resolve(); });
 }
 async function mount(events = [update("first", 0, false, true), update("snapshot", 100, false, true), update("local", 450, true), update("last", 999)]): Promise<WorkbenchRuntime> {
   document.body.innerHTML = '<main id="app"></main>';
   const history = createInMemoryEventHistory();
+  mountedHistory = history;
   for (const event of events) await history.offer(event).settled;
   runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
   await settle();
@@ -41,6 +43,7 @@ afterEach(async () => {
   runtime?.dispose();
   root = undefined;
   runtime = undefined;
+  mountedHistory = undefined;
 });
 
 describe("integrated Activity timeline in the production Workbench panel", () => {
@@ -62,6 +65,17 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     });
     expect(timeline.getAttribute("aria-busy")).toBe("false");
     expect(track.getAttribute("aria-disabled")).toBe("false");
+  });
+
+  it("does not imply elapsed duration across a clock regression even when the last timestamp catches up", async () => {
+    const panel = await mount([update("first", 0), update("forward", 500), update("regressed", 400), update("last", 999)]);
+    const timeline = document.querySelector('[aria-label="Activity timeline"]')!;
+    const track = timeline.querySelector<HTMLElement>('[aria-label="Select Activity time range"]')!;
+    expect(track.getAttribute("aria-disabled")).toBe("true");
+    expect(timeline.textContent).toContain("Timeline unavailable across a clock change");
+    expect(timeline.querySelector('[aria-label="Captured Activity events"]')).toBeNull();
+    expect(timeline.querySelector('[aria-label="Elapsed time since first retained event"]')!.textContent).toBe("");
+    expect(panel.getSnapshot().evidence.events).toHaveLength(4);
   });
 
   it("shows SERVER and LOCAL on one compact elapsed timeline above existing Ordered Evidence", async () => {
@@ -116,7 +130,8 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     await settle();
     const before = panel.getSnapshot();
     const burst = document.querySelector<HTMLButtonElement>('button[aria-label="Show snapshot burst +0.0s–+0.101s in Evidence"]');
-    expect(Array.from(document.querySelectorAll('[aria-label="Snapshot bursts"] button')).map(button => button.getAttribute("aria-label"))).toContain("Show snapshot burst +0.0s–+0.101s in Evidence");
+    expect(document.querySelectorAll('button[aria-label="Show snapshot burst +0.0s–+0.101s in Evidence"]')).toHaveLength(1);
+    expect(burst!.textContent).toContain("2 snapshot updates");
     await act(async () => burst!.click());
     await settle();
     const after = panel.getSnapshot();
@@ -147,5 +162,109 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     await act(async () => toggle.click());
     expect(document.querySelector('[aria-label="Activity timeline"]')!.textContent).toContain("All retained time");
     expect(panel.getSnapshot().evidence.investigation.filter.around).toBeNull();
+  });
+
+  it("retains the focused snapshot caption as passive Capture extends its exact burst", async () => {
+    const panel = await mount([update("first", 0, false, true)]);
+    const caption = document.querySelector<HTMLButtonElement>('button[aria-label^="Show snapshot burst"]')!;
+    await act(async () => caption.focus());
+    await act(async () => { await mountedHistory!.offer(update("snapshot-next", 100, false, true)).settled; });
+    await act(async () => { await vi.waitFor(() => expect(panel.getSnapshot().activity?.projection.timeline.snapshotBursts[0]?.end).toBe(origin + 101)); });
+    expect(document.activeElement).toBe(caption);
+    expect(caption.textContent).toContain("2 snapshot updates");
+    await act(async () => caption.click());
+    await settle();
+    expect(panel.getSnapshot().evidence.investigation.filter.around?.end).toBe(origin + 101);
+  });
+
+  it("retains a focused band as a later snapshot burst extends during passive Capture", async () => {
+    const panel = await mount([update("first", 0, false, true), update("live", 100), update("second", 200, false, true)]);
+    const band = document.querySelector<HTMLButtonElement>('button[aria-label="Show snapshot burst +0.2s–+0.201s in Evidence"]')!;
+    await act(async () => band.focus());
+    await act(async () => { await mountedHistory!.offer(update("snapshot-next", 300, false, true)).settled; });
+    await act(async () => { await vi.waitFor(() => expect(panel.getSnapshot().activity?.projection.timeline.snapshotBursts[1]?.end).toBe(origin + 301)); });
+    expect(document.activeElement).toBe(band);
+    await act(async () => band.click());
+    await settle();
+    expect(panel.getSnapshot().evidence.investigation.filter.around).toMatchObject({ start: origin + 200, end: origin + 301 });
+  });
+
+  it("selects an exact LOCAL update in existing Evidence without opening Context or changing the investigation", async () => {
+    const panel = await mount();
+    await act(async () => {
+      panel.dispatch({ type: "freeze-evidence" });
+      panel.dispatch({ type: "set-find", value: "orders" });
+    });
+    await settle();
+    const before = panel.getSnapshot();
+    const point = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(button => /^Select LOCAL Item Update at .*; Evidence local$/.test(button.getAttribute("aria-label") ?? ""));
+    expect(point).toBeDefined();
+    await act(async () => point!.click());
+    await settle();
+    const after = panel.getSnapshot();
+    expect(after.evidence.selectedEventId).toBe("local");
+    expect(after.evidence.events.some(event => event.id === "local")).toBe(true);
+    expect(after.contextId).toBe(before.contextId);
+    expect(after.evidence.investigation.filter).toEqual(before.evidence.investigation.filter);
+    expect(after.evidence.findState.query).toBe(before.evidence.findState.query);
+    expect(after.evidence.mode).toBe("frozen");
+  });
+
+  it("keeps a captured status marker unobscured when no Item Updates match", async () => {
+    const base = update("status", 0);
+    await mount([{ ...base, kind: "client-status", logicalEventId: undefined, update: undefined, client: { ...base.client!, status: "CONNECTED:WS-STREAMING" } }]);
+    const timeline = document.querySelector('[aria-label="Activity timeline"]')!;
+    const track = timeline.querySelector('[aria-label="Select Activity time range"]')!;
+    expect(track.querySelector('button[aria-label^="Inspect SERVER Client status"]')).not.toBeNull();
+    expect(track.querySelector('[role="status"]')).toBeNull();
+    expect(timeline.textContent).toContain("No matching captured updates");
+  });
+
+  it("offers coincident captured loss and error records individually and inspects the chosen immutable Evidence", async () => {
+    const problemBase = update("problem", 500);
+    const panel = await mount([
+      update("first", 0),
+      { ...problemBase, id: "loss", kind: "lost-updates", logicalEventId: undefined, update: { lostUpdates: 7 } },
+      { ...problemBase, id: "error", kind: "subscription-error", logicalEventId: undefined, update: undefined, raw: { code: 24, message: "Subscription refused" } },
+      update("last", 999)
+    ]);
+    const before = panel.getSnapshot();
+    const group = document.querySelector<HTMLButtonElement>('button[aria-label="2 captured Activity events; choose Evidence"]');
+    expect(group).not.toBeNull();
+    await act(async () => group!.click());
+    const choices = document.querySelector('[role="dialog"][aria-label="Choose captured Activity event"]')!;
+    expect(choices).not.toBeNull();
+    expect(choices.textContent).toContain("Lost updates");
+    expect(choices.textContent).toContain("Subscription error");
+    const error = Array.from(choices.querySelectorAll<HTMLButtonElement>("button")).find(button => /^Inspect SERVER Subscription error at .*; Evidence error$/.test(button.getAttribute("aria-label") ?? ""))!;
+    await act(async () => error.click());
+    await settle();
+    expect(panel.getSnapshot().evidence.selectedEventId).toBe("error");
+    expect(panel.getSnapshot().contextId).toBe("context:error");
+    expect(panel.getSnapshot().evidence.investigation.filter).toEqual(before.evidence.investigation.filter);
+    expect(document.querySelector('[aria-label="Context"]')!.textContent).toContain("error");
+    expect(document.querySelector('[role="dialog"][aria-label="Choose captured Activity event"]')).toBeNull();
+  });
+
+  it("keeps open choices and focus stable through passive Capture, then Escape restores the exact group", async () => {
+    const base = update("problem", 500);
+    const panel = await mount([update("first", 0), { ...base, id: "loss", kind: "lost-updates", logicalEventId: undefined, update: { lostUpdates: 7 } }, { ...base, id: "error", kind: "subscription-error", logicalEventId: undefined, update: undefined, raw: { code: 24 } }, update("last", 999)]);
+    const group = document.querySelector<HTMLButtonElement>('button[aria-label="2 captured Activity events; choose Evidence"]')!;
+    await act(async () => { group.focus(); group.click(); });
+    const focusedChoice = document.activeElement;
+    expect(focusedChoice?.getAttribute("aria-label")).toMatch(/^Inspect SERVER Lost updates/);
+    await act(async () => { await mountedHistory!.offer(update("far-later", 100_000, true)).settled; });
+    await act(async () => { await vi.waitFor(() => expect(panel.getSnapshot().activity?.projection.timeline.domain?.end).toBe(origin + 100_001)); });
+    expect(document.activeElement).toBe(focusedChoice);
+    expect(document.querySelector('[role="dialog"]')!.textContent).toContain("2 captured events");
+    await act(async () => focusedChoice!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.querySelector('[role="dialog"][aria-label="Choose captured Activity event"]')).toBeNull();
+    expect(document.activeElement).toBe(group);
+    expect(panel.getSnapshot().evidence.selectedEventId).toBeNull();
+    await act(async () => group.click());
+    expect(document.querySelector('[role="dialog"][aria-label="Choose captured Activity event"]')).not.toBeNull();
+    await act(async () => panel.dispatch({ type: "freeze-evidence" }));
+    await settle();
+    expect(document.querySelector('[role="dialog"][aria-label="Choose captured Activity event"]')).toBeNull();
   });
 });

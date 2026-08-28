@@ -33,6 +33,7 @@ export type ActivityCoverage = ActivityReadPoint["coverage"];
 
 export type ActivityMarker = Readonly<{
   kind: "CLIENT_STATUS" | "SESSION_TRANSITION" | "LOST_UPDATES" | "SUBSCRIPTION_ERROR";
+  intervalId: string;
   timestamp: number;
   sequence: number;
   eventId: string;
@@ -46,6 +47,7 @@ export type ActivityMarker = Readonly<{
   status: string | null;
   errorCode: string | number | null;
   errorMessage: string | null;
+  source: "SERVER" | "LOCAL";
   provenance: "SERVER" | "LOCAL";
   consequenceLimit: string;
   supportingFilterMutations?: readonly FilterMutation[];
@@ -115,8 +117,31 @@ export type ActivityBucket = Readonly<{
 export type ActivitySnapshotBurst = Readonly<{
   start: number;
   end: number;
+  /** Immutable first accepted Evidence sequence; safe renderer key component. */
+  startSequence: number;
   logicalUpdates: number;
   segment: number;
+}>;
+
+/** A compact, immutable Evidence identity for an individually selectable update mark. */
+export type ActivityTimelineSourcePoint = Readonly<{
+  intervalId: string;
+  eventId: string;
+  sequence: number;
+  timestamp: number;
+  source: "SERVER" | "LOCAL";
+  kind: "ITEM_UPDATE";
+  clientId: string | null;
+  sessionId: string | null;
+  subscriptionId: string | null;
+  itemName: string | null;
+  itemPosition: number | null;
+}>;
+
+/** Explicit route for bounded marks that remain available in current Evidence. */
+export type ActivityTimelineOverflow = Readonly<{
+  omitted: number;
+  evidenceRoute: "CURRENT_FILTERED_EVIDENCE";
 }>;
 
 export type ActivityTimeline = Readonly<{
@@ -128,6 +153,10 @@ export type ActivityTimeline = Readonly<{
   matchingRange: ActivityTimeRange | null;
   snapshotBursts: readonly ActivitySnapshotBurst[];
   snapshotBurstsTruncated: boolean;
+  sourcePoints: readonly ActivityTimelineSourcePoint[];
+  sourcePointsOverflow: ActivityTimelineOverflow | null;
+  markers: readonly ActivityMarker[];
+  markersOverflow: ActivityTimelineOverflow | null;
   /** More than one segment means elapsed duration is ambiguous across a clock regression. */
   clockAmbiguous: boolean;
 }>;
@@ -151,8 +180,6 @@ export type ActivityProjection = Readonly<{
   scope: ActivityScope;
   filterRevision: number;
   readPoint: ActivityReadPoint;
-  /** False while the current interval's accepted-Evidence feed is synchronizing. */
-  coherent?: boolean;
   intervalId: string;
   retainedRange: ActivityReadPoint["retainedRange"];
   committedEvidenceBoundary: ActivityReadPoint["committedEvidenceBoundary"];
@@ -206,6 +233,8 @@ export function clipActivityTimeRange(
 export const MAX_ACTIVITY_BUCKETS = 120;
 const DURATIONS = Object.freeze([1_000, 2_000, 5_000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000, 86_400_000]);
 export const MAX_ACTIVITY_SNAPSHOT_BURSTS = 64;
+export const MAX_ACTIVITY_TIMELINE_SOURCE_POINTS = 128;
+export const MAX_ACTIVITY_TIMELINE_MARKERS = 128;
 
 export function createActivityProjection(input: ActivityProjectionInput): ActivityProjection {
   return project(input);
@@ -293,7 +322,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
     ? chooseDuration([...serverLogical, ...localLogical], segments, range)
     : null;
   const buckets = duration === null ? [] : makeBuckets(serverLogical, localLogical, matching, duration, segments, range, readPoint.terminal);
-  const timeline = activityTimeline(serverLogical, localLogical, matching, segments, range);
+  const timeline = activityTimeline(serverLogical, localLogical, matching, activityMarkers, buckets, segments, range);
   const state: ActivityState = readPoint.coverage === "UNAVAILABLE" ? "UNAVAILABLE" : matching.length === 0 ? "EMPTY_MATCH" : readPoint.coverage === "LIMITED" || readPoint.terminal ? "LIMITED" : "AVAILABLE";
   const reason = state === "UNAVAILABLE"
     ? "Observation Coverage is unavailable."
@@ -361,6 +390,10 @@ function emptyTimeline(retainedRange: ActivityReadPoint["retainedRange"]): Activ
     matchingRange: null,
     snapshotBursts: Object.freeze([]),
     snapshotBurstsTruncated: false,
+    sourcePoints: Object.freeze([]),
+    sourcePointsOverflow: null,
+    markers: Object.freeze([]),
+    markersOverflow: null,
     clockAmbiguous: false
   });
 }
@@ -369,6 +402,8 @@ function activityTimeline(
   server: readonly ActivityEvidence[],
   local: readonly ActivityEvidence[],
   matching: readonly ActivityEvidence[],
+  activityMarkers: readonly ActivityMarker[],
+  buckets: readonly ActivityBucket[],
   segments: readonly Readonly<{ index: number; startSequence: number; endSequence: number | null }>[],
   retainedRange: ActivityReadPoint["retainedRange"]
 ): ActivityTimeline {
@@ -376,16 +411,29 @@ function activityTimeline(
     ? Object.freeze({ start: retainedRange.first.timestamp, end: retainedRange.last.timestamp + 1 })
     : null;
   const logicalUpdates = [...server, ...local];
+  let firstLogicalTimestamp = Number.POSITIVE_INFINITY;
+  let lastLogicalTimestamp = Number.NEGATIVE_INFINITY;
+  for (const entry of logicalUpdates) {
+    firstLogicalTimestamp = Math.min(firstLogicalTimestamp, entry.event.timestamp);
+    lastLogicalTimestamp = Math.max(lastLogicalTimestamp, entry.event.timestamp);
+  }
   const matchingRange = segments.length <= 1 && logicalUpdates.length
-    ? Object.freeze({
-        start: Math.min(...logicalUpdates.map((entry) => entry.event.timestamp)),
-        end: Math.max(...logicalUpdates.map((entry) => entry.event.timestamp)) + 1
-      })
+    ? Object.freeze({ start: firstLogicalTimestamp, end: lastLogicalTimestamp + 1 })
     : null;
-  const segmentFor = (sequence: number): number =>
-    segments.find((segment) => sequence >= segment.startSequence && (segment.endSequence === null || sequence <= segment.endSequence))?.index ?? 0;
+  const segmentFor = (sequence: number): number => {
+    let low = 0;
+    let high = segments.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >>> 1;
+      const segment = segments[middle]!;
+      if (sequence < segment.startSequence) high = middle - 1;
+      else if (segment.endSequence !== null && sequence > segment.endSequence) low = middle + 1;
+      else return segment.index;
+    }
+    return 0;
+  };
   const runs: Array<ActivitySnapshotBurst & Readonly<{ sequence: number }>> = [];
-  let current: { start: number; end: number; logicalUpdates: number; segment: number; sequence: number } | null = null;
+  let current: { start: number; end: number; startSequence: number; logicalUpdates: number; segment: number; sequence: number } | null = null;
   const countedSnapshotLogicalIds = new Set<string>();
   for (const entry of [...matching].sort((left, right) => left.sequence - right.sequence)) {
     if (entry.event.kind === "end-of-snapshot") {
@@ -411,16 +459,54 @@ function activityTimeline(
       continue;
     }
     if (current) runs.push(Object.freeze(current));
-    current = { start: entry.event.timestamp, end: entry.event.timestamp + 1, logicalUpdates: 1, segment, sequence: entry.sequence };
+    current = { start: entry.event.timestamp, end: entry.event.timestamp + 1, startSequence: entry.sequence, logicalUpdates: 1, segment, sequence: entry.sequence };
   }
   if (current) runs.push(Object.freeze(current));
   const snapshotBurstsTruncated = runs.length > MAX_ACTIVITY_SNAPSHOT_BURSTS;
+  const bucketById = new Map(buckets.map((bucket) => [bucket.id, bucket]));
+  const bucketDuration = buckets[0] ? buckets[0].end - buckets[0].start : null;
+  const lowDensityServer = server.filter((entry) => {
+    if (bucketDuration === null) return false;
+    const segment = segmentFor(entry.sequence);
+    const bucket = bucketById.get(`${segment}:${Math.floor(entry.event.timestamp / bucketDuration) * bucketDuration}`);
+    return bucket?.logicalUpdates === 1;
+  });
+  // LOCAL injections are deliberately sparse and directly actionable. Keep
+  // them exact even when several occur inside one SERVER-density bucket.
+  const sourceCandidates = [...local, ...lowDensityServer];
+  const selectedSourceCandidates = sourceCandidates
+    .slice(0, MAX_ACTIVITY_TIMELINE_SOURCE_POINTS)
+    .sort((left, right) => left.event.timestamp - right.event.timestamp || left.sequence - right.sequence);
+  const sourcePoints = selectedSourceCandidates.map((entry) => Object.freeze({
+    intervalId: entry.intervalId,
+    eventId: entry.event.id,
+    sequence: entry.sequence,
+    timestamp: entry.event.timestamp,
+    source: isLocalUpdate(entry.event) ? "LOCAL" as const : "SERVER" as const,
+    kind: "ITEM_UPDATE" as const,
+    clientId: eventClientId(entry.event),
+    sessionId: eventSessionId(entry.event),
+    subscriptionId: eventSubscriptionId(entry.event),
+    itemName: eventItemName(entry.event),
+    itemPosition: eventItemPosition(entry.event)
+  }));
+  const sourcePointsOverflow = sourceCandidates.length > selectedSourceCandidates.length
+    ? Object.freeze({ omitted: sourceCandidates.length - selectedSourceCandidates.length, evidenceRoute: "CURRENT_FILTERED_EVIDENCE" as const })
+    : null;
+  const timelineMarkers = activityMarkers.slice(0, MAX_ACTIVITY_TIMELINE_MARKERS);
+  const markersOverflow = activityMarkers.length > timelineMarkers.length
+    ? Object.freeze({ omitted: activityMarkers.length - timelineMarkers.length, evidenceRoute: "CURRENT_FILTERED_EVIDENCE" as const })
+    : null;
   return Object.freeze({
     originTimestamp: retainedRange?.first.timestamp ?? null,
     domain,
     matchingRange,
     snapshotBursts: Object.freeze(runs.slice(0, MAX_ACTIVITY_SNAPSHOT_BURSTS).map(({ sequence: _sequence, ...burst }) => Object.freeze(burst))),
     snapshotBurstsTruncated,
+    sourcePoints: Object.freeze(sourcePoints),
+    sourcePointsOverflow,
+    markers: Object.freeze(timelineMarkers),
+    markersOverflow,
     clockAmbiguous: segments.length > 1
   });
 }
@@ -530,8 +616,12 @@ function bucketCount(
     const includesSequence = (sequence: number): boolean => sequence >= segment.startSequence && (segment.endSequence === null || sequence <= segment.endSequence);
     const segmentEntries = entries.filter((entry) => includesSequence(entry.sequence));
     if (!segmentEntries.length) return total;
-    const observedFirst = Math.min(...segmentEntries.map(({ event }) => event.timestamp));
-    const observedLast = Math.max(...segmentEntries.map(({ event }) => event.timestamp));
+    let observedFirst = Number.POSITIVE_INFINITY;
+    let observedLast = Number.NEGATIVE_INFINITY;
+    for (const entry of segmentEntries) {
+      observedFirst = Math.min(observedFirst, entry.event.timestamp);
+      observedLast = Math.max(observedLast, entry.event.timestamp);
+    }
     const usesRetainedRange = segments.length === 1 || (retainedRange !== null && (includesSequence(retainedRange.first.sequence) || includesSequence(retainedRange.last.sequence)));
     const retainedFirst = retainedRange && usesRetainedRange && (segments.length === 1 || includesSequence(retainedRange.first.sequence)) ? retainedRange.first.timestamp : observedFirst;
     const retainedLast = retainedRange && usesRetainedRange && (segments.length === 1 || includesSequence(retainedRange.last.sequence)) ? retainedRange.last.timestamp : observedLast;
@@ -569,10 +659,16 @@ function makeBuckets(
 ): ActivityBucket[] {
   const inSegment = (entry: ActivityEvidence, segment: typeof segments[number]) => entry.sequence >= segment.startSequence && (segment.endSequence === null || entry.sequence <= segment.endSequence);
   return segments.flatMap((segment, segmentIndex) => {
-    const segmentEntries = [...server, ...local].filter((entry) => inSegment(entry, segment));
+    const segmentServer = server.filter((entry) => inSegment(entry, segment));
+    const segmentLocal = local.filter((entry) => inSegment(entry, segment));
+    const segmentEntries = [...segmentServer, ...segmentLocal];
     if (!segmentEntries.length) return [];
-    const observedFirst = Math.min(...segmentEntries.map(({ event }) => event.timestamp));
-    const observedLast = Math.max(...segmentEntries.map(({ event }) => event.timestamp));
+    let observedFirst = Number.POSITIVE_INFINITY;
+    let observedLast = Number.NEGATIVE_INFINITY;
+    for (const entry of segmentEntries) {
+      observedFirst = Math.min(observedFirst, entry.event.timestamp);
+      observedLast = Math.max(observedLast, entry.event.timestamp);
+    }
     const includesSequence = (sequence: number): boolean => sequence >= segment.startSequence && (segment.endSequence === null || sequence <= segment.endSequence!);
     const usesRetainedRange = segments.length === 1 || (retainedRange !== null && (includesSequence(retainedRange.first.sequence) || includesSequence(retainedRange.last.sequence)));
     const retainedFirst = retainedRange && usesRetainedRange && (segments.length === 1 || includesSequence(retainedRange.first.sequence)) ? retainedRange.first.timestamp : observedFirst;
@@ -581,26 +677,48 @@ function makeBuckets(
     const lastTimestamp = Math.max(observedLast, retainedLast);
     const first = Math.floor(firstTimestamp / duration) * duration;
     const count = Math.max(1, Math.ceil((lastTimestamp - first + 1) / duration));
-    return Array.from({ length: count }, (_, index) => {
+    const buckets = Array.from({ length: count }, (_, index) => {
       const start = first + index * duration; const end = start + duration;
-      const inBucket = (entry: ActivityEvidence) => inSegment(entry, segment) && entry.event.timestamp >= start && entry.event.timestamp < end;
       const firstPartial = firstTimestamp > start;
       const finalPartial = lastTimestamp + 1 < end;
-      return Object.freeze({
+      return {
         id: `${segment.index}:${start}`,
         start, end,
-        logicalUpdates: server.filter(inBucket).length,
-        snapshotLogicalUpdates: server.filter((entry) => inBucket(entry) && entry.event.update?.isSnapshot === true).length,
-        liveLogicalUpdates: server.filter((entry) => inBucket(entry) && entry.event.update?.isSnapshot !== true).length,
-        updateDeliveries: matching.filter((entry) => inBucket(entry) && isServerUpdate(entry.event) && Boolean(entry.event.listener)).length,
-        localLogicalUpdates: local.filter(inBucket).length,
-        localUpdateDeliveries: matching.filter((entry) => inBucket(entry) && isLocalUpdate(entry.event) && Boolean(entry.event.listener)).length,
+        logicalUpdates: 0,
+        snapshotLogicalUpdates: 0,
+        liveLogicalUpdates: 0,
+        updateDeliveries: 0,
+        localLogicalUpdates: 0,
+        localUpdateDeliveries: 0,
         firstPartial,
         currentPartial: !terminal && segmentIndex === segments.length - 1 && finalPartial,
         finalPartial,
         segment: segment.index
-      });
+      };
     });
+    const bucketFor = (entry: ActivityEvidence): typeof buckets[number] | null => {
+      const index = Math.floor((entry.event.timestamp - first) / duration);
+      return index >= 0 && index < buckets.length ? buckets[index]! : null;
+    };
+    for (const entry of segmentServer) {
+      const bucket = bucketFor(entry);
+      if (!bucket) continue;
+      bucket.logicalUpdates += 1;
+      if (entry.event.update?.isSnapshot === true) bucket.snapshotLogicalUpdates += 1;
+      else bucket.liveLogicalUpdates += 1;
+    }
+    for (const entry of segmentLocal) {
+      const bucket = bucketFor(entry);
+      if (bucket) bucket.localLogicalUpdates += 1;
+    }
+    for (const entry of matching) {
+      if (!inSegment(entry, segment) || !entry.event.listener) continue;
+      const bucket = bucketFor(entry);
+      if (!bucket) continue;
+      if (isServerUpdate(entry.event)) bucket.updateDeliveries += 1;
+      else if (isLocalUpdate(entry.event)) bucket.localUpdateDeliveries += 1;
+    }
+    return buckets.map((bucket) => Object.freeze(bucket));
   });
 }
 
@@ -719,16 +837,19 @@ function markers(entries: readonly ActivityEvidence[]): ActivityMarker[] {
     .sort((a, b) => a.event.timestamp - b.event.timestamp || a.sequence - b.sequence)
     .map((entry) => {
       const { event, sequence } = entry;
-      const kind = event.kind === "client-status" ? "CLIENT_STATUS" as const : event.kind === "subscription-error" ? "SUBSCRIPTION_ERROR" as const : event.kind === "lost-updates" ? "LOST_UPDATES" as const : "SESSION_TRANSITION" as const;
+      const sessionTransition = event.topology?.kind === "session-established" || event.topology?.kind === "session-absent";
+      const kind = sessionTransition ? "SESSION_TRANSITION" as const : event.kind === "client-status" ? "CLIENT_STATUS" as const : event.kind === "subscription-error" ? "SUBSCRIPTION_ERROR" as const : "LOST_UPDATES" as const;
+      const sessionLabel = event.topology?.kind === "session-established" ? "Session established" : event.topology?.kind === "session-absent" ? "Session absent" : "Session transition";
       const raw = event.raw ?? {};
       const rawString = (key: string): string | null => typeof raw[key] === "string" ? raw[key] as string : null;
       const rawScalar = (key: string): string | number | null => typeof raw[key] === "string" || typeof raw[key] === "number" ? raw[key] as string | number : null;
       return Object.freeze({
         kind,
+        intervalId: entry.intervalId,
         timestamp: event.timestamp,
         sequence,
         eventId: event.id,
-        label: kind === "CLIENT_STATUS" ? eventClientStatus(event) ?? "Client status observed" : kind === "SUBSCRIPTION_ERROR" ? "Subscription error" : kind === "LOST_UPDATES" ? "Lost updates" : "Session transition",
+        label: kind === "CLIENT_STATUS" ? eventClientStatus(event) ?? "Client status observed" : kind === "SUBSCRIPTION_ERROR" ? "Subscription error" : kind === "LOST_UPDATES" ? "Lost updates" : sessionLabel,
         reportedCount: event.update?.lostUpdates ?? null,
         clientId: eventClientId(event),
         sessionId: eventSessionId(event),
@@ -738,6 +859,7 @@ function markers(entries: readonly ActivityEvidence[]): ActivityMarker[] {
         status: eventClientStatus(event) ?? rawString("status"),
         errorCode: kind === "SUBSCRIPTION_ERROR" ? rawScalar("code") : null,
         errorMessage: kind === "SUBSCRIPTION_ERROR" ? rawString("message") : null,
+        source: event.synthetic || event.source === "synthetic" ? "LOCAL" as const : "SERVER" as const,
         provenance: event.synthetic || event.source === "synthetic" ? "LOCAL" as const : "SERVER" as const,
         consequenceLimit: kind === "LOST_UPDATES" ? "The reported loss does not establish its server-side cause." : kind === "SUBSCRIPTION_ERROR" ? "The captured error does not establish downstream application effect." : "This is a captured observation, not a continuous state interval.",
         supportingFilterMutations: evidenceFilterMutations(entry, ["client", "session", "subscription", "item"])

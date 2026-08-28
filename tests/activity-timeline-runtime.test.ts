@@ -25,6 +25,13 @@ async function settle(): Promise<void> {
   for (let index = 0; index < 80; index += 1) await Promise.resolve();
 }
 
+async function settleReplay(): Promise<void> {
+  for (let index = 0; index < 16; index += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await settle();
+  }
+}
+
 function publicationScheduler(): WorkbenchRuntimeScheduler & Readonly<{ flushFrame(): void }> {
   const frames: Array<() => void> = [];
   return {
@@ -37,12 +44,10 @@ function publicationScheduler(): WorkbenchRuntimeScheduler & Readonly<{ flushFra
 }
 
 describe("compact Activity timeline runtime seam", () => {
-  it("reports Activity synchronization instead of transient empty metrics before the accepted-Evidence feed is coherent", async () => {
+  it("publishes an available timeline after a synchronous accepted-Evidence replay", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update(1)] });
     const runtime = createWorkbenchRuntime({ history });
 
-    expect(runtime.getSnapshot().activity?.projection.state).toBe("LOADING");
-    await settle();
     expect(runtime.getSnapshot().activity?.projection.state).toBe("AVAILABLE");
     runtime.dispose();
   });
@@ -58,6 +63,38 @@ describe("compact Activity timeline runtime seam", () => {
     const activity = runtime.getSnapshot().activity!;
     expect(activity.projection.state).toBe("LOADING");
     expect(activity.projection.timeline.domain).toBeNull();
+    runtime.dispose();
+  });
+
+  it("settles a held replay with a captured Session transition into an available timeline", async () => {
+    const history = createInMemoryEventHistory();
+    const sessionEstablished: LightstreamerEventEnvelope = {
+      ...update(1),
+      id: "session-established",
+      kind: "client-status",
+      client: { id: "client-1", sessionId: "session-1", status: "CONNECTED" },
+      topology: {
+        version: 1,
+        kind: "session-established",
+        pageEpoch: "page-1",
+        captureSequence: 1,
+        provenance: { instrumentationSource: "official-public-api" },
+        coverage: { status: "complete", getters: {} },
+        client: { id: "client-1", sessionId: { state: "real", value: "session-1" }, status: "CONNECTED" }
+      }
+    };
+    await history.offer(sessionEstablished).settled;
+    for (let index = 2; index <= 513; index += 1) await history.offer(update(index)).settled;
+    const runtime = createWorkbenchRuntime({ history });
+
+    await Promise.resolve();
+    expect(runtime.getSnapshot().activity?.projection.state).toBe("LOADING");
+    await settleReplay();
+    const activity = runtime.getSnapshot().activity!;
+    expect(["AVAILABLE", "LIMITED"]).toContain(activity.projection.state);
+    expect(activity.projection.timeline.markers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventId: "session-established", kind: "SESSION_TRANSITION" })
+    ]));
     runtime.dispose();
   });
 
@@ -187,7 +224,7 @@ describe("compact Activity timeline runtime seam", () => {
     await settle();
 
     expect(runtime.getSnapshot().activity?.projection.timeline.snapshotBursts).toEqual([
-      { start: 1_000, end: 2_001, logicalUpdates: 2, segment: 0 }
+      { start: 1_000, end: 2_001, startSequence: 1, logicalUpdates: 2, segment: 0 }
     ]);
     runtime.dispose();
   });
@@ -219,6 +256,147 @@ describe("compact Activity timeline runtime seam", () => {
     releases.splice(0).forEach((release) => release());
     await settle();
     expect(runtime.getSnapshot().evidence.events.map((event) => event.id)).toContain("timeline-2");
+    runtime.dispose();
+  });
+
+  it("selects represented timeline source points and markers without changing Scope, Filter, Find, or Frozen Evidence", async () => {
+    const local = { ...update(2), source: "synthetic" as const, synthetic: true, logicalEventId: "local-2" };
+    const marker = {
+      ...update(3),
+      kind: "client-status" as const,
+      client: { id: "client-1", sessionId: "session-1", status: "DISCONNECTED" },
+      topology: {
+        version: 1 as const,
+        kind: "session-absent" as const,
+        pageEpoch: "page-1",
+        captureSequence: 3,
+        provenance: { instrumentationSource: "official-public-api" as const },
+        coverage: { status: "complete" as const, getters: {} },
+        client: { id: "client-1", sessionId: { state: "real" as const, value: "session-1" }, status: "DISCONNECTED" }
+      }
+    };
+    const history = createInMemoryEventHistory();
+    for (const event of [update(1), local, marker]) await history.offer(event).settled;
+    const runtime = createWorkbenchRuntime({ history });
+    await settle();
+    const filter = runtime.getSnapshot().evidence.investigation.filter;
+    runtime.dispatch({
+      type: "apply-filter-mutations",
+      expectedRevision: filter.revision,
+      operations: [{ type: "set-text", text: "timeline" }]
+    });
+    await settle();
+    runtime.dispatch({ type: "set-find", value: "timeline" });
+    await settle();
+    runtime.dispatch({ type: "freeze-evidence" });
+    await settle();
+    await history.offer(update(4)).settled;
+    await settle();
+
+    const before = runtime.getSnapshot();
+    const source = before.activity!.projection.timeline.sourcePoints.find((point) => point.eventId === "timeline-2")!;
+    const timelineMarker = before.activity!.projection.timeline.markers.find((point) => point.eventId === "timeline-3")!;
+    const frozenBoundary = before.activity!.readPoint.committedEvidenceBoundary;
+
+    runtime.dispatch({ type: "select-activity-evidence", ...source, inspect: true });
+    await settle();
+    let after = runtime.getSnapshot();
+    expect(after.evidence.selectedEventId).toBe("timeline-2");
+    expect(after.evidence.investigation.lookup).toMatchObject({ state: "RETAINED", evidence: { identity: { eventId: "timeline-2" } } });
+    expect(after.selectedEvidence?.id).toBe("timeline-2");
+    expect(after.contextId).toBe("context:timeline-2");
+    expect(after.scopeId).toBe(before.scopeId);
+    expect(after.activity?.filter).toEqual(before.activity?.filter);
+    expect(after.evidence.find).toBe("timeline");
+    expect(after.evidence.mode).toBe("frozen");
+    expect(after.activity?.readPoint.committedEvidenceBoundary).toEqual(frozenBoundary);
+
+    runtime.dispatch({ type: "select-activity-evidence", ...timelineMarker, inspect: true });
+    await settle();
+    after = runtime.getSnapshot();
+    expect(after.evidence.selectedEventId).toBe("timeline-3");
+    expect(after.selectedEvidence?.id).toBe("timeline-3");
+    expect(after.contextId).toBe("context:timeline-3");
+    expect(after.activity?.filter).toEqual(before.activity?.filter);
+    expect(after.evidence.find).toBe("timeline");
+    expect(after.evidence.mode).toBe("frozen");
+    expect(after.activity?.readPoint.committedEvidenceBoundary).toEqual(frozenBoundary);
+    runtime.dispose();
+  });
+
+  it("pages an off-window LOCAL timeline anchor into Evidence while preserving an active range, Find, and Frozen boundary", async () => {
+    const earlyLocal = { ...update(1), id: "early-local", source: "synthetic" as const, synthetic: true, logicalEventId: "early-local" };
+    const history = createInMemoryEventHistory({ panelSessionId: "authoritative-test" });
+    for (const event of [earlyLocal, ...Array.from({ length: 119 }, (_, index) => update(index + 2))]) {
+      await history.offer(event).settled;
+    }
+    const runtime = createWorkbenchRuntime({ history });
+    await settle();
+    const initialFilter = runtime.getSnapshot().evidence.investigation.filter;
+    runtime.dispatch({
+      type: "apply-filter-mutations",
+      expectedRevision: initialFilter.revision,
+      operations: [{ type: "set-around", around: { intervalId: "authoritative-test:interval-1", start: 1_000, end: 120_001 } }]
+    });
+    await settle();
+    runtime.dispatch({ type: "set-find", value: "timeline-120" });
+    await settle();
+    runtime.dispatch({ type: "freeze-evidence" });
+    await settle();
+    history.offer(update(121));
+    await settle();
+
+    const before = runtime.getSnapshot();
+    const anchor = before.activity!.projection.timeline.sourcePoints.find((point) => point.eventId === "early-local")!;
+    const frozenBoundary = before.activity!.readPoint.committedEvidenceBoundary;
+    expect(before.evidence.events.map((event) => event.id)).not.toContain("early-local");
+
+    runtime.dispatch({ type: "select-activity-evidence", ...anchor });
+    await settle();
+    const after = runtime.getSnapshot();
+    expect(after.evidence.loading).toBe(false);
+    expect(after.evidence.investigation.lookup).toMatchObject({ state: "RETAINED", evidence: { identity: { eventId: "early-local" } } });
+    expect(after.evidence.offset).toBe(119);
+    expect(after.evidence.events.map((event) => event.id)).toContain("early-local");
+    expect(after.evidence.selectedEventId).toBe("early-local");
+    expect(after.selectedEvidence?.id).toBe("early-local");
+    expect(after.evidence.investigation.filter).toEqual(before.evidence.investigation.filter);
+    expect(after.evidence.find).toBe("timeline-120");
+    expect(after.evidence.mode).toBe("frozen");
+    expect(after.activity?.readPoint.committedEvidenceBoundary).toEqual(frozenBoundary);
+
+    const narrowed = after.evidence.investigation.filter;
+    runtime.dispatch({
+      type: "apply-filter-mutations",
+      expectedRevision: narrowed.revision,
+      operations: [{ type: "set-around", around: { intervalId: "authoritative-test:interval-1", start: 2_000, end: 120_001 } }]
+    });
+    await settle();
+    const beforeStaleAnchor = runtime.getSnapshot();
+    expect(beforeStaleAnchor.activity!.projection.timeline.sourcePoints.map((point) => point.eventId)).not.toContain("early-local");
+    runtime.dispatch({ type: "select-activity-evidence", ...anchor, inspect: true });
+    await settle();
+    const afterStaleAnchor = runtime.getSnapshot();
+    expect(afterStaleAnchor.evidence.selectedEventId).toBe(beforeStaleAnchor.evidence.selectedEventId);
+    expect(afterStaleAnchor.contextId).toBe(beforeStaleAnchor.contextId);
+    runtime.dispose();
+  });
+
+  it("keeps ordinary Find navigation independent from an unrelated visible selection", async () => {
+    const history = createAuthoritativeHistory({
+      precommitted: [
+        { ...update(1), update: { isSnapshot: true, fields: { marker: "old-find-only" } } },
+        ...Array.from({ length: 119 }, (_, index) => update(index + 2))
+      ]
+    });
+    const runtime = createWorkbenchRuntime({ history });
+    await settle();
+    runtime.dispatch({ type: "select-evidence", eventId: "timeline-120" });
+    await settle();
+    runtime.dispatch({ type: "set-find", value: "old-find-only" });
+    await settle();
+
+    expect(runtime.getSnapshot().evidence.events.map((event) => event.id)).toContain("timeline-1");
     runtime.dispose();
   });
 });

@@ -29,7 +29,9 @@ import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
 import { ObservedActivityDocument } from "./observed-activity-document";
-import { ActivityTimeline, activityRangeLabel } from "./activity-timeline";
+import { ActivityTimeline } from "./activity-timeline";
+import { activityRangeLabel } from "./activity-timeline-format";
+import type { TimelineEvidenceAnchor } from "./activity-timeline-events";
 
 import "./workbench-panel.css";
 
@@ -471,6 +473,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     key: () => undefined
   });
   const pendingEvidenceFocus = useRef<string | null>(null);
+  const pendingTimelineReveal = useRef<string | null>(null);
   const pendingScopeFocus = useRef<string | null>(null);
   const pendingScopeEntryFocus = useRef(false);
   const pendingContextFocus = useRef(false);
@@ -894,6 +897,18 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       pendingContextFocus.current = false;
     }
     dispatch(runtime, { type: "open-context" });
+  };
+
+  const selectTimelineEvidence = (anchor: TimelineEvidenceAnchor, inspect: boolean) => {
+    dispatch(runtime, { type: "select-activity-evidence", ...anchor, inspect });
+    if (runtime.getSnapshot().evidence.selectedEventId !== anchor.eventId) return;
+    if (inspect && runtime.getSnapshot().contextId !== `context:${anchor.eventId}`) return;
+    pendingTimelineReveal.current = anchor.eventId;
+    if (inspect) {
+      pendingContextFocus.current = true;
+      pendingEvidenceFocus.current = anchor.eventId;
+      setContextCollapsed(false);
+    }
   };
 
   const openScopeContext = () => {
@@ -1409,6 +1424,15 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [findState.currentEventId]);
 
   useLayoutEffect(() => {
+    const eventId = pendingTimelineReveal.current;
+    if (!eventId || (geometry === "compact" && snapshot.contextId)) return;
+    const row = evidenceRows.current.get(eventId);
+    if (!row) return;
+    row.scrollIntoView?.({ block: "nearest" });
+    pendingTimelineReveal.current = null;
+  }, [snapshot.version, geometry, snapshot.contextId]);
+
+  useLayoutEffect(() => {
     const nodeId = pendingScopeFocus.current;
     if (!nodeId) return;
     const node = scopeNodesById.current.get(nodeId);
@@ -1742,7 +1766,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </nav>
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
-          {snapshot.activity ? <ActivityTimeline projection={snapshot.activity.projection} filter={appliedFilter} onFilter={(expectedRevision, operations) => dispatch(runtime, { type: "apply-filter-mutations", expectedRevision, operations })} /> : null}
+          {snapshot.activity ? <ActivityTimeline projection={snapshot.activity.projection} filter={appliedFilter} frozen={evidence.mode === "frozen"} selectedEventId={selectedEventId} onSelect={selectTimelineEvidence} onShowEvidence={() => evidenceLedger.current?.focus()} onFilter={(expectedRevision, operations) => dispatch(runtime, { type: "apply-filter-mutations", expectedRevision, operations })} /> : null}
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>{activeTimelineRange ? "Before range" : "Matching"} {matching.toLocaleString()}</span><span>{activeTimelineRange ? "In range" : "In Scope"} {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : snapshot.context.diagnostics.length ? <button type="button" aria-controls="workbench-context" onClick={openScopeContext}>Open Scope Context</button> : null}</div></header>
           {filterOpen ? <form className={`workbench-react__filter${filterStep !== "composer" ? " workbench-react__filter--structured-open" : ""}${filterStep === "explorer" ? " workbench-react__filter--explorer-open" : ""}`} id="workbench-filter" aria-label="Filter ordered Evidence" onKeyDown={handleFilterEscape} onSubmit={(event) => {
             event.preventDefault();

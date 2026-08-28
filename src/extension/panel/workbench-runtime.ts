@@ -158,7 +158,8 @@ import {
   type ActivityProjection,
   type ActivityProjectionInput,
   type ActivityScope,
-  type ActivityReadPoint
+  type ActivityReadPoint,
+  type ActivityTimelineSourcePoint
 } from "../../core/activity-projection";
 import {
   closeActivityDocument,
@@ -713,6 +714,7 @@ export type WorkbenchCommand =
   | { type: "open-activity" }
   | { type: "close-activity" }
   | { type: "show-activity-supporting-evidence"; start?: number; end?: number; filterMutations?: readonly FilterMutation[] }
+  | { type: "select-activity-evidence"; intervalId: string; eventId: string; sequence: number; timestamp: number; source: "SERVER" | "LOCAL"; inspect?: boolean }
   | { type: "select-activity"; selection: ActivityDocumentState["selection"] }
   | { type: "set-activity-local-series"; enabled: boolean }
   | { type: "set-activity-timeline-series"; series: ActivityDocumentState["timelineSeries"] }
@@ -982,6 +984,10 @@ class Runtime implements WorkbenchRuntime {
    */
   private activityEvidenceRevision = 0;
   private activityProjectionCache: Readonly<{ key: string; projection: ActivityProjection }> | null = null;
+  /** Matching-result offset for an exact compact-timeline selection. */
+  private timelineEvidenceOffset: number | null = null;
+  /** Only an explicit timeline reveal may keep its selected page ahead of Find. */
+  private timelineEvidenceRevealActive = false;
   private activityEvidenceReadPointCache: Readonly<{ intervalId: string; through: number; evidence: readonly ActivityEvidence[] }> | null = null;
   private activityEvidenceCoherent = false;
   private activityOpen = false;
@@ -1925,6 +1931,8 @@ class Runtime implements WorkbenchRuntime {
         this.setScenarioStepEditorPresentation(command.stepId, command.presentation);
         return;
       case "select-evidence":
+        this.timelineEvidenceOffset = null;
+        this.timelineEvidenceRevealActive = false;
         this.selectionEventId = command.eventId;
         this.focusedEventId = command.eventId;
         this.selectionHiddenByFilter = false;
@@ -1945,6 +1953,8 @@ class Runtime implements WorkbenchRuntime {
         }
         return;
       case "focus-evidence":
+        this.timelineEvidenceOffset = null;
+        this.timelineEvidenceRevealActive = false;
         this.focusedEventId = command.eventId;
         this.selectionEventId = command.eventId;
         this.selectionHiddenByFilter = false;
@@ -1990,6 +2000,8 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       case "open-raw-evidence":
+        this.timelineEvidenceOffset = null;
+        this.timelineEvidenceRevealActive = false;
         this.selectionEventId = command.eventId;
         this.focusedEventId = command.eventId;
         this.resolveSelectedEvent(command.eventId, true);
@@ -2085,7 +2097,6 @@ class Runtime implements WorkbenchRuntime {
           });
         }
         this.activityOpen = false;
-        this.compactClosedActivityEvidence();
         this.cancelActivityPublication();
         if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
         const activityOrigin = this.activityOriginCheckpoint;
@@ -2126,13 +2137,15 @@ class Runtime implements WorkbenchRuntime {
           if (activityDocument) this.recordInvestigationCheckpoint(activityDocument);
           this.canonicalFilter = result.filter;
           this.activityOpen = false;
-          this.compactClosedActivityEvidence();
           if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
           this.recordInvestigationCheckpoint();
           this.refreshEvidence("filter");
         }
         return;
       }
+      case "select-activity-evidence":
+        this.selectActivityEvidence(command);
+        return;
       case "select-activity":
       case "set-activity-local-series":
       case "set-activity-timeline-series":
@@ -2239,6 +2252,79 @@ class Runtime implements WorkbenchRuntime {
       this.selectionHiddenByFilter = false;
       this.filterRecoveryFocused = false;
     }
+  }
+
+  /**
+   * Selects an exact compact-timeline anchor only while it remains represented
+   * by the current scoped, filtered Activity projection and its read point.
+   */
+  private selectActivityEvidence(anchor: Readonly<Pick<ActivityTimelineSourcePoint, "intervalId" | "eventId" | "sequence" | "timestamp" | "source"> & { inspect?: boolean }>): void {
+    const projection = this.activitySnapshot(this.scopeSnapshot()).projection;
+    const sameAnchor = (candidate: Readonly<Pick<ActivityTimelineSourcePoint, "intervalId" | "eventId" | "sequence" | "timestamp" | "source">>): boolean =>
+      candidate.intervalId === anchor.intervalId &&
+      candidate.eventId === anchor.eventId &&
+      candidate.sequence === anchor.sequence &&
+      candidate.timestamp === anchor.timestamp &&
+      candidate.source === anchor.source;
+    const represented = projection.timeline.sourcePoints.some(sameAnchor) || projection.timeline.markers.some(sameAnchor);
+    if (!represented || projection.readPoint.intervalId !== anchor.intervalId) return;
+    const offset = this.activityEvidenceOffset(anchor, projection);
+    if (offset === null) return;
+
+    this.selectionEventId = anchor.eventId;
+    this.focusedEventId = anchor.eventId;
+    this.selectedEvidenceIdentity = Object.freeze({
+      intervalId: anchor.intervalId,
+      pageId: anchor.intervalId,
+      ownerId: "memory-event-history",
+      sequence: anchor.sequence,
+      eventId: anchor.eventId
+    });
+    this.selectionHiddenByFilter = false;
+    this.filterRecoveryFocused = false;
+    this.selectedPayloadLoadedForEventId = null;
+    this.timelineEvidenceOffset = offset;
+    this.timelineEvidenceRevealActive = true;
+    if (anchor.inspect) this.contextId = `context:${anchor.eventId}`;
+    if (anchor.eventId !== this.clearedSelectionEventId) this.clearedSelectionEventId = null;
+    this.publish();
+    if (
+      !this.displayedEvidence().events.some((event) => event.id === anchor.eventId) ||
+      !this.selectedEventEnvelope ||
+      this.selectedEventEnvelope.id !== anchor.eventId ||
+      this.selectedPayloadLoadedForEventId !== anchor.eventId
+    ) {
+      if (!this.evidenceQueryPending) this.refreshEvidence("command", offset, true);
+    }
+  }
+
+  /**
+   * Computes the existing bounded Evidence-page offset from compact Activity
+   * metadata only. It is intentionally paid on an explicit anchor selection,
+   * never while rendering the closed timeline.
+   */
+  private activityEvidenceOffset(
+    anchor: Readonly<Pick<ActivityTimelineSourcePoint, "intervalId" | "eventId" | "sequence" | "timestamp" | "source">>,
+    projection: ActivityProjection
+  ): number | null {
+    const boundary = projection.readPoint.committedEvidenceBoundary;
+    let newerMatching = 0;
+    for (let index = this.activityEvidence.length - 1; index >= 0; index -= 1) {
+      const entry = this.activityEvidence[index]!;
+      if (
+        entry.intervalId !== anchor.intervalId ||
+        (boundary !== null && entry.sequence > boundary.sequence) ||
+        !matchesActivityEvidence(entry, this.canonicalFilter, projection.scope)
+      ) continue;
+      if (
+        entry.event.id === anchor.eventId &&
+        entry.sequence === anchor.sequence &&
+        entry.event.timestamp === anchor.timestamp &&
+        (entry.event.synthetic || entry.event.source === "synthetic" ? "LOCAL" : "SERVER") === anchor.source
+      ) return newerMatching;
+      newerMatching += 1;
+    }
+    return null;
   }
 
   dispose(): void {
@@ -2502,6 +2588,8 @@ class Runtime implements WorkbenchRuntime {
     this.activityEvidenceRevision += 1;
     this.activityProjectionCache = null;
     this.activityEvidenceReadPointCache = null;
+    this.timelineEvidenceOffset = null;
+    this.timelineEvidenceRevealActive = false;
     // Clear establishes a new, known-empty History Interval immediately.
     this.activityEvidenceCoherent = true;
     this.activityHydrationPromise = null;
@@ -2840,6 +2928,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     if (state.progress.phase === "LIVE") {
+      const becameCoherent = !this.activityEvidenceCoherent;
       this.activityEvidenceCoherent = true;
       const recovery = this.projectionRecovery;
       if (recovery !== null) {
@@ -2851,6 +2940,13 @@ class Runtime implements WorkbenchRuntime {
         this.projectionRecovery = null;
         this.invalidatePreparedExport();
         if (this.initialEvidenceSettled && this.visible) this.schedulePassivePublication();
+      }
+      // A closed Activity timeline has no delayed document publication. The
+      // false→true transition replaces its LOADING snapshot after replay;
+      // later LIVE progress notifications remain on normal passive cadence.
+      if (becameCoherent) {
+        if (this.visible) this.publish();
+        else this.hiddenDirty = true;
       }
       return;
     }
@@ -4479,15 +4575,20 @@ class Runtime implements WorkbenchRuntime {
 
   private refreshEvidence(
     source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility",
-    offset = 0
+    offset = 0,
+    preserveCommandOffset = false
   ): void {
+    if (source === "scope" || source === "filter" || source === "reveal-selection" || source === "navigation") {
+      this.timelineEvidenceOffset = null;
+      this.timelineEvidenceRevealActive = false;
+    }
     if (source === "passive" && this.evidenceQueryPending) {
       this.passiveRefreshPending = true;
       return;
     }
     this.reconcileScopeIdentity();
     const effectiveOffset = this.mode === "frozen" && source !== "passive" && source !== "visibility"
-      ? (source === "navigation" ? offset : this.displayedEvidence().offset)
+      ? (source === "navigation" || preserveCommandOffset ? offset : this.displayedEvidence().offset)
       : offset;
     if (source !== "navigation") {
       this.evidencePageCursors.clear();
@@ -4496,7 +4597,7 @@ class Runtime implements WorkbenchRuntime {
     this.evidenceQueryAbortController?.abort();
     const queryController = new AbortController();
     this.evidenceQueryAbortController = queryController;
-    const request = Object.freeze({ ...this.investigationRequest(effectiveOffset, source), signal: queryController.signal });
+    const request = Object.freeze({ ...this.investigationRequest(effectiveOffset, source, preserveCommandOffset), signal: queryController.signal });
     this.evidenceQueryPending = true;
     this.evidenceLoading = true;
     this.investigationState = "loading";
@@ -4567,14 +4668,17 @@ class Runtime implements WorkbenchRuntime {
         } else {
           this.evidencePageCursors.delete(effectiveOffset + result.value.page.evidence.length);
         }
-        this.applyInvestigationSnapshot(result.value, source, effectiveOffset);
-        if (selectionNeedsLookup) {
+        this.applyInvestigationSnapshot(result.value, source, effectiveOffset, preserveCommandOffset);
+        const selectionNeedsTimelinePage = this.timelineEvidenceRevealActive && this.timelineEvidenceOffset !== null &&
+          !this.displayedEvidence().events.some((event) => event.id === this.selectionEventId);
+        if (selectionNeedsLookup || selectionNeedsTimelinePage) {
           // Selection may arrive while the initial/passive request is in
           // flight. Reissue the same coherent investigation with the selected
           // identity attached instead of hydrating payload through a second
           // legacy read path.
           this.initialEvidenceSettled = true;
-          this.refreshEvidence("command");
+          const timelineOffset = this.timelineEvidenceOffset;
+          this.refreshEvidence("command", timelineOffset ?? 0, timelineOffset !== null);
           return;
         }
         this.resumePendingLocalInjection();
@@ -4631,7 +4735,8 @@ class Runtime implements WorkbenchRuntime {
 
   private investigationRequest(
     offset: number,
-    source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility"
+    source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility",
+    timelineReveal = false
   ): EvidenceInvestigationQueryRequest {
     const topology = this.topologyProjection.snapshot();
     const target = findTopologySelection(topology, this.scopeId ?? "page");
@@ -4648,7 +4753,7 @@ class Runtime implements WorkbenchRuntime {
       // Find is a retained-history operation even while the visible page is
       // Frozen. Read its canonical match window at the current boundary, then
       // keep the Frozen page/read point when publishing that window.
-      at: this.mode === "frozen" && this.find.trim() !== "" && source === "command"
+      at: this.mode === "frozen" && this.find.trim() !== "" && source === "command" && !timelineReveal
         ? "LATEST_COMMITTED"
         : frozenReadPoint ?? "LATEST_COMMITTED",
       scope: structuralEvidenceScope(target),
@@ -4747,9 +4852,10 @@ class Runtime implements WorkbenchRuntime {
   private applyInvestigationSnapshot(
     value: EvidenceSnapshot,
     source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility",
-    offset: number
+    offset: number,
+    timelineReveal = false
   ): void {
-    const frozenFindBase = this.mode === "frozen" && this.find.trim() !== "" && source === "command"
+    const frozenFindBase = this.mode === "frozen" && this.find.trim() !== "" && source === "command" && !timelineReveal
       ? this.frozenInvestigation
       : null;
     const projectedValue = frozenFindBase
@@ -4762,12 +4868,17 @@ class Runtime implements WorkbenchRuntime {
     const findWindow = value.find?.window;
     const findTargetId = value.find?.current?.eventId ?? value.find?.first?.eventId ?? null;
     const targetIsOnCanonicalPage = findTargetId === null || value.page.evidence.some((record) => record.identity.eventId === findTargetId);
-    const boundedFindWindow = !targetIsOnCanonicalPage && findWindow && findWindow.length > 0
+    const timelineSelectionIsOnCanonicalPage = this.timelineEvidenceRevealActive && this.selectionEventId !== null && value.page.evidence.some((record) => record.identity.eventId === this.selectionEventId);
+    const timelineLookupPage = this.timelineEvidenceRevealActive && !timelineSelectionIsOnCanonicalPage &&
+      value.lookup?.state === "RETAINED" && value.lookup.evidence.identity.eventId === this.selectionEventId
+      ? Object.freeze({ ...projectedValue.page, evidence: Object.freeze([value.lookup.evidence]), nextCursor: null })
+      : null;
+    const boundedFindWindow = !this.timelineEvidenceRevealActive && timelineLookupPage === null && !timelineSelectionIsOnCanonicalPage && !targetIsOnCanonicalPage && findWindow && findWindow.length > 0
       ? findWindow.slice(0, this.windowSize)
       : null;
-    const displayedPage = boundedFindWindow && boundedFindWindow.length > 0
+    const displayedPage = timelineLookupPage ?? (boundedFindWindow && boundedFindWindow.length > 0
       ? Object.freeze({ ...projectedValue.page, evidence: Object.freeze([...boundedFindWindow].reverse()) })
-      : projectedValue.page;
+      : projectedValue.page);
     const displayedValue = displayedPage === projectedValue.page
       ? projectedValue
       : Object.freeze({ ...projectedValue, page: displayedPage });
@@ -4789,6 +4900,8 @@ class Runtime implements WorkbenchRuntime {
       this.selectedEvidenceIdentity = selectedRecord.identity;
       this.selectedEventEnvelope = this.eventForRecord(selectedRecord);
       this.selectionHiddenByFilter = false;
+      this.timelineEvidenceOffset = null;
+      this.timelineEvidenceRevealActive = false;
     }
 
     if (displayedValue.lookup?.state === "RETAINED") {
@@ -5358,16 +5471,6 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  /**
-   * Activity now keeps its bounded, payload-free index for the full current
-   * History Interval. The document may close without losing its coherent
-   * readpoint or forcing a later raw-journal scan.
-   */
-  private compactClosedActivityEvidence(): void {
-    // Intentionally retained through Clear. This is compact Activity metadata,
-    // not another captured-event payload cache.
-  }
-
   private activitySnapshot(scope: WorkbenchSnapshot["scope"]): WorkbenchActivitySnapshot {
     const target = findTopologySelection(this.topologyProjection.snapshot(), this.scopeId ?? "page");
     const activityScope = activityScopeFor(target);
@@ -5523,7 +5626,6 @@ class Runtime implements WorkbenchRuntime {
     this.activityProjectionCache = null;
     this.activityEvidenceReadPointCache = null;
     this.activityHydrated = true;
-    this.compactClosedActivityEvidence();
     if (this.activityOpen) this.publish();
   }
 

@@ -186,7 +186,7 @@ describe("Observed Activity projection", () => {
     });
 
     expect(projection.matchingEvidence).toBe(1);
-    expect(projection.markers[0]).toMatchObject({ kind: "CLIENT_STATUS", clientId: "client-1", sessionId: "session-2", status: "DISCONNECTED" });
+    expect(projection.markers[0]).toMatchObject({ kind: "SESSION_TRANSITION", clientId: "client-1", sessionId: "session-2", status: "DISCONNECTED" });
 
     const sessionMutation = projection.markers[0]?.supportingFilterMutations?.find((mutation) =>
       mutation.type === "add-criterion" && mutation.facet === "session"
