@@ -18,6 +18,93 @@ const emptyFilter = (): EvidenceFilter => ({ revision: 1, text: "", criteria: {}
 const criterion = (facet: string, value: string) => typedFacetValue(facet, "string", value, value);
 
 describe("filter-impl-06 memory selection planner", () => {
+  it("uses complete token-posting supersets for substring filters and falls back for phrase filters", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-06-substring-candidates" });
+    const mergeCriterion = typedFacetValue("mode", "enum", "MERGE", "MERGE");
+    await history.offer(event("scenario-event-1", 1, 1_000)).settled;
+    await history.offer(event("scenario-event-1-passive", 2, 2_000)).settled;
+    await history.offer({ ...event("scenario-event-1-command", 3, 3_000), subscription: { id: "subscription-command", mode: "COMMAND" } }).settled;
+    await history.offer(event("phrase-merge", 4, 4_000, "scenario event phrase")).settled;
+    await history.offer({ ...event("phrase-command", 5, 5_000, "scenario event phrase"), subscription: { id: "subscription-phrase-command", mode: "COMMAND" } }).settled;
+    await history.offer(event("long-field-record", 6, 6_000, `${"x".repeat(2_049)} canonical-only-long-token`)).settled;
+
+    const base = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(base.ok).toBe(true);
+    if (!base.ok) return;
+    const query = (text: string, criteria: EvidenceFilter["criteria"] = {}) => history.query!({
+      at: base.value.readPoint,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      filter: { ...emptyFilter(), text, criteria }
+    });
+
+    const prefixWithFacet = await query("scenario-event-1", {
+      mode: { include: [mergeCriterion], exclude: [] },
+    });
+    expect(prefixWithFacet).toMatchObject({
+      ok: true,
+      value: {
+        totals: { matching: 2, inScope: 2 },
+        page: { evidence: [
+          { identity: { eventId: "scenario-event-1" } },
+          { identity: { eventId: "scenario-event-1-passive" } },
+        ] },
+        telemetry: { fullRetainedScan: false },
+      },
+    });
+
+    const substring = await query("event-1-pass");
+    expect(substring).toMatchObject({
+      ok: true,
+      value: {
+        page: { evidence: [{ identity: { eventId: "scenario-event-1-passive" } }] },
+        telemetry: { fullRetainedScan: true },
+      },
+    });
+
+    const initialFind = await history.query!({
+      at: base.value.readPoint,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      filter: emptyFilter(),
+      find: { text: "scenario-event-1" },
+    });
+    expect(initialFind).toMatchObject({
+      ok: true,
+      value: {
+        find: {
+          total: 3,
+          current: null,
+          matches: [
+            { eventId: "scenario-event-1" },
+            { eventId: "scenario-event-1-passive" },
+            { eventId: "scenario-event-1-command" },
+          ],
+        },
+        telemetry: { fullRetainedScan: false },
+      },
+    });
+
+    const phraseWithFacet = await query("scenario event phrase", {
+      mode: { include: [mergeCriterion], exclude: [] },
+    });
+    expect(phraseWithFacet).toMatchObject({
+      ok: true,
+      value: {
+        totals: { matching: 1, inScope: 1 },
+        page: { evidence: [{ identity: { eventId: "phrase-merge" } }] },
+        telemetry: { fullRetainedScan: true },
+      },
+    });
+
+    const canonicalOnly = await query("canonical-only-long-token");
+    expect(canonicalOnly).toMatchObject({
+      ok: true,
+      value: {
+        page: { evidence: [{ identity: { eventId: "long-field-record" } }] },
+        telemetry: { fullRetainedScan: true },
+      },
+    });
+  });
+
   it("looks up retained selected Evidence immutably and reports exact canonical blockers", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-06-lookup" });
     await history.offer(event("one", 1, 1_000, "alpha")).settled;

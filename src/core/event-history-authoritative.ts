@@ -499,6 +499,37 @@ function intersectMemoryPostings(postings: readonly Set<number>[]): Set<number> 
   return result;
 }
 
+function memoryIndexedSingleTokenSearchQuery(
+  index: MemoryQueryIndex,
+  text: string,
+): string | null {
+  const tokens = memoryQueryTokens(text);
+  // Keep the existing indexed-token eligibility boundary. Canonical text not
+  // present in this compact index, and phrases, retain the materialized path.
+  return text.length >= 3
+    && tokens.length === 1
+    && tokens[0] === text
+    && index.searchPostings.has(text)
+    ? text
+    : null;
+}
+
+function memorySearchCandidatePostings(
+  index: MemoryQueryIndex,
+  text: string,
+): Readonly<{ sequences: Set<number>; reads: number }> | null {
+  const tokenQuery = memoryIndexedSingleTokenSearchQuery(index, text);
+  if (tokenQuery === null) return null;
+  const sequences = new Set<number>();
+  let reads = 0;
+  for (const [token, posting] of index.searchPostings) {
+    if (!token.includes(tokenQuery)) continue;
+    reads += 1;
+    for (const sequence of posting) sequences.add(sequence);
+  }
+  return { sequences, reads };
+}
+
 function memoryIndexedFilterCandidates(index: MemoryQueryIndex, filter: EvidenceQueryRequest["filter"]): MemoryPostingSelection {
   const facetGroups: Set<number>[] = [];
   let reads = 0;
@@ -518,10 +549,10 @@ function memoryIndexedFilterCandidates(index: MemoryQueryIndex, filter: Evidence
   }
   const text = normalizeEvidenceSearchText(filter.text);
   if (text.length >= 3) {
-    const posting = index.searchPostings.get(text);
-    reads += 1;
-    if (!posting) return { sequences: null, reads, candidates: 0, driver: null };
-    facetGroups.push(posting);
+    const candidates = memorySearchCandidatePostings(index, text);
+    if (candidates === null) return { sequences: null, reads, candidates: 0, driver: null };
+    reads += candidates.reads;
+    facetGroups.push(candidates.sequences);
     driver ??= "search";
   }
   if (facetGroups.length === 0) return { sequences: null, reads, candidates: 0, driver };
@@ -1268,11 +1299,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", error instanceof Error ? error.message : "The page cursor is invalid.") });
     }
     const unsupported = filter.unsupported.length > 0;
-    const findTextLength = request.find === undefined ? 0 : Array.from(normalizeEvidenceSearchText(request.find.text)).length;
     const filterText = normalizeEvidenceSearchText(filter.text);
-    const indexedFilterTextSupported = filterText.length === 0 || (filterText.length >= 3 && memoryQueryIndex.searchPostings.has(filterText));
+    const indexedFilterTextSupported = filterText.length === 0 || memoryIndexedSingleTokenSearchQuery(memoryQueryIndex, filterText) !== null;
     const indexedFindTextSupported = request.find === undefined
-      || (findTextLength >= 3 && memoryQueryIndex.searchPostings.has(normalizeEvidenceSearchText(request.find.text)));
+      || memoryIndexedSingleTokenSearchQuery(memoryQueryIndex, normalizeEvidenceSearchText(request.find.text)) !== null;
     const hasStructuralInclude = Object.values(filter.criteria).some((bucket) => bucket?.include.some((value) => value.type.startsWith("structural-")) === true);
     const canUseIndexedFind = request.find !== undefined
       && request.find.current === undefined
@@ -1282,7 +1312,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const useMaterializedFallback = unsupported
       || cursor !== null
       || (request.discover?.length ?? 0) > 0
-      || (request.find !== undefined && (!canUseIndexedFind || findTextLength < 3))
+      || (request.find !== undefined && !canUseIndexedFind)
       || !indexedFilterTextSupported
       || !indexedFindTextSupported
       || hasStructuralInclude;
