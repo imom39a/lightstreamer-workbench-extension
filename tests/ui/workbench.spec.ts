@@ -2502,7 +2502,7 @@ test("Scenario Checkpoint authoring stays protected, keyboard reachable, and Rev
 test("Scenario Diagnostic Observation Review and Trace expose bounded provenance without copying messages", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-scenario-diagnostic-pass", { width: 900, height: 700 }, "light");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-  await expect(scenario.getByLabel("Protected Scenario target and execution boundary")).toContainText(/Diagnostic authorization seed.*sequence 0/);
+  await expect(scenario.getByLabel("Protected Scenario target and execution boundary")).not.toContainText("Diagnostic authorization seed");
   await expect(scenario.getByRole("region", { name: "Scenario Run ledger" })).toContainText(/Evidence boundary .*Diagnostic Observation cursor .*sequence 0/);
 
   const checkpoint = page.getByRole("article", { name: "Scenario Checkpoint Later lost-updates observation exists" });
@@ -2618,6 +2618,13 @@ test("Scenario fails closed for incompatible membership, invalid Review, and par
   await expect(partialTrace).toBeVisible();
   await notRunTrace.scrollIntoViewIfNeeded();
   await expect(notRunTrace).toBeVisible();
+
+  await page.setViewportSize({ width: 900, height: 320 });
+  await expect.poll(() => stoppedSteps.evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
+  await partialTrace.scrollIntoViewIfNeeded();
+  await expect(partialTrace).toBeInViewport();
+  await notRunTrace.scrollIntoViewIfNeeded();
+  await expect(notRunTrace).toBeInViewport();
   await expect(stopped.getByText(/Injection local-injection-/)).toHaveCount(1);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(1);
   await expectNoSeriousAxeViolations(page, testInfo);

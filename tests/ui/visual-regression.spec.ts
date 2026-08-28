@@ -214,7 +214,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         await expect(rule).toBeInViewport();
       }
       if (!visual.production.scenario.endsWith("authoring")) {
-        await expect(scenario.getByLabel("Protected Scenario target and execution boundary")).toContainText("Diagnostic authorization seed");
+        await expect(scenario.getByLabel("Protected Scenario target and execution boundary")).not.toContainText("Diagnostic authorization seed");
         await expect(scenario.getByRole("region", { name: "Scenario Run ledger" })).toContainText("Diagnostic Observation cursor");
       }
       if (visual.production.scenario.endsWith("review")) await expect(checkpoint).toContainText("REVIEWED");

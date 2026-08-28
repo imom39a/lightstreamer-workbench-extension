@@ -2064,7 +2064,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => editRuntime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run, priorRuns: [run], focusedMemberId: checkpoint.id, runner: { ...reviewed.runner!, run, phase: "complete", activeCheckpoint: null } } })));
     expect(region.textContent).toContain("Diagnostic Observation subscription.lost-updates");
     expect(region.textContent).toContain("observed observed \"error\" · certain · diagnostic-observation");
-    expect(document.querySelector('[aria-label="Protected Scenario target and execution boundary"]')?.textContent).toContain("Diagnostic authorization seeddiagnostic-review · sequence 3");
+    expect(document.querySelector('[aria-label="Protected Scenario target and execution boundary"]')?.textContent).not.toContain("Diagnostic authorization seed");
     expect(document.querySelector('[aria-label="Scenario Run ledger"]')?.textContent).toContain("Evidence boundary empty · Diagnostic Observation cursor diagnostic-review · sequence 3");
     expect(region.textContent).toContain("Exact affected identity subscription · page page-1 · client client-1 · session session-1 · subscription subscription-1");
     expect(region.textContent).toContain("Diagnostic Observation boundary diagnostic-interval · sequence 7");

@@ -71,7 +71,6 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   const nextMember = state.runner?.cursor.members[state.runner.cursor.index] ?? (run ? run.members[run.nextMemberIndex] : null) ?? null;
   const nextStep = nextMember?.kind === "step" ? nextMember : null;
   const nextMemberLabel = nextMember?.kind === "checkpoint" ? `Checkpoint ${nextMember.name}` : nextStep ? `Step ${nextStep.ordinal}` : "—";
-  const diagnosticAuthorizationSeed = run?.authorizations[0]?.diagnosticObservationBoundary ?? null;
   return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase} onFocusCapture={(event) => {
     const control = (event.target as HTMLElement).dataset.scenarioControl;
     recoverTerminalFocus.current = control === "pause" || control === "stop";
@@ -88,7 +87,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       <div><dt>Delivery</dt><dd>{state.scenario.target.deliveryPath.toUpperCase()} · exact shared Subscription target</dd></div>
       <div><dt>Boundary</dt><dd>LOCAL ONLY · one ordinary Local Injection per Step · Lightstreamer Server is not contacted</dd></div>
       <div><dt>Scenario Clock</dt><dd>{state.scenario.speed}× speed · monotonic active time · hidden and paused time excluded</dd></div>
-      {run ? <><div><dt>Reviewed Run</dt><dd>{run.id} · Scenario revision {run.scenarioRevision} · target fingerprint {run.targetFingerprint}</dd></div><div><dt>Evidence seed</dt><dd>{run.committedEvidenceSeed ? `${run.committedEvidenceSeed.intervalId} · sequence ${run.committedEvidenceSeed.sequence}` : "Empty committed Evidence boundary"}</dd></div><div><dt>Diagnostic authorization seed</dt><dd>{diagnosticAuthorizationSeed ? `${diagnosticAuthorizationSeed.intervalId} · sequence ${diagnosticAuthorizationSeed.sequence}` : "No Diagnostic Observation cursor required"}</dd></div></> : null}
+      {run ? <><div><dt>Reviewed Run</dt><dd>{run.id} · Scenario revision {run.scenarioRevision} · target fingerprint {run.targetFingerprint}</dd></div><div><dt>Evidence seed</dt><dd>{run.committedEvidenceSeed ? `${run.committedEvidenceSeed.intervalId} · sequence ${run.committedEvidenceSeed.sequence}` : "Empty committed Evidence boundary"}</dd></div></> : null}
     </dl>
     {state.membershipError ? <p className="workbench-react__scenario-problem" role="alert"><strong>BLOCKED.</strong> {state.membershipError} No Injection was attempted.</p> : null}
     {state.pickerOpen ? <section className="workbench-react__scenario-picker" aria-label="Scenario Evidence picker" onKeyDown={(event) => {
