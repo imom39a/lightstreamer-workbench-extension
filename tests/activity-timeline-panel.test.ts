@@ -60,11 +60,15 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     expect(track.getAttribute("aria-disabled")).toBe("true");
     expect(timeline.textContent).toContain("synchronizing");
     expect(timeline.querySelector('[aria-label="Snapshot bursts"]')).toBeNull();
+    const summary = document.querySelector('[aria-label="Activity summary"]')!;
+    expect(summary.querySelector('[aria-label="Activity counts"]')).toBeNull();
+    expect(summary.textContent).toContain("synchronizing");
     await act(async () => {
       await vi.waitFor(() => expect(runtime!.getSnapshot().activity?.projection.state).toBe("AVAILABLE"));
     });
     expect(timeline.getAttribute("aria-busy")).toBe("false");
     expect(track.getAttribute("aria-disabled")).toBe("false");
+    expect(summary.querySelector('[aria-label="Activity counts"]')).not.toBeNull();
   });
 
   it("does not imply elapsed duration across a clock regression even when the last timestamp catches up", async () => {
@@ -89,7 +93,131 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     expect(timeline!.textContent).not.toContain(String(origin));
     expect(evidence.querySelector('[aria-label="Ordered Lightstreamer Evidence"]')).not.toBeNull();
     expect(panel.getSnapshot().activity?.open).toBe(false);
-    expect(Array.from(document.querySelectorAll("button")).some(button => button.textContent === "Open Activity")).toBe(true);
+    expect(Array.from(document.querySelectorAll("button")).some(button => button.textContent === "Open Activity")).toBe(false);
+  });
+
+  it("keeps a collapsed scope Activity summary beside selected Evidence with exact source counts", async () => {
+    const panel = await mount();
+    const context = document.querySelector('[aria-label="Context"]')!;
+    const disclosure = context.querySelector<HTMLDetailsElement>('details[aria-label="Activity summary"]');
+    expect(disclosure).not.toBeNull();
+    expect(disclosure!.open).toBe(false);
+    expect(disclosure!.querySelector('summary')!.textContent).toBe("Activity summary — Inspected page");
+    expect(Array.from(document.querySelectorAll('button')).some(button => button.textContent === "Open Scope Context")).toBe(true);
+    await act(async () => disclosure!.querySelector('summary')!.click());
+    await settle();
+    expect(disclosure!.open).toBe(true);
+    const counts = disclosure!.querySelector('[aria-label="Activity counts"]')!;
+    expect(counts.textContent).toContain("SERVER33");
+    expect(counts.textContent).toContain("LOCAL11");
+    expect(disclosure!.textContent).toContain("SERVER Snapshot 2 · Live 1");
+    await act(async () => panel.dispatch({ type: "select-evidence", eventId: "local" }));
+    await settle();
+    expect(context.querySelector<HTMLDetailsElement>('details[aria-label="Activity summary"]')!.open).toBe(true);
+    expect(context.textContent).toContain("local");
+    await act(async () => { await mountedHistory!.offer(update("later", 1500)).settled; });
+    await act(async () => { await vi.waitFor(() => expect(panel.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(4)); });
+    expect(context.querySelector<HTMLDetailsElement>('details[aria-label="Activity summary"]')!.open).toBe(true);
+    expect(counts.textContent).toContain("SERVER44");
+  });
+
+  it("pages every SERVER ranking and narrows Evidence without changing Scope, range, selection, Find or Frozen", async () => {
+    const events = Array.from({ length: 6 }, (_, index) => ({ ...update(`server-${index}`, index * 100), subscription: { id: `subscription-${index + 1}`, mode: "COMMAND" as const } }));
+    const panel = await mount([...events, { ...update("local-only", 600, true), subscription: { id: "local-only-subscription", mode: "COMMAND" } }]);
+    await act(async () => {
+      panel.dispatch({ type: "select-evidence", eventId: "local-only" });
+      panel.dispatch({ type: "freeze-evidence" });
+      panel.dispatch({ type: "set-find", value: "orders" });
+      panel.dispatch({ type: "apply-filter-mutations", expectedRevision: panel.getSnapshot().evidence.investigation.filter.revision, operations: [{ type: "set-around", around: { intervalId: panel.getSnapshot().activity!.projection.intervalId, start: origin, end: origin + 601 } }] });
+    });
+    await settle();
+    const before = panel.getSnapshot();
+    const disclosure = document.querySelector<HTMLDetailsElement>('details[aria-label="Activity summary"]')!;
+    await act(async () => disclosure.querySelector('summary')!.click());
+    expect(disclosure.textContent).toContain("Filter: Range +0.0s–+0.601s");
+    const ranking = disclosure.querySelector('[aria-label="Busiest SERVER Subscriptions"]');
+    expect(ranking).not.toBeNull();
+    expect(ranking!.querySelectorAll('button[aria-label^="Filter Evidence to"]')).toHaveLength(5);
+    expect(ranking!.textContent).not.toContain("local-only-subscription");
+    const next = ranking!.querySelector<HTMLButtonElement>('button[aria-label="Next Activity ranking page"]')!;
+    await act(async () => next.click());
+    expect(ranking!.textContent).toContain("Rows 6–6 of 6");
+    const target = ranking!.querySelector<HTMLButtonElement>('button[aria-label="Filter Evidence to subscription-6"]')!;
+    await act(async () => target.click());
+    await settle();
+    const after = panel.getSnapshot();
+    expect(after.evidence.events.map(event => event.id)).toEqual(["server-5"]);
+    expect(after.activity!.scope).toEqual(before.activity!.scope);
+    expect(after.evidence.investigation.filter.around).toEqual(before.evidence.investigation.filter.around);
+    expect(after.evidence.selectedEventId).toBe("local-only");
+    expect(after.evidence.findState.query).toBe("orders");
+    expect(after.evidence.mode).toBe("frozen");
+    expect(disclosure.open).toBe(true);
+    const back = document.querySelector<HTMLButtonElement>('button[aria-label="Back investigation"]')!;
+    await act(async () => back.click());
+    await settle();
+    expect(panel.getSnapshot().evidence.events).toHaveLength(7);
+    const reset = Array.from(disclosure.querySelectorAll('button')).find(button => button.textContent === "Reset Filter")!;
+    await act(async () => reset.click());
+    await settle();
+    expect(panel.getSnapshot().evidence.investigation.filter.around).toBeNull();
+  });
+
+  it("labels bandwidth and frequency as captured distinct values, not the latest or current settings", async () => {
+    const events = [10, 5, 10].map((value, index) => {
+      const base = update(`bandwidth-${index}`, index * 100);
+      return { ...base, client: { ...base.client!, requestedMaxBandwidth: value }, subscription: { ...base.subscription!, realMaxFrequency: "unlimited" } };
+    });
+    await mount(events);
+    const disclosure = document.querySelector<HTMLDetailsElement>('details[aria-label="Activity summary"]')!;
+    await act(async () => disclosure.querySelector('summary')!.click());
+    const facts = disclosure.querySelector('[aria-label="Captured bandwidth and frequency"]');
+    expect(facts).not.toBeNull();
+    expect(facts!.textContent).toContain("Captured distinct values across matching owners; not current settings.");
+    expect(facts!.textContent).toContain("Requested max bandwidth10 · 5");
+    expect(facts!.textContent).toContain("Real max frequencyunlimited");
+    expect(facts!.textContent).not.toContain(String(origin));
+  });
+
+  it("retains a focused ranking identity while passive Capture updates its exact counts", async () => {
+    const rankedUpdate = (id: string, subscription: number, offset: number) => ({ ...update(id, offset), subscription: { id: `subscription-${subscription}`, mode: "COMMAND" as const } });
+    const panel = await mount(Array.from({ length: 6 }, (_, index) => rankedUpdate(`rank-${index}`, index + 1, index * 100)));
+    const summary = document.querySelector<HTMLDetailsElement>('details[aria-label="Activity summary"]')!;
+    await act(async () => summary.querySelector('summary')!.click());
+    const rank = summary.querySelector<HTMLButtonElement>('button[aria-label="Filter Evidence to subscription-5"]')!;
+    await act(async () => rank.focus());
+    await act(async () => {
+      await mountedHistory!.offer(rankedUpdate("rank-6-next", 6, 600)).settled;
+      await mountedHistory!.offer(rankedUpdate("rank-5-next", 5, 700)).settled;
+    });
+    await act(async () => { await vi.waitFor(() => expect(panel.getSnapshot().activity!.projection.logicalUpdateTotal).toBe(8)); });
+    expect(document.activeElement).toBe(rank);
+    expect(rank.closest('tr')!.textContent).toBe("subscription-522");
+  });
+
+  it("does not turn delivery-only Evidence into zero logical updates and qualifies mixed identity counts", async () => {
+    const unknown = Array.from({ length: 5 }, (_, index) => ({ ...update(`delivery-${index}`, index * 100, false, index < 2), logicalEventId: undefined }));
+    const panel = await mount([...unknown, { ...update("local-delivery", 500, true), logicalEventId: undefined }]);
+    const summary = document.querySelector<HTMLDetailsElement>('details[aria-label="Activity summary"]')!;
+    await act(async () => summary.querySelector('summary')!.click());
+    const counts = summary.querySelector('[aria-label="Activity counts"]')!;
+    expect(counts.textContent).toContain("SERVERUnknown5");
+    expect(counts.textContent).toContain("LOCALUnknown1");
+    expect(summary.textContent).toContain("SERVER Snapshot Unknown · Live Unknown");
+    expect(summary.textContent).toContain("5 SERVER Update Deliveries lack logical update identity.");
+    expect(summary.textContent).toContain("Ranking unavailable: SERVER logical update identities were not captured.");
+    const timeline = document.querySelector('[aria-label="Activity timeline"]')!;
+    expect(timeline.textContent).toContain("Captured deliveries; logical update count unknown");
+    expect(timeline.textContent).not.toContain("No matching captured updates");
+    await act(async () => {
+      await mountedHistory!.offer(update("identified-server", 600, false, true)).settled;
+      await mountedHistory!.offer(update("identified-local", 700, true)).settled;
+    });
+    await act(async () => { await vi.waitFor(() => expect(panel.getSnapshot().activity!.projection.updateDeliveryTotal).toBe(6)); });
+    expect(counts.textContent).toContain("SERVER1 identified6");
+    expect(counts.textContent).toContain("LOCAL1 identified2");
+    expect(summary.textContent).toContain("SERVER Snapshot 1 identified · Live Unknown");
+    expect(summary.textContent).toContain("Ranked by identified SERVER Logical Updates only.");
   });
 
   it("applies a keyboard range to existing Evidence without changing selection, Find, or Frozen position", async () => {

@@ -1,7 +1,13 @@
 import { mkdirSync } from "node:fs";
 
 import axe from "axe-core";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+
+declare global {
+  interface Window {
+    __appendDeferredWorkbenchEvents: () => number;
+  }
+}
 
 const evidenceRoot =
   process.env.LSEW_INTEGRATED_ACTIVITY_EVIDENCE_DIR ??
@@ -44,6 +50,19 @@ async function openIntegratedActivity(
   await expect(
     page.locator('[aria-label="Activity timeline"]'),
   ).toHaveAttribute("aria-busy", "false");
+}
+
+async function openActivitySummary(page: Page): Promise<Locator> {
+  const evidence = page.getByRole("region", { name: "Ordered Evidence" });
+  await evidence.getByRole("button", {
+    name: /^(Focus selected Context|Open selected Context|Open Scope Context)$/,
+  }).click();
+  const summary = page.locator('details[aria-label="Activity summary"]');
+  await expect(summary).toBeVisible();
+  await expect(summary.locator("summary")).toHaveText(/^Activity summary — /);
+  await summary.locator("summary").click();
+  await expect(summary).toHaveAttribute("open", "");
+  return summary;
 }
 
 async function expectNoSeriousAxeViolations(page: Page): Promise<void> {
@@ -134,7 +153,7 @@ test("Activity compact single Snapshot caption trigger applies SERVER, SNAPSHOT,
   await expect(evidence).toContainText(/Before range\s*1/);
   await expect(evidence).toContainText(/In range\s*1/);
   await expect(
-    page.getByText(
+    evidence.getByText(
       /Filter:.*phase:\s*SNAPSHOT.*provenance:\s*SERVER.*Range \+0\.0s–\+0\.001s/i,
     ),
   ).toBeVisible();
@@ -329,6 +348,9 @@ test("Activity source marker selects the original Local Evidence in Context", as
   await expect(
     page.locator('[data-evidence-id="activity-main-local-1"]'),
   ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    page.getByRole("region", { name: "Local Injection Draft" }),
+  ).toHaveCount(0);
   await preserveActivityScreenshot(page, "normal-dark-local-source-context.png");
 });
 
@@ -454,4 +476,42 @@ test("Activity collision chooser supports keyboard selection and Escape focus re
   await expect(
     page.locator('[data-evidence-id="activity-main-subscription-error"]'),
   ).toHaveAttribute("aria-selected", "true");
+});
+
+test("Activity summary keeps exact integrated SERVER and LOCAL counts in Context", async ({
+  page,
+}) => {
+  await openIntegratedActivity(page);
+  const summary = await openActivitySummary(page);
+  const counts = summary.getByRole("table", { name: "Activity counts" });
+
+  await expect(counts.getByRole("row", { name: /SERVER/ })).toContainText("1,700");
+  await expect(counts.getByRole("row", { name: /SERVER/ })).toContainText("1,704");
+  await expect(counts.getByRole("row", { name: /LOCAL/ })).toContainText("3");
+  await expect(summary).toContainText("SERVER Snapshot 1,692 · Live 8");
+  await expect(page.getByRole("button", { name: "Open Activity" })).toHaveCount(0);
+  await expect(page.getByRole("main", { name: "Observed Activity" })).toHaveCount(0);
+});
+
+test("Activity summary disclosure stays open across selection, passive Capture, and responsive Context", async ({
+  page,
+}) => {
+  await openIntegratedActivity(page, { theme: "dark" });
+  const summary = await openActivitySummary(page);
+
+  await page.getByRole("button", {
+    name: /^Select LOCAL Item Update at .*; Evidence activity-main-local-1$/,
+  }).click();
+  await expect(page.locator('[data-evidence-id="activity-main-local-1"]')).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(summary).toHaveAttribute("open", "");
+
+  await page.getByRole("button", { name: "Freeze Evidence" }).click();
+  expect(await page.evaluate(() => window.__appendDeferredWorkbenchEvents())).toBe(1);
+  await expect(summary).toHaveAttribute("open", "");
+
+  await page.setViewportSize({ width: 563, height: 700 });
+  await expect(summary).toHaveAttribute("open", "");
 });

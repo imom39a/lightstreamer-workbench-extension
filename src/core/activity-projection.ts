@@ -144,6 +144,22 @@ export type ActivityTimelineOverflow = Readonly<{
   evidenceRoute: "CURRENT_FILTERED_EVIDENCE";
 }>;
 
+/**
+ * Captured Item Update delivery Evidence that cannot establish a Logical
+ * Update identity. Existing logical totals intentionally count only the
+ * identified subset; delivery totals remain independent and exact.
+ */
+export type ActivityLogicalUpdateIdentityQualification = Readonly<{
+  unidentifiedDeliveries: number;
+  unidentifiedSnapshotDeliveries: number;
+  unidentifiedLiveDeliveries: number;
+}>;
+
+export type ActivityLogicalUpdateIdentity = Readonly<{
+  server: ActivityLogicalUpdateIdentityQualification;
+  local: ActivityLogicalUpdateIdentityQualification;
+}>;
+
 export type ActivityTimeline = Readonly<{
   /** Earliest retained Evidence timestamp; this is not a Capture-start claim. */
   originTimestamp: number | null;
@@ -192,6 +208,7 @@ export type ActivityProjection = Readonly<{
   updateDeliveryTotal: number;
   localLogicalUpdateTotal: number;
   localUpdateDeliveryTotal: number;
+  logicalUpdateIdentity: ActivityLogicalUpdateIdentity;
   matchingEvidence: number;
   emptyMatchCause: "FILTER_EXCLUSION" | "NO_MATCHING_EVIDENCE" | null;
   markers: readonly ActivityMarker[];
@@ -314,8 +331,14 @@ function project(input: ActivityProjectionInput): ActivityProjection {
   const laneSummary = connectionLanes(matching, activityMarkers);
   const server = matching.filter(({ event }) => isServerUpdate(event));
   const local = matching.filter(({ event }) => isLocalUpdate(event));
-  const serverLogical = uniqueLogical(server);
-  const localLogical = uniqueLogical(local);
+  const serverLogicalSummary = logicalUpdateSummary(server);
+  const localLogicalSummary = logicalUpdateSummary(local);
+  const serverLogical = serverLogicalSummary.logical;
+  const localLogical = localLogicalSummary.logical;
+  const logicalUpdateIdentity = Object.freeze({
+    server: serverLogicalSummary.qualification,
+    local: localLogicalSummary.qualification
+  });
   const segments = clockSegments([...serverLogical, ...localLogical].sort((a, b) => a.sequence - b.sequence));
   const range = readPoint.retainedRange;
   const duration = segments.length
@@ -358,6 +381,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
     updateDeliveryTotal: deliveries(server),
     localLogicalUpdateTotal: localLogical.length,
     localUpdateDeliveryTotal: deliveries(local),
+    logicalUpdateIdentity,
     matchingEvidence: matching.length,
     emptyMatchCause,
     bucketDuration: duration,
@@ -377,7 +401,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
 }
 
 function emptyProjection(scope: ActivityScope, revision: number, readPoint: ActivityReadPoint): ActivityProjection {
-  return Object.freeze({ state: "EMPTY_INTERVAL", reason: null, scope, filterRevision: revision, readPoint, intervalId: readPoint.intervalId, retainedRange: readPoint.retainedRange, committedEvidenceBoundary: readPoint.committedEvidenceBoundary, bucketDuration: null, buckets: Object.freeze([]), timeline: emptyTimeline(readPoint.retainedRange), logicalUpdateTotal: 0, snapshotLogicalUpdateTotal: 0, liveLogicalUpdateTotal: 0, updateDeliveryTotal: 0, localLogicalUpdateTotal: 0, localUpdateDeliveryTotal: 0, matchingEvidence: 0, emptyMatchCause: null, markers: Object.freeze([]), rankings: Object.freeze([]), allRankings: Object.freeze([]), rankingOther: null, rankingRangeReason: null, clockSegments: Object.freeze([]), connectionLanes: Object.freeze([]), connectionOverflow: null, contextFacts: Object.freeze([]), excludedLayers: Object.freeze([]) });
+  return Object.freeze({ state: "EMPTY_INTERVAL", reason: null, scope, filterRevision: revision, readPoint, intervalId: readPoint.intervalId, retainedRange: readPoint.retainedRange, committedEvidenceBoundary: readPoint.committedEvidenceBoundary, bucketDuration: null, buckets: Object.freeze([]), timeline: emptyTimeline(readPoint.retainedRange), logicalUpdateTotal: 0, snapshotLogicalUpdateTotal: 0, liveLogicalUpdateTotal: 0, updateDeliveryTotal: 0, localLogicalUpdateTotal: 0, localUpdateDeliveryTotal: 0, logicalUpdateIdentity: emptyLogicalUpdateIdentity(), matchingEvidence: 0, emptyMatchCause: null, markers: Object.freeze([]), rankings: Object.freeze([]), allRankings: Object.freeze([]), rankingOther: null, rankingRangeReason: null, clockSegments: Object.freeze([]), connectionLanes: Object.freeze([]), connectionOverflow: null, contextFacts: Object.freeze([]), excludedLayers: Object.freeze([]) });
 }
 
 function emptyTimeline(retainedRange: ActivityReadPoint["retainedRange"]): ActivityTimeline {
@@ -515,14 +539,39 @@ function isServerUpdate(event: LightstreamerEventEnvelope): boolean { return eve
 function isLocalUpdate(event: LightstreamerEventEnvelope): boolean { return event.kind === "item-update" && (event.synthetic || event.source === "synthetic"); }
 function deliveries(entries: readonly ActivityEvidence[]): number { return entries.filter(({ event }) => Boolean(event.listener)).length; }
 
-function uniqueLogical(entries: readonly ActivityEvidence[]): ActivityEvidence[] {
+function logicalUpdateSummary(entries: readonly ActivityEvidence[]): Readonly<{
+  logical: readonly ActivityEvidence[];
+  qualification: ActivityLogicalUpdateIdentityQualification;
+}> {
   const result = new Map<string, ActivityEvidence>();
+  let unidentifiedDeliveries = 0;
+  let unidentifiedSnapshotDeliveries = 0;
+  let unidentifiedLiveDeliveries = 0;
   for (const entry of entries) {
     const identity = logicalIdentity(entry);
-    if (!identity) continue;
+    if (!identity) {
+      unidentifiedDeliveries += 1;
+      if (entry.event.update?.isSnapshot === true) unidentifiedSnapshotDeliveries += 1;
+      else unidentifiedLiveDeliveries += 1;
+      continue;
+    }
     if (!result.has(identity)) result.set(identity, entry);
   }
-  return [...result.values()].sort((a, b) => a.sequence - b.sequence);
+  return Object.freeze({
+    logical: Object.freeze([...result.values()].sort((a, b) => a.sequence - b.sequence)),
+    qualification: Object.freeze({ unidentifiedDeliveries, unidentifiedSnapshotDeliveries, unidentifiedLiveDeliveries })
+  });
+}
+
+function emptyLogicalUpdateIdentityQualification(): ActivityLogicalUpdateIdentityQualification {
+  return Object.freeze({ unidentifiedDeliveries: 0, unidentifiedSnapshotDeliveries: 0, unidentifiedLiveDeliveries: 0 });
+}
+
+function emptyLogicalUpdateIdentity(): ActivityLogicalUpdateIdentity {
+  return Object.freeze({
+    server: emptyLogicalUpdateIdentityQualification(),
+    local: emptyLogicalUpdateIdentityQualification()
+  });
 }
 
 function logicalIdentity(entry: ActivityEvidence): string | null {
@@ -792,7 +841,12 @@ function contextFacts(entries: readonly ActivityEvidence[]): ActivityContextFact
       .filter((value): value is { value: string | number; timestamp: number } => value.value !== null && value.value !== undefined && String(value.value).length > 0)
       .map((value) => ({ value: String(value.value), timestamp: value.timestamp }));
     if (!values.length) return [];
-    const uniqueValues = values.filter((value, index, all) => all.findIndex((candidate) => candidate.value === value.value) === index);
+    const seenValues = new Set<string>();
+    const uniqueValues = values.filter((value) => {
+      if (seenValues.has(value.value)) return false;
+      seenValues.add(value.value);
+      return true;
+    });
     const numericValues = values
       .map((value) => ({ value: Number(value.value), timestamp: value.timestamp }))
       .filter((value) => Number.isFinite(value.value));
@@ -868,18 +922,28 @@ function markers(entries: readonly ActivityEvidence[]): ActivityMarker[] {
 }
 
 function rankings(entries: readonly ActivityEvidence[], deliveriesFor: readonly ActivityEvidence[], scope: ActivityScope, plottedRange: ActivityTimeRange | null, rangeReason: string | null): ActivityRanking[] {
-  const by = new Map<string, { label: string; logical: number; deliveries: number; entries: ActivityEvidence[] }>();
+  const by = new Map<string, { baseIdentity: string; logical: number; deliveries: number; entries: ActivityEvidence[] }>();
   for (const entry of entries) {
-    const identity = rankingIdentity(entry, scope);
-    const current = by.get(identity) ?? { label: identity, logical: 0, deliveries: 0, entries: [] }; current.logical += 1; current.entries.push(entry); by.set(identity, current);
+    const identity = rankingGroupIdentity(entry, scope);
+    const current = by.get(identity) ?? { baseIdentity: rankingIdentity(entry, scope), logical: 0, deliveries: 0, entries: [] }; current.logical += 1; current.entries.push(entry); by.set(identity, current);
   }
-  for (const entry of deliveriesFor) if (entry.event.listener) { const identity = rankingIdentity(entry, scope); const current = by.get(identity); if (current) { current.deliveries += 1; current.entries.push(entry); } }
-  return [...by.entries()].map(([identity, value]) => {
+  for (const entry of deliveriesFor) if (entry.event.listener) { const current = by.get(rankingGroupIdentity(entry, scope)); if (current) { current.deliveries += 1; current.entries.push(entry); } }
+  const duplicateBaseIdentities = new Map<string, number>();
+  for (const value of by.values()) duplicateBaseIdentities.set(value.baseIdentity, (duplicateBaseIdentities.get(value.baseIdentity) ?? 0) + 1);
+  return [...by.entries()].map(([groupIdentity, value]) => {
     const first = value.entries[0];
-    const supportingFilterMutations = evidenceFilterMutations(first, [scope.kind === "SUBSCRIPTION" ? "item" : "subscription"]);
+    const supportingFilterMutations = evidenceFilterMutations(first, [
+      "client",
+      "session",
+      "subscription",
+      ...(scope.kind === "SUBSCRIPTION" ? ["item" as const] : [])
+    ]);
+    const disambiguate = (duplicateBaseIdentities.get(value.baseIdentity) ?? 0) > 1;
+    const clientId = first ? eventClientId(first.event) : null;
+    const sessionId = first ? eventSessionId(first.event) : null;
     return Object.freeze({
-      identity,
-      label: value.label,
+      identity: disambiguate ? groupIdentity : value.baseIdentity,
+      label: disambiguate ? `${value.baseIdentity} · ${clientId ?? "client unavailable"} · ${sessionId ?? "session unavailable"}` : value.baseIdentity,
       logicalUpdates: value.logical,
       updateDeliveries: value.deliveries,
       range: plottedRange,
@@ -938,6 +1002,16 @@ function uniqueFilterMutations(mutations: readonly FilterMutation[]): FilterMuta
 
 function rankingIdentity(entry: ActivityEvidence, scope: ActivityScope): string {
   return scope.kind === "SUBSCRIPTION" ? `${eventItemName(entry.event) ?? "<unknown-item>"}:${eventItemPosition(entry.event) ?? ""}` : eventSubscriptionId(entry.event) ?? "<unknown-subscription>";
+}
+
+/** Page/client views must not merge same-named subscriptions from distinct captured owners. */
+function rankingGroupIdentity(entry: ActivityEvidence, scope: ActivityScope): string {
+  if (scope.kind === "SUBSCRIPTION") return rankingIdentity(entry, scope);
+  return JSON.stringify([
+    eventClientId(entry.event) ?? "<unknown-client>",
+    eventSessionId(entry.event) ?? "<unknown-session>",
+    eventSubscriptionId(entry.event) ?? "<unknown-subscription>"
+  ]);
 }
 
 function otherRanking(all: readonly ActivityRanking[]): ActivityRanking | null {

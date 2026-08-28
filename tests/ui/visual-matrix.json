@@ -188,6 +188,35 @@
     "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
   },
   {
+    "id": "activity-main-normal-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "reference": { "source": "asset", "path": "docs/reference/integrated-activity/D-single-track-normal-dark.jpg" },
+    "production": { "scenario": "integrated-activity-main", "setup": "activity-main" }
+  },
+  {
+    "id": "activity-main-chooser-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "reference": { "source": "asset", "path": "docs/reference/integrated-activity/D-single-track-compact-light.jpg" },
+    "production": { "scenario": "integrated-activity-main", "setup": "activity-main-chooser" }
+  },
+  {
+    "id": "activity-main-summary-wide-dark",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "dark",
+    "reference": { "source": "asset", "path": "docs/reference/integrated-activity/D-single-track-wide-dark.jpg" },
+    "production": { "scenario": "integrated-activity-main", "setup": "activity-main-summary" }
+  },
+  {
+    "id": "activity-main-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "live-selected" },
+    "production": { "scenario": "integrated-activity-main", "setup": "activity-main" }
+  },
+  {
     "id": "activity-10k-normal-light",
     "viewport": { "width": 900, "height": 700 },
     "theme": "light",

@@ -715,6 +715,7 @@ export type WorkbenchCommand =
   | { type: "close-activity" }
   | { type: "show-activity-supporting-evidence"; start?: number; end?: number; filterMutations?: readonly FilterMutation[] }
   | { type: "select-activity-evidence"; intervalId: string; eventId: string; sequence: number; timestamp: number; source: "SERVER" | "LOCAL"; inspect?: boolean }
+  | { type: "apply-activity-ranking-filter"; expectedRevision: number; rankingId: string }
   | { type: "select-activity"; selection: ActivityDocumentState["selection"] }
   | { type: "set-activity-local-series"; enabled: boolean }
   | { type: "set-activity-timeline-series"; series: ActivityDocumentState["timelineSeries"] }
@@ -1300,6 +1301,58 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.applyFilterCommand(expectedRevision, filterMutationsForAction(action));
+  }
+
+  /**
+   * Rankings represent SERVER item-update activity only. Resolve the clicked
+   * identity from the current projection so an outdated Context row cannot
+   * append a broadening criterion to a newer Filter.
+   */
+  private applyActivityRankingFilter(expectedRevision: number, rankingId: string): void {
+    const projection = this.activitySnapshot(this.scopeSnapshot()).projection;
+    if (expectedRevision !== this.canonicalFilter.revision || projection.filterRevision !== expectedRevision) {
+      this.filterMutation = Object.freeze({
+        state: "stale",
+        revision: this.canonicalFilter.revision,
+        changed: false,
+        message: "The Activity ranking no longer matches the current Filter.",
+        removedCriteria: 0
+      });
+      this.publish();
+      return;
+    }
+    const facet = projection.scope.kind === "SUBSCRIPTION" ? "item" : "subscription";
+    const ranking = projection.allRankings.find((candidate) => candidate.identity === rankingId);
+    const constraints = ranking?.supportingFilterMutations?.filter((mutation): mutation is Extract<FilterMutation, { type: "add-criterion" }> =>
+      mutation.type === "add-criterion" && mutation.polarity === "include"
+    ) ?? [];
+    const constraintFor = (candidateFacet: string, value: string): boolean => constraints.some((constraint) =>
+      constraint.facet === candidateFacet && constraint.value.value === value
+    );
+    const target = constraints.find((constraint) => constraint.facet === facet);
+    if (!target || !constraintFor("kind", "ITEM-UPDATE") || !constraintFor("provenance", "SERVER")) {
+      this.filterMutation = Object.freeze({
+        state: "invalid",
+        revision: this.canonicalFilter.revision,
+        changed: false,
+        message: "That Activity ranking is no longer available for the current Filter.",
+        removedCriteria: 0
+      });
+      this.publish();
+      return;
+    }
+    const replacedFacets = new Set<string>();
+    const operations = constraints.flatMap((constraint) => {
+      if (replacedFacets.has(constraint.facet)) return [];
+      replacedFacets.add(constraint.facet);
+      const existing = this.canonicalFilter.criteria[constraint.facet];
+      return [Object.freeze({
+        type: "replace-facet" as const,
+        facet: constraint.facet,
+        criterion: Object.freeze({ include: Object.freeze([constraint.value]), exclude: existing?.exclude ?? Object.freeze([]) })
+      })];
+    });
+    this.applyFilterCommand(expectedRevision, operations);
   }
 
   private revealSelectedEvidence(): void {
@@ -2145,6 +2198,9 @@ class Runtime implements WorkbenchRuntime {
       }
       case "select-activity-evidence":
         this.selectActivityEvidence(command);
+        return;
+      case "apply-activity-ranking-filter":
+        this.applyActivityRankingFilter(command.expectedRevision, command.rankingId);
         return;
       case "select-activity":
       case "set-activity-local-series":

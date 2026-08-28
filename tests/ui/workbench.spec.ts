@@ -227,63 +227,40 @@ test("Workbench keeps COMMAND projection UI out of selected high-volume Evidence
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
-test("Observed Activity preserves exact 10,000-record orientation and keyboard selection", async ({ page }, testInfo) => {
+test("Activity summary preserves exact 10,000-record orientation in Context", async ({ page }, testInfo) => {
   await openScenario(page, "activity-10k", { width: 900, height: 700 }, "light");
-  await expect(page.getByRole("button", { name: "Open Activity" })).toBeVisible();
-  await page.getByRole("button", { name: "Open Activity" }).click();
-  const activity = page.getByRole("main", { name: "Observed Activity" });
-  await expect(activity).toBeVisible();
-  await expect(activity).toContainText("9,999 Logical Updates");
-  await expect(activity).toContainText("9,999 Update Deliveries");
-  await expect(activity.getByRole("grid", { name: "Activity timeline buckets" })).toBeVisible();
-  const grid = activity.getByRole("grid", { name: "Activity timeline buckets" });
-  await grid.focus();
-  await page.keyboard.press("End");
-  await expect(activity.locator("tr[aria-selected='true']")).toHaveCount(1);
-  await expect(activity.getByRole("button", { name: "Show supporting Evidence" })).toBeVisible();
-  await page.keyboard.press("Enter");
-  await expect(page.getByText(/Filter: /)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Activity" })).toHaveCount(0);
+  await expect(page.getByRole("main", { name: "Observed Activity" })).toHaveCount(0);
+  await page.getByRole("region", { name: "Ordered Evidence" }).getByRole("button", {
+    name: /^(Focus selected Context|Open selected Context|Open Scope Context)$/,
+  }).click();
+  const summary = page.locator('details[aria-label="Activity summary"]');
+  await expect(summary.locator("summary")).toHaveText(/^Activity summary — /);
+  await expect(summary).not.toHaveAttribute("open", "");
+  await summary.locator("summary").click();
+  const counts = summary.getByRole("table", { name: "Activity counts" });
+  await expect(counts.getByRole("row", { name: /SERVER/ })).toContainText("9,999");
+  await expect(counts.getByRole("row", { name: /LOCAL/ })).toContainText("0");
   await attachNamedScenarioScreenshot(page, testInfo, "activity-10k-normal-light");
 });
 
-test("Observed Activity keeps graphical small multiples and ranking tables in one accessible selection model", async ({ page }, testInfo) => {
+test("Activity summary ranking uses native buttons to apply a visible canonical Filter", async ({ page }, testInfo) => {
   await openScenario(page, "activity-graphical", { width: 900, height: 700 }, "dark");
-  await page.getByRole("button", { name: "Open Activity" }).click();
-  const activity = page.getByRole("main", { name: "Observed Activity" });
-  const chart = activity.getByRole("group", { name: "Activity small multiples" });
-  await expect(chart).toBeVisible();
-  await expect(chart.getByRole("img", { name: /Server Logical Updates/ })).toBeVisible();
-  await expect(chart.getByRole("img", { name: /Update Deliveries/ })).toBeVisible();
-  await expect(chart).toContainText("zero-based linear scale");
-  await expect(activity.getByRole("grid", { name: "Activity timeline buckets" })).toBeVisible();
-
-  const timeline = activity.getByRole("grid", { name: "Activity timeline buckets" });
-  await timeline.focus();
-  await page.keyboard.press("ArrowRight");
-  await expect(timeline.locator("[aria-selected='true']")).toHaveCount(1);
-  await expect(activity.getByRole("region", { name: "Activity selection detail" })).toContainText("LOGICAL UPDATES");
-
-  const deliverySort = activity.getByRole("button", { name: "Update Deliveries", exact: true });
-  const ranking = activity.getByRole("region", { name: "Activity ranking" });
-  const rankingChart = ranking.getByRole("grid", { name: "Busiest ranking graph" });
-  const rankingTable = ranking.getByRole("table", { name: /Complete synchronized Server ranking/ });
-  await expect(rankingTable.locator("tbody tr")).toHaveCount(12);
-  await expect(rankingChart.locator("[data-ranking-identity]")).toHaveCount(11);
-  await expect(rankingChart).toHaveAttribute("tabindex", "0");
-  const selectedRankingRow = rankingTable.locator("tbody tr").filter({ hasText: "activity-graphical-subscription-1" }).first();
-  const selectedRankingIdentity = await selectedRankingRow.getByRole("button").innerText();
-  await selectedRankingRow.getByRole("button").click();
-  await expect(selectedRankingRow).toHaveAttribute("aria-selected", "true");
-  await expect(rankingChart.locator(`[data-ranking-identity="${selectedRankingIdentity}"]`)).toHaveAttribute("data-selected", "true");
-  await deliverySort.click();
-  await expect(deliverySort).toHaveAttribute("aria-pressed", "true");
-  await expect(rankingTable).toBeVisible();
-  await expect(rankingTable.locator("tbody tr")).toHaveCount(12);
-  await expect(selectedRankingRow).toHaveAttribute("aria-selected", "true");
-  await expect(rankingChart.locator(`[data-ranking-identity="${selectedRankingIdentity}"]`)).toHaveAttribute("data-selected", "true");
+  await page.getByRole("region", { name: "Ordered Evidence" }).getByRole("button", {
+    name: /^(Focus selected Context|Open selected Context|Open Scope Context)$/,
+  }).click();
+  const summary = page.locator('details[aria-label="Activity summary"]');
+  await summary.locator("summary").click();
+  const ranking = summary.getByRole("region", { name: "Busiest SERVER Subscriptions" });
+  const firstRank = ranking.getByRole("button", { name: /^Filter Evidence to / }).first();
+  await firstRank.focus();
+  await expect(firstRank).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(summary.getByRole("button", { name: "Reset Filter" })).toBeVisible();
+  await expect(page.getByText(/Filter:.*subscription/i).first()).toBeVisible();
   await expectNoSeriousAxeViolations(page, testInfo);
   await page.setViewportSize({ width: 563, height: 700 });
-  await expect(activity.getByRole("button", { name: "Back to Evidence" })).toBeVisible();
+  await expect(summary).toHaveAttribute("open", "");
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
 });

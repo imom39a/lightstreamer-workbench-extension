@@ -28,7 +28,7 @@ import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filt
 import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
-import { ObservedActivityDocument } from "./observed-activity-document";
+import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
 import { activityRangeLabel } from "./activity-timeline-format";
 import type { TimelineEvidenceAnchor } from "./activity-timeline-events";
@@ -48,12 +48,6 @@ export type WorkbenchPanelProps = { runtime: WorkbenchRuntime };
 
 type ScopeNode = WorkbenchSnapshot["scope"]["nodes"][number];
 type ScopeTreeEntry = { node: ScopeNode; index: number };
-type ActivityFocusDescriptor = "connection" | "timeline" | "ranking";
-const activityFocusSelectors: Readonly<Record<ActivityFocusDescriptor, string>> = Object.freeze({
-  connection: '[aria-label="Connection activity lanes"]',
-  timeline: '[aria-label="Activity timeline buckets"]',
-  ranking: '[aria-label="Busiest ranking graph"]'
-});
 type ScopeTreeActions = {
   scroll(scrollTop: number): void;
   focus(scopeId: string): void;
@@ -494,6 +488,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const [shallowContextWidth, setShallowContextWidth] = useState(320);
   const [scopeCollapsed, setScopeCollapsed] = useState(false);
   const [contextCollapsed, setContextCollapsed] = useState(false);
+  const [activitySummaryOpen, setActivitySummaryOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState("");
   const [filterDraftCriteria, setFilterDraftCriteria] = useState<Filter["criteria"]>({});
@@ -523,9 +518,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const scopeTrigger = useRef<HTMLButtonElement | null>(null);
   const contextLens = useRef<HTMLElement | null>(null);
   const commandProjectionTrigger = useRef<HTMLButtonElement | null>(null);
-  const activityTrigger = useRef<HTMLButtonElement | null>(null);
   const workbenchRoot = useRef<HTMLElement | null>(null);
-  const activityFocus = useRef<ActivityFocusDescriptor | null>(null);
   const commandProjectionEvidenceScrollTop = useRef(0);
   const previousCommandProjectionContext = useRef(false);
   const pendingCommandProjectionReturnFocus = useRef<
@@ -706,57 +699,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     });
   }, [activeFacetDiscovery, evidence.investigation.queryState, filterDiscoveryCursor]);
 
-  useLayoutEffect(() => {
-    const root = workbenchRoot.current;
-    if (!root) return;
-    const onFocusIn = (event: FocusEvent) => {
-      if (!snapshot.activity?.open) return;
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      for (const descriptor of Object.keys(activityFocusSelectors) as ActivityFocusDescriptor[]) {
-        if (target.closest(activityFocusSelectors[descriptor])) {
-          activityFocus.current = descriptor;
-          return;
-        }
-      }
-    };
-    root.addEventListener("focusin", onFocusIn);
-    return () => root.removeEventListener("focusin", onFocusIn);
-  }, [snapshot.activity?.open]);
-
-  useLayoutEffect(() => {
-    const transition = snapshot.activity?.transition;
-    if (!transition || transition.sequence === 0) return;
-    window.requestAnimationFrame(() => {
-      if (!workbenchRoot.current) return;
-      if (transition.kind === "explicit-close") {
-        activityTrigger.current?.focus({ preventScroll: true });
-        return;
-      }
-      if (transition.kind !== "opened" && transition.kind !== "back") return;
-      const descriptor = transition.kind === "back" ? activityFocus.current ?? "timeline" : "timeline";
-      workbenchRoot.current.querySelector<HTMLElement>(activityFocusSelectors[descriptor])?.focus({ preventScroll: true });
-    });
-  }, [snapshot.activity?.transition?.sequence, snapshot.activity?.transition?.kind]);
-
-  useLayoutEffect(() => {
-    const root = workbenchRoot.current;
-    const activity = snapshot.activity;
-    if (!root || !activity?.open) return;
-    const documentScroll = root.querySelector<HTMLElement>(".workbench-react__activity-scroll");
-    if (!documentScroll) return;
-    const plotScroll = root.querySelector<HTMLElement>(".workbench-react__activity-plot");
-    documentScroll.scrollTop = activity.document?.documentScrollTop ?? 0;
-    if (plotScroll) plotScroll.scrollLeft = activity.document?.plotScrollLeft ?? 0;
-    const onDocumentScroll = () => dispatch(runtime, { type: "set-activity-scroll", documentTop: documentScroll.scrollTop });
-    const onPlotScroll = () => plotScroll && dispatch(runtime, { type: "set-activity-scroll", plotLeft: plotScroll.scrollLeft });
-    documentScroll.addEventListener("scroll", onDocumentScroll, { passive: true });
-    plotScroll?.addEventListener("scroll", onPlotScroll, { passive: true });
-    return () => {
-      documentScroll.removeEventListener("scroll", onDocumentScroll);
-      plotScroll?.removeEventListener("scroll", onPlotScroll);
-    };
-  }, [runtime, snapshot.activity?.open]);
   const compactSurface = snapshot.contextId === "context:scope" ? "scope" : snapshot.contextId ? "context" : undefined;
   const rawEvidence = snapshot.contextId?.startsWith("raw:") ? selected : null;
   const commandProjectionComparison = snapshot.contextId === "command-projections";
@@ -1700,13 +1642,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </div>
       </header>
       <nav className="workbench-react__scope-strip" aria-label="Current runtime scope">
-        <button type="button" ref={scopeTrigger} disabled={!workspaceAvailable} aria-controls={workspaceAvailable && !snapshot.activity?.open ? "workbench-runtime-scope" : undefined} aria-expanded={workspaceAvailable && !snapshot.activity?.open && scopeIsPresented} onClick={(event) => openScope(event.currentTarget)}>Scope</button>
+        <button type="button" ref={scopeTrigger} disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-runtime-scope" : undefined} aria-expanded={workspaceAvailable && scopeIsPresented} onClick={(event) => openScope(event.currentTarget)}>Scope</button>
         {scopeCollapsed ? <button ref={scopeRestore} className="workbench-react__restore-pane workbench-react__restore-pane--scope" type="button" onClick={() => restorePane("scope")}>Restore Scope</button> : null}
         {contextCollapsed ? <button ref={contextRestore} className="workbench-react__restore-pane" type="button" onClick={() => restorePane("context")}>Restore Context</button> : null}
         <strong className="workbench-react__scope-label">{scopeLabel}</strong>
         <span className="workbench-react__scope-status">{scopeStatus}</span>
         {canAuthorCommandUpdate ? <button type="button" onClick={() => dispatch(runtime, { type: "begin-local-injection-from-scope" })}>Author COMMAND Item Update</button> : null}
-        {snapshot.activity ? <button ref={activityTrigger} type="button" onClick={() => dispatch(runtime, { type: "open-activity" })}>Open Activity</button> : null}
       </nav>
       {localInjection.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Local Injection unavailable</strong><span>{localInjection.entryError}</span></div> : null}
       {snapshot.scenario ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection Scenario…</div>}><LazyLocalInjectionScenarioDocument runtime={runtime} snapshot={snapshot} /></Suspense> : null}
@@ -1734,7 +1675,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           dispatch(runtime, { type: "cancel-discard-local-injection" });
         }}>Keep draft</button><button type="button" onClick={() => dispatch(runtime, { type: "confirm-discard-local-injection" })}>Confirm discard</button>
       </section> : null}
-      {localInjectionDraft?.open || snapshot.scenario ? null : snapshot.activity?.open && snapshot.activity ? <ObservedActivityDocument runtime={runtime} activity={snapshot.activity} scopeLabel={scopeLabel} /> : commandProjectionComparison ? <CommandProjectionComparison
+      {localInjectionDraft?.open || snapshot.scenario ? null : commandProjectionComparison ? <CommandProjectionComparison
         scope={scopeLabel}
         capture={snapshot.capture}
         projections={snapshot.commandProjections}
@@ -1767,7 +1708,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
           {snapshot.activity ? <ActivityTimeline projection={snapshot.activity.projection} filter={appliedFilter} frozen={evidence.mode === "frozen"} selectedEventId={selectedEventId} onSelect={selectTimelineEvidence} onShowEvidence={() => evidenceLedger.current?.focus()} onFilter={(expectedRevision, operations) => dispatch(runtime, { type: "apply-filter-mutations", expectedRevision, operations })} /> : null}
-          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>{activeTimelineRange ? "Before range" : "Matching"} {matching.toLocaleString()}</span><span>{activeTimelineRange ? "In range" : "In Scope"} {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : snapshot.context.diagnostics.length ? <button type="button" aria-controls="workbench-context" onClick={openScopeContext}>Open Scope Context</button> : null}</div></header>
+          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>{activeTimelineRange ? "Before range" : "Matching"} {matching.toLocaleString()}</span><span>{activeTimelineRange ? "In range" : "In Scope"} {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : <button type="button" aria-controls="workbench-context" onClick={openScopeContext}>Open Scope Context</button>}</div></header>
           {filterOpen ? <form className={`workbench-react__filter${filterStep !== "composer" ? " workbench-react__filter--structured-open" : ""}${filterStep === "explorer" ? " workbench-react__filter--explorer-open" : ""}`} id="workbench-filter" aria-label="Filter ordered Evidence" onKeyDown={handleFilterEscape} onSubmit={(event) => {
             event.preventDefault();
             setFilterSubmitVersion(snapshot.version);
@@ -1849,6 +1790,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               <div className="workbench-react__context-actions"><button type="button" disabled={!snapshot.export.json} onClick={() => downloadExport("json")}>Download JSON</button><button type="button" disabled={!snapshot.export.document} onClick={() => downloadExport("html")}>Download HTML</button></div>
               {exportDownloadStatus ? <p className="workbench-react__copy-status" role="status" aria-live="polite">{exportDownloadStatus}</p> : null}
             </section> : <>
+              {snapshot.activity ? <ActivityContextSummary projection={snapshot.activity.projection} scopeLabel={scopeLabel} filterSummary={appliedFilterSummary} hasActiveFilter={hasActiveFilter} frozen={evidence.mode === "frozen"} open={activitySummaryOpen} onOpenChange={setActivitySummaryOpen} onRankingFilter={(expectedRevision, rankingId) => dispatch(runtime, { type: "apply-activity-ranking-filter", expectedRevision, rankingId })} onResetFilter={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })} /> : null}
               <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               {snapshot.context.diagnostics.length || snapshot.context.diagnosticFilter.active ? <section className="workbench-react__context-diagnostics" role="region" aria-label="Context diagnostics">
                 <div className="workbench-react__context-diagnostics-heading"><strong>Diagnostics for this Scope</strong>{snapshot.context.diagnosticFilter.active ? <button type="button" onClick={() => dispatch(runtime, { type: "reset-diagnostic-filter" })}>Reset diagnostic filters</button> : null}</div>

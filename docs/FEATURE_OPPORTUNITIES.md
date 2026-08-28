@@ -220,6 +220,12 @@ This replaces the old “faceted Timeline” proposal. It deepens Ordered Eviden
 
 ### Build 3 — Scoped Observed Activity Dashboard
 
+**Presentation amendment, 2026-08-28:** the maintainer-approved
+[integrated Activity contract](WORKBENCH_INTEGRATED_ACTIVITY.md) supersedes
+the separate document, multiple series and chart/table interactions below.
+The main Evidence timeline and one scoped Context summary retain the
+accepted aggregation and evidence boundaries.
+
 Give a developer a graphical answer to the initial diagnostic question: **where is observed activity or degradation concentrated, and which supporting Evidence should I inspect?** This is fast orientation over accepted Evidence, not a generic verdict that a Lightstreamer client is healthy or performing well.
 
 The first release contains four coordinated views:

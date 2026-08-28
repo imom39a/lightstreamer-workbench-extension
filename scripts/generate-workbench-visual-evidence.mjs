@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { extname, join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
@@ -89,7 +89,9 @@ try {
   });
   const results = [];
   for (const scenario of scenarios) {
-    const reference = scenario.reference?.source === "production"
+    const reference = scenario.reference?.source === "asset"
+      ? await readFile(resolve(projectRoot, scenario.reference.path))
+      : scenario.reference?.source === "production"
       ? (await captureProduction(browser, scenario, {
           ...scenario.production,
           storageMode: scenario.reference.storageMode
@@ -103,7 +105,7 @@ try {
     const current = await captureProduction(browser, scenario);
     const comparison = await createDiff(browser, reference, current.png, scenario.viewport);
     const paths = {
-      reference: join(artifactRoot, "reference", `${scenario.id}.png`),
+      reference: join(artifactRoot, "reference", `${scenario.id}${scenario.reference?.source === "asset" ? extname(scenario.reference.path) : ".png"}`),
       current: join(artifactRoot, "current", `${scenario.id}.png`),
       diff: join(artifactRoot, "diff", `${scenario.id}.png`)
     };
@@ -141,16 +143,17 @@ try {
         ? `initial Scenario 05 production baselines at ${scenarioHaltReferenceCommit}; the surface is absent at implementation base e74d4ca, so these are explicit new-baseline references`
         : scenarios.every(({ reference }) => reference?.source === "production")
           ? "clean production storage-headroom scenarios with the advisory estimate omitted"
-          : "accepted prototypes/workbench-ui-10; storage-headroom states use clean production scenarios with the advisory estimate omitted",
+          : "accepted prototypes/workbench-ui-10 and archived reviewed Activity D images; storage-headroom states use clean production scenarios with the advisory estimate omitted",
       current: "production Workbench scenario harness using shipped panel root document",
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
     contactSheets,
     review: !grep && results.length === allScenarios.length ? {
       classification: "Material UI",
-      changedWorkflow: "The integrated Workbench matrix covers promoted Activity, Local Injection Scenario authoring and execution, diagnostics, and compact operating actions in the shipped panel shell.",
+      changedWorkflow: "The integrated Workbench matrix covers the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, diagnostics, and compact operating actions in the shipped panel shell.",
       acceptanceCriteria: [
-        "Observed Activity preserves exact 10,000-record orientation, graphical and textual meaning, limited and memory-fallback coverage truth, and normal, compact, and wide reachability.",
+        "One shared SERVER/LOCAL timeline belongs above Evidence, uses elapsed time since the first retained event, and preserves exact range and captured-event routes without a separate Activity page.",
+        "One collapsed Activity summary in Context retains exact SERVER/LOCAL counts, bounded SERVER busiest identities and captured facts, including 10,000-record, limited and memory-fallback states.",
         "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
         "Contextual diagnostics present server errors and bounded keepalive aggregation without a health verdict; duplicate, overlap, listener churn, and subscription lint remain scope-relevant and route to supporting Evidence.",
         "Committed snapshot, COMMAND, and lost-update anomalies preserve exact epoch attribution, bounded limitations, and one normalized lifecycle without duplicate footer ownership.",
@@ -170,6 +173,25 @@ try {
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; help-resource and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
       matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; Activity, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
       baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
+    } : results.every(({ production }) => production.setup.startsWith("activity")) ? {
+      classification: "Material UI",
+      changedWorkflow: "Activity is integrated into the existing Evidence and Context workspace; the separate Activity page is retired.",
+      acceptanceCriteria: [
+        "The compact timeline shares one SERVER/LOCAL track with shape and text reinforcing Local provenance; elapsed time has a stable retained-event origin.",
+        "Exact source and captured problem records remain individually reachable through existing Evidence and Context, including coincident marks.",
+        "One collapsed scoped Context summary preserves exact counts, bounded SERVER rankings and captured facts; ordinary investigation has no extra Activity destination or bucket table.",
+        "Scope, Filter, selection, Find, Frozen position and Draft safety remain independent, with keyboard access, visible focus, no horizontal overflow and no serious or critical axe violations."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: "Timeline, coincident-event chooser and Context disclosure controls retain visible, unobscured keyboard focus; the maintained Activity browser tests exercise range selection, Reset/Back and restoration.",
+      baselineIntent: "Replace the five old Activity-page baselines with Context summaries and add four integrated Activity states; refresh other affected shell baselines separately with explicit base/current review."
     } : results.some(({ id }) => id.startsWith("scenario-diagnostic-")) ? {
       classification: "Material UI",
       changedWorkflow: "A Scenario Diagnostic Observation Checkpoint authorizes a journal cursor, evaluates only later normalized observations, and preserves compact provenance without copying diagnostic messages.",
@@ -282,7 +304,7 @@ function isStorageHeadroomSetup(setup) {
 
 function contactSheetScenarioIds(matrix) {
   return matrix
-    .filter(({ id, production }) => id.startsWith("scenario-") || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup))
+    .filter(({ id, production }) => id.startsWith("scenario-") || production.setup.startsWith("activity") || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup))
     .map(({ id }) => id);
 }
 
@@ -293,10 +315,11 @@ function publicReviewScope() {
   const storageIds = allScenarios
     .filter(({ production }) => isStorageHeadroomSetup(production.setup))
     .map(({ id }) => id);
+  const activityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
   return {
     contactSheetScenarioIds: contactSheetScenarioIds(allScenarios),
-    accessibilityScenarioIds: [...diagnosticIds, ...storageIds],
-    focusScenarioIds: [...diagnosticIds, ...storageIds]
+    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds],
+    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds]
   };
 }
 
@@ -329,10 +352,11 @@ async function createContactSheets(runningBrowser, results) {
     const requiredStorageIds = allScenarios
       .filter(({ production }) => isStorageHeadroomSetup(production.setup))
       .map(({ id }) => id);
-    const requiredFocusIds = [...requiredDiagnosticIds, ...requiredStorageIds];
+    const requiredActivityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
+    const requiredFocusIds = [...requiredDiagnosticIds, ...requiredStorageIds, ...requiredActivityIds];
     const missingFocusIds = requiredFocusIds.filter((id) => !affectedIds.includes(id));
     if (requiredDiagnosticIds.length !== 12 || requiredStorageIds.length !== 5 || missingFocusIds.length > 0) {
-      throw new Error(`Contact sheets require all 12 integrated diagnostic and 5 storage-headroom states; missing: ${missingFocusIds.join(", ") || "none"}.`);
+      throw new Error(`Contact sheets require all integrated Activity, 12 diagnostic and 5 storage-headroom states; missing: ${missingFocusIds.join(", ") || "none"}.`);
     }
   }
   const output = {};
@@ -362,7 +386,7 @@ async function writeContactSheet(runningBrowser, results, views, relativePath) {
       images.push({
         scenario: result.id,
         view,
-        dataUrl: `data:image/png;base64,${bytes.toString("base64")}`
+        dataUrl: imageDataUrl(bytes)
       });
     }
   }
@@ -573,7 +597,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
     let focusEvidence = null;
     let memoryEvidence = null;
     let storageEvidence = null;
-    if (scenario.production.setup.startsWith("scenario") || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics", "activity-10k", "activity-graphical", "activity-limited", "activity-memory"].includes(scenario.production.setup)) {
+    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -585,6 +609,31 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
         throw new Error(`Help resources has serious or critical axe violations: ${JSON.stringify(seriousOrCriticalViolations)}`);
       }
       accessibility = { seriousOrCriticalViolations };
+    }
+    if (scenario.production.setup.startsWith("activity")) {
+      const action = scenario.production.setup === "activity-main-chooser"
+        ? page.getByRole("dialog", { name: "Choose captured Activity event" }).getByRole("button").first()
+        : scenario.production.setup === "activity-main"
+          ? page.locator('[aria-label="Activity timeline"]').getByRole("button", { name: "Timeline", exact: true })
+          : page.locator("#workbench-context summary").filter({ hasText: /^Activity summary/ });
+      await action.scrollIntoViewIfNeeded();
+      await action.focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      focusEvidence = await action.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          action: element.getAttribute("aria-label") ?? element.textContent?.trim() ?? "",
+          focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+        };
+      });
+      if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
+        throw new Error(`Activity focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
+      }
     }
     if (isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) && scenario.production.storageMode !== "clean") {
       const diagnosticFocus = scenario.production.setup === "diagnostic-server"
@@ -930,21 +979,32 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     return;
   }
   if (setup.startsWith("activity")) {
-    await page.getByRole("button", { name: "Open Activity" }).click();
-    const document = page.getByRole("main", { name: "Observed Activity" });
-    await document.waitFor();
-    if (setup === "activity-10k" || setup === "activity-graphical") {
-      await document.getByRole("grid", { name: "Activity timeline buckets" }).waitFor();
-    } else if (setup === "activity-limited") {
-      await document.getByRole("status").waitFor();
-      await document.getByText("Observation Coverage is limited", { exact: false }).waitFor();
-    } else {
-      await document.getByText("Observed Server activity", { exact: true }).waitFor();
-      await document.getByText("History Interval", { exact: false }).waitFor();
+    const timeline = page.locator('[aria-label="Activity timeline"][aria-busy="false"]');
+    await timeline.waitFor();
+    if (await page.getByRole("button", { name: "Open Activity", exact: true }).count()) {
+      throw new Error("The separate Activity doorway must be retired.");
     }
+    if (setup === "activity-main" || setup === "activity-main-chooser") {
+      if (setup === "activity-main") {
+        await timeline.getByRole("button", { name: /^Select LOCAL Item Update at .*; Evidence activity-main-local-1$/ }).click();
+        await page.locator('[data-evidence-id="activity-main-local-1"][aria-selected="true"]').waitFor();
+      }
+      const collapse = page.getByRole("button", { name: "Collapse Context", exact: true });
+      if (await collapse.isVisible()) await collapse.click();
+      if (setup === "activity-main-chooser") {
+        await timeline.getByRole("toolbar", { name: "Captured Activity events" })
+          .getByRole("button", { name: /^\d+ captured Activity events; choose Evidence$/ }).last().click();
+        await page.getByRole("dialog", { name: "Choose captured Activity event" }).waitFor();
+      }
+      return;
+    }
+    await page.getByRole("button", { name: /^(Open Scope Context|Open selected Context|Restore selected Context|Focus selected Context)$/ }).click();
+    const summary = page.locator("#workbench-context summary").filter({ hasText: /^Activity summary/ });
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#workbench-context details[open] > summary").filter({ hasText: /^Activity summary/ }).waitFor();
     if (setup === "activity-10k") {
-      await document.getByText("9,999 Logical Updates", { exact: false }).waitFor();
-      await document.getByText("9,999 Update Deliveries", { exact: false }).waitFor();
+      await summary.locator("..").getByText("9,999", { exact: true }).first().waitFor();
     }
     return;
   }
@@ -1083,6 +1143,11 @@ async function tabTo(page, target, maximumTabs = 40) {
   throw new Error(`Physical Tab navigation did not reach ${await target.getAttribute("aria-label") ?? "the requested control"}.`);
 }
 
+function imageDataUrl(bytes) {
+  const mime = bytes[0] === 0xff && bytes[1] === 0xd8 ? "image/jpeg" : "image/png";
+  return `data:${mime};base64,${bytes.toString("base64")}`;
+}
+
 async function createDiff(runningBrowser, reference, current, viewport) {
   const context = await runningBrowser.newContext({ viewport });
   const page = await context.newPage();
@@ -1119,8 +1184,8 @@ async function createDiff(runningBrowser, reference, current, viewport) {
       referenceContext.putImageData(output, 0, 0);
       return { png: referenceCanvas.toDataURL("image/png"), changedPixels, totalPixels: width * height };
     }, {
-      referenceUrl: `data:image/png;base64,${reference.toString("base64")}`,
-      currentUrl: `data:image/png;base64,${current.toString("base64")}`,
+      referenceUrl: imageDataUrl(reference),
+      currentUrl: imageDataUrl(current),
       width: viewport.width,
       height: viewport.height
     });

@@ -9,8 +9,8 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   visualEvidenceOnly?: boolean;
-  prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" };
+  prototype?: { variant: string; state: string; frame: string; setup: string; surface?: string };
+  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" };
 }>;
 const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
 
@@ -57,18 +57,40 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     case "activity-10k":
     case "activity-graphical":
     case "activity-limited":
-    case "activity-memory": {
-      const open = page.getByRole("button", { name: "Open Activity" });
-      await expectVisibleKeyboardTarget(page, open);
-      await page.keyboard.press("Enter");
-      const activity = page.getByRole("main", { name: "Observed Activity" });
-      await expect(activity).toBeVisible();
-      if (visual.production.setup === "activity-10k" || visual.production.setup === "activity-graphical") {
-        await expect(activity.getByRole("grid", { name: "Activity timeline buckets" })).toBeVisible();
+    case "activity-memory":
+    case "activity-main":
+    case "activity-main-chooser":
+    case "activity-main-summary": {
+      const timeline = page.locator('[aria-label="Activity timeline"]');
+      await expect(timeline).toHaveAttribute("aria-busy", "false");
+      await expect(page.getByRole("button", { name: "Open Activity", exact: true })).toHaveCount(0);
+      if (visual.production.setup === "activity-main" || visual.production.setup === "activity-main-chooser") {
+        if (visual.production.setup === "activity-main") {
+          await timeline.getByRole("button", { name: /^Select LOCAL Item Update at .*; Evidence activity-main-local-1$/ }).click();
+          await expect(page.locator('[data-evidence-id="activity-main-local-1"]')).toHaveAttribute("aria-selected", "true");
+        }
+        const collapse = page.getByRole("button", { name: "Collapse Context", exact: true });
+        if (await collapse.isVisible()) await collapse.click();
+        if (visual.production.setup === "activity-main-chooser") {
+          await timeline.getByRole("toolbar", { name: "Captured Activity events" })
+            .getByRole("button", { name: /^\d+ captured Activity events; choose Evidence$/ }).last().click();
+          await expect(page.getByRole("dialog", { name: "Choose captured Activity event" })).toBeVisible();
+        } else {
+          await timeline.getByRole("button", { name: "Timeline", exact: true }).focus();
+        }
+        return;
       }
-      if (visual.production.setup === "activity-10k") await expect(activity).toContainText("9,999 Logical Updates");
-      if (visual.production.setup === "activity-limited") await expect(activity).toContainText("Coverage LIMITED");
-      if (visual.production.setup === "activity-memory") await expect(activity).toContainText("Coverage USEFUL");
+      const openContext = page.getByRole("button", { name: /^(Open Scope Context|Open selected Context|Restore selected Context|Focus selected Context)$/ });
+      await expectVisibleKeyboardTarget(page, openContext);
+      await page.keyboard.press("Enter");
+      const context = page.getByRole("complementary", { name: "Context" });
+      const summary = context.locator("summary").filter({ hasText: /^Activity summary/ });
+      await summary.focus();
+      await page.keyboard.press("Enter");
+      await expect(summary.locator("..")).toHaveAttribute("open", "");
+      if (visual.production.setup === "activity-10k") await expect(summary.locator("..")).toContainText("9,999");
+      if (visual.production.setup === "activity-limited") await expect(page.getByText("Coverage LIMITED", { exact: true })).toBeVisible();
+      if (visual.production.setup === "activity-memory") await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
       return;
     }
     case "scenario-hidden-pause": {

@@ -31,6 +31,8 @@ export function ActivityTimeline({ projection, filter, frozen, selectedEventId, 
   const omittedEvents = (timeline.sourcePointsOverflow?.omitted ?? 0) + (timeline.markersOverflow?.omitted ?? 0);
   const singleBurst = timeline.snapshotBursts.length === 1 ? timeline.snapshotBursts[0] : null;
   const markerOnly = !projection.logicalUpdateTotal && !projection.localLogicalUpdateTotal && timeline.markers.length > 0;
+  const unidentifiedDeliveries = projection.logicalUpdateIdentity.server.unidentifiedDeliveries + projection.logicalUpdateIdentity.local.unidentifiedDeliveries;
+  const snapshotIdentityLimited = projection.logicalUpdateIdentity.server.unidentifiedSnapshotDeliveries > 0;
   const burstKey = (burst: typeof timeline.snapshotBursts[number]) => `${burst.segment}:${burst.startSequence}`;
   const focusedBurstKey = timeline.snapshotBursts.some(burst => burstKey(burst) === focusedBurst) ? focusedBurst : timeline.snapshotBursts[0] ? burstKey(timeline.snapshotBursts[0]) : null;
   const position = (timestamp: number) => domain ? Math.max(0, Math.min(100, (timestamp - domain.start) / Math.max(1, domain.end - domain.start) * 100)) : 0;
@@ -119,11 +121,12 @@ export function ActivityTimeline({ projection, filter, frozen, selectedEventId, 
           </span>;
         }) : null}
         {available && domain && origin !== null ? <ActivityTimelineEvents projection={projection} domain={domain} origin={origin} frozen={frozen} selectedEventId={selectedEventId} onSelect={onSelect} /> : null}
-        {!available || (!projection.logicalUpdateTotal && !projection.localLogicalUpdateTotal && !markerOnly) ? <span className="workbench-activity-timeline__empty" role="status">{timeline.clockAmbiguous ? "Timeline unavailable across a clock change" : projection.reason ?? "No matching captured updates"}</span> : null}
+        {!available || (!projection.logicalUpdateTotal && !projection.localLogicalUpdateTotal && !markerOnly) ? <span className="workbench-activity-timeline__empty" role="status">{timeline.clockAmbiguous ? "Timeline unavailable across a clock change" : available && unidentifiedDeliveries ? "Captured deliveries; logical update count unknown" : projection.reason ?? "No matching captured updates"}</span> : null}
       </div>
       <div className="workbench-activity-timeline__caption">
-        {available && singleBurst && origin !== null ? <button type="button" className="workbench-activity-timeline__snapshot-legend" aria-label={`Show snapshot burst ${activityRangeLabel(singleBurst, origin)} in Evidence`} title={`${singleBurst.logicalUpdates.toLocaleString()} SERVER Snapshot Logical Updates · applies exact Snapshot phase and time range`} onClick={() => applySnapshotBurst(singleBurst)}><i aria-hidden="true" />{singleBurst.logicalUpdates.toLocaleString()} snapshot updates</button> : available && timeline.snapshotBursts.length > 1 ? <span className="workbench-activity-timeline__snapshot-legend"><i aria-hidden="true" />{timeline.snapshotBursts.length} snapshot bursts</span> : null}
-        {available && markerOnly ? <span role="status">No matching captured updates</span> : null}
+        {available && singleBurst && origin !== null ? <button type="button" className="workbench-activity-timeline__snapshot-legend" aria-label={`Show snapshot burst ${activityRangeLabel(singleBurst, origin)} in Evidence`} title={`${singleBurst.logicalUpdates.toLocaleString()} SERVER Snapshot Logical Updates · applies exact Snapshot phase and time range`} onClick={() => applySnapshotBurst(singleBurst)}><i aria-hidden="true" />{singleBurst.logicalUpdates.toLocaleString()}{snapshotIdentityLimited ? " identified" : ""} snapshot updates</button> : available && timeline.snapshotBursts.length > 1 ? <span className="workbench-activity-timeline__snapshot-legend"><i aria-hidden="true" />{timeline.snapshotBursts.length}{snapshotIdentityLimited ? " identified" : ""} snapshot bursts</span> : null}
+        {available && markerOnly ? <span role="status">{unidentifiedDeliveries ? "Captured deliveries; logical update count unknown" : "No matching captured updates"}</span> : null}
+        {available && unidentifiedDeliveries && (projection.logicalUpdateTotal || projection.localLogicalUpdateTotal) ? <span>Identified updates only; some delivery identities unavailable.</span> : null}
         <span id="workbench-activity-timeline-help">{available ? "Drag to filter · ←/→ end · Shift start · Enter apply" : "Time range selection unavailable"}</span>
         {omittedEvents ? <button type="button" onClick={onShowEvidence}>{omittedEvents.toLocaleString()} more events in Evidence</button> : null}
         <strong id="workbench-activity-timeline-range" aria-live="polite">{selectedRange && origin !== null ? `${draftRange ? "Preview" : "Range"} ${activityRangeLabel(selectedRange, origin)}` : "All retained time"}</strong>

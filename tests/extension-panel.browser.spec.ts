@@ -385,6 +385,9 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       activityTimelineCount: number;
       activitySources: string;
       activityReady: boolean;
+      activitySummaryCount: number;
+      activitySummaryCollapsed: boolean;
+      hasActivityDoorway: boolean;
       hasLegacyViews: boolean;
       panel: { width: number; height: number; viewportWidth: number; viewportHeight: number };
       }>(survivingPanel, `({
@@ -394,6 +397,9 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
         activityTimelineCount: document.querySelectorAll('[aria-label="Activity timeline"]').length,
         activitySources: document.querySelector('[aria-label="Update source legend"]')?.textContent ?? "",
         activityReady: document.querySelector('[aria-label="Activity timeline"]')?.getAttribute('aria-busy') === 'false',
+        activitySummaryCount: [...document.querySelectorAll('#workbench-context summary')].filter(element => element.textContent?.startsWith('Activity summary')).length,
+        activitySummaryCollapsed: [...document.querySelectorAll('#workbench-context summary')].some(element => element.textContent?.startsWith('Activity summary') && !element.parentElement?.hasAttribute('open')),
+        hasActivityDoorway: [...document.querySelectorAll('button')].some(element => element.textContent?.trim() === 'Open Activity'),
         hasLegacyViews: Boolean(document.querySelector(".view-selector")),
         panel: (() => {
           const panel = document.querySelector(".workbench-react")?.getBoundingClientRect();
@@ -412,6 +418,9 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       assert.match(proof.activitySources, /SERVER/);
       assert.match(proof.activitySources, /LOCAL/);
       assert.equal(proof.activityReady, true, "The timeline reaches its coherent retained Evidence boundary.");
+      assert.equal(proof.activitySummaryCount, 1, "Activity details have one home in existing Context.");
+      assert.equal(proof.activitySummaryCollapsed, true, "The scoped Activity summary starts collapsed.");
+      assert.equal(proof.hasActivityDoorway, false, "The separate Activity page is retired.");
       assert.equal(proof.hasLegacyViews, false);
       assert.equal(proof.panel.width, proof.panel.viewportWidth);
       assert.equal(proof.panel.height, proof.panel.viewportHeight);

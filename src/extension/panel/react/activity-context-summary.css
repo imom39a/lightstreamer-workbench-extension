@@ -1,0 +1,17 @@
+.workbench-activity-summary { min-width: 0; margin: 0 0 10px; border-bottom: 1px solid var(--wb-border); font-size: 11px; }
+.workbench-activity-summary > summary { min-height: 24px; padding: 4px 0; cursor: pointer; overflow-wrap: anywhere; font-weight: 600; }
+.workbench-activity-summary > summary:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 1px; }
+.workbench-activity-summary__content { padding-bottom: 7px; }
+.workbench-activity-summary__content p { margin: 4px 0; color: var(--wb-muted); }
+.workbench-activity-summary table { width: 100%; border-collapse: collapse; }
+.workbench-activity-summary th, .workbench-activity-summary td { padding: 4px 5px; border-bottom: 1px solid var(--wb-border); text-align: right; overflow-wrap: anywhere; }
+.workbench-activity-summary th:first-child { padding-left: 0; text-align: left; }
+.workbench-activity-summary h3 { margin: 10px 0 4px; font-size: 11px; }
+.workbench-react .workbench-activity-summary th > button { min-height: 24px; max-width: 100%; padding: 2px 0; border: 0; background: transparent; text-align: left; text-decoration: underline; font: inherit; overflow-wrap: anywhere; }
+.workbench-activity-summary__pagination { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin-top: 4px; }
+.workbench-react .workbench-activity-summary__pagination > button { min-height: 24px; font-size: 11px; }
+.workbench-activity-summary__facts { margin: 5px 0; }
+.workbench-activity-summary__facts > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 5px; padding: 3px 0; }
+.workbench-activity-summary__facts dt, .workbench-activity-summary__facts dd { margin: 0; overflow-wrap: anywhere; }
+.workbench-activity-summary__filter { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; margin: 4px 0; overflow-wrap: anywhere; }
+.workbench-react .workbench-activity-summary__filter > button { min-height: 24px; font-size: 11px; }
