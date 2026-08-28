@@ -506,7 +506,12 @@ describe("Event History performance runner reference preflight", () => {
   it("uses explicit capture-only classification without constructing a self-reference", () => {
     const source = readFileSync("scripts/event-history-performance.mjs", "utf8");
 
-    expect(source).toContain('classifyEventHistoryPerformance(report, undefined, "capture-only")');
+    expect(source).toContain("const decision = captureMode");
+    expect(source).toContain("classifyEventHistoryPerformance(report, undefined, classificationMode)");
+    expect(source).toContain("classifyEventHistoryPerformance(report, reference, classificationMode)");
+    expect(source).toContain('captureMode ? "filter-impl-08-capture-only" : "filter-impl-08"');
+    expect(source).toContain('captureMode ? "non-interactive-capture-only" : "non-interactive"');
+    expect(source).toContain('captureMode ? "capture-only" : "ordinary"');
     expect(source).not.toContain("candidateReference");
     expect(source).toContain('const reference = captureMode ? undefined : JSON.parse');
   });
