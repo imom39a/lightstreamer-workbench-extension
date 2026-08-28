@@ -128,9 +128,8 @@ test("Activity snapshot burst applies the exact canonical phase and range Filter
 
   await expect(evidence).toContainText(/Before range\s*1,696/);
   await expect(evidence).toContainText(/In range\s*1,696/);
-  await expect(
-    page.getByText(/Filter:.*phase.*SNAPSHOT/i).first(),
-  ).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText(/Filter:.*phase.*SNAPSHOT/i);
   await expect(
     page.getByRole("button", { name: "Reset Filter" }),
   ).toBeVisible();

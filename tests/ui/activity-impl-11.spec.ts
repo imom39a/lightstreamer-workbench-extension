@@ -69,7 +69,8 @@ test("Activity summary keeps Filter exclusions and selected Evidence independent
 
   await expect(summary).toContainText("Current Scope and Filter");
   await expect(summary.getByRole("table", { name: "Activity counts" })).toBeVisible();
-  await expect(page.getByText(/Filter:.*kind.*item-update/i).first()).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText(/Filter:.*kind.*item-update/i);
   await expect(summary.getByRole("button", { name: "Reset Filter" })).toBeVisible();
 });
 

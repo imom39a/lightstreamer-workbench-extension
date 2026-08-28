@@ -205,7 +205,8 @@ test("Workbench keeps COMMAND projection UI out of selected high-volume Evidence
   await page.getByRole("button", { name: "Filter" }).click();
   await page.getByLabel("Filter Evidence").fill("retained-evidence-event");
   await page.getByRole("button", { name: "Apply" }).click();
-  await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: retained-evidence-event");
 
   const grid = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
   const focused = page.locator(`[data-evidence-id="${highVolumeEventId(3_970)}"]`);
@@ -217,7 +218,8 @@ test("Workbench keeps COMMAND projection UI out of selected high-volume Evidence
   expect(beforeScrollTop).toBeGreaterThan(0);
 
   await expect.poll(() => grid.evaluate((ledger) => ledger.scrollTop)).toBe(beforeScrollTop);
-  await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: retained-evidence-event");
   await expect(focused).toHaveAttribute("aria-selected", "true");
   await expect(focused).toBeFocused();
   await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
@@ -257,7 +259,8 @@ test("Activity summary ranking uses native buttons to apply a visible canonical 
   await expect(firstRank).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(summary.getByRole("button", { name: "Reset Filter" })).toBeVisible();
-  await expect(page.getByText(/Filter:.*subscription/i).first()).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText(/Filter:.*subscription/i);
   await expectNoSeriousAxeViolations(page, testInfo);
   await page.setViewportSize({ width: 563, height: 700 });
   await expect(summary).toHaveAttribute("open", "");
@@ -372,25 +375,48 @@ test("Workbench exposes structural Scope as a roving tree at wide geometry", asy
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench opens and restores the temporary Scope picker at normal and shallow geometry", async ({ page }, testInfo) => {
-  await openScenario(page, "live-selected", { width: 900, height: 700 }, "light");
+test("Workbench keeps populated Scope picker controls above Evidence at normal and shallow geometry", async ({ page }, testInfo) => {
+  await openScenario(page, "integrated-activity-main", { width: 900, height: 700 }, "light");
   const scope = page.getByRole("button", { name: "Scope", exact: true });
   await expect(scope).toHaveAttribute("aria-expanded", "false");
   await expect(scope).toHaveAttribute("aria-controls", "workbench-runtime-scope");
   await scope.focus();
   await scope.click();
   await expect(scope).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByRole("button", { name: "Close Scope" })).toBeVisible();
-  await expect(page.getByRole("tree")).toBeVisible();
+  const normalClose = page.getByRole("button", { name: "Close Scope" });
+  const normalFirstTreeItem = page.getByRole("tree").getByRole("treeitem").first();
+  await expect(normalClose).toBeVisible();
+  await expect(normalFirstTreeItem).toBeVisible();
+  for (const target of [normalClose, normalFirstTreeItem]) expect(await target.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    return hit !== null && element.contains(hit);
+  })).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("populated-scope-picker-normal.png") });
+  await normalClose.click();
+  await expect(scope).toBeFocused();
+  await scope.click();
   await expect(page.locator(":focus")).toHaveRole("treeitem");
   await page.keyboard.press("Escape");
   await expect(scope).toHaveAttribute("aria-expanded", "false");
   await expect(scope).toBeFocused();
 
-  await openScenario(page, "live-selected", { width: 900, height: 320 }, "dark");
+  await openScenario(page, "integrated-activity-main", { width: 900, height: 320 }, "dark");
   await scope.click();
   await expect(scope).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByRole("button", { name: "Close Scope" })).toBeVisible();
+  const shallowClose = page.getByRole("button", { name: "Close Scope" });
+  const shallowFirstTreeItem = page.getByRole("tree").getByRole("treeitem").first();
+  await expect(shallowClose).toBeVisible();
+  await expect(shallowFirstTreeItem).toBeVisible();
+  for (const target of [shallowClose, shallowFirstTreeItem]) expect(await target.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    return hit !== null && element.contains(hit);
+  })).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("populated-scope-picker-shallow.png") });
+  await shallowClose.click();
+  await expect(scope).toBeFocused();
+  await scope.click();
   await expect(page.locator(":focus")).toHaveRole("treeitem");
   await page.keyboard.press("Escape");
   await expect(scope).toBeFocused();
@@ -529,7 +555,8 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByLabel("Filter Evidence").fill("retained-evidence-event");
   await page.getByRole("button", { name: "Apply" }).click();
-  await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: retained-evidence-event");
   await grid.hover();
   await page.mouse.wheel(0, 260);
   const beforeScrollTop = await grid.evaluate((element) => element.scrollTop);
@@ -584,7 +611,8 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   await expect(more).toBeFocused();
   await expect(more).toHaveAttribute("aria-expanded", "false");
   await expect(priorHeading).toBeVisible();
-  await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: retained-evidence-event");
   await expect(page.locator(`[data-evidence-id="${selectedIdentity}"]`)).toHaveAttribute("aria-selected", "true");
   await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBe(beforeScrollTop);
   await expect(page.getByText(/View FROZEN/)).toBeVisible();
@@ -887,7 +915,8 @@ test("Workbench keeps Find reachable and restorable in compact geometry", async 
   await expect(page.getByLabel("Filter Evidence")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(filter).toBeFocused();
-  await expect(page.getByText("Filter: scenario-event", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event");
   await find.focus();
   await page.keyboard.press(process.platform === "darwin" ? "Meta+f" : "Control+f");
   await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toBeVisible();
@@ -914,20 +943,23 @@ test("Workbench drafts free-text Filter, exposes exact counts, and keeps Find in
   await expect(page.getByRole("button", { name: "Add structured criterion" })).toBeEnabled();
   await expect(page.getByText("Choose one of twelve Evidence facets to browse exact observed values.", { exact: true })).toBeVisible();
   await page.getByLabel("Filter Evidence").fill("not-applied-yet");
-  await expect(page.getByText("Filter: scenario-event", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event");
   await page.evaluate(() => window.__makeWorkbenchFilterStale());
   await expect(page.getByLabel("Filter Evidence")).toHaveValue("not-applied-yet");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator(".workbench-react__filter-status")).toContainText("Filter revision is stale");
   await expect(page.getByLabel("Filter Evidence")).toHaveValue("not-applied-yet");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByText("Filter: not-applied-yet", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: not-applied-yet");
   await expect(filter).toBeFocused();
 
   await filter.click();
   await page.getByLabel("Filter Evidence").fill("scenario-event-2");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByText("Filter: scenario-event-2", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event-2");
   await expect(page.getByText("Shown 1", { exact: true })).toBeVisible();
   await expect(page.getByText("Matching 1", { exact: true })).toBeVisible();
   await expect(page.getByText("In Scope 1", { exact: true })).toBeVisible();
@@ -936,9 +968,10 @@ test("Workbench drafts free-text Filter, exposes exact counts, and keeps Find in
   await expect(page.getByRole("textbox", { name: "Find in ordered Evidence" })).toHaveValue("item update");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
-  await expect(page.getByText("Filter: scenario-event-2", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event-2");
   await page.getByRole("button", { name: "Reset Filter", exact: true }).click();
-  await expect(page.getByText("Filter: scenario-event-2", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".workbench-react__active-filter")).toHaveCount(0);
   await expect(page.getByText("Shown 6", { exact: true })).toBeVisible();
 
   await expectShellFits(page);
@@ -1691,12 +1724,27 @@ test("Workbench gives an empty current Scope a truthful compact orientation", as
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench routes an empty normal Scope change through the temporary picker", async ({ page }, testInfo) => {
-  await openScenario(page, "empty-scope", { width: 900, height: 700 }, "light");
-  await page.getByRole("button", { name: "Change Scope" }).click();
-  await expect(page.getByRole("button", { name: "Close Scope" })).toBeVisible();
-  await page.getByRole("button", { name: "Close Scope" }).click();
-  await expect(page.getByRole("button", { name: "Change Scope" })).toBeFocused();
+test("Workbench routes an empty Scope change through the temporary picker above Evidence", async ({ page }, testInfo) => {
+  for (const [viewport, theme, label] of [
+    [{ width: 900, height: 700 }, "light", "normal"],
+    [{ width: 900, height: 320 }, "dark", "shallow"]
+  ] as const) {
+    await openScenario(page, "empty-scope", viewport, theme);
+    const changeScope = page.getByRole("button", { name: "Change Scope" });
+    await changeScope.click();
+    const closeScope = page.getByRole("button", { name: "Close Scope" });
+    const scopeTree = page.getByRole("tree", { name: /Runtime Scope tree/ });
+    await expect(closeScope).toBeVisible();
+    await expect(scopeTree.getByRole("treeitem").first()).toBeVisible();
+    expect(await closeScope.evaluate(button => {
+      const bounds = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+      return hit !== null && button.contains(hit);
+    })).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`empty-scope-picker-${label}.png`) });
+    await closeScope.click();
+    await expect(changeScope).toBeFocused();
+  }
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
@@ -1711,7 +1759,8 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
     document.querySelector<HTMLElement>("#app")!.dataset.theme = "dark";
   });
   await expect(page.locator(".workbench-react")).toHaveCSS("background-color", "rgb(27, 29, 32)");
-  await expect(page.getByText("Filter: scenario-event")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event");
   await page.getByRole("button", { name: "Find", exact: true }).click();
   await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText(/matches/);
   await page.keyboard.press("Escape");

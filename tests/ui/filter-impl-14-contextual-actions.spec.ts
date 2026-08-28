@@ -20,6 +20,7 @@ test("filter-impl-14 exposes typed selected-Evidence actions and immediate recov
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
 
   const selected = page.locator('[data-evidence-id="scenario-event-3"]');
+  const activeFilter = page.locator(".workbench-react__active-filter");
   await expect(selected).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "Focus selected Context" }).click();
   const actions = page.getByRole("complementary", { name: "Context" });
@@ -31,16 +32,23 @@ test("filter-impl-14 exposes typed selected-Evidence actions and immediate recov
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/base-normal-selected-action-context-light.png` });
 
   await actions.getByRole("button", { name: /^Include COMMAND key/ }).click();
-  await expect(page.getByText(/Filter:.*COMMAND key/)).toBeVisible();
+  await expect(activeFilter).toBeVisible();
+  await expect(activeFilter).toHaveText("Filter: scenario-event · key: alpha");
   await expect(actions.getByRole("button", { name: /^Exclude Client/ })).toBeVisible();
   await actions.getByRole("button", { name: "Around selected Evidence ±5 seconds" }).click();
-  await expect(page.getByText(/Filter:.*Around/)).toBeVisible();
+  await expect(activeFilter).toBeVisible();
+  await expect(activeFilter).toHaveText("Filter: scenario-event · key: alpha · Range −4.998s–+5.002s");
+  await expect(selected).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "Reset Filter", exact: true })).toBeVisible();
 
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/current-normal-selected-action-context-light.png` });
   await testInfo.attach("current-normal-selected-action-context-light.png", {
     path: `${evidenceRoot}/current-normal-selected-action-context-light.png`,
     contentType: "image/png"
   });
+  await page.getByRole("button", { name: "Reset Filter", exact: true }).click();
+  await expect(activeFilter).toHaveCount(0);
+  await expect(selected).toHaveAttribute("aria-selected", "true");
   await assertAxe(page);
 });
 

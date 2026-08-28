@@ -107,7 +107,8 @@ test("Activity ranking narrows existing Evidence through the canonical Filter", 
 
   await filterRank.click();
   await expect(summary.getByRole("button", { name: "Reset Filter" })).toBeVisible();
-  await expect(page.getByText(/Filter:.*subscription/i).first()).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText(/Filter:.*subscription/i);
   if (selectedId) {
     await expect(page.getByRole("heading", { name: new RegExp(selectedId) })).toBeVisible();
   }

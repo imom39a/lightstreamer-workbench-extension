@@ -102,7 +102,8 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
 
   await openExplorer(page, "filter-find", { width: 900, height: 700 }, "light", "Evidence kind");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.getByText("Filter: scenario-event", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event");
   await expect(page.locator(".workbench-react__active-filter")).not.toContainText("kind");
 
   await page.goto("/?scenario=filter-find&theme=light");
@@ -110,7 +111,8 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByLabel("Filter Evidence").fill("filter-zero-result");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByText("Filter: filter-zero-result", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: filter-zero-result");
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
   await page.getByRole("option", { name: "Add Evidence kind criterion" }).click();
@@ -131,7 +133,8 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await openExplorer(page, "filter-active-zero", { width: 900, height: 700 }, "light", "Evidence kind");
   await page.getByRole("button", { name: /^Include item-update/ }).click();
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByText(/Filter:.*item-update/)).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText(/Filter:.*item-update/);
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByLabel("Filter Evidence").fill("filter-active-zero-client-status");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
@@ -166,7 +169,8 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await expect(page.getByLabel("Filter Evidence")).toHaveValue("not-applied-yet");
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/current-stale-retry-light.png` });
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByText("Filter: not-applied-yet", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: not-applied-yet");
   await expect(filter).toBeFocused();
   await assertAxe(page);
 });

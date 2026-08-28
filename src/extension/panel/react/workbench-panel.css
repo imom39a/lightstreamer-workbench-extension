@@ -257,7 +257,7 @@
 .workbench-react__scope-node em { color: var(--wb-muted); font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-style: normal; }
 .workbench-react__scope-node[data-retired="true"] { color: var(--wb-muted); }
 
-.workbench-react__evidence { position: relative; display: flex; flex-direction: column; }
+.workbench-react__evidence { position: relative; isolation: isolate; display: flex; flex-direction: column; }
 .workbench-react__condition { display: grid; flex: 0 0 auto; grid-template-columns: auto minmax(0, 1fr) auto; gap: 9px; align-items: center; border-bottom: 1px solid var(--wb-border); padding: 6px 9px; }
 .workbench-react__condition--warning { background: var(--wb-warning-soft); color: var(--wb-warning); }
 .workbench-react__condition--selection { background: var(--wb-info-soft); color: var(--wb-info); }
