@@ -8,10 +8,10 @@ Name:
 Lightstreamer Workbench
 ```
 
-Summary, 99 characters:
+Summary, 89 characters:
 
 ```text
-DevTools workspace for inspecting Lightstreamer Web Client activity and deliberate Local Injection.
+Inspect Lightstreamer Web Client activity and test local Item Updates in Chrome DevTools.
 ```
 
 Category:
@@ -47,43 +47,44 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 ## Detailed Description
 
 ```text
-Lightstreamer Workbench adds a Chrome DevTools panel for developers debugging web applications that use the official Lightstreamer Web Client.
+Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
 
-It captures client, Session, Subscription, listener, Item Update, snapshot, and COMMAND-mode key lifecycle activity from the inspected page. The React Scoped Evidence Workspace keeps structural Runtime Scope, chronological Ordered Evidence, and explanatory Context together so developers can follow an investigation without losing its active object or selected Evidence.
+It captures clients, Sessions, Subscriptions, listeners, Item Updates, snapshots, and COMMAND key lifecycles. The workspace has Runtime Scope, Ordered Evidence, and Context.
 
 Key features:
 
-- Runtime Scope for choosing the inspected page, client, Session, Subscription, item, or listener while retired objects remain readable but cannot become Local Injection targets.
-- Ordered Evidence with independent Find, Filter, selection, Capture, Coverage, and Live/Frozen controls, plus bounded rendering backed by committed Evidence through the current History Interval's Committed Evidence Boundary.
-- Context for the active runtime object or selected Evidence, including immutable raw Evidence, COMMAND lifecycle detail, and explicit provenance and limitations.
-- A Panel Session-wide Notifications document for active operational conditions and recent Lightstreamer diagnostics, with stable identities, independent filters, supporting Evidence routes, and dismissible footer copies.
-- Side-by-side Observed Server COMMAND State and Local Effective COMMAND State projections; neither is presented as authoritative server state.
-- Exactly one protected Local Injection Draft, created from an immutable captured Source or authored from a live COMMAND scope.
-- Full-size raw JSON editing with validation, default immutable Source/Draft comparison for captured updates, and a direct labelled **Inject locally** action after atomic payload and target revalidation.
-- Explicit Local Injection Scenarios with ordered single-target Steps, immutable reviewed Runs, serial controls, Checkpoints, per-Step outcomes, and complete correlation.
-- Local-only delivery to the exact live Subscription through the inspected page, with delivered, failed, partial, unknown, and stale-target outcomes that state only what Workbench can prove.
-- WebSocket/TLCP fallback diagnostics when primary Web Client instrumentation is unavailable.
-- One temporary Event History per Panel Session, with normal 100,000-record/256 MiB and startup-memory 5,000-record/32 MiB History Capacity tiers; the selected adapter is fixed for the session and no backend service is required. Count and canonical bytes are independent limits; arbitrary-size payloads are not promised.
-- Complete History is limited to committed Evidence through the current History Interval's Committed Evidence Boundary. Clear makes an exact interval cut and cannot restart stopped Capture; journal or capacity failures stop acceptance fail-closed.
-- Controlled Close attempts erasure. Abnormal termination relies on a later ownership-safe sweep, so residual data may remain until Chrome next runs the extension; a new Panel Session starts empty and never replays stale Evidence. Storage fallback alone does not limit Observation Coverage.
+- Select the page, client, Session, Subscription, item, or listener in Runtime Scope. You can inspect retired objects, but you cannot use them as Local Injection targets.
+- Read events in retained order. Each row shows its event number, time, Source, phase, operation, object, and key.
+- Use Find, Filter, selection, Capture, Coverage, and Live or Frozen independently.
+- Select an event to inspect its Fields, raw Evidence, Source, COMMAND details, and limits in Context.
+- Review active conditions and recent Lightstreamer diagnostics in Notifications. Dismiss hides only the footer message.
+- Trace COMMAND `ADD`, `UPDATE`, and `DELETE` operations. Use Fields, diagnostics, and Checkpoints for more detail.
+- Create one protected Local Injection Draft from captured Evidence or from a live COMMAND Scope.
+- Edit raw JSON and validate the Draft. Captured Drafts compare Source and Draft by default, then inject directly from that preview.
+- Use a Local Injection Scenario for ordered Steps, immutable reviewed Runs, serial controls, Checkpoints, and results for each Step.
+- Deliver an Item Update to the exact live Subscription in the inspected page. Workbench reports delivered, failed, partial, unknown, and stale-target results.
+- Use WebSocket/TLCP fallback diagnostics when the primary Web Client instrumentation is not available.
+- Keep one temporary Event History for each Panel Session. IndexedDB can keep 100,000 records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB.
+- Use the Committed Evidence Boundary to find the end of complete History. Clear ends the current History Interval and cannot restart stopped Capture.
+- A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
 - No product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer-operated backend.
-- First-party Help links to versioned documentation, privacy, and support routes on the project site.
+- Help links open the project documentation, privacy policy, and support page.
 
-This extension is intended for developers and QA engineers who need to understand and reproduce Lightstreamer COMMAND subscription behavior inside Chrome DevTools.
+Use this extension to inspect and test Lightstreamer behavior in Chrome DevTools.
 ```
 
 ## Screenshot Upload Order
 
 Remove every legacy screenshot that shows the retired three-section interface before uploading this 2.0 set.
 
-1. `screenshots/01-command-projections-context.png`
-   - Caption: Runtime Scope, retained Event order, timestamp, Source, COMMAND operation, object, key, and selected update Fields remain readable in one workspace.
+1. `screenshots/01-workspace-context.png`
+   - Caption: Select a Runtime Scope. Read events in order. Inspect the selected update Fields in Context.
 2. `screenshots/02-ordered-evidence-context.png`
-   - Caption: Complete raw Evidence preserves the immutable captured envelope, provenance, and Lightstreamer-native runtime context for detailed inspection.
+   - Caption: Inspect the complete raw Evidence, Source, and Lightstreamer runtime context for an event.
 3. `screenshots/03-local-injection-editor.png`
-   - Caption: One protected Local Injection Draft provides default Source/Draft comparison, raw JSON editing, validation, exact target details, and direct local delivery.
+   - Caption: Compare, edit, validate, and inject one protected Local Injection Draft from the same preview.
 4. `screenshots/04-notifications.png`
-   - Caption: Notifications keeps active Workbench conditions and recent Lightstreamer diagnostics reviewable without taking over selected Evidence Context.
+   - Caption: Review active Workbench conditions and recent Lightstreamer diagnostics in Notifications.
 
 ## Graphic Assets
 
@@ -116,31 +117,31 @@ Version:
 What's new:
 
 ```text
-Focused update for the 2.0 Scoped Evidence Workspace.
+Update for the Workbench workspace.
 
-- Adds explicit multi-event Local Injection Scenarios with immutable reviewed Runs, serial controls, Checkpoints, and correlated outcomes.
-- Adds a Panel Session-wide Notifications workflow for active conditions and recent Lightstreamer diagnostics; footer conditions can be dismissed without changing Evidence.
-- Improves Scope and Ordered Evidence readability, including a dedicated retained-order rail and stable two-line Scope identities.
-- Keeps selected update Fields visible by default through compact supporting Context disclosures.
+- Adds Local Injection Scenarios with immutable reviewed Runs, serial controls, Checkpoints, and results for each Step.
+- Adds one Notifications document for active conditions and recent Lightstreamer diagnostics. Dismiss hides only the footer message.
+- Adds a separate rail for retained Event order and a two-line layout for Scope items.
+- Shows selected update Fields before the closed supporting sections in Context.
 - Keeps the same Manifest V3 permissions, local-only data handling, temporary Event History, and Local Injection server boundary.
 ```
 
 ## Privacy Practices Draft
 
 ```text
-Lightstreamer Workbench processes inspected-page Lightstreamer event data locally inside one Panel Session. Each Panel Session owns one temporary Event History: normal IndexedDB capacity is 100,000 Evidence records or 256 MiB, and startup memory fallback capacity is 5,000 records or 32 MiB. The selected adapter is fixed for that session. Captured Evidence is not transmitted to the developer, this extension's authors, an analytics service, or any other external service by the extension.
+Lightstreamer Workbench processes inspected-page Lightstreamer event data in the browser extension context. Each Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. Workbench does not change the storage type during the Panel Session. The extension does not send captured Evidence to the maintainers, an analytics service, or another external service.
 
-Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary. Clear makes an exact interval cut and cannot restart Capture after a terminal stop. Controlled Close attempts erasure; abnormal termination may defer cleanup to a later ownership-safe sweep, so residual data can remain until Chrome next runs the extension. A new Panel Session starts empty and never replays stale Evidence. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen state are independent, and storage fallback alone does not limit Coverage.
+Complete History ends at the current History Interval's Committed Evidence Boundary. Clear ends the current History Interval. It cannot restart Capture after a terminal stop. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
 
-Version 2 includes no product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer-operated backend. It creates no analytics identifier. It may remove retired 0.1.x analytics consent and random installation identifier records when local storage is available; this cleanup never sends data and cannot block the panel when local storage is unavailable.
+Version 2 has no product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer server. It does not create an analytics identifier. It can remove old 0.1.x analytics consent and installation identifier records when local storage is available. This cleanup does not send data. A cleanup failure does not block the panel.
 
-Required host/page access is used to instrument the inspected page's official Lightstreamer Web Client activity and support developer-controlled Local Injection within the inspected page. Local Injection does not contact the Lightstreamer Server. Versioned JSON and offline HTML exports occur only after an explicit user action, exclude credentials, and create local downloads for the user to review.
+Workbench uses host and page access to observe the official Lightstreamer Web Client. It also uses this access for Local Injection in the inspected page. Local Injection does not contact the Lightstreamer Server. Workbench creates a JSON or offline HTML export only when the user requests it. Each export excludes credentials and creates a local download.
 ```
 
 Privacy questionnaire note:
 
 ```text
-Version 2 has no off-device user-data collection or transmission by the extension. Do not declare product-usage analytics or an analytics identifier. Explain any locally processed website content in the dashboard field whose wording requires it, and state that it stays in the current DevTools session except for deliberate user-created local exports. Certify no sale, advertising use, account sign-in, remote logging, or use outside the extension's single debugging purpose. The dashboard answers, listing, and policy at https://imom39a.github.io/lightstreamer-workbench-extension/privacy/ must remain identical in substance.
+Version 2 does not send user data off the device. Do not declare product analytics or an analytics identifier. State that Workbench processes website content in the current DevTools session. State that only a user-requested export creates a local file. Certify that Workbench does not sell data or use it for advertising. Certify that Workbench has no account sign-in or remote logging. Keep the dashboard answers, listing, and privacy policy consistent.
 ```
 
 ## Reviewer Test Instructions
@@ -148,11 +149,11 @@ Version 2 has no off-device user-data collection or transmission by the extensio
 ```text
 No account or login is required.
 
-This is a Chrome DevTools extension. After installing it, open Chrome DevTools on a page that uses the official Lightstreamer Web Client and select the "Lightstreamer Workbench" panel. The panel stays idle until the inspected page creates Lightstreamer clients or Subscriptions. Captured activity appears chronologically in Ordered Evidence. Use Runtime Scope to choose a client, Session, Subscription, item, or listener; Context explains the active runtime object or selected Evidence and shows COMMAND key lifecycles and projections when applicable.
+This is a Chrome DevTools extension. Open Chrome DevTools on a page that uses the official Lightstreamer Web Client. Select the "Lightstreamer Workbench" panel. The panel stays idle until the page creates a Lightstreamer client or Subscription. Captured activity appears in Ordered Evidence. Use Runtime Scope to select a client, Session, Subscription, item, or listener. Select Evidence to inspect it in Context. Use ordered operations, Fields, diagnostics, and Checkpoints to inspect COMMAND lifecycles.
 
-To inspect Local Injection, select one compatible captured Item Update and choose **Create Local Injection Draft**, or choose **Author COMMAND Item Update** from an applicable live COMMAND scope. Workbench protects exactly one Draft. A captured Draft opens with its immutable Source and editable Draft compared by default; a newly authored Draft uses the single editor and has no invented Source. Edit the raw JSON, resolve validation problems, verify the exact target and Local-only boundary on that same preview surface, and choose **Inject locally** directly. Immediately before dispatch, Workbench freezes and revalidates the payload and target. The outcome document distinguishes delivered, failed, partial, unknown, and stale-target results without claiming downstream application effects. Multi-Step Scenarios still require **Review Scenario** to seal an immutable Run.
+To test Local Injection, select a compatible captured Item Update. Then select **Create Local Injection Draft**. You can also select **Author COMMAND Item Update** from an applicable live COMMAND Scope. Workbench protects one Draft. For captured Evidence, **Compare Source** is active by default. Edit the JSON, correct validation errors, verify the exact target, then select **Inject locally** on the same authoring surface. Workbench freezes and revalidates the Draft and target before delivery. The outcome document reports delivered, failed, partial, unknown, and stale-target results. It does not report an application business result.
 
-Open **More actions** and confirm the **Help & resources** section links to first-party Documentation, Privacy, and Support routes. Version 2 has no analytics disclosure or analytics preference control.
+Open **More actions**. Confirm that **Help & resources** has Documentation, Privacy, and Support links. Version 2 has no analytics control.
 
 For deterministic local verification from the repository:
 
@@ -168,7 +169,7 @@ For deterministic local verification from the repository:
 - [x] Run `npm run release:package`.
 - [x] Upload `release/lightstreamer-workbench-v2.0.1.zip`.
 - [x] Upload `public/icons/icon-128.png` as the store icon.
-- [x] Upload all three screenshots in the order listed above.
+- [x] Upload all four screenshots in the order listed above.
 - [x] Upload `store-listing/promo/small-promo-tile.png`.
 - [x] Optionally upload `store-listing/promo/marquee-promo-tile.png`.
 - [x] Confirm the package-derived summary and paste the detailed description from this file.

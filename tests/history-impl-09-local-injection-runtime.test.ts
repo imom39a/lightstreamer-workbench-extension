@@ -129,7 +129,7 @@ async function syntheticEvidence(history: EventHistory) {
 }
 
 describe("history-impl-09 Local Injection committed Evidence boundary", () => {
-  it("projects Local Effective COMMAND State after committed Local Evidence", async () => {
+  it("publishes delivered Local Injection only after Local Evidence commits", async () => {
     const history = createAuthoritativeHistory({ precommitted: commandHistory });
     const executor = { execute: vi.fn(async () => successResult("committed-1")) };
     const runtime = createWorkbenchRuntime({
@@ -147,11 +147,6 @@ describe("history-impl-09 Local Injection committed Evidence boundary", () => {
     expect((await syntheticEvidence(history)).map(({ eventId }) => eventId)).toEqual([
       "synthetic-committed-1"
     ]);
-    expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=9");
-    expect(runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId).toBe(
-      "synthetic-committed-1"
-    );
 
     runtime.dispose();
   });
@@ -176,15 +171,11 @@ describe("history-impl-09 Local Injection committed Evidence boundary", () => {
       detail: expect.stringContaining("could not be retained")
     });
     expect(await syntheticEvidence(history)).toHaveLength(0);
-    expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=1");
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).not.toContain("qty=17");
-    expect(runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId).toBeUndefined();
 
     runtime.dispose();
   });
 
-  it("does not project a delivered Local Injection while its commit is delayed", async () => {
+  it("keeps a delivered Local Injection pending while its Evidence commit is delayed", async () => {
     const commit = deferred<void>();
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "history-impl-09-local-injection",
@@ -206,9 +197,6 @@ describe("history-impl-09 Local Injection committed Evidence boundary", () => {
     expect(runtime.getSnapshot().localInjection.draft?.phase).toBe("pending");
     expect(runtime.getSnapshot().localInjection.draft?.outcome).toBeNull();
     expect(await syntheticEvidence(history)).toHaveLength(0);
-    runtime.dispatch({ type: "set-context", contextId: "context:scope" });
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=1");
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).not.toContain("qty=23");
 
     commit.resolve();
     await flushAsync();
@@ -220,7 +208,6 @@ describe("history-impl-09 Local Injection committed Evidence boundary", () => {
     expect((await syntheticEvidence(history)).map(({ eventId }) => eventId)).toEqual([
       "synthetic-delayed-1"
     ]);
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=23");
 
     runtime.dispose();
   });

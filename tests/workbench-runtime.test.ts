@@ -1750,7 +1750,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("owns presentation-ready evidence, Scope, Context, Capture coverage, and COMMAND provenance", async () => {
+  it("owns presentation-ready evidence, Scope, Context, and Capture coverage", async () => {
     const history = createAuthoritativeHistory();
     history.offer({
       ...event("command-1", "orders"),
@@ -1793,9 +1793,6 @@ describe("WorkbenchRuntime", () => {
       object: "orders"
     });
     expect(snapshot.context).toMatchObject({ kind: "evidence", title: "command-1 · Item Update" });
-    expect(snapshot.commandProjections.observed.rows).toEqual([
-      ["orders-subscription / orders / order-17", "command=ADD, key=order-17, qty=3"]
-    ]);
     expect(snapshot.diagnostics[0]).toMatchObject({ title: "Coverage LIMITED" });
 
     runtime.dispose();
@@ -2122,124 +2119,6 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("scopes both COMMAND projections to structural descendants without merging their semantics", async () => {
-    const history = createAuthoritativeHistory();
-    const subAOrders = {
-      clientId: "client-a",
-      sessionId: "session-a",
-      subscriptionId: "sub-a",
-      itemName: "orders",
-      itemPosition: 1,
-      listenerId: "listener-a",
-      key: "shared-key",
-      qty: 1
-    };
-    history.offer(commandUpdate("command-1", subAOrders));
-    history.offer(commandUpdate("command-2", { ...subAOrders, itemName: "trades", itemPosition: 2, key: "trade-key", qty: 2 }));
-    history.offer(commandUpdate("command-3", {
-      ...subAOrders,
-      clientId: "client-b",
-      sessionId: "session-b",
-      subscriptionId: "sub-b",
-      listenerId: "listener-b",
-      qty: 3
-    }));
-    history.offer(commandUpdate("command-4", { ...subAOrders, qty: 9 }, { synthetic: true, command: "UPDATE" }));
-    history.offer(commandUpdate("command-5", {
-      ...subAOrders,
-      itemName: "trades",
-      itemPosition: 2,
-      key: "trade-key",
-      qty: 8
-    }, { synthetic: true, command: "UPDATE" }));
-    history.offer(commandUpdate("command-6", {
-      ...subAOrders,
-      itemName: "trades",
-      itemPosition: 2,
-      key: "trade-key",
-      qty: 2
-    }, { command: "UPDATE" }));
-    const runtime = createWorkbenchRuntime({ history });
-    await flushStoreNotifications();
-
-    expect(runtime.getSnapshot().commandProjections.observed.rows.map(([label]) => label)).toEqual([
-      "sub-a / orders / shared-key",
-      "sub-a / trades / trade-key",
-      "sub-b / orders / shared-key"
-    ]);
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=9");
-    expect(runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId).toBe(
-      "command-4"
-    );
-    expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
-
-    const select = (kind: "client" | "session" | "subscription" | "item" | "listener", label: string) => {
-      const node = runtime
-        .getSnapshot()
-        .scope.nodes.find((candidate) => candidate.kind === kind && candidate.label.startsWith(label));
-      expect(node).toBeDefined();
-      runtime.dispatch({ type: "set-scope", scopeId: node?.id ?? null });
-      return runtime.getSnapshot().commandProjections;
-    };
-
-    expect(select("client", "client-a").observed.rows.map(([label]) => label)).toEqual([
-      "sub-a / orders / shared-key",
-      "sub-a / trades / trade-key"
-    ]);
-    expect(select("session", "Session session-a").observed.rows.map(([label]) => label)).toEqual([
-      "sub-a / orders / shared-key",
-      "sub-a / trades / trade-key"
-    ]);
-    expect(select("subscription", "sub-a").observed.rows.map(([label]) => label)).toEqual([
-      "sub-a / orders / shared-key",
-      "sub-a / trades / trade-key"
-    ]);
-    const itemProjection = select("item", "orders");
-    expect(itemProjection.observed.rows).toEqual([
-      ["sub-a / orders / shared-key", "command=ADD, key=shared-key, qty=1"]
-    ]);
-    expect(itemProjection.localEffective.rows).toEqual([
-      ["sub-a / orders / shared-key", "command=UPDATE, key=shared-key, qty=9"]
-    ]);
-    expect(itemProjection.localEffective.supportingLocalEvidenceId).toBe("command-4");
-    expect(select("listener", "listener-a").observed.rows.map(([label]) => label)).toEqual([
-      "sub-a / orders / shared-key"
-    ]);
-    runtime.dispose();
-  });
-
-  it("opens and closes the promoted COMMAND comparison without changing the investigation state", async () => {
-    const history = createAuthoritativeHistory();
-    history.offer(commandUpdate("comparison-command-1", {
-      clientId: "comparison-client",
-      sessionId: "comparison-session",
-      subscriptionId: "comparison-subscription",
-      itemName: "orders",
-      itemPosition: 1,
-      listenerId: "comparison-listener",
-      key: "comparison-key",
-      qty: 1
-    }));
-    const runtime = createWorkbenchRuntime({ history });
-    await flushStoreNotifications();
-    runtime.dispatch({ type: "select-evidence", eventId: "comparison-command-1" });
-    runtime.dispatch({ type: "open-context" });
-    const before = runtime.getSnapshot();
-
-    runtime.dispatch({ type: "open-command-projection-comparison" });
-    expect(runtime.getSnapshot().contextId).toBe("command-projections");
-    expect(runtime.getSnapshot().scopeId).toBe(before.scopeId);
-    expect(runtime.getSnapshot().selectionEventId).toBe(before.selectionEventId);
-    expect(runtime.getSnapshot().evidence.investigation.filter).toEqual(before.evidence.investigation.filter);
-
-    runtime.dispatch({ type: "close-command-projection-comparison" });
-    expect(runtime.getSnapshot().contextId).toBe(before.contextId);
-    expect(runtime.getSnapshot().scopeId).toBe(before.scopeId);
-    expect(runtime.getSnapshot().selectionEventId).toBe(before.selectionEventId);
-    expect(runtime.getSnapshot().evidence.focusedEventId).toBe(before.evidence.focusedEventId);
-    runtime.dispose();
-  });
-
   it("returns Session operations to the prior Context without changing investigation state", async () => {
     const history = createAuthoritativeHistory();
     history.offer(event("actions-origin", "orders"));
@@ -2262,48 +2141,6 @@ describe("WorkbenchRuntime", () => {
         mode: origin.evidence.mode,
       }
     });
-    runtime.dispose();
-  });
-
-  it("keeps a retained COMMAND projection available in retired Session Scope", async () => {
-    const history = createAuthoritativeHistory();
-    const identity = {
-      clientId: "retired-client",
-      sessionId: "retired-session",
-      subscriptionId: "retired-sub",
-      itemName: "orders",
-      itemPosition: 1,
-      listenerId: "retired-listener",
-      key: "retired-key",
-      qty: 7
-    };
-    history.offer(commandUpdate("retired-command-1", identity));
-    history.offer({
-      ...topologyEvent("retired-session-2", "client-status"),
-      client: {
-        id: identity.clientId,
-        status: "CONNECTED:WS-STREAMING",
-        sessionId: "replacement-session",
-        transport: "WS-STREAMING"
-      },
-      subscription: undefined,
-      item: undefined,
-      listener: undefined,
-      update: undefined
-    });
-    const runtime = createWorkbenchRuntime({ history });
-    await flushStoreNotifications();
-    const retired = runtime
-      .getSnapshot()
-      .scope.nodes.find(({ kind, retired }) => kind === "session" && retired);
-    runtime.dispatch({ type: "set-scope", scopeId: retired?.id ?? null });
-
-    expect(runtime.getSnapshot().commandProjections.observed.rows).toEqual([
-      ["retired-sub / orders / retired-key", "command=ADD, key=retired-key, qty=7"]
-    ]);
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows).toEqual(
-      runtime.getSnapshot().commandProjections.observed.rows
-    );
     runtime.dispose();
   });
 

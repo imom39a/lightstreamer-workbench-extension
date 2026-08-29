@@ -1,42 +1,42 @@
-Local Injection reproduces an Item Update locally against an exact live Subscription target. A standalone Draft delivers one update; a Local Injection Scenario deliberately runs an explicit sequence against the same local-only boundary. Both remain separate from immutable Captured Evidence.
+Local Injection delivers an Item Update to an exact live Subscription target in the inspected page. A Draft delivers one update. A Local Injection Scenario delivers an ordered sequence. Local Injection does not change captured Evidence.
 
-Scenario Checkpoints can assert that a normalized Diagnostic Observation exists after the latest Review authorization. The assertion uses the stable contract version, rule code, lifecycle, minimum severity, and exact typed affected identity—not diagnostic display copy—and an optional `within` window advances only on active Scenario time.
+A Scenario Checkpoint can require a diagnostic after the latest Review. It matches stable diagnostic data, not the displayed message. An optional `within` period uses active Scenario time.
 
 ## Start a Draft
 
-Use one of two explicit entry paths:
+Use one of these paths:
 
 - Select compatible captured Item Update Evidence and choose **Create Local Injection Draft**.
 - Choose a compatible live COMMAND item or key Scope and choose **Author COMMAND Item Update**.
 
-Workbench protects exactly one standalone target-anchored Draft at a time. A Scenario is a separate, mutually protected temporary document. Visible Evidence never joins either document automatically.
+Workbench protects one standalone Draft at a time. The Draft has one target. A Scenario is a separate temporary document. Workbench does not add visible Evidence to a Draft or Scenario automatically.
 
-## Edit, preview, and validate
+## Edit and validate
 
-Raw JSON is the primary editor. The Subscription instance, Session, item identity, Source, Local-only boundary, target lifecycle, and validation state remain protected outside the editable document.
+Use the raw JSON editor to change the update. You cannot edit the Subscription instance, Session, item identity, Source, local-only boundary, target lifecycle, or validation state.
 
-When a Draft began from captured Evidence, the immutable Source and editable Draft appear in comparison by default. This authoring surface is also the preview. A newly authored Draft has no Source, so Workbench shows the single editor and does not invent one.
+If the Draft uses captured Evidence, **Compare Source** is active by default. This view is the delivery preview: it shows the immutable Source and editable Draft together without changing either one. You can close or reopen the comparison.
 
-## Inject directly
+## Preview and deliver
 
-When the Draft and protected target are valid, choose **Inject locally** on the authoring surface. There is no separate standalone Review screen. Immediately before dispatch, Workbench atomically freezes the exact payload and target fingerprint and revalidates both, then attempts one delivery through the inspected page's captured listener or Lightstreamer WebSocket path.
+Check the target, validation, local-only delivery boundary, and Source-to-Draft difference on the authoring surface. Then select **Inject locally** on that same surface. Workbench freezes and revalidates the Draft and target before making one delivery attempt through a captured listener or the Lightstreamer WebSocket path.
 
-Local Injection does **not** contact the Lightstreamer Server. A delivered outcome proves only the Workbench local-delivery boundary; it does not prove an application business effect.
+Local Injection does **not** contact the Lightstreamer Server. A delivered outcome proves only that Workbench completed its local delivery. It does not prove an application business result.
 
 ## Run a Scenario
 
-Convert a protected Draft to a Scenario, then add compatible captured updates or newly authored updates deliberately. One Scenario contains one to 100 explicitly ordered Steps against one exact page, client, Session, Subscription, and listener or wire delivery path. Optional named Checkpoints occupy ordered positions without allocating an Injection. The complete Scenario document, immutable Run plans, and retained Traces stay within an 8 MiB accounted-state limit.
+Convert a protected Draft to a Scenario. Then add compatible captured updates or authored updates. A Scenario can contain 1 to 100 ordered Steps. All Steps use the same page, client, Session, Subscription, and listener or wire path. A named Checkpoint can have a position between Steps. A Checkpoint does not create an Injection. Scenario data has an 8 MiB limit.
 
-**Review Scenario** remains required for a sequence. It validates every Step and freezes the exact target, order, payloads, relative active-time delays, speed, Checkpoints, and committed-Evidence seed boundary into an immutable Run. The simplified standalone direct-injection path does not bypass this boundary. **Step next**, **Play**, **Pause**, and **Stop** remain serial and visible. Hidden time does not advance the Scenario Clock, and **Run again** performs a new Review with fresh Run, Injection, request, and resulting Evidence identities.
+Select **Review Scenario** to validate all Steps. Review creates an immutable Run. The Run contains the target, order, payloads, active-time delays, speed, Checkpoints, and committed-Evidence seed boundary. **Step next**, **Play**, **Pause**, and **Stop** run serially. Hidden time does not advance the Scenario Clock. **Run again** creates new Run, Injection, request, and Evidence identities.
 
-Every Step uses the ordinary one-request/one-result Local Injection boundary. A Run never batches page requests, contacts the server, overlaps Steps, catches up after suspension, loops, retries automatically, rolls back delivered Steps, or suppresses interleaving Server Updates. Target retirement, failed or uncertain delivery, incomplete Evidence settlement, drift requiring re-review, or a failed Checkpoint stops before another Step and marks the remainder **NOT RUN**.
+Each Step makes one Local Injection request and gets one result. A Run does not batch requests, contact the server, overlap Steps, repeat Steps, retry, or reverse delivered Steps. Server Updates can occur between Steps. A target change, failed delivery, uncertain delivery, incomplete Evidence commit, required re-review, or failed Checkpoint stops the Run. Workbench marks the remaining Steps **NOT RUN**.
 
 ### Checkpoints
 
-Scenario Assertions inspect Workbench-owned facts only: a prior Injection Outcome; attempted, delivered, or listener counts; existence of correlated committed Local Evidence; Local Effective COMMAND key presence or absence; and strict primitive field equality. Equality distinguishes absent fields from present values and compares type and value without coercion. A server-derived public-API `null` is ambiguous, while a concrete `null` from correlated committed Local Evidence can be evaluated.
+Scenario Checkpoints inspect Workbench data only. They can inspect an earlier Injection Outcome, delivery counts, listener counts, related committed Local Evidence, COMMAND key presence, and primitive field values. Field comparison uses the value and data type. It does not convert types. It distinguishes an absent field from a present field. A server-derived public API `null` is ambiguous. A `null` in related committed Local Evidence can be evaluated.
 
-Listener-count assertions are unavailable for wire delivery. A positive assertion may wait for an explicit active-time `within` duration. Evidence links appear only while the exact committed boundary remains retained. Checkpoints never execute inspected-page JavaScript or assert arbitrary DOM, application, server, diagnostic, or Authoritative COMMAND State.
+A listener-count Checkpoint is not available for wire delivery. A positive Checkpoint can wait for an active-time `within` period. An Evidence link is available only while Workbench retains the applicable committed boundary. Checkpoints do not run page JavaScript. They do not test arbitrary DOM, application, server, or server COMMAND state.
 
 ## Outcomes and stale targets
 
-Invalid or stale Drafts state that no Injection was attempted. Failed, partial, or uncertain outcomes preserve the Draft and say only what Workbench can prove. Workbench never silently retargets, discards, repeats, or broadens an Injection.
+An invalid or stale Draft does not make an Injection attempt. A failed, partial, or uncertain result keeps the Draft. Workbench reports only the result that it can prove. It does not change the target, discard the Draft, repeat the Injection, or increase its Scope without an explicit action.

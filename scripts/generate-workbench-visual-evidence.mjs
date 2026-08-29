@@ -554,11 +554,9 @@ async function assertPrototypeSetup(page, workbench, setup) {
     "live-selected": ["evt-1842", "Open complete raw"],
     "captured-draft": ["topology-small-subscription", "json-string-event", "json-string-alpha"],
     "authored-review": ["topology-small-subscription", "None · newly authored", "visual-review"],
-    "command-comparison": ["Why matching?", "scenario-subscription-1 / scenario.snapshot-basic / alpha"],
     "more-actions": ["Session operations", "Copy complete scoped Evidence"],
     "memory-operations": ["in-memory fallback", "Panel Session closes."],
     "clear-confirmation": ["Clear retained events", "This removes retained Evidence from this Panel Session and cannot be undone."],
-    "matching-summary": ["Matching projections", "Neither projection is Authoritative COMMAND State."],
     "selected-json": ["json-string-event", "JSON string", "AIRPORT-02"],
     "activity-10k": ["Observed Server activity", "9,999 Logical Updates", "Server Logical Updates and Update Deliveries"],
     "activity-graphical": ["Observed Server activity", "Server Logical Updates and Update Deliveries"],
@@ -1225,11 +1223,6 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
       throw new Error("Standalone Local Injection must not expose a separate Review surface.");
     }
     await page.getByRole("textbox", { name: "Local Injection JSON", exact: true }).waitFor();
-    return;
-  }
-  if (setup === "command-comparison") {
-    await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
-    await page.getByRole("region", { name: "COMMAND projection comparison" }).waitFor();
     return;
   }
   if (setup === "retained-find") {

@@ -4,7 +4,7 @@
 - A page that uses the official Lightstreamer Web Client.
 - Authorization to inspect the page and any data it displays.
 
-Workbench does not require an account or a maintainer-operated backend.
+Workbench does not require an account or a Workbench server.
 
 ## Install
 
@@ -12,25 +12,27 @@ Workbench does not require an account or a maintainer-operated backend.
 2. Open the application page you want to inspect.
 3. Open Chrome DevTools.
 4. Select **Lightstreamer Workbench** from the DevTools panels.
-5. Reload the inspected page with DevTools open when the application created its Lightstreamer client before instrumentation attached.
+5. Reload the page if the Lightstreamer client existed before Workbench opened.
 
-## Confirm useful Capture
+## Check Capture and Coverage
 
-The operating strip separates two questions:
+The operating strip shows two independent states:
 
-- **Capture operation** tells you whether Workbench is accepting activity.
-- **Observation Coverage** tells you how confidently captured Evidence represents the relevant Lightstreamer runtime.
+- **Capture** shows whether Workbench accepts activity.
+- **Coverage** shows how much of the applicable Lightstreamer runtime Workbench can observe.
 
-When Coverage is limited or unavailable, follow the recovery text before treating missing Evidence as proof that activity did not occur.
+If Coverage is LIMITED or UNAVAILABLE, do the displayed recovery action. Do not use missing Evidence as proof until you correct the Coverage problem.
 
-## Run a first investigation
+## Inspect your first Session
 
-1. Open **Scope** and choose a client, Session, Subscription, item, or listener.
-2. Follow matching events in **Ordered Evidence**.
-3. Select one row to populate **Context**.
-4. Use **Find** to navigate matches without changing the visible set.
-5. Use **Filter** to change the visible set deliberately.
-6. Freeze the Evidence view when you need a stable historical window; Capture continues unless its operating state says otherwise.
-7. Open **Notifications** when the footer reports an active condition or recent diagnostic; dismissing a footer copy does not remove its notification or Evidence.
+1. Open **Scope**.
+2. Select a client, Session, Subscription, item, or listener.
+3. Read the matching events in **Ordered Evidence**.
+4. Select one row to show **Context**.
+5. Use **Find** to move between matches without changing the visible set.
+6. Use **Filter** to change the visible set.
+7. Select **Freeze Evidence** when you need a stable historical view. Capture continues.
+8. Open **Notifications** when the footer shows a condition or recent diagnostic.
+9. Dismiss a footer message if it obstructs the workspace. This action does not delete the notification or Evidence.
 
-Next: follow the complete [Developer guide]({{site}}docs/developer-guide/) or [understand the unified workspace]({{site}}docs/workspace/).
+Next, use the [Developer guide]({{site}}docs/developer-guide/) or read about the [Workbench workspace]({{site}}docs/workspace/).

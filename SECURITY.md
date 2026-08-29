@@ -1,28 +1,28 @@
 # Security Policy
 
-Lightstreamer Workbench is a developer tool that observes inspected-page runtime data. Security and privacy reports are taken seriously because captured Lightstreamer payloads can contain proprietary or user-sensitive application data.
+Lightstreamer Workbench observes inspected-page runtime data. Captured Lightstreamer payloads can contain proprietary or private application data. Use the private report process for a security or privacy problem.
 
 Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extension/security/
 
 ## Supported versions
 
-Security fixes target the current Chrome Web Store release and the current `main` branch:
+Security fixes apply to the current Chrome Web Store release and the current `main` branch:
 
 | Version | Status |
 | --- | --- |
 | `2.0.x` | Current public release; supported |
 
-Older releases receive no routine fixes. Upgrade to the latest Chrome Web Store version before reporting a vulnerability unless the issue specifically concerns the upgrade path.
+Older releases do not get routine fixes. Install the latest Chrome Web Store version before you report a vulnerability. Do not upgrade if the vulnerability is in the upgrade process.
 
 ## Report a vulnerability
 
 Do not open a public issue with exploit details, production payloads, tokens, cookies, account identifiers, or private URLs.
 
 1. Use [GitHub private vulnerability reporting](https://github.com/imom39a/lightstreamer-workbench-extension/security/advisories/new).
-2. If that private flow is unavailable, open a [minimal public support issue](https://github.com/imom39a/lightstreamer-workbench-extension/issues/new?template=03-question.yml) asking for maintainer security contact. Omit all exploit details and sensitive data.
-3. Include a concise impact summary, affected version or commit, browser version, reproduction outline, and a sanitized proof of concept only in the private report.
+2. If the private report page is not available, open a [public support issue](https://github.com/imom39a/lightstreamer-workbench-extension/issues/new?template=03-question.yml). Ask for a maintainer security contact. Do not include vulnerability details or private data.
+3. Put the impact, affected version, browser version, reproduction steps, and a safe proof of concept only in the private report.
 
-The maintainers triage reports based on exploitability, user impact, captured-data exposure, and extension-store release risk.
+The maintainers assess exploitability, user impact, captured-data exposure, and Chrome Web Store release risk.
 
 ## Use the private security path for
 
@@ -42,8 +42,8 @@ The maintainers triage reports based on exploitability, user impact, captured-da
 - Feature requests.
 - Fixture or local build failures.
 
-Review the [Support page](https://imom39a.github.io/lightstreamer-workbench-extension/support/) to choose the right public template.
+Use the [Support page](https://imom39a.github.io/lightstreamer-workbench-extension/support/) to select a public report template.
 
 ## Data-handling reminder
 
-Workbench is designed to process Lightstreamer Evidence locally inside one Panel Session. The session owns one temporary Event History; controlled Close attempts erasure, while abnormal termination can defer cleanup to a later ownership-safe sweep. Residual data may remain until Chrome next runs the extension, but a new Panel Session never replays stale Evidence. Do not attach raw production event streams, exports, or screenshots containing sensitive application data to public issues or pull requests.
+Workbench processes Lightstreamer Evidence in one Panel Session. The Panel Session owns one temporary Event History. A controlled Close tries to erase this History. An abnormal stop can prevent erasure. Residual data can remain until Chrome runs the extension again. A new Panel Session does not load this data. Do not attach private production events, exports, or screenshots to public issues or pull requests.

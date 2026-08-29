@@ -1,19 +1,19 @@
 ## Scoped exports
 
-Workbench can prepare a versioned JSON snapshot or offline HTML report for the current Scope. Export is a deliberate local download, not automatic persistence.
+Workbench can create a versioned JSON snapshot or an offline HTML report for the current Scope. Workbench creates an export only when you request it. An export is a local download.
 
-Credentials are excluded unconditionally. Before downloading, you can redact additional categories such as server addresses, masked client IP information, item names, COMMAND keys, field names, and captured identifiers.
+Workbench always excludes credentials. You can also remove server addresses, masked client IP information, item names, COMMAND keys, field names, and captured identifiers.
 
-Including complete Evidence is explicit because captured application payloads can contain sensitive or proprietary data.
+You must explicitly include complete Evidence. Captured application payloads can contain private or proprietary data.
 
 ## Local storage boundary
 
-Captured clients, Sessions, Subscriptions, updates, field values, diagnostics, Sources, and Drafts remain in the browser extension context for the current Panel Session. One Panel Session owns one temporary Event History. Normal IndexedDB History Capacity is 100,000 Evidence records or 256 MiB of canonical replay-complete journal bytes; the startup memory fallback is 5,000 records or 32 MiB. The first independent limit reached controls admission, and the selected adapter never changes mid-session. Count and canonical bytes are independent limits; arbitrary-size payloads are not promised.
+Captured clients, Sessions, Subscriptions, updates, field values, diagnostics, Sources, and Drafts stay in the browser extension context. One Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. The first count or byte limit stops admission. Workbench does not change the storage type during the Panel Session.
 
-Complete History is available only through the current History Interval's Committed Evidence Boundary. Clear is an exact interval cut; it does not restart Capture after a fail-closed terminal stop. Controlled Close attempts to erase the owned journal. Abnormal termination can defer cleanup to a later ownership-safe sweep, so residual temporary data may remain until Chrome next runs the extension. A new Panel Session starts empty and never replays a prior session's Evidence. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen view state remain independent; storage fallback alone does not limit Coverage.
+Complete History ends at the current History Interval's Committed Evidence Boundary. Clear ends the current interval. Clear does not restart Capture after a terminal stop. A controlled Close tries to erase the Event History. An abnormal stop can prevent this action. Residual data can remain until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen remain independent. The memory fallback does not reduce Coverage by itself.
 
 ## No analytics or tracking
 
-Version 2 sends no product analytics, inspected-page URLs, Lightstreamer addresses, captured values, identifiers, search text, Drafts, errors, or stack traces to the maintainers. The public website also uses no analytics, cookies, submitted forms, or tracking scripts.
+Version 2 does not send product analytics or inspected-page data to the maintainers. This data includes URLs, Lightstreamer addresses, captured values, identifiers, search text, Drafts, errors, and stack traces. The public website does not use analytics, cookies, forms, or tracking scripts.
 
-Read the complete [Privacy policy]({{site}}privacy/) before sharing an export or using Workbench against production data.
+Read the [Privacy policy]({{site}}privacy/) before you share an export or inspect production data.

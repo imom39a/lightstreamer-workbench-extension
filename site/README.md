@@ -15,3 +15,7 @@ The build writes only public routes and required local assets to ignored `site-d
 `site/assets/og.png` is the release-current social card copied into the public artifact. `npm run store:assets` composes it from the maintained brand artwork, project logo, and latest generated Workbench screenshot, then writes the same image to `docs/assets/github-social-preview.png` for repository use.
 
 The final card remains exactly `1280x640`; `npm run site:check` enforces that dimension.
+
+## Writing style
+
+Use [ASD-STE100-style Simplified Technical English](https://www.asd-ste100.org/) for all public copy. Use short, active sentences. Give one action in each numbered step. Use the same word for the same action or object. Do not use idioms or promotional slogans. Keep official Lightstreamer and Workbench terms exact when a simpler word would change the technical meaning.

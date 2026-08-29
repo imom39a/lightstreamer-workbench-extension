@@ -1,32 +1,32 @@
-The roadmap deepens the accepted Scoped Evidence Workspace. It does not recreate separate feature destinations, and it does not promise dates.
+This roadmap lists planned work. It does not specify release dates.
 
 ## Next
 
-### Normalized JSON Evidence console
+### JSON Evidence view
 
-Present each retained row as one deterministic normalized Workbench Evidence object while preserving retained order, bounded rendering, Find, Filter, selection, and semantic Context.
+Show each retained row as a normalized Workbench Evidence object. Keep retained order, bounded rendering, Find, Filter, selection, and Context.
 
-### Contextual narrowing and value inspection
+### Filter and value inspection
 
-Add click-to-narrow facets and make changed fields, Update Deliveries, provenance, JSON Patch evidence, and value ambiguity easier to inspect without opening raw capture.
+Add controls that create Filter criteria from selected values. Show changed fields, Update Deliveries, Source, JSON Patch data, and ambiguous values without requiring raw Evidence.
 
-### Runtime diagnosis that reaches conclusions
+### Runtime diagnostics
 
-Correlate connection recovery, Session epochs, snapshot bootstrap, subscription configuration, server errors, keepalives, loss signals, and evidence-based linting inside the existing Context and diagnostic boundaries.
+Connect related recovery events, Session epochs, snapshots, Subscription settings, server errors, keepalives, and loss signals. Show the result in Context or Notifications.
 
-### Captured Client Messages and deliberate Server Injection
+### Client Messages and Server Injection
 
-Capture `LightstreamerClient.sendMessage` calls and listener outcomes as outbound Evidence. A reviewed Server Injection will send once through the inspected client's normal message path. It will not directly create an inbound Item Update, prove a downstream business effect, or retry an unknown outcome automatically.
+Capture `LightstreamerClient.sendMessage` calls and listener outcomes as outbound Evidence. A reviewed Server Injection will send one Client Message through the inspected client's normal message path. It will not create an inbound Item Update. It will not prove an application result or retry an unknown result automatically.
 
-### Deterministic multi-event Local Injection Scenarios
+### Local Injection Scenario release
 
-The explicit-membership, single-target, immutable-Run Scenario workflow is implemented and package-verified in the source tree. Public availability follows the maintainer-controlled Chrome Web Store release process; package verification does not mean the candidate is published.
+The Scenario workflow is implemented and verified in the release package. It uses explicit Steps, one target, and immutable Runs. Chrome Web Store review controls public availability. Package verification does not mean that the release is public.
 
-## Exploring
+## Later ideas
 
 - Capture import, offline investigation, fixture generation, and cross-capture comparison.
 - Listener performance, client-log, protocol, frequency, bandwidth, buffer, and loss diagnostics.
 - Broader frame, worker, transport, and bundled-client observation coverage.
 - Guarded live tuning and specialized Mobile Push Notification tooling.
 
-These are product opportunities, not release commitments. Scope and ordering may change as real investigation evidence accumulates.
+These items are not release commitments. Their content and order can change.

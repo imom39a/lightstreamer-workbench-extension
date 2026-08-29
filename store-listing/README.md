@@ -6,7 +6,7 @@ This folder contains source-controlled Chrome Web Store release materials for Li
 
 Screenshots, 1280x800 PNG:
 
-1. `screenshots/01-command-projections-context.png`
+1. `screenshots/01-workspace-context.png`
 2. `screenshots/02-ordered-evidence-context.png`
 3. `screenshots/03-local-injection-editor.png`
 4. `screenshots/04-notifications.png`
@@ -34,8 +34,8 @@ Generated product/site artwork:
 - `../docs/assets/brand-hero-ai.png` - AI-generated original hero artwork
 - `../docs/assets/mascot.png` - AI-generated original transparent mascot cutout
 - `../site/assets/og.png` - 1280x640 public-site social card
-- `../docs/assets/real-app-gallery.png` - annotated feature walkthrough generated from the current COMMAND-state screenshot
-- `../docs/assets/app-command-projections.png` - web-ready real app screenshot generated from `screenshots/01-command-projections-context.png`
+- `../docs/assets/real-app-gallery.png` - annotated feature walkthrough generated from the current workspace screenshot
+- `../docs/assets/app-workspace-context.png` - web-ready real app screenshot generated from `screenshots/01-workspace-context.png`
 - `../docs/assets/app-ordered-evidence-context.png` - web-ready real app screenshot generated from `screenshots/02-ordered-evidence-context.png`
 - `../docs/assets/app-local-injection-editor.png` - web-ready real app screenshot generated from `screenshots/03-local-injection-editor.png`
 - `../docs/assets/app-notifications.png` - web-ready real app screenshot generated from `screenshots/04-notifications.png`

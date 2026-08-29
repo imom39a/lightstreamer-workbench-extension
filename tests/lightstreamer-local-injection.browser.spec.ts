@@ -315,13 +315,10 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
   );
   await waitForCondition(
     cdp,
-    `(() => {
-      const compare = [...document.querySelectorAll("button")]
-        .find((button) => button.textContent?.trim() === "Compare Source");
-      return compare?.getAttribute("aria-pressed") === "true" &&
-        Boolean(document.querySelector('[aria-label="Immutable Injection Source JSON"]'));
-    })()`,
-    "the captured Source comparison to be open by default"
+    `[...document.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Compare Source" && button.getAttribute("aria-pressed") === "true"
+    )`,
+    "the captured Draft to open with Source comparison active"
   );
   await clickPanelButton(cdp, "Compare Source");
   await waitForCondition(
@@ -334,6 +331,7 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
     })()`,
     "the captured JSON-string field to expand as structured editor JSON"
   );
+
   const key = `fixture-local-${++localInjectionKeySequence}.TICKER`;
   const document = {
     command: "ADD",

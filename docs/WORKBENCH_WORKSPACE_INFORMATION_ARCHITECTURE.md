@@ -8,7 +8,7 @@ This document records the selected workspace model for the Lightstreamer Workben
 
 Adopt a **Scoped Evidence Workspace**.
 
-Ordered evidence is the permanent primary surface. A persistent runtime scope determines which evidence is in the investigation. Structural Topology chooses that scope instead of remaining a peer destination. Selection opens contextual detail without silently changing scope. COMMAND projections, raw capture, export, and Local Injection are lenses or actions reached from the relevant scope or evidence.
+Ordered evidence is the permanent primary surface. A persistent runtime scope determines which evidence is in the investigation. Structural Topology chooses that scope instead of remaining a peer destination. Selection opens contextual detail without silently changing scope. Raw capture, export, and Local Injection are lenses or actions reached from the relevant scope or evidence.
 
 The model combines:
 
@@ -112,18 +112,16 @@ When no evidence row is selected, it presents a **runtime-object dossier** for t
 - Capture coverage and material diagnostics;
 - listeners and Update Delivery boundaries;
 - a bounded recent-evidence summary;
-- distinct COMMAND projections where the scope supports them;
+- relevant COMMAND lifecycle diagnostics where the scope supports them;
 - valid contextual actions for a live object.
 
-When an evidence row is selected, the same secondary surface becomes an **evidence inspector**. Applicable lenses include Summary, Fields, Deliveries, COMMAND State, and Raw. The collapsed Activity summary, Filter selected Evidence, and Evidence metadata disclosures precede Selected update, keeping captured Fields in the initial viewport while the supporting context remains directly expandable. Selected provenance remains visible in the inspector header, and the Filter disclosure remains stable with an explicit unavailable state when it has no typed actions. Runtime-object dossiers remain expanded when no Evidence is selected. Evidence remains primary; the inspector explains it and exposes valid follow-up actions.
+When an evidence row is selected, the same secondary surface becomes an **evidence inspector**. Applicable lenses include Summary, Fields, Deliveries, and Raw. The collapsed Activity summary, Filter selected Evidence, and Evidence metadata disclosures precede Selected update, keeping captured Fields in the initial viewport while the supporting context remains directly expandable. Selected provenance remains visible in the inspector header, and the Filter disclosure remains stable with an explicit unavailable state when it has no typed actions. Runtime-object dossiers remain expanded when no Evidence is selected. Evidence remains primary; the inspector explains it and exposes valid follow-up actions.
 
 This conditional dossier is the selected contribution from Runtime Lens. Runtime objects do not replace ordered evidence as the workspace organizer.
 
-### COMMAND projections
+### COMMAND lifecycle analysis
 
-Observed Server COMMAND State and Local Effective COMMAND State appear as named contextual lenses for a COMMAND Subscription, item, key, or relevant update. A compare treatment may juxtapose them but must never merge them or imply that either is Authoritative COMMAND State.
-
-Complete COMMAND lifecycle analysis applies or inherits the relevant Subscription, item, and key scope, then correlates ordered ADD, UPDATE, DELETE, snapshot, generation, and warning evidence in the primary ledger.
+Complete COMMAND lifecycle analysis applies or inherits the relevant Subscription, item, and key scope, then correlates ordered `ADD`, `UPDATE`, `DELETE`, snapshot, generation, and diagnostic Evidence in the primary ledger. Workbench does not add a general reconstructed-state lens or comparison document; internal state remains available to validation, Scenarios, Checkpoints, and diagnostic producers.
 
 ### Local Injection transition
 
@@ -135,7 +133,7 @@ The selected workspace supports:
 - live COMMAND item or key scope → **Author COMMAND Item Update**;
 - contextual menus as accelerators only, never the sole route.
 
-The draft keeps the exact Local Injection Target visible and separates the immutable Injection Source from the editable Injection Draft. A captured-source Draft opens Source/Draft comparison by default and uses that authoring surface as its preview; source-free authoring stays explicit and never invents a Source. Once validation and target readiness pass, the same surface exposes the labelled **Inject locally** action without a separate standalone Review transition. Immediately before dispatch, the runtime atomically freezes the payload and target fingerprint and revalidates both. Target availability, validation, labelled execution, Injection Outcome, marked Injected Update, Timeline trace, and Local Effective COMMAND State effect remain explicit. Scenario Review remains the separate boundary for sealing a multi-Step immutable Run.
+The draft keeps the exact Local Injection Target visible and separates the immutable Injection Source from the editable Injection Draft. A captured Draft compares Source and Draft by default, using that same authoring surface as the delivery preview. Target availability, validation, the direct labelled **Inject locally** action, Injection Outcome, marked Injected Update, and Timeline trace remain explicit; there is no separate standalone Review document.
 
 The draft occupies the contextual detail area where space permits. In compact geometry it becomes the one primary surface and Back restores the exact evidence selection and investigation state. Target retirement preserves safe edits, disables execution, and requires explicit reselection; Workbench never silently retargets.
 
@@ -230,4 +228,4 @@ Those decisions may refine the prototype but cannot reintroduce peer feature des
 
 ## Vocabulary resolution
 
-**Scoped Evidence Workspace**, runtime-object dossier, evidence inspector, and layout categories are product-design language, not Lightstreamer domain concepts. No new domain term was resolved, so [CONTEXT.md](../CONTEXT.md) does not change. Existing Injection, Capture, Update Delivery, and COMMAND projection language remains authoritative.
+**Scoped Evidence Workspace**, runtime-object dossier, evidence inspector, and layout categories are product-design language, not Lightstreamer domain concepts. No new domain term was resolved, so [CONTEXT.md](../CONTEXT.md) does not change. Existing Injection, Capture, Update Delivery, and internal COMMAND-state language remains authoritative.

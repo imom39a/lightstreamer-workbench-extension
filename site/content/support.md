@@ -1,19 +1,19 @@
-Choose the route that matches the request. GitHub remains the public collaboration backend, while this page remains the stable support URL used by Workbench and the Chrome Web Store.
+Use GitHub to get support. Select the applicable report type below.
 
 ## Report a bug
 
-Use the [bug-report template]({{github}}/issues/new?template=01-bug-report.yml) for reproducible extension behavior, UI defects, capture problems, and sanitized correctness reports.
+Use the [bug-report template]({{github}}/issues/new?template=01-bug-report.yml) for extension errors, UI problems, Capture problems, and incorrect results.
 
-Include the Workbench version, Chrome version, what you expected, what happened, and the smallest safe reproduction. Never attach production payloads, private URLs, tokens, cookies, customer data, or screenshots containing secrets.
+Include the Workbench version and the Chrome version. Describe the expected result and the actual result. Include the smallest safe reproduction. Do not attach production payloads, private URLs, tokens, cookies, customer data, or screenshots that contain secrets.
 
 ## Request a feature
 
-Use the [feature-request template]({{github}}/issues/new?template=02-feature-request.yml) to describe the Lightstreamer-native problem, the developer journey it blocks, and the evidence or outcome you need.
+Use the [feature-request template]({{github}}/issues/new?template=02-feature-request.yml). Describe the Lightstreamer problem, the task that you cannot complete, and the result that you need.
 
 ## Ask a question
 
-Use the [question template]({{github}}/issues/new?template=03-question.yml) for usage and product-boundary questions that contain no sensitive information.
+Use the [question template]({{github}}/issues/new?template=03-question.yml) for usage and product-limit questions. Do not include private data.
 
 ## Report a vulnerability
 
-Do not open a public issue. Follow the private process on the [Security policy]({{site}}security/).
+Do not open a public issue. Use the private process in the [Security policy]({{site}}security/).

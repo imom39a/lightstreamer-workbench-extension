@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible problem with Capture, Diagnose, COMMAND projections, Local Injection, or packaging.
+description: Report a reproducible problem with Capture, Diagnose, COMMAND lifecycles, Local Injection, or packaging.
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -24,7 +24,7 @@ body:
         - Capture or instrumentation
         - Scope or structural Topology
         - Ordered Evidence or Context
-        - COMMAND projections
+        - COMMAND lifecycle
         - Local Injection
         - WebSocket/TLCP fallback
         - DevTools panel UI

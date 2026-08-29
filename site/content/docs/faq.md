@@ -1,35 +1,35 @@
 ## Is this a generic WebSocket inspector?
 
-No. Workbench targets the official Lightstreamer Web Client and models Lightstreamer-native clients, Sessions, Subscriptions, items, fields, COMMAND keys, snapshots, updates, and delivery boundaries.
+No. Workbench supports the official Lightstreamer Web Client. It shows Lightstreamer clients, Sessions, Subscriptions, items, fields, COMMAND keys, snapshots, updates, and delivery boundaries.
 
 ## Does Workbench connect or subscribe for my application?
 
-No. It observes page-owned clients and Subscriptions. It does not call `connect()` or `subscribe()` on the application's behalf.
+No. It observes clients and Subscriptions that the page owns. It does not call `connect()` or `subscribe()` for the application.
 
 ## Does Local Injection reach the Lightstreamer Server?
 
-No. Local Injection delivers through the inspected page. Planned Server Injection will send a Client Message through the page-owned client's normal `sendMessage` path; it will not manufacture an inbound server update.
+No. Local Injection delivers an Item Update in the inspected page. Planned Server Injection will send a Client Message through the page-owned client's normal `sendMessage` path. It will not create an inbound Server Update.
 
-## Is reconstructed COMMAND state authoritative?
+## Does Workbench show the server COMMAND state?
 
-No. Observed Server COMMAND State and Local Effective COMMAND State are evidence-backed projections with explicit coverage limits.
+No. Workbench shows captured `ADD`, `UPDATE`, and `DELETE` Evidence and related diagnostics. Derived state supports validation, Scenarios, and Checkpoints. It is not direct access to server state.
 
 ## Is captured data uploaded?
 
-No. Version 2 contains no analytics or maintainer-operated upload path. Deliberate exports remain local downloads. Application traffic produced by the inspected page still belongs to that application.
+No. Version 2 has no analytics or maintainer upload service. An export is a local download that you request. The inspected application controls its own network traffic.
 
 ## How long is Evidence retained?
 
-Only for the current Panel Session. One Panel Session owns one temporary Event History: the normal IndexedDB tier supports up to 100,000 retained Evidence records or 256 MiB of canonical replay-complete journal bytes, while the startup memory fallback supports up to 5,000 records or 32 MiB. The first independent limit reached controls admission; 100,000 arbitrary-size payloads are not promised.
+Workbench retains Evidence only for the current Panel Session. One Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. The first count or byte limit stops admission.
 
-Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary; the rendered Evidence window is only a bounded view. Clear makes an exact History Interval cut and does not restart Capture after a terminal stop. Controlled Close attempts erasure and reports what was confirmed. If Chrome, DevTools, or the renderer ends abnormally, a later ownership-safe cleanup sweep may be needed, so residual temporary data can remain until Chrome next runs the extension. A new Panel Session starts empty and never replays stale Evidence from an earlier session.
+Complete History ends at the current History Interval's Committed Evidence Boundary. The visible Evidence window shows only part of the retained Evidence. Clear ends the current History Interval. Clear does not restart Capture after a terminal stop. A controlled Close tries to erase the Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence.
 
-Capture Operation, Observation Coverage, History Capacity, and Live/Frozen view state are independent. An in-memory fallback lowers History Capacity but does not by itself make Coverage limited; the selected history adapter is not switched during a Panel Session.
+Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. Workbench does not change the storage type during the Panel Session.
 
 ## Is Workbench open source?
 
-Yes. The core product is available under Apache-2.0 in the [public GitHub repository]({{github}}).
+Yes. The [public GitHub repository]({{github}}) uses the Apache-2.0 license.
 
 ## Is this an official Lightstreamer product?
 
-No. Lightstreamer Workbench supports applications using the official Lightstreamer Web Client, but the project is independent and not affiliated with Lightstreamer.
+No. Lightstreamer Workbench supports the official Lightstreamer Web Client. This project is independent and is not affiliated with Lightstreamer.

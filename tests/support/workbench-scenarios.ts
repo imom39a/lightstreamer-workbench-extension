@@ -49,11 +49,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "raw-evidence",
   "filter-find",
   "filter-hidden-selection",
-  "command-projection-matching",
-  "command-projection-before-local",
-  "command-projection-local-difference",
-  "command-projection-retention-failure",
-  "command-projection-unavailable",
+  "local-injection-retention-failure",
   "recovering",
   "retired-scope",
   "local-injection-captured",
@@ -136,6 +132,7 @@ export type WorkbenchScenario = Readonly<{
     compareOpen?: boolean;
     minimized?: boolean;
     parked?: boolean;
+    review?: boolean;
     staleBeforeReview?: boolean;
     staleAfterReview?: boolean;
     execute?: boolean;
@@ -176,7 +173,6 @@ export function highVolumeEventId(sequence: number): string {
  */
 export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario {
   const canonical = getPanelScenario("command-state").capturedEvents;
-  const serverOnlyCanonical = canonical.filter((event) => !event.synthetic);
   const topology = getPanelScenario("topology-small");
 
   switch (id) {
@@ -549,28 +545,7 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         filterQuery: "scenario-event-1"
       };
     }
-    case "command-projection-matching":
-      return {
-        id,
-        initialEvents: serverOnlyCanonical,
-        captureStatus: "capturing"
-      };
-    case "command-projection-local-difference":
-      return {
-        ...localInjectionCapturedScenario(id),
-        localInjection: {
-          entry: "selection",
-          rawText: JSON.stringify({
-            command: "UPDATE",
-            key: "small-alpha",
-            isSnapshot: false,
-            fields: { command: "UPDATE", key: "small-alpha", value: "9" }
-          }, null, 2),
-          execute: true,
-          executorOutcome: "delivered"
-        }
-      };
-    case "command-projection-retention-failure": {
+    case "local-injection-retention-failure": {
       const priorLocalSource = topology.capturedEvents.find((event) => event.kind === "item-update");
       if (!priorLocalSource?.update) {
         throw new Error("The topology scenario must include an Item Update.");
@@ -604,24 +579,12 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
             isSnapshot: false,
             fields: { command: "UPDATE", key: "small-alpha", value: "9" }
           }, null, 2),
+          review: true,
           execute: true,
           executorOutcome: "delivered"
         }
       };
     }
-    case "command-projection-before-local":
-      return localInjectionCapturedScenario(id);
-    case "command-projection-unavailable":
-      return {
-        id,
-        initialEvents: [],
-        captureStatus: "idle",
-        capture: {
-          operation: "IDLE",
-          coverage: "UNAVAILABLE",
-          detail: "No captured Server Updates are available for this Scope."
-        }
-      };
     case "recovering":
       return {
         id,
@@ -708,12 +671,12 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
     case "local-injection-stale-review":
       return {
         ...localInjectionCapturedScenario(id),
-        localInjection: { entry: "selection", staleAfterReview: true, execute: true }
+        localInjection: { entry: "selection", review: true, staleAfterReview: true, execute: true }
       };
     case "local-injection-stale-edit":
       return {
         ...localInjectionCapturedScenario(id),
-        localInjection: { entry: "selection", staleBeforeReview: true, execute: true }
+        localInjection: { entry: "selection", staleBeforeReview: true, review: true }
       };
     case "local-injection-pending":
       return localInjectionOutcomeScenario(id, "pending");

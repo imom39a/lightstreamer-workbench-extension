@@ -43,13 +43,6 @@
     "production": { "scenario": "local-injection-authored", "setup": "authored-direct" }
   },
   {
-    "id": "wide-command-comparison-light",
-    "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
-    "prototype": { "variant": "A", "state": "command", "frame": "wide", "setup": "command-comparison" },
-    "production": { "scenario": "command-projection-matching", "setup": "command-comparison" }
-  },
-  {
     "id": "normal-retained-find-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
@@ -83,13 +76,6 @@
     "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "more-actions" },
     "production": { "scenario": "live-selected", "setup": "more-actions-help" }
-  },
-  {
-    "id": "wide-matching-summary-light",
-    "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
-    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "matching-summary" },
-    "production": { "scenario": "command-projection-matching", "setup": "none" }
   },
   {
     "id": "wide-selected-json-dark",

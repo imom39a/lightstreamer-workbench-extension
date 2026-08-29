@@ -14,10 +14,10 @@
   <image href="../icons/icon-128.png" x="26" y="32" width="64" height="64" filter="url(#small-logo-shadow)"/>
   <text x="26" y="132" fill="#f8fafc" font-family="Inter, Arial, Helvetica, sans-serif" font-size="27" font-weight="800">Lightstreamer</text>
   <text x="26" y="166" fill="#f8fafc" font-family="Inter, Arial, Helvetica, sans-serif" font-size="27" font-weight="800">Workbench</text>
-  <text x="28" y="204" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="16">Inspect COMMAND streams</text>
-  <text x="28" y="229" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="16">inside Chrome DevTools.</text>
+  <text x="28" y="204" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="16">Debug Lightstreamer</text>
+  <text x="28" y="229" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="16">in Chrome DevTools.</text>
   <rect x="276" y="214" width="64" height="25" rx="7" fill="#2563eb"/>
-  <text x="290" y="232" fill="#eff6ff" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="700">ADD</text>
+  <text x="286" y="232" fill="#eff6ff" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="700">SCOPE</text>
   <rect x="350" y="214" width="74" height="25" rx="7" fill="#0f766e"/>
-  <text x="361" y="232" fill="#ecfeff" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="700">REPLAY</text>
+  <text x="361" y="232" fill="#ecfeff" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="700">LOCAL</text>
 </svg>

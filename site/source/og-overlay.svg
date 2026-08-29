@@ -4,10 +4,10 @@
   <text x="166" y="119" fill="#f4f7f4" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800">Workbench</text>
   <rect x="64" y="185" width="98" height="38" rx="19" fill="#15291d" stroke="#396748"/>
   <text x="113" y="211" text-anchor="middle" fill="#a5e8be" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="800">2.0</text>
-  <text x="62" y="305" fill="#f4f7f4" font-family="Arial, Helvetica, sans-serif" font-size="63" font-weight="800">Unified Scoped</text>
-  <text x="62" y="375" fill="#f4f7f4" font-family="Arial, Helvetica, sans-serif" font-size="63" font-weight="800">Evidence Workspace</text>
-  <text x="66" y="435" fill="#cbd4ce" font-family="Arial, Helvetica, sans-serif" font-size="25">Debug the official Lightstreamer Web Client</text>
-  <text x="66" y="471" fill="#cbd4ce" font-family="Arial, Helvetica, sans-serif" font-size="25">where it runs: inside Chrome DevTools.</text>
+  <text x="62" y="305" fill="#f4f7f4" font-family="Arial, Helvetica, sans-serif" font-size="63" font-weight="800">Debug Lightstreamer</text>
+  <text x="62" y="375" fill="#f4f7f4" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">in Chrome DevTools</text>
+  <text x="66" y="435" fill="#cbd4ce" font-family="Arial, Helvetica, sans-serif" font-size="25">Inspect the official Lightstreamer Web Client.</text>
+  <text x="66" y="471" fill="#cbd4ce" font-family="Arial, Helvetica, sans-serif" font-size="25">Test Item Updates with Local Injection.</text>
   <line x1="66" y1="526" x2="566" y2="526" stroke="#2a352f"/>
-  <text x="66" y="570" fill="#a8b3ad" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" letter-spacing="1.5">OPEN SOURCE  ·  LOCAL BY DESIGN</text>
+  <text x="66" y="570" fill="#a8b3ad" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" letter-spacing="1.5">OPEN SOURCE  ·  DATA STAYS LOCAL</text>
 </svg>
