@@ -26,6 +26,10 @@ const screenshots = [
   {
     file: "03-local-injection-editor.png",
     scene: "local-injection"
+  },
+  {
+    file: "04-notifications.png",
+    scene: "notifications"
   }
 ];
 
@@ -94,7 +98,8 @@ const scene = new URLSearchParams(window.location.search).get("scene") ?? "comma
 const scenarioId = {
   "command-state": "live-selected",
   "timeline-detail": "raw-evidence",
-  "local-injection": "local-injection-large"
+  "local-injection": "local-injection-large",
+  "notifications": "diagnostics-stress"
 }[scene];
 if (!scenarioId) throw new Error("Unknown store-listing scenario: " + scene);
 const root = document.querySelector("#app");
@@ -162,6 +167,12 @@ if (scene === "local-injection") {
   runtime.dispatch({ type: "set-local-injection-compare", open: true });
 }
 await new Promise((resolveReady) => setTimeout(resolveReady, 160));
+if (scene === "notifications") {
+  const notifications = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim().startsWith("Notifications"));
+  if (!(notifications instanceof HTMLButtonElement)) throw new Error("Store-listing Notifications control did not render.");
+  notifications.click();
+  await new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame)));
+}
 document.documentElement.dataset.sceneReady = "true";
 window.addEventListener("pagehide", () => {
   reactRoot.unmount();
@@ -306,6 +317,10 @@ async function generateRealAppPreviewAssets() {
     {
       source: resolve(projectRoot, "store-listing/screenshots/03-local-injection-editor.png"),
       output: resolve(docsAssetsDir, "app-local-injection-editor.png")
+    },
+    {
+      source: resolve(projectRoot, "store-listing/screenshots/04-notifications.png"),
+      output: resolve(docsAssetsDir, "app-notifications.png")
     }
   ];
 
@@ -320,10 +335,14 @@ async function generateRealAppPreviewAssets() {
     screenshots: sourceScreenshots.map((screenshot) => screenshot.output),
     outputPath: resolve(docsAssetsDir, "real-app-gallery.png")
   });
+  const socialPreviewPath = resolve(docsAssetsDir, "github-social-preview.png");
   await generateGitHubSocialPreviewAsset({
     screenshot: sourceScreenshots[0].output,
-    outputPath: resolve(docsAssetsDir, "github-social-preview.png")
+    outputPath: socialPreviewPath
   });
+  const siteSocialCardPath = resolve(projectRoot, "site/assets/og.png");
+  await copyFile(socialPreviewPath, siteSocialCardPath);
+  console.log(`Wrote ${siteSocialCardPath}`);
 }
 
 async function generateRealAppGallery(options) {
@@ -483,7 +502,7 @@ async function runChromeScreenshot(url, outputPath) {
           ]
         }),
         url
-      ]), {
+      ], {
         stdio: "pipe"
       });
 

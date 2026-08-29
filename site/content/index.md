@@ -1,111 +1,112 @@
 <section class="hero">
   <div class="hero__copy">
-    <span class="eyebrow">Chrome DevTools for Lightstreamer</span>
-    <h1>Debug Lightstreamer where it runs.</h1>
-    <p class="lede">Lightstreamer Workbench brings Runtime Scope, chronological Evidence, and precise Context into one continuous workspace—then lets you reproduce COMMAND behavior locally without waiting for the backend.</p>
+    <span class="eyebrow">Chrome DevTools · Lightstreamer Web Client</span>
+    <h1>See the Lightstreamer runtime. Keep the evidence.</h1>
+    <p class="lede">Capture clients, Sessions, Subscriptions, updates, snapshots, and COMMAND lifecycles in one investigation workspace. Then reproduce the hard case locally—without waiting for the backend sequence to happen again.</p>
     <div class="hero__actions">
-      <a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Add Workbench 2.0</a>
-      <a class="button button--secondary" href="{{site}}docs/">Read the 2.0 docs</a>
+      <a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Add to Chrome</a>
+      <a class="button button--secondary" href="{{site}}docs/developer-guide/">Open the developer guide</a>
     </div>
-    <p class="hero__note"><strong>Version 2.0 is live.</strong> Install the unified Scoped Evidence Workspace from the Chrome Web Store.</p>
+    <p class="hero__note"><span>Local-first</span><span>No account</span><span>No analytics</span><span>Open source</span></p>
   </div>
   <figure class="product-frame product-frame--hero">
-    <figcaption><span></span><span></span><span></span><strong>Lightstreamer Workbench</strong></figcaption>
-    <img src="{{site}}assets/app-command-projections.png" alt="Lightstreamer Workbench showing Runtime Scope, Ordered Evidence, and selected Evidence Context in one DevTools workspace." width="960" height="600" fetchpriority="high">
+    <figcaption><span></span><span></span><span></span><strong>Release-current Workbench</strong></figcaption>
+    <img src="{{site}}assets/app-command-projections.png" alt="Lightstreamer Workbench showing Runtime Scope, Ordered Evidence, and selected Evidence Context in one Chrome DevTools workspace." width="960" height="600" fetchpriority="high">
   </figure>
 </section>
 
 <section class="outcome-strip" aria-label="Product boundaries">
-  <p><strong>Official Web Client focus</strong><span>Captures Lightstreamer semantics instead of guessing from generic WebSocket frames.</span></p>
-  <p><strong>COMMAND-native evidence</strong><span>Follows keys, operations, snapshots, and distinct state projections.</span></p>
-  <p><strong>Local by design</strong><span>Captured application data stays in the current browser debugging session.</span></p>
+  <p><strong>Lightstreamer-native</strong><span>Observe official Web Client objects and callbacks instead of guessing from generic socket frames.</span></p>
+  <p><strong>Evidence-first</strong><span>Keep event order, timestamp, Source, phase, operation, object, and COMMAND key explicit.</span></p>
+  <p><strong>Safe reproduction</strong><span>Review local-only Item Updates before delivery; Server Evidence remains distinct.</span></p>
 </section>
 
-<section class="section section--split" id="why-workbench">
-  <div>
-    <span class="eyebrow">Why Workbench</span>
-    <h2>Streaming bugs rarely wait for a convenient sequence.</h2>
-  </div>
-  <div class="prose-large">
-    <p>When a keyed row disappears, a snapshot looks incomplete, or application state diverges, browser logs are rarely enough. Workbench records Lightstreamer-native Evidence next to the inspected page, preserves the runtime object you are investigating, and makes the next deliberate action explicit.</p>
-    <p>It is developer infrastructure for applications using the official Lightstreamer Web Client—not a generic socket inspector and not an application-specific debugger.</p>
-  </div>
-</section>
-
-<section class="section" id="workspace">
+<section class="section" id="capabilities">
   <header class="section__header">
-    <span class="eyebrow">One continuous investigation</span>
-    <h2>Scope, Evidence, and Context stay together.</h2>
-    <p>Version 2 replaces separate feature destinations with a responsive Scoped Evidence Workspace.</p>
+    <span class="eyebrow">Current capabilities</span>
+    <h2>Everything you need to investigate a stream.</h2>
+    <p>Workbench stays close to the inspected page and keeps every conclusion tied to captured or deliberately created Evidence.</p>
   </header>
-  <div class="workspace-flow">
-    <article><span>01</span><h3>Choose Runtime Scope</h3><p>Navigate Page → client → Session → Subscription → item → listener without losing retired historical objects.</p></article>
-    <article><span>02</span><h3>Follow Ordered Evidence</h3><p>Filter, find, select, and freeze a high-volume chronological stream while Capture continues.</p></article>
-    <article><span>03</span><h3>Explain in Context</h3><p>Inspect the active runtime object or selected Evidence without silently changing the investigation boundary.</p></article>
+  <div class="capability-grid">
+    <article class="capability-card"><span>Scope</span><h3>Navigate the runtime</h3><p>Move from Page to client, Session, Subscription, item, and listener. Current and retired objects remain clearly separated.</p></article>
+    <article class="capability-card"><span>Evidence</span><h3>Read retained order</h3><p>Scan a stable event sequence with exact identities, timestamps, provenance, snapshot/live phase, operation, object, and key.</p></article>
+    <article class="capability-card"><span>Diagnostics</span><h3>Notifications without noise</h3><p>Review active conditions and recent Lightstreamer notices in one document. Dismiss a footer copy without deleting the notification or changing Evidence.</p></article>
+    <article class="capability-card"><span>COMMAND</span><h3>Compare two projections</h3><p>Separate Observed Server COMMAND State from Local Effective COMMAND State without calling either authoritative server state.</p></article>
+    <article class="capability-card"><span>Reproduction</span><h3>Inject one update—or a sequence</h3><p>Edit, validate, review, and deliver a local-only Draft. Build ordered Scenarios with explicit Steps, Checkpoints, and immutable reviewed Runs.</p></article>
+    <article class="capability-card"><span>History</span><h3>Filter, find, freeze, and export</h3><p>Investigate high-volume current-session history with bounded rendering, deliberate navigation, and credential-safe JSON or offline HTML export.</p></article>
   </div>
-  <p class="section__action"><a href="{{site}}docs/workspace/">Understand the unified workspace →</a></p>
 </section>
 
 <section class="section section--media">
   <div class="media-copy">
-    <span class="eyebrow">COMMAND without guesswork</span>
-    <h2>Compare what the server showed with what local delivery changed.</h2>
-    <p><strong>Observed Server COMMAND State</strong> uses captured Server Updates only. <strong>Local Effective COMMAND State</strong> adds successfully delivered Local Injected Updates. Workbench names both projections and never presents either as authoritative server state.</p>
-    <a href="{{site}}docs/command-state/">Read the COMMAND projection guide →</a>
+    <span class="eyebrow">One continuous investigation</span>
+    <h2>Scope, Evidence, and Context stay aligned.</h2>
+    <p>Choose the runtime boundary in Scope, follow matching events in Ordered Evidence, and inspect the selected update in Context. Supporting activity, Filter actions, and metadata stay one disclosure away while Fields remain immediately readable.</p>
+    <a href="{{site}}docs/workspace/">Understand the workspace →</a>
   </div>
   <figure class="product-frame">
-    <img src="{{site}}assets/real-app-gallery.png" alt="Annotated Workbench COMMAND state walkthrough showing active keys, changed fields, and the Local Injection path." width="1400" height="900" loading="lazy">
+    <img src="{{site}}assets/app-command-projections.png" alt="Current Workbench workspace with two-line Scope identities, a dedicated Evidence order rail, and selected update Fields." width="960" height="600" loading="lazy">
   </figure>
 </section>
 
 <section class="section section--media section--media-reverse">
   <div class="media-copy">
+    <span class="eyebrow">Operational clarity</span>
+    <h2>Warnings remain useful without taking over the workspace.</h2>
+    <p>Notifications collects Coverage, Capture, History, storage, recovery, Subscription, snapshot, keepalive, and COMMAND diagnostics across the Panel Session. Stable conditions update in place instead of piling up.</p>
+    <p class="boundary-note"><strong>Dismiss means presentation only.</strong> It hides the active footer copy, not the retained notification, supporting Evidence, or diagnostic observation.</p>
+    <a href="{{site}}docs/developer-guide/#triage-notifications-without-losing-evidence">Use the Notifications workflow →</a>
+  </div>
+  <figure class="product-frame">
+    <img src="{{site}}assets/app-notifications.png" alt="Workbench Notifications showing active operational conditions and recent Lightstreamer diagnostics with supporting investigation routes." width="960" height="600" loading="lazy">
+  </figure>
+</section>
+
+<section class="section section--media">
+  <div class="media-copy">
     <span class="eyebrow">Deliberate Local Injection</span>
-    <h2>Reproduce one update without touching the server stream.</h2>
-    <p>Create one protected Draft from immutable captured Evidence or author a COMMAND update against a live Scope. Edit raw JSON, validate, review the exact target, then deliver locally through the inspected page.</p>
-    <p class="boundary-note"><strong>Local means local.</strong> This workflow does not contact the Lightstreamer Server and successful Local Evidence remains visibly separate from Server Evidence.</p>
+    <h2>Reproduce the hard sequence locally.</h2>
+    <p>Create a protected Draft from captured Evidence or author a COMMAND update against a live Scope. Edit raw JSON, validate, compare immutable Source with Draft, review the exact target, and deliver through the inspected page.</p>
+    <p>For multi-event cases, turn the work into an explicit Scenario with ordered Steps, active-time delays, Checkpoints, per-Step outcomes, and fresh identities for every reviewed Run.</p>
     <a href="{{site}}docs/local-injection/">Follow the Local Injection workflow →</a>
   </div>
   <figure class="product-frame">
-    <img src="{{site}}assets/app-local-injection-editor.png" alt="Protected Local Injection Draft with raw JSON editing, validation, and Source comparison." width="960" height="600" loading="lazy">
+    <img src="{{site}}assets/app-local-injection-editor.png" alt="Protected Local Injection Draft with raw JSON editing, validation, exact target details, and review controls." width="960" height="600" loading="lazy">
   </figure>
+</section>
+
+<section class="section guide-callout" id="developer-guide">
+  <div class="guide-callout__copy">
+    <span class="eyebrow">How to use Workbench</span>
+    <h2>A practical guide, not a feature catalog.</h2>
+    <p>Start with the page, narrow Scope, read Evidence in retained order, qualify the observation boundary, and reproduce only after you can name the exact target.</p>
+    <a class="button button--secondary" href="{{site}}docs/developer-guide/">Open the developer guide</a>
+  </div>
+  <ol class="guide-steps">
+    <li><span>01</span><div><strong>Attach before activity</strong><p>Open DevTools and reload when the page created its client before Workbench attached.</p></div></li>
+    <li><span>02</span><div><strong>Choose the smallest useful Scope</strong><p>Keep the investigation boundary explicit before filtering or selecting Evidence.</p></div></li>
+    <li><span>03</span><div><strong>Read the Evidence boundary</strong><p>Check Capture, Coverage, History, Source, and phase before drawing a conclusion.</p></div></li>
+    <li><span>04</span><div><strong>Reproduce deliberately</strong><p>Review the target and local-only boundary before a Draft or Scenario can deliver.</p></div></li>
+  </ol>
 </section>
 
 <section class="section evidence-boundary">
   <div>
-    <span class="eyebrow">Session-scoped by default</span>
-    <h2>Keep the investigation useful without turning it into a data service.</h2>
+    <span class="eyebrow">Local by design</span>
+    <h2>Useful history without a monitoring backend.</h2>
   </div>
   <ul class="check-list">
-    <li>One Panel Session owns one temporary Event History: normal IndexedDB capacity is 100,000 records/256 MiB, startup memory fallback is 5,000 records/32 MiB, and the selected adapter stays fixed. Count and canonical bytes are independent limits; arbitrary-size payloads are not promised.</li>
-    <li>Complete History means accepted Evidence through the current History Interval's Committed Evidence Boundary; controlled Close attempts erasure, abnormal cleanup uses an ownership-safe guarded sweep, and a new Panel Session never replays residual data.</li>
-    <li>Versioned JSON and offline HTML exports are deliberate downloads with credential exclusion.</li>
-    <li>Version 2 and this website ship without analytics, tracking, accounts, advertising, or remote error logging.</li>
-    <li>Observation limits remain explicit when instrumentation or runtime coverage is incomplete.</li>
+    <li>One Panel Session owns one temporary Event History: up to 100,000 records or 256 MiB with normal IndexedDB storage; 5,000 records or 32 MiB in startup memory fallback.</li>
+    <li>Captured data stays in the browser extension context. Workbench ships without analytics, accounts, advertising, or remote error logging.</li>
+    <li>Versioned JSON and offline HTML exports happen only after a deliberate download and exclude credentials.</li>
+    <li>Observation Coverage and the Committed Evidence Boundary remain visible so missing data is never silently treated as proof.</li>
   </ul>
-  <p class="section__action"><a href="{{site}}privacy/">Read the privacy policy →</a></p>
-</section>
-
-<section class="section" id="roadmap-preview">
-  <header class="section__header">
-    <span class="eyebrow">What comes next</span>
-    <h2>Deeper Evidence, not more disconnected destinations.</h2>
-  </header>
-  <div class="roadmap-preview">
-    <article><span class="status-label">Next</span><h3>Normalized JSON Evidence</h3><p>A complete deterministic Evidence object per retained row, with the existing Context still providing semantic interpretation.</p></article>
-    <article><span class="status-label">Next</span><h3>Faster, more conclusive diagnosis</h3><p>Contextual facets plus richer changed-field, delivery, provenance, recovery, and snapshot explanations.</p></article>
-    <article><span class="status-label">Next</span><h3>Client Messages and Server Injection</h3><p>Capture outbound Client Messages and deliberately send through the inspected client's normal <code>sendMessage</code> path.</p></article>
-  </div>
-  <p class="section__action"><a href="{{site}}roadmap/">See Next and Exploring →</a></p>
-</section>
-
-<section class="section open-source">
-  <img src="{{site}}assets/mascot.png" alt="Lightstreamer Workbench mascot" width="220" height="220" loading="lazy">
-  <div><span class="eyebrow">Open source</span><h2>Built in public for Lightstreamer developers.</h2><p>The complete Workbench core remains available under Apache-2.0. Read the source, report an issue, or help sharpen generic Lightstreamer debugging infrastructure.</p><div class="inline-actions"><a class="button button--secondary" href="{{github}}" target="_blank" rel="noopener noreferrer">View source</a><a href="{{github}}/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener noreferrer">Contribute →</a></div></div>
+  <p class="section__action"><a href="{{site}}docs/export-and-privacy/">Review export and privacy boundaries →</a></p>
 </section>
 
 <section class="final-cta">
-  <span class="eyebrow">Ready when the stream is not</span>
-  <h2>Bring the next Lightstreamer investigation into DevTools.</h2>
-  <div class="inline-actions"><a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Add Workbench 2.0</a><a class="button button--secondary" href="{{site}}docs/getting-started/">Get started</a></div>
+  <span class="eyebrow">Ready for the next investigation</span>
+  <h2>Bring Lightstreamer debugging into DevTools.</h2>
+  <p>Install Workbench, open the developer guide, and follow the evidence from runtime object to exact update.</p>
+  <div class="inline-actions"><a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Add to Chrome</a><a class="button button--secondary" href="{{site}}docs/developer-guide/">Open the developer guide</a></div>
 </section>

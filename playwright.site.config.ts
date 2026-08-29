@@ -8,6 +8,8 @@ import { createPlaywrightLaunchOptions } from "./scripts/chrome-launch-args.mjs"
 
 const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const chromeExecutable = resolveChromeExecutable();
+const sitePort = process.env.LSEW_SITE_PORT?.trim() || "4181";
+const siteBaseUrl = `http://127.0.0.1:${sitePort}/lightstreamer-workbench-extension/`;
 
 export default defineConfig({
   testDir: "./tests/site",
@@ -21,7 +23,7 @@ export default defineConfig({
   outputDir: "test-results/site",
   reporter: [["list"], ["html", { outputFolder: "test-results/site-report", open: "never" }]],
   use: {
-    baseURL: "http://127.0.0.1:4181/lightstreamer-workbench-extension/",
+    baseURL: siteBaseUrl,
     headless: true,
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
@@ -32,7 +34,7 @@ export default defineConfig({
   },
   webServer: {
     command: "npm run site:serve",
-    url: "http://127.0.0.1:4181/lightstreamer-workbench-extension/",
+    url: siteBaseUrl,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000
   }

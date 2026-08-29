@@ -56,9 +56,11 @@ Key features:
 - Runtime Scope for choosing the inspected page, client, Session, Subscription, item, or listener while retired objects remain readable but cannot become Local Injection targets.
 - Ordered Evidence with independent Find, Filter, selection, Capture, Coverage, and Live/Frozen controls, plus bounded rendering backed by committed Evidence through the current History Interval's Committed Evidence Boundary.
 - Context for the active runtime object or selected Evidence, including immutable raw Evidence, COMMAND lifecycle detail, and explicit provenance and limitations.
+- A Panel Session-wide Notifications document for active operational conditions and recent Lightstreamer diagnostics, with stable identities, independent filters, supporting Evidence routes, and dismissible footer copies.
 - Side-by-side Observed Server COMMAND State and Local Effective COMMAND State projections; neither is presented as authoritative server state.
 - Exactly one protected Local Injection Draft, created from an immutable captured Source or authored from a live COMMAND scope.
 - Full-size raw JSON editing with validation, Review, and optional immutable Source/Draft comparison and diff.
+- Explicit Local Injection Scenarios with ordered single-target Steps, immutable reviewed Runs, serial controls, Checkpoints, per-Step outcomes, and complete correlation.
 - Local-only delivery to the exact live Subscription through the inspected page, with delivered, failed, partial, unknown, and stale-target outcomes that state only what Workbench can prove.
 - WebSocket/TLCP fallback diagnostics when primary Web Client instrumentation is unavailable.
 - One temporary Event History per Panel Session, with normal 100,000-record/256 MiB and startup-memory 5,000-record/32 MiB History Capacity tiers; the selected adapter is fixed for the session and no backend service is required. Count and canonical bytes are independent limits; arbitrary-size payloads are not promised.
@@ -75,11 +77,13 @@ This extension is intended for developers and QA engineers who need to understan
 Remove every legacy screenshot that shows the retired three-section interface before uploading this 2.0 set.
 
 1. `screenshots/01-command-projections-context.png`
-   - Caption: Context compares Observed Server and Local Effective COMMAND State while Runtime Scope keeps the active Subscription visible.
+   - Caption: Runtime Scope, retained Event order, timestamp, Source, COMMAND operation, object, key, and selected update Fields remain readable in one workspace.
 2. `screenshots/02-ordered-evidence-context.png`
    - Caption: Complete raw Evidence preserves the immutable captured envelope, provenance, and Lightstreamer-native runtime context for detailed inspection.
 3. `screenshots/03-local-injection-editor.png`
-   - Caption: One Local Injection Draft provides raw JSON editing, validation, and an immutable Source/Draft comparison before Review.
+   - Caption: One protected Local Injection Draft provides raw JSON editing, validation, exact target details, and deliberate Review.
+4. `screenshots/04-notifications.png`
+   - Caption: Notifications keeps active Workbench conditions and recent Lightstreamer diagnostics reviewable without taking over selected Evidence Context.
 
 ## Graphic Assets
 
@@ -112,11 +116,13 @@ Version:
 What's new:
 
 ```text
-Maintenance release for the 2.0 Scoped Evidence Workspace.
+Focused update for the 2.0 Scoped Evidence Workspace.
 
-- Carries forward the verified 2.0.0 extension behavior without user-facing feature or UI changes.
-- Keeps the same Manifest V3 permissions, local-only data handling, temporary Event History, and Local Injection boundaries.
-- Refreshes the Chrome Web Store package with 2.0.1 version metadata.
+- Adds explicit multi-event Local Injection Scenarios with immutable reviewed Runs, serial controls, Checkpoints, and correlated outcomes.
+- Adds a Panel Session-wide Notifications workflow for active conditions and recent Lightstreamer diagnostics; footer conditions can be dismissed without changing Evidence.
+- Improves Scope and Ordered Evidence readability, including a dedicated retained-order rail and stable two-line Scope identities.
+- Keeps selected update Fields visible by default through compact supporting Context disclosures.
+- Keeps the same Manifest V3 permissions, local-only data handling, temporary Event History, and Local Injection server boundary.
 ```
 
 ## Privacy Practices Draft

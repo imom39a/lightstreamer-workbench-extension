@@ -17,8 +17,9 @@ const projectRoot = resolve(import.meta.dirname, "..");
 const outputRoot = resolve(projectRoot, "site-dist");
 const contentRoot = resolve(projectRoot, "site/content");
 const pages = [
-  page("index.md", "index.html", "Lightstreamer Workbench 2.0", "Debug Lightstreamer Web Client behavior inside Chrome DevTools.", "home"),
+  page("index.md", "index.html", "Lightstreamer Workbench for Chrome DevTools", "Capture, explain, and reproduce Lightstreamer Web Client behavior inside Chrome DevTools.", "home"),
   page("docs/index.md", "docs/index.html", "Documentation", "Install Lightstreamer Workbench and learn the unified investigation workspace.", "docs"),
+  page("docs/developer-guide.md", "docs/developer-guide/index.html", "Developer guide", "A practical workflow for capturing, investigating, and reproducing Lightstreamer behavior with Workbench.", "docs"),
   page("docs/getting-started.md", "docs/getting-started/index.html", "Getting started", "Install Workbench, open its DevTools panel, and capture your first Lightstreamer session.", "docs"),
   page("docs/workspace.md", "docs/workspace/index.html", "The unified workspace", "Use Runtime Scope, Ordered Evidence, and Context as one continuous investigation workspace.", "docs"),
   page("docs/evidence.md", "docs/evidence/index.html", "Ordered Evidence", "Filter, find, select, freeze, and inspect retained Lightstreamer Evidence.", "docs"),
@@ -56,6 +57,7 @@ await Promise.all([
   copy("docs/assets/app-ordered-evidence-context.png", "assets/app-ordered-evidence-context.png"),
   copy("docs/assets/app-command-projections.png", "assets/app-command-projections.png"),
   copy("docs/assets/app-local-injection-editor.png", "assets/app-local-injection-editor.png"),
+  copy("docs/assets/app-notifications.png", "assets/app-notifications.png"),
   copy("docs/assets/real-app-gallery.png", "assets/real-app-gallery.png"),
   copy("site/assets/og.png", "assets/og.png")
 ]);
@@ -143,7 +145,6 @@ function renderDocument(definition, body) {
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
-    ${renderReleaseBanner()}
     ${renderHeader(definition.output)}
     <main id="main-content" class="${mainClass}">
       ${home ? body : `${renderArticleIntro(definition)}${docs ? renderDocsNavigation(definition.output) : ""}<article class="article-content">${body}</article>`}
@@ -153,19 +154,14 @@ function renderDocument(definition, body) {
 </html>\n`;
 }
 
-function renderReleaseBanner() {
-  return `<aside class="release-banner" aria-label="Release status"><strong>Workbench 2.0 is available.</strong><span>The unified Scoped Evidence Workspace is live in the Chrome Web Store.</span><a href="${CHROME_WEB_STORE_URL}" target="_blank" rel="noopener noreferrer">Install 2.0</a></aside>`;
-}
-
 function renderHeader(currentOutput) {
   const nav = [
-    ["Product", sitePath(), currentOutput === "index.html"],
-    ["Docs", sitePath("docs/"), currentOutput.startsWith("docs/")],
-    ["Roadmap", sitePath("roadmap/"), currentOutput.startsWith("roadmap/")],
-    ["Releases", sitePath("releases/"), currentOutput.startsWith("releases/")],
+    ["Capabilities", `${sitePath()}#capabilities`, false],
+    ["Developer guide", sitePath("docs/developer-guide/"), currentOutput === "docs/developer-guide/index.html"],
+    ["Documentation", sitePath("docs/"), currentOutput.startsWith("docs/") && currentOutput !== "docs/developer-guide/index.html"],
     ["GitHub", GITHUB_REPOSITORY_URL, false]
   ];
-  return `<header class="site-header"><div class="site-header__inner"><a class="brand" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="38" height="38"><span>Lightstreamer Workbench</span></a><nav aria-label="Primary">${nav.map(([label, href, current]) => `<a href="${href}"${current ? ' aria-current="page"' : ""}${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav><a class="button button--compact" href="${CHROME_WEB_STORE_URL}" target="_blank" rel="noopener noreferrer">Add Workbench 2.0</a></div></header>`;
+  return `<header class="site-header"><div class="site-header__inner"><a class="brand" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="38" height="38"><span>Lightstreamer Workbench</span></a><nav aria-label="Primary">${nav.map(([label, href, current]) => `<a href="${href}"${current ? ' aria-current="page"' : ""}${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav><a class="button button--compact" href="${CHROME_WEB_STORE_URL}" target="_blank" rel="noopener noreferrer">Add to Chrome</a></div></header>`;
 }
 
 function renderArticleIntro(definition) {
@@ -179,12 +175,12 @@ function renderDocsNavigation(currentOutput) {
 
 function renderFooter() {
   const links = [
+    ["Developer guide", sitePath("docs/developer-guide/")],
     ["Documentation", sitePath("docs/")],
     ["Privacy", sitePath("privacy/")],
     ["Security", sitePath("security/")],
     ["Support", sitePath("support/")],
-    ["Releases", sitePath("releases/")],
-    ["Roadmap", sitePath("roadmap/")],
+    ["Release notes", sitePath("releases/")],
     ["Source", GITHUB_REPOSITORY_URL]
   ];
   return `<footer class="site-footer"><div><a class="brand brand--footer" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="32" height="32"><span>Lightstreamer Workbench</span></a><p>Open-source developer infrastructure for applications using the official Lightstreamer Web Client.</p><p class="fine-print">Independent and not affiliated with Lightstreamer. Source is available under Apache-2.0.</p></div><nav aria-label="Footer">${links.map(([label, href]) => `<a href="${href}"${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav></footer>`;

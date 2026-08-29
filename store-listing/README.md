@@ -9,6 +9,7 @@ Screenshots, 1280x800 PNG:
 1. `screenshots/01-command-projections-context.png`
 2. `screenshots/02-ordered-evidence-context.png`
 3. `screenshots/03-local-injection-editor.png`
+4. `screenshots/04-notifications.png`
 
 Promotional images:
 
@@ -37,6 +38,7 @@ Generated product/site artwork:
 - `../docs/assets/app-command-projections.png` - web-ready real app screenshot generated from `screenshots/01-command-projections-context.png`
 - `../docs/assets/app-ordered-evidence-context.png` - web-ready real app screenshot generated from `screenshots/02-ordered-evidence-context.png`
 - `../docs/assets/app-local-injection-editor.png` - web-ready real app screenshot generated from `screenshots/03-local-injection-editor.png`
+- `../docs/assets/app-notifications.png` - web-ready real app screenshot generated from `screenshots/04-notifications.png`
 
 ## Regenerate Screenshots
 
@@ -46,7 +48,7 @@ npm run store:assets
 
 The screenshot generator bundles the real panel component, seeds deterministic Lightstreamer COMMAND events, and captures 1280x800 Chrome screenshots. Set `CHROME_PATH` if Chrome is not in a standard location.
 
-Icons are generated from `source/icon.svg` with ImageMagick. Promo tiles are raster-composed by `scripts/generate-store-listing-assets.mjs` from the maintained brand artwork, generated icon, and crisp text overlays. The same script derives web-ready real-app images from the current release screenshots. The public-site social card is generated separately from the stabilized site design and stored at `site/assets/og.png`. Keep `docs/assets/` available when regenerating store assets because the static site build copies the current product screenshots from there.
+Icons are generated from `source/icon.svg` with ImageMagick. Promo tiles are raster-composed by `scripts/generate-store-listing-assets.mjs` from the maintained brand artwork, generated icon, and crisp text overlays. The same script derives web-ready real-app images and the public-site social card at `site/assets/og.png` from the current release screenshots. Keep `docs/assets/` available when regenerating store assets because the static site build copies the current product screenshots from there.
 
 For icon-only regeneration:
 

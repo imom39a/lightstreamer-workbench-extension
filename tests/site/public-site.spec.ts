@@ -4,6 +4,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 const routes = [
   "",
   "docs/",
+  "docs/developer-guide/",
   "docs/getting-started/",
   "docs/workspace/",
   "docs/evidence/",
@@ -62,18 +63,17 @@ test("every stable public route is isolated, canonical, and navigable", async ({
   }
 });
 
-test("desktop home tells the unified 2.0 story without overflow", async ({ page }, testInfo) => {
+test("desktop home presents release-current capabilities without overflow", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("");
 
-  await expect(page.getByRole("heading", { name: "Debug Lightstreamer where it runs." })).toBeVisible();
-  await expect(page.getByText("Workbench 2.0 is available.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "See the Lightstreamer runtime. Keep the evidence." })).toBeVisible();
   await expect(page.getByRole("img", { name: /Runtime Scope, Ordered Evidence/ })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Scope, Evidence, and Context stay together." })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Client Messages and Server Injection" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Read the 2.0 docs" })).toHaveAttribute(
+  await expect(page.getByRole("heading", { name: "Everything you need to investigate a stream." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Notifications without noise" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open the developer guide" }).first()).toHaveAttribute(
     "href",
-    "/lightstreamer-workbench-extension/docs/"
+    "/lightstreamer-workbench-extension/docs/developer-guide/"
   );
   await expectNoHorizontalOverflow(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -85,17 +85,29 @@ test("mobile home and documentation keep navigation and calls to action usable",
   await page.goto("");
 
   await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Add Workbench 2.0" }).first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Debug Lightstreamer where it runs." })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Add to Chrome" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "See the Lightstreamer runtime. Keep the evidence." })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
-  await page.getByRole("link", { name: "Docs", exact: true }).click();
-  await expect(page).toHaveURL(/\/docs\/$/);
-  await expect(page.getByRole("heading", { name: "Documentation" })).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Primary" })
+    .getByRole("link", { name: "Developer guide", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/docs\/developer-guide\/$/);
+  await expect(page.getByRole("heading", { name: "Developer guide" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Documentation" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScreenshot(page, testInfo, "mobile-docs");
+});
+
+test("developer guide covers the complete investigation and reproduction workflow", async ({ page }) => {
+  await page.goto("docs/developer-guide/");
+  await expect(page.getByRole("heading", { name: "A repeatable investigation workflow" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Triage Notifications without losing Evidence" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Reproduce behavior with Local Injection" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Keyboard essentials" })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 });
 
 test("customer policy and support routes stay first-party", async ({ page }) => {
@@ -142,6 +154,16 @@ async function expectNoSeriousAxeViolations(page: Page, testInfo: TestInfo): Pro
 }
 
 async function attachScreenshot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  const pageHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+  const viewportHeight = page.viewportSize()?.height ?? 900;
+  for (let offset = 0; offset < pageHeight; offset += Math.max(320, viewportHeight - 120)) {
+    await page.evaluate((top) => window.scrollTo({ top }), offset);
+    await page.waitForTimeout(40);
+  }
+  await page.evaluate(() => window.scrollTo({ top: 0 }));
+  await page.waitForFunction(() =>
+    [...document.images].every((candidate) => candidate.complete && candidate.naturalWidth > 0)
+  );
   await testInfo.attach(`${name}.png`, {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png"

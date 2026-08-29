@@ -3,14 +3,14 @@
   --ink: #f4f7f4;
   --muted: #a8b3ad;
   --muted-strong: #cbd4ce;
-  --canvas: #0b0f0d;
-  --canvas-raised: #111713;
-  --canvas-soft: #171e1a;
-  --line: #2a352f;
-  --line-strong: #46584e;
-  --green: #7ee2a8;
-  --green-strong: #41c57a;
-  --green-soft: #15291d;
+  --canvas: #0a0e0c;
+  --canvas-raised: #101713;
+  --canvas-soft: #161e1a;
+  --line: #29352f;
+  --line-strong: #45594f;
+  --green: #7fe3aa;
+  --green-strong: #43c77d;
+  --green-soft: #13271b;
   --amber: #f2c879;
   --shadow: 0 28px 90px rgb(0 0 0 / 38%);
   --radius: 14px;
@@ -26,6 +26,7 @@
 
 html {
   scroll-behavior: smooth;
+  scroll-padding-top: 96px;
 }
 
 body {
@@ -33,7 +34,8 @@ body {
   margin: 0;
   color: var(--ink);
   background:
-    radial-gradient(circle at 18% 0%, rgb(55 127 83 / 13%), transparent 30rem),
+    radial-gradient(circle at 16% -5%, rgb(55 143 92 / 16%), transparent 34rem),
+    radial-gradient(circle at 92% 20%, rgb(43 93 78 / 8%), transparent 30rem),
     var(--canvas);
   font-size: 16px;
   line-height: 1.65;
@@ -116,41 +118,19 @@ pre code {
   transform: translateY(0);
 }
 
-.release-banner {
-  display: flex;
-  min-height: 39px;
-  align-items: center;
-  justify-content: center;
-  gap: 0.65rem 1.1rem;
-  padding: 0.4rem 1rem;
-  border-bottom: 1px solid #49512e;
-  color: #e8e7d7;
-  background: #252819;
-  font-size: 0.82rem;
-  text-align: center;
-}
-
-.release-banner strong {
-  color: var(--amber);
-}
-
-.release-banner a {
-  color: #fff4d6;
-  font-weight: 700;
-}
-
 .site-header {
-  position: relative;
+  position: sticky;
   z-index: 10;
+  top: 0;
   border-bottom: 1px solid var(--line);
-  background: rgb(11 15 13 / 88%);
+  background: rgb(10 14 12 / 90%);
   backdrop-filter: blur(18px);
 }
 
 .site-header__inner {
   display: flex;
   width: min(calc(100% - 2rem), var(--content));
-  min-height: 76px;
+  min-height: 72px;
   margin-inline: auto;
   align-items: center;
   gap: 2rem;
@@ -252,11 +232,11 @@ pre code {
 
 .hero {
   display: grid;
-  min-height: 650px;
-  padding: 5.7rem 0 4.7rem;
+  min-height: 620px;
+  padding: 5rem 0 4.25rem;
   align-items: center;
-  gap: 3.4rem;
-  grid-template-columns: minmax(0, 0.83fr) minmax(540px, 1.17fr);
+  gap: 3rem;
+  grid-template-columns: minmax(380px, 0.76fr) minmax(0, 1.24fr);
 }
 
 .hero__copy {
@@ -287,7 +267,7 @@ h3 {
 .hero h1 {
   max-width: 760px;
   margin-top: 1rem;
-  font-size: clamp(3rem, 6vw, 5.6rem);
+  font-size: clamp(3rem, 5vw, 4.7rem);
 }
 
 .lede {
@@ -311,14 +291,20 @@ h3 {
 }
 
 .hero__note {
+  display: flex;
+  flex-wrap: wrap;
   max-width: 600px;
   margin: 1.15rem 0 0;
+  gap: 0.45rem;
   color: var(--muted);
   font-size: 0.78rem;
 }
 
-.hero__note strong {
-  color: var(--amber);
+.hero__note span {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 2%);
 }
 
 .product-frame {
@@ -332,8 +318,6 @@ h3 {
 
 .product-frame--hero {
   width: 100%;
-  transform: perspective(1200px) rotateY(-3deg) rotateX(1deg);
-  transform-origin: center left;
 }
 
 .product-frame figcaption {
@@ -396,7 +380,7 @@ h3 {
 }
 
 .section {
-  padding-block: 7rem;
+  padding-block: 6.5rem;
   border-bottom: 1px solid var(--line);
 }
 
@@ -429,6 +413,42 @@ h3 {
   max-width: 650px;
   color: var(--muted);
   font-size: 1.05rem;
+}
+
+.capability-grid {
+  display: grid;
+  margin-top: 3rem;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.capability-card {
+  min-height: 235px;
+  padding: 1.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgb(18 26 21 / 92%), rgb(12 17 14 / 88%));
+}
+
+.capability-card > span {
+  color: var(--green);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.capability-card h3 {
+  margin-top: 2rem;
+  font-size: 1.35rem;
+  letter-spacing: -0.025em;
+}
+
+.capability-card p {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
 }
 
 .workspace-flow,
@@ -505,6 +525,53 @@ h3 {
   padding: 0.9rem 1rem;
   border-left: 3px solid var(--amber);
   background: rgb(242 200 121 / 7%);
+}
+
+.guide-callout {
+  display: grid;
+  align-items: start;
+  gap: 4.5rem;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.guide-callout__copy p {
+  max-width: 600px;
+  color: var(--muted-strong);
+}
+
+.guide-callout__copy .button {
+  margin-top: 1rem;
+}
+
+.guide-steps {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.guide-steps li {
+  display: grid;
+  padding: 1.15rem 0;
+  border-bottom: 1px solid var(--line);
+  gap: 1rem;
+  grid-template-columns: 2.2rem 1fr;
+}
+
+.guide-steps li > span {
+  color: var(--green);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+}
+
+.guide-steps strong {
+  color: var(--ink);
+}
+
+.guide-steps p {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .evidence-boundary {
@@ -588,6 +655,12 @@ h3 {
   margin-top: 2rem;
 }
 
+.final-cta > p {
+  max-width: 640px;
+  margin: 1.2rem auto 0;
+  color: var(--muted);
+}
+
 .article-shell {
   display: grid;
   width: min(calc(100% - 2rem), 980px);
@@ -627,7 +700,7 @@ h3 {
 
 .docs-navigation {
   position: sticky;
-  top: 1.25rem;
+  top: 5.75rem;
   display: flex;
   height: max-content;
   padding-right: 1.5rem;
@@ -797,6 +870,15 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .capability-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .guide-callout {
+    gap: 3rem;
+    grid-template-columns: 1fr;
+  }
+
   .product-frame--hero {
     width: 100%;
     transform: none;
@@ -820,18 +902,6 @@ h3 {
 @media (max-width: 720px) {
   body {
     font-size: 15px;
-  }
-
-  .release-banner {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 0;
-    text-align: left;
-  }
-
-  .release-banner a {
-    position: absolute;
-    right: 1rem;
   }
 
   .brand span {
@@ -868,6 +938,7 @@ h3 {
   }
 
   .outcome-strip,
+  .capability-grid,
   .workspace-flow,
   .roadmap-preview,
   .section--split,

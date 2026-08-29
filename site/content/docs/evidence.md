@@ -7,6 +7,10 @@
 
 Workbench preserves these states independently. A filtered-out selected event remains recoverable through explicit Reveal or Clear selection actions.
 
+## Read an Evidence row
+
+The left order rail shows authoritative retained Event sequence independently of the timestamp. The remaining row presents Evidence meaning first, then timestamp, Source, snapshot/live phase, COMMAND operation, runtime object, and key. This hierarchy remains readable when event identities reach five digits or runtime names are long.
+
 ## Canonical faceted filtering
 
 Filter state is one typed, revisioned descriptor for the whole Panel Session. The shared algebra owns evaluation and mutation; `evidence-facets.ts` owns facet extraction and canonical search text; the bounded Evidence query owns planning, discovery, Find, paging, and restoration. IndexedDB and memory implement that same query contract, so a session cannot mix an older scalar filter, renderer predicate, or full-history filtering read with the shipped semantics. Future facets extend the descriptor catalog and query contract at that seam rather than adding a presentation-specific filter path.
@@ -28,3 +32,7 @@ Complete History means committed Evidence through the current History Interval's
 ## Evidence provenance
 
 `SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` remain textual. A Local Injected Update is not presented as a Server Update, and a COMMAND verb such as `ADD`, `UPDATE`, or `DELETE` is not treated as success or severity.
+
+## Diagnostics are not Evidence filters
+
+Notifications spans the Panel Session and has its own Code, Severity, and Affected filters. Opening or filtering Notifications does not change Evidence Scope, Filter, Find, selection, Live/Frozen state, or retained history. Dismissing an active footer condition changes only that footer presentation; it does not remove the notification or supporting Evidence.

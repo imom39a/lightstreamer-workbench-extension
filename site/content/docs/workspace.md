@@ -14,9 +14,17 @@ High-volume history uses a bounded visible window while retained Evidence remain
 
 ## Context
 
-With no selected row, Context describes the active runtime object. With a selected row, it explains that Evidence and exposes applicable fields, raw data, diagnostics, COMMAND detail, and actions.
+With no selected row, Context describes the active runtime object. With a selected row, its header keeps Evidence provenance visible and presents update Fields first. **Activity summary**, **Filter selected Evidence**, and **Evidence metadata** remain collapsed supporting disclosures immediately above the selected update.
+
+Expand only the context you need. The Filter disclosure exposes typed Include, Exclude, and Around actions without changing unrelated criteria. Evidence metadata exposes Source, phase, identities, observation path, COMMAND details, and limitations.
 
 At compact geometry, opening Context temporarily replaces Evidence. **Back to Evidence** restores the originating selection and focus.
+
+## Notifications
+
+The labelled footer entry opens one Panel Session-wide Notifications document for active Workbench conditions and recent Lightstreamer diagnostics. Notification filters are independent of Evidence Scope and Filter. Stable active conditions update in place instead of piling up duplicate entries.
+
+Dismiss hides only the active footer copy. The retained notification, supporting Evidence, affected Scope, and diagnostic observation remain available until the condition resolves.
 
 ## Session operations
 

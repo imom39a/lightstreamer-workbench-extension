@@ -31,5 +31,6 @@ When Coverage is limited or unavailable, follow the recovery text before treatin
 4. Use **Find** to navigate matches without changing the visible set.
 5. Use **Filter** to change the visible set deliberately.
 6. Freeze the Evidence view when you need a stable historical window; Capture continues unless its operating state says otherwise.
+7. Open **Notifications** when the footer reports an active condition or recent diagnostic; dismissing a footer copy does not remove its notification or Evidence.
 
-Next: [Understand the unified workspace]({{site}}docs/workspace/).
+Next: follow the complete [Developer guide]({{site}}docs/developer-guide/) or [understand the unified workspace]({{site}}docs/workspace/).

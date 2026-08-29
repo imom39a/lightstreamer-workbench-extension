@@ -1,12 +1,13 @@
-Workbench 2.0 is a Chrome DevTools extension for inspecting applications that use the official Lightstreamer Web Client. These guides cover the unified Scoped Evidence Workspace available from the Chrome Web Store.
+Lightstreamer Workbench is a Chrome DevTools extension for inspecting applications that use the official Lightstreamer Web Client. These guides cover the complete release-current investigation and local reproduction workflow.
 
 ## Start here
 
-1. [Install and capture your first session]({{site}}docs/getting-started/).
-2. Learn how [Runtime Scope, Ordered Evidence, and Context]({{site}}docs/workspace/) work together.
-3. Use [Filter, Find, selection, and Live/Frozen investigation]({{site}}docs/evidence/) without conflating their state.
-4. Follow a keyed lifecycle through [COMMAND projections]({{site}}docs/command-state/).
-5. Create and review one protected [Local Injection]({{site}}docs/local-injection/).
+1. Follow the practical [Developer guide]({{site}}docs/developer-guide/) from first Capture through diagnosis and Local Injection.
+2. [Install and capture your first session]({{site}}docs/getting-started/).
+3. Learn how [Runtime Scope, Ordered Evidence, and Context]({{site}}docs/workspace/) work together.
+4. Use [Filter, Find, selection, Live/Frozen investigation, and Notifications]({{site}}docs/evidence/) without conflating their state.
+5. Follow a keyed lifecycle through [COMMAND projections]({{site}}docs/command-state/).
+6. Create one protected Draft or an ordered [Local Injection Scenario]({{site}}docs/local-injection/).
 
 ## Product boundary
 

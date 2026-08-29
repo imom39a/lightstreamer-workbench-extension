@@ -12,14 +12,6 @@ The build writes only public routes and required local assets to ignored `site-d
 
 ## Social card
 
-`site/assets/og.png` is the release social card copied into the public artifact. It is composed from:
+`site/assets/og.png` is the release-current social card copied into the public artifact. `npm run store:assets` composes it from the maintained brand artwork, project logo, and latest generated Workbench screenshot, then writes the same image to `docs/assets/github-social-preview.png` for repository use.
 
-- `site/source/og-background.png`: one image-generation result created after the 2.0 site design stabilized;
-- `site/source/og-overlay.svg`: deterministic, reviewable title and release copy;
-- `public/icons/icon-128.png`: the existing project icon.
-
-The generated-background prompt was:
-
-> Create an original, understated wide technical illustration of ordered streaming evidence converging into one unified investigation workspace. Use a near-black grid, thin mint evidence traces, restrained blue accents, and calm negative space on the left. Match the credible Chrome DevTools density in the provided Workbench reference. Include no text, letters, numbers, logos, screenshots, browser chrome, people, mascots, watermark, fake code, or generic AI swirls.
-
-The final card must remain exactly `1280x640`; `npm run site:check` enforces that dimension.
+The final card remains exactly `1280x640`; `npm run site:check` enforces that dimension.

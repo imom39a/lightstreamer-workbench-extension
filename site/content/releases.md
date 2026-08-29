@@ -1,16 +1,19 @@
-## 2.0.1 — verified release candidate
+## 2.0.1 — current release line
 
-Version 2.0.1 is a verified release candidate for the unified **Scoped Evidence Workspace** delivered in 2.0.0.
+Version 2.0.1 is the release-current **Scoped Evidence Workspace**. Chrome Web Store availability follows the maintainer-controlled review and rollout process; check Chrome's extension details for the version installed in your browser.
 
 - Adds deterministic multi-event Local Injection Scenarios with explicit single-target membership, immutable reviewed Runs, serial controls, per-Step outcomes, Workbench-owned Checkpoints, and complete correlation.
 - Extends Scenario Checkpoints with exact post-Review normalized Diagnostic Observation assertions, race-safe journal reads, active-time windows, bounded references, and explicit Clear/unavailable outcomes.
 - Proves a three-Step ADD → UPDATE → DELETE Run through the official Lightstreamer client using three ordinary local-delivery requests, then verifies the separate Observed Server and Local Effective COMMAND projections.
+- Moves active operational conditions and recent Lightstreamer diagnostics into one Panel Session-wide Notifications document. Stable conditions update in place, supporting Evidence remains inspectable, and Dismiss hides only the active footer copy.
+- Improves Scope readability with a stable identity line and secondary facts, and gives Ordered Evidence a dedicated retained-order rail separate from timestamp and event identity.
+- Keeps selected update Fields visible by collapsing Activity summary, Filter selected Evidence, and Evidence metadata while preserving selected provenance in the Context header.
 - Keeps the same Manifest V3 permissions, local-only data handling, Panel Session-owned temporary Event History, and Local Injection boundaries.
-- Produces an audited 2.0.1 extension package for maintainer-controlled release.
+- Publishes a release-current product site, screenshots, and practical developer guide for the complete workflow.
 
-The repository package is verified for maintainer release. This record does not mean it has been uploaded, submitted for review, approved, rolled out, or published; 2.0.0 remains the current Chrome Web Store release.
+The release process is staged and maintainer-controlled. A built package or source commit alone does not prove that a Web Store rollout has completed.
 
-## 2.0.0 — current Chrome Web Store release
+## 2.0.0 — unified workspace foundation
 
 Version 2 is the first public release of the unified **Scoped Evidence Workspace**.
 
