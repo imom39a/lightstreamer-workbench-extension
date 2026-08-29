@@ -1,6 +1,6 @@
 # Workbench Visual Semantics
 
-Status: accepted product direction, 2026-08-04
+Status: accepted product direction, amended 2026-08-29
 
 This document records the selected visual language for status, provenance, diagnostics, COMMAND evidence, and Local Injection outcomes in the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md), [Elastic Triad layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md), and [Roving Instrument interaction model](WORKBENCH_KEYBOARD_AND_OPERATION_MODEL.md). Production implementation follows as a separate effort.
 
@@ -74,27 +74,25 @@ Coverage limitations name the affected observation and provide a nearby diagnost
 
 ## Scope and runtime lifecycle
 
-- Scope nodes use the canonical runtime object name and an explicit lifecycle suffix.
+- Scope nodes use one stable priority block: object type and lifecycle share the first line, canonical runtime identity owns the primary line, and captured facts own the secondary line.
+- Long identities visually truncate only after receiving their own line; the exact value remains programmatically available from the owning Scope row.
 - Current, inactive, retired, and unknown objects remain distinguishable in text.
 - A material limitation appears beside the affected object and expands into concise consequence and recovery guidance.
 - Scope selection uses the generic interaction treatment; it never borrows Server, Local, warning, or success styling.
 - High-cardinality COMMAND keys remain Evidence/filter identities rather than structural peers with individual status decorations.
 
-## Dense Evidence ledger
+## Ordered Evidence ledger
 
-Normal and wide Evidence use stable columns in this order where capacity permits:
+Normal, wide, and compact Evidence use four stable semantic columns:
 
-- time/order and evidence identity;
-- Source;
-- Phase;
-- COMMAND operation when applicable;
-- evidence kind and Lightstreamer object identity;
-- exact COMMAND key when captured, otherwise an em dash;
-- material diagnostic severity.
+- **Order** labels the authoritative retained History sequence while preserving exact Evidence identity independently;
+- **Evidence** leads with event meaning, then presents timestamp, textual Source, and Phase as secondary context;
+- **Command** presents the neutral COMMAND operation when applicable;
+- **Object** leads with the Lightstreamer object identity and presents the exact captured COMMAND key beneath it, otherwise an em dash.
 
 Rows do not accumulate pills or badge necklaces. Common neutral values remain compact text. A low-frequency explanation belongs in Context.
 
-Compact Evidence uses the accepted two-line row grammar while retaining time/order, evidence identity, textual Source, event kind, relevant COMMAND operation, object identity, and exact captured COMMAND key. Changed-field detail remains in selected Context and complete raw Evidence. A complete value that is visually truncated remains available programmatically and in Context. Inherently two-dimensional evidence may own bounded horizontal scrolling; the panel shell never does.
+The Order rail is an ordering aid, not a provenance, lifecycle, diagnostic, or outcome symbol. Event meaning and object identity use primary lines; timestamp/provenance/phase and COMMAND key use secondary lines. Compact geometry rebalances widths without changing that grammar. Changed-field detail remains in selected Context and complete raw Evidence. A complete value that is visually truncated remains available programmatically and in Context. Inherently two-dimensional evidence may own bounded horizontal scrolling; the panel shell never does.
 
 Use an em dash only for not applicable. Use the literal word `unknown` when Workbench cannot determine a value, and name `unavailable`, `redacted`, or `inferred` where those are the actual evidence conditions.
 
@@ -183,15 +181,15 @@ These rules follow the repository's accepted [WCAG 2.2 AA baseline](research/chr
 
 ### B — Signal Rail
 
-Rejected. A fixed provenance/phase/COMMAND/lifecycle/diagnostic/outcome gutter improves experienced scanning, but consumes permanent width and creates a private vocabulary that every contributor must maintain. The user explicitly selected Plain Ledger without borrowing the rail. Do not add a permanent semantic gutter unless future measured use exposes a specific scanning failure that text and column placement cannot solve.
+Rejected. A fixed provenance/phase/COMMAND/lifecycle/diagnostic/outcome gutter improves experienced scanning, but consumes permanent width and creates a private vocabulary that every contributor must maintain. The approved 2026-08-29 Order rail is a narrow exception: it contains explicit text and canonical retained History sequence only, and carries none of those semantic states.
 
 ### C — Evidence Blocks
 
-Rejected as the universal ledger grammar. Labelled sequence boundaries explain snapshot and Local Injection traces well, but introduce variable row rhythm, become ambiguous when evidence interleaves, and risk growing into the investigation taxonomy that the workspace decision already rejected. Use ordinary chronological rows and explicit selected-evidence Context instead.
+Rejected as the earlier variable-row universal ledger grammar. The approved 2026-08-29 four-column Evidence row keeps one fixed 52px rhythm and ordinary chronological rows; it does not create grouped sequence boundaries or another investigation taxonomy.
 
 ## Verification evidence
 
-The disposable [workbench-ui-08 prototype](../prototypes/workbench-ui-08/README.md) provides the selected Plain Ledger and the two rejected contrasts over one deterministic Lightstreamer scenario. Browser review covered mixed Server and Local Evidence, degraded Capture, Frozen high volume, projection comparison, immutable raw Server evidence, empty Scope, and ready, invalid, stale-target, delivered, and failed Local Injection states.
+The disposable [workbench-ui-08 prototype](../prototypes/workbench-ui-08/README.md) provides the selected Plain Ledger and the two rejected contrasts over one deterministic Lightstreamer scenario. The later [workbench-ui-12 prototype](../prototypes/workbench-ui-12/README.md) records the maintainer-approved Scope priority blocks and Order rail amendment. Browser review covered populated and long-identity Scope, ordered Evidence, mixed Server and Local Evidence, degraded Capture, Frozen high volume, projection comparison, immutable raw Server evidence, empty Scope, and ready, invalid, stale-target, delivered, and failed Local Injection states.
 
 The selected model and contrasts were exercised at compact `563×700`, normal `900×700`, shallow `900×320`, and wide `1440×900` geometries in representative Dark and Light themes. Checks covered shell and pane overflow, textual provenance, non-color meaning, persistent Injection outcomes, keyboard isolation, and browser console errors. Type checking, extension build, JavaScript syntax checking, and whitespace validation passed. No production panel behavior changed.
 

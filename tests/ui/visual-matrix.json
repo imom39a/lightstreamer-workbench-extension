@@ -574,5 +574,19 @@
     "theme": "light",
     "prototype": {"variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer"},
     "production": {"scenario": "notifications-empty", "setup": "notifications-empty"}
+  },
+  {
+    "id": "readability-c-normal-light",
+    "viewport": {"width": 1440, "height": 900},
+    "theme": "light",
+    "reference": {"source": "asset", "path": "prototypes/workbench-ui-12/screenshots/C-normal.jpg"},
+    "production": {"scenario": "recovering", "setup": "readability"}
+  },
+  {
+    "id": "readability-c-compact-light",
+    "viewport": {"width": 563, "height": 700},
+    "theme": "light",
+    "reference": {"source": "prototype-12", "variant": "C", "frame": "compact"},
+    "production": {"scenario": "frozen-high-volume", "setup": "readability-scope"}
   }
 ]

@@ -143,11 +143,12 @@ test("Workbench keeps selected Evidence focused without COMMAND projection UI", 
 
   const initialRow = page.locator('[data-evidence-id="scenario-event-3"]');
   const normalRowHeight = await initialRow.evaluate((row) => row.getBoundingClientRect().height);
-  expect(normalRowHeight).toBeGreaterThanOrEqual(26);
-  expect(normalRowHeight).toBeLessThanOrEqual(28);
-  const eventIdentity = initialRow.locator('[role="gridcell"]').first().locator("small").first();
-  await expect(eventIdentity).toHaveText("scenario-event-3");
-  expect(await eventIdentity.evaluate((identity) => identity.scrollWidth <= identity.clientWidth)).toBe(true);
+  expect(normalRowHeight).toBe(52);
+  const eventOrder = initialRow.locator('[role="gridcell"]').first();
+  await expect(eventOrder.locator("small").first()).toHaveText("Event");
+  await expect(eventOrder.locator("strong")).toHaveText("3");
+  await expect(eventOrder.locator("strong")).toHaveAttribute("title", "scenario-event-3");
+  expect(await eventOrder.locator("strong").evaluate((identity) => identity.scrollWidth <= identity.clientWidth)).toBe(true);
   await expect(initialRow).toHaveAttribute("aria-selected", "true");
   await initialRow.focus();
   await page.keyboard.press("ArrowDown");
@@ -363,6 +364,27 @@ test("Workbench exposes structural Scope as a roving tree at wide geometry", asy
   const evidenceRows = page.locator('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]');
   expect(await evidenceRows.count()).toBeGreaterThan(0);
   await expect(scopeItems.first()).toContainText("Active");
+  const priorityBlock = await scopeItems.first().evaluate((row) => {
+    const type = row.querySelector<HTMLElement>(".workbench-react__scope-type")!;
+    const identity = row.querySelector<HTMLElement>(".workbench-react__scope-identity")!;
+    const state = row.querySelector<HTMLElement>(".workbench-react__scope-state")!;
+    const facts = row.querySelector<HTMLElement>(".workbench-react__scope-facts")!;
+    return {
+      height: row.getBoundingClientRect().height,
+      typeTop: type.getBoundingClientRect().top,
+      identityTop: identity.getBoundingClientRect().top,
+      stateTop: state.getBoundingClientRect().top,
+      factsTop: facts.getBoundingClientRect().top,
+      identityTitle: identity.title,
+      factsTitle: facts.title
+    };
+  });
+  expect(priorityBlock.height).toBe(58);
+  expect(Math.abs(priorityBlock.typeTop - priorityBlock.stateTop)).toBeLessThan(2);
+  expect(priorityBlock.identityTop).toBeGreaterThan(priorityBlock.typeTop);
+  expect(priorityBlock.factsTop).toBeGreaterThan(priorityBlock.identityTop);
+  expect(priorityBlock.identityTitle).toBe("Inspected page");
+  expect(priorityBlock.factsTitle).toMatch(/clients? · \d+ subscriptions?/);
   await scopeItems.first().focus();
   await page.keyboard.press("ArrowDown");
   await expect(page.locator(":focus")).toHaveRole("treeitem");
@@ -732,25 +754,44 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   const nonUpdate = page.locator(`[data-evidence-id="${highVolumeEventId(3_968)}"]`);
   const assertCommandKeyContract = async () => {
     const headers = await page.locator('[role="columnheader"]').allTextContents();
-    expect(headers).toContain("COMMAND key");
-    expect(headers).not.toContain("Change");
-    await expect(selected.locator('[role="gridcell"]').nth(5)).toHaveText(longKey);
-    await expect(selected.locator('[role="gridcell"]').nth(5)).toHaveAttribute("title", longKey);
-    await expect(missingKey.locator('[role="gridcell"]').nth(5)).toHaveText("—");
-    await expect(missingKey.locator('[role="gridcell"]').nth(5)).toHaveAttribute("title", "No COMMAND key");
+    expect(headers).toEqual(["Order", "Evidence", "Command", "Object"]);
+    await expect(selected.locator('[role="gridcell"]').nth(3).locator("small")).toHaveText(`Key ${longKey}`);
+    await expect(selected.locator('[role="gridcell"]').nth(3).locator("small")).toHaveAttribute("title", longKey);
+    await expect(missingKey.locator('[role="gridcell"]').nth(3).locator("small")).toHaveText("Key —");
+    await expect(missingKey.locator('[role="gridcell"]').nth(3).locator("small")).toHaveAttribute("title", "No COMMAND key");
     await expect(missingKey).not.toContainText("field-only-key-must-not-be-inferred");
-    await expect(nonUpdate.locator('[role="gridcell"]').nth(3)).toHaveText("—");
-    await expect(nonUpdate.locator('[role="gridcell"]').nth(5)).toHaveText("—");
+    await expect(nonUpdate.locator('[role="gridcell"]').nth(2)).toHaveText("—");
+    await expect(nonUpdate.locator('[role="gridcell"]').nth(3).locator("small")).toHaveText("Key —");
   };
   await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
   await expect(selected).toHaveAttribute("title", new RegExp(selectedIdentity));
-  await expect(selected.locator('[role="gridcell"]').nth(4)).toHaveAttribute("title", longItem);
+  await expect(selected.locator('[role="gridcell"]').nth(3).locator("strong")).toHaveAttribute("title", longItem);
   const compactHeights = await page.locator(".workbench-react__evidence-row").evaluateAll((rows) =>
     [...new Set(rows.map((row) => row.getBoundingClientRect().height))]
   );
   expect(compactHeights).toHaveLength(1);
   expect(compactHeights[0]).toBeGreaterThanOrEqual(48);
   expect(compactHeights[0]).toBeLessThanOrEqual(54);
+  const priorityRow = await selected.evaluate((row) => {
+    const order = row.querySelector<HTMLElement>(".workbench-react__evidence-order")!;
+    const meaning = row.querySelector<HTMLElement>(".workbench-react__evidence-meaning")!;
+    const object = row.querySelector<HTMLElement>(".workbench-react__evidence-object")!;
+    const orderParts = order.querySelectorAll<HTMLElement>("small, strong");
+    return {
+      orderLabel: orderParts[0]?.textContent,
+      orderValue: orderParts[1]?.textContent,
+      orderTitle: order.querySelector("strong")?.title,
+      meaningPrimaryTop: meaning.querySelector("strong")!.getBoundingClientRect().top,
+      meaningSecondaryTop: meaning.querySelector("small")!.getBoundingClientRect().top,
+      objectPrimaryTop: object.querySelector("strong")!.getBoundingClientRect().top,
+      objectSecondaryTop: object.querySelector("small")!.getBoundingClientRect().top
+    };
+  });
+  expect(priorityRow.orderLabel).toBe("Event");
+  expect(priorityRow.orderValue).toBe("3970");
+  expect(priorityRow.orderTitle).toBe(selectedIdentity);
+  expect(priorityRow.meaningSecondaryTop).toBeGreaterThan(priorityRow.meaningPrimaryTop);
+  expect(priorityRow.objectSecondaryTop).toBeGreaterThan(priorityRow.objectPrimaryTop);
   await assertCommandKeyContract();
 
   const operatingTop = await page.locator(".workbench-react__operating").evaluate((element) => element.getBoundingClientRect().top);
@@ -767,11 +808,12 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
     await page.setViewportSize(viewport);
     await expect(shell).toHaveAttribute("data-geometry", viewport.geometry);
     await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
+    await expect(selected).toHaveCSS("height", "52px");
     if (viewport.geometry === "normal" || viewport.geometry === "wide") {
       const columnWidths = await selected.locator('[role="gridcell"]').evaluateAll((cells) =>
         cells.map((cell) => cell.getBoundingClientRect().width)
       );
-      expect(columnWidths).toHaveLength(6);
+      expect(columnWidths).toHaveLength(4);
       expect(columnWidths.every((width) => width >= 64)).toBe(true);
     }
     if (viewport.geometry === "normal" || viewport.geometry === "wide") {
@@ -839,7 +881,7 @@ test("Workbench keeps a large live Scope contiguous while Ordered Evidence owns 
   expect(scopeWindow.mounted).toBeLessThanOrEqual(127);
   expect(scopeWindow.visibleRows.length).toBeGreaterThan(3);
   expect(scopeWindow.visibleRows.slice(1).every((row, index) =>
-    Math.abs(row.top - scopeWindow.visibleRows[index]!.top - 27) < 1
+    Math.abs(row.top - scopeWindow.visibleRows[index]!.top - 58) < 1
   )).toBe(true);
 
   const firstScopeRow = tree.getByRole("treeitem").first();
@@ -1186,6 +1228,7 @@ test("Workbench preserves structural selection contrast in forced colors", async
   expect(selectedUnfocused.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
   expect(selectedUnfocused.boxShadow).not.toBe("none");
   expect(selectedUnfocused.outlineStyle).toBe("none");
+  await expect(selected.locator(".workbench-react__evidence-order")).toHaveCSS("background-color", selectedUnfocused.backgroundColor);
 
   await selected.focus();
   const selectedFocused = await selected.evaluate((row) => {
@@ -1815,6 +1858,17 @@ test("Workbench keeps mixed-size footer diagnostics readable and bounded across 
       expect(evidenceVisibility!.rowBottom).toBeLessThanOrEqual(evidenceVisibility!.viewportBottom + 1);
 
       const diagnosticList = footer.getByLabel("Workbench diagnostic entries");
+      const firstDetailsCue = entries.first().getByText("Diagnostic details", { exact: true });
+      const cueVisibility = await firstDetailsCue.evaluate((cue) => {
+        const owner = cue.closest(".workbench-react__status-diagnostics");
+        if (!(owner instanceof HTMLElement)) return null;
+        const cueRect = cue.getBoundingClientRect();
+        const ownerRect = owner.getBoundingClientRect();
+        return { cueTop: cueRect.top, cueBottom: cueRect.bottom, ownerTop: ownerRect.top, ownerBottom: ownerRect.bottom };
+      });
+      expect(cueVisibility).not.toBeNull();
+      expect(cueVisibility!.cueTop).toBeGreaterThanOrEqual(cueVisibility!.ownerTop - 1);
+      expect(cueVisibility!.cueBottom).toBeLessThanOrEqual(cueVisibility!.ownerBottom + 1);
       await diagnosticList.focus();
       await expect(diagnosticList).toBeFocused();
       await page.keyboard.press("End");
@@ -1993,7 +2047,7 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
       const rect = row.getBoundingClientRect();
       return rect.height > 0 && rect.top >= evidenceRect.top && rect.bottom <= evidenceRect.bottom;
     }).length;
-  })).toBeGreaterThanOrEqual(2);
+  })).toBeGreaterThanOrEqual(1);
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
 

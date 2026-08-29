@@ -221,8 +221,7 @@ async function waitForPanelEvidence(cdp: CdpClient, previousCount = 0): Promise<
       [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
         .filter((row) =>
           row.textContent?.includes("scenario.mutate-reinject") &&
-          [...row.querySelectorAll('[role="gridcell"]')]
-            .some((cell) => cell.textContent?.trim() === "SERVER")
+          row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · SERVER · ")
         ).length > ${previousCount}
     `,
     "the production Evidence workspace to show the fixture Item Update"
@@ -232,8 +231,7 @@ async function waitForPanelEvidence(cdp: CdpClient, previousCount = 0): Promise<
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
       .filter((row) =>
         row.textContent?.includes("scenario.mutate-reinject") &&
-        [...row.querySelectorAll('[role="gridcell"]')]
-          .some((cell) => cell.textContent?.trim() === "SERVER")
+        row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · SERVER · ")
       ).length`
   );
 }
@@ -244,8 +242,7 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
       '[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]'
     )].filter((row) =>
       row.textContent?.includes("scenario.mutate-reinject") &&
-      [...row.querySelectorAll('[role="gridcell"]')]
-        .some((cell) => cell.textContent?.trim() === "SERVER")
+      row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · SERVER · ")
     );
     return rows.at(-1);
   })()`;

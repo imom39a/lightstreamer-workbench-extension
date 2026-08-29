@@ -178,3 +178,49 @@ npm run fixture:test:browser
 npm run release:package
 npm run docs:check
 ```
+
+## Readability UX batch
+
+The `readability-ui-01` batch adds the approved `workbench-ui-12` Variant C
+Scope priority blocks and Ordered Evidence reading order to the maintained
+matrix. The Scope row now presents type and lifecycle first, identity on its
+own primary line, and facts second; compact pressure may visually truncate the
+identity because the exact value remains available from the owning tree item.
+Evidence now separates the authoritative retained History sequence from exact
+Evidence identity, then presents semantic meaning, timestamp/provenance/phase,
+COMMAND operation, object, and key. The same batch keeps a shallow mixed-size
+diagnostic complete and dismissible without obscuring the remaining Evidence
+row.
+
+The final packet contains 82 reference/current/diff scenario captures,
+including approved normal and compact Variant C references and affected
+contact sheets. It reported zero browser diagnostics, zero shell or document
+overflows, 71 axe-checked states with zero serious or critical violations, and
+62 focus-checked states whose controls were visible and unobscured. The
+independent reviewer inspected both Variant C reference/current/diff trios,
+high-volume ordered Evidence, shallow diagnostics, forced colors, long
+identities, corresponding Darwin/Linux baselines, and contact sheets. The
+review passed with no material findings.
+
+The maintained Darwin and pinned-Linux snapshot suites each passed all 194
+checks after deliberate baseline updates. Browser coverage also proves the
+58px virtual Scope row, 52px virtual Evidence row, one-viewport Page Up/Down,
+exact accessible identities, authoritative sequence values that differ from
+event-id suffixes, and complete diagnostic disclosure under 320px shallow
+pressure. The shipped DevTools-panel smoke, official-client fixture, release
+package, documentation check, and full unit suite passed.
+
+Exact visual commands used for this batch:
+
+```text
+CI=1 npm run test:ui:update
+docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui:update'
+CI=1 npm run test:ui
+docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui'
+npm run test:ui:visual
+npm run test:ui:extension
+npm run fixture:test:browser
+npm run release:package
+npm run docs:check
+npm test
+```

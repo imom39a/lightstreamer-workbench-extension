@@ -10,7 +10,7 @@ type VisualCase = Readonly<{
   forcedColors?: boolean;
   visualEvidenceOnly?: boolean;
   prototype?: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
+  production: { scenario: string; setup: "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
 }>;
 const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
 
@@ -248,6 +248,18 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     case "none":
       await expect(page.locator(".workbench-react__evidence-summary")).toHaveCSS("display", "flex");
       return;
+    case "readability":
+    case "readability-scope": {
+      if (visual.production.setup === "readability-scope") await page.getByRole("button", { name: "Scope", exact: true }).click();
+      const scope = page.getByRole("navigation", { name: "Structural runtime scope" });
+      await expect(scope).toBeVisible();
+      await expect(scope.locator(".workbench-react__scope-identity", { hasText: "Inspected page" })).toBeVisible();
+      if (visual.production.setup === "readability") {
+        await expect(page.getByRole("region", { name: "Ordered Evidence" })).toBeVisible();
+        await expect(page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" })).toBeVisible();
+      }
+      return;
+    }
     case "diagnostics": {
       const diagnostics = page.getByLabel("Workbench diagnostic entries");
       await expect(diagnostics).toContainText("3 diagnostics · Scroll to review all");

@@ -129,6 +129,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       events: [
         {
           id: "evt-1",
+          sequence: 14_788,
           time: "14:08:39.112",
           source: "SERVER",
           phase: "SNAPSHOT",
@@ -141,6 +142,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
         },
         {
           id: "evt-2",
+          sequence: 14_789,
           time: "14:08:41.238",
           source: "SERVER",
           phase: "LIVE",
@@ -753,7 +755,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("lists the captured COMMAND key in Ordered Evidence while preserving Evidence metadata for Context", async () => {
+  it("groups Ordered Evidence by order, meaning, command, and object", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const runtime = createTestRuntime(snapshot());
@@ -764,10 +766,17 @@ describe("React Workbench Diagnose panel", () => {
     const selectedRow = document.querySelector<HTMLElement>('[data-evidence-id="evt-2"]');
     const cells = selectedRow?.querySelectorAll<HTMLElement>('[role="gridcell"]');
 
-    expect(headers).toContain("COMMAND key");
-    expect(headers).not.toContain("Change");
-    expect(cells?.[5]?.textContent).toBe("order-1042");
-    expect(cells?.[5]?.getAttribute("title")).toBe("order-1042");
+    expect(headers).toEqual(["Order", "Evidence", "Command", "Object"]);
+    expect(cells).toHaveLength(4);
+    expect(cells?.[0]?.querySelector("small")?.textContent).toBe("Event");
+    expect(cells?.[0]?.querySelector("strong")?.textContent).toBe("14789");
+    expect(cells?.[0]?.querySelector("strong")?.getAttribute("title")).toBe("evt-2");
+    expect(cells?.[1]?.querySelector("strong")?.textContent).toBe("Item Update");
+    expect(cells?.[1]?.querySelector("small")?.textContent).toBe("14:08:41.238 · SERVER · LIVE");
+    expect(cells?.[2]?.textContent).toBe("UPDATE");
+    expect(cells?.[3]?.querySelector("strong")?.textContent).toBe("order-1042");
+    expect(cells?.[3]?.querySelector("small")?.textContent).toBe("Key order-1042");
+    expect(cells?.[3]?.querySelector("small")?.getAttribute("title")).toBe("order-1042");
     expect(rootElement.textContent).toContain("COMMAND operation");
 
     await act(async () => root.unmount());
@@ -1278,6 +1287,44 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
+  it("presents Scope identity, type, lifecycle, and facts as a priority block", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const runtime = createTestRuntime({
+      ...base,
+      scope: {
+        ...base.scope,
+        nodes: [
+          {
+            id: "page",
+            kind: "page",
+            label: "Inspected page",
+            detail: "1 client · 15 subscriptions",
+            parentId: null,
+            depth: 0,
+            tone: "active",
+            lifecycle: "active",
+            retired: false,
+            selected: true
+          }
+        ]
+      }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const page = document.querySelector<HTMLElement>('[role="treeitem"][data-scope-id="page"]');
+    expect(page?.querySelector(".workbench-react__scope-type")?.textContent).toBe("Page");
+    expect(page?.querySelector(".workbench-react__scope-identity")?.textContent).toBe("Inspected page");
+    expect(page?.querySelector(".workbench-react__scope-identity")?.getAttribute("title")).toBe("Inspected page");
+    expect(page?.querySelector(".workbench-react__scope-state")?.textContent).toBe("Active");
+    expect(page?.querySelector(".workbench-react__scope-facts")?.textContent).toBe("1 client · 15 subscriptions");
+    expect(page?.querySelector(".workbench-react__scope-facts")?.getAttribute("title")).toBe("1 client · 15 subscriptions");
+
+    await act(async () => root.unmount());
+  });
+
   it("uses complete tree keyboard behavior without committing Scope while scanning", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
@@ -1431,7 +1478,7 @@ describe("React Workbench Diagnose panel", () => {
     const tree = document.querySelector<HTMLDivElement>('[role="tree"]')!;
     page.focus();
     runtime.commands.length = 0;
-    tree.scrollTop = 1_800;
+    tree.scrollTop = 3_600;
     await act(async () => tree.dispatchEvent(new Event("scroll", { bubbles: true })));
 
     expect(document.activeElement).toBe(page);
@@ -1558,8 +1605,11 @@ describe("React Workbench Diagnose panel", () => {
     const root = createRoot(document.querySelector("#app")!);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
-    const treeText = document.querySelector('[role="tree"]')?.textContent ?? "";
-    expect(treeText).toContain("Connected · Active");
+    const tree = document.querySelector('[role="tree"]');
+    const active = tree?.querySelector('[data-scope-id="active"]');
+    const treeText = tree?.textContent ?? "";
+    expect(active?.querySelector(".workbench-react__scope-facts")?.textContent).toBe("Connected");
+    expect(active?.querySelector(".workbench-react__scope-state")?.textContent).toBe("Active");
     expect(treeText).toContain("Recovering");
     expect(treeText).toContain("Disconnected");
     expect(treeText).toContain("Retired");
@@ -1594,23 +1644,40 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("moves Evidence by a viewport with Page Up and Page Down", async () => {
+  it("moves Evidence by one 52px-row viewport with Page Up and Page Down without clamping", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const base = snapshot();
-    const third = { ...base.evidence.events[1], id: "evt-3", time: "14:08:42.238" };
+    const events = Array.from({ length: 30 }, (_, index) => ({
+      ...base.evidence.events[1],
+      id: `scenario-event-1-passive-${index + 1}`,
+      sequence: 20_001 + index,
+      time: `14:08:${String(index).padStart(2, "0")}.238`
+    }));
+    const focusedEventId = events[9]!.id;
     const runtime = createTestRuntime({
       ...base,
-      evidence: { ...base.evidence, total: 3, events: [...base.evidence.events, third] }
+      selectionEventId: focusedEventId,
+      evidence: {
+        ...base.evidence,
+        total: events.length,
+        events,
+        visibleStart: 1,
+        visibleEnd: events.length,
+        focusedEventId,
+        selectedEventId: focusedEventId
+      }
     });
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
-    const row = document.querySelector<HTMLButtonElement>('[data-evidence-id="evt-2"]');
+    const ledger = document.querySelector<HTMLElement>('[aria-label="Ordered Lightstreamer Evidence"]');
+    Object.defineProperty(ledger, "clientHeight", { configurable: true, value: 260 });
+    const row = document.querySelector<HTMLButtonElement>(`[data-evidence-id="${focusedEventId}"]`);
     await act(async () => row?.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true })));
-    expect(runtime.commands).toContainEqual({ type: "focus-evidence", eventId: "evt-3" });
+    expect(runtime.commands).toContainEqual({ type: "focus-evidence", eventId: events[14]!.id });
     await act(async () => row?.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true })));
-    expect(runtime.commands).toContainEqual({ type: "focus-evidence", eventId: "evt-1" });
+    expect(runtime.commands).toContainEqual({ type: "focus-evidence", eventId: events[4]!.id });
 
     await act(async () => root.unmount());
   });

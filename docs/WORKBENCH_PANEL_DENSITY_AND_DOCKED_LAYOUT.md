@@ -1,6 +1,6 @@
 # Workbench Panel Density and Docked Layout
 
-Status: accepted product direction, 2026-08-03
+Status: accepted product direction, 2026-08-03; readability amendment accepted 2026-08-29
 
 This document records the selected density, pane, resizing, overflow, and docked-size behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md) and [Local Injection interaction model](../prototypes/workbench-ui-05/COMPARISON.md). Production implementation follows as a separate effort.
 
@@ -48,9 +48,22 @@ When capacity falls, Workbench reduces in this order:
 2. Move Context from beside Evidence to below it.
 3. Replace simultaneous panes with one explicitly focused surface.
 4. Move low-frequency actions into labelled overflow.
-5. Convert evidence columns into the compact two-line row grammar.
+5. Rebalance the persistent two-line Evidence grammar for the compact surface.
 
-Wide layouts expose more useful columns and context. They do not add padding, cards, metric tiles, or decorative empty space.
+Wide layouts expose more identity width and context. They do not add padding, cards, metric tiles, or decorative empty space.
+
+### Scope and Evidence readability amendment
+
+The product owner approved Variant C from the `workbench-ui-12` readability prototype on 2026-08-29. It amends the earlier row-density guidance without changing Elastic Triad, scroll ownership, selection, focus, or the underlying Evidence model:
+
+- every structural Scope row is a priority block: object type and lifecycle share the first line, the complete identity owns the primary line, and captured facts own the secondary line;
+- every Ordered Evidence row uses four stable semantic columns: **Order**, **Evidence**, **Command**, and **Object**;
+- the Order rail labels and anchors authoritative retained History sequence independently from timestamp and exact Evidence identity;
+- Evidence meaning leads; timestamp, textual provenance, and phase share its secondary line;
+- object identity leads its block and the captured COMMAND key remains directly visible on the secondary line;
+- compact geometry retains the same meaning and order, while column widths rebalance and the redundant header may be hidden.
+
+This is a deliberate readability trade: fewer rows are visible at once, but long identities no longer compete with lifecycle, counters, timestamp, and event identity on one clipped line. High-volume navigation remains bounded and virtualized.
 
 ## Information that cannot be reduced away
 
@@ -97,7 +110,7 @@ Visible labels may shorten in compact geometry, but their complete value remains
 
 - Exactly one primary surface is visible: Scope picker, Evidence, Context detail, raw evidence, diagnostics, export, or Local Injection.
 - Selecting an evidence row does not automatically replace Evidence. Enter or an explicit Open action transitions to Context.
-- Compact evidence uses a stable two-line row grammar retaining time/order, semantic type, primitive identity, operation/change summary, and textual provenance.
+- Compact evidence retains the stable Order / Evidence / Command / Object grammar, including event identity, timestamp, semantic type, primitive identity, COMMAND key, operation, phase, and textual provenance.
 - Back restores the exact originating row or control, virtual-list anchor, scope, Filter, Find, Live/Frozen state, and focus.
 - Compact behavior is ordinary master/detail restoration, not an investigation stack.
 
@@ -156,8 +169,8 @@ The [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#workspace) b
 - Operating, scope, task, and origin strips: approximately `28–30px` high.
 - Bottom status/action strip: approximately `24–32px` high.
 - Independent controls and selectable rows: at least `24×24px`, following compact developer-tool ergonomics rather than consumer-web touch sizing.
-- Normal and wide evidence rows: approximately `26–28px`.
-- Compact evidence rows: approximately `40–44px` with two lines.
+- Structural Scope priority rows: approximately `58px` with type/state, identity, and facts lines.
+- Evidence rows at every geometry: approximately `52px` with paired primary and secondary lines.
 - Noninteractive JSON and diff lines: approximately `18–20px`.
 
 Focused Compact and shallow surfaces keep Back, current state, and the consequential action fixed and reachable. Fixed strips cannot cover focused content. `563×137` must preserve emergency operation and download/action reachability but is not a supported comfortable JSON-editing size.
@@ -182,7 +195,7 @@ Focused Compact and shallow surfaces keep Back, current state, and the consequen
 
 - Evidence remains virtualized with stable event identities.
 - COMMAND keys remain evidence/filter identities and never become structural Scope-tree peers.
-- Wide and normal preserve comparable columns while useful; compact switches to the two-line grammar.
+- Wide and normal preserve the four comparable semantic columns; compact rebalances those columns without changing their meaning or order.
 - Complete copy and export operate on retained evidence, not only rendered rows.
 
 ### Local Injection
@@ -232,6 +245,8 @@ Elastic Triad borrows Viewport Lease's full-canvas behavior for document-heavy o
 The disposable [workbench-ui-06 prototype](../prototypes/workbench-ui-06/README.md) provides all three models on one deterministic Lightstreamer scenario. The selected Elastic Triad was browser-checked across compact, normal, shallow, and wide frames; Live Evidence, selected detail, high-volume evidence, Local Injection, diagnostics, and export; and representative Dark and Light themes.
 
 Checks covered panel-level overflow, pane relocation, compact two-line evidence rows, textual provenance, full-canvas Local Injection, Source/Draft scroll ownership, action reachability, variant switching, and browser console errors. Type checking, the extension build, JavaScript syntax checking, and whitespace validation passed. No production panel behavior changed.
+
+The 2026-08-29 readability amendment was evaluated in the disposable `workbench-ui-12` prototype at normal and compact geometry. The product owner explicitly selected Variant C, **Priority blocks + order rail**, without adjustment; production verification supersedes the prototype's illustrative values and styling.
 
 ## Vocabulary resolution
 

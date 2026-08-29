@@ -591,8 +591,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         panelCdp,
         `
           [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-            .some((row) => [...row.querySelectorAll('[role="gridcell"]')]
-              .some((cell) => cell.textContent?.trim() === "LOCAL")) &&
+            .some((row) => row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · LOCAL · ")) &&
           !document.querySelector('[aria-label="COMMAND projection summary"]') &&
           ![...document.querySelectorAll("button")].some(
             (button) => button.textContent?.includes("COMMAND projections")
@@ -603,8 +602,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       const localEvidenceProof = await evaluateByValue<string>(
         panelCdp,
         `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-          .find((row) => [...row.querySelectorAll('[role="gridcell"]')]
-            .some((cell) => cell.textContent?.trim() === "LOCAL"))?.textContent ?? ""`
+          .find((row) => row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · LOCAL · "))?.textContent ?? ""`
       );
       expect(localEvidenceProof).toContain("LOCAL");
       expect(localEvidenceProof).toContain("UPDATE");
@@ -639,13 +637,13 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       }
 
       if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
-        .find((candidate) => candidate.querySelector("span")?.textContent?.includes("scenario.mutate-reinject"))`)) {
+        .find((candidate) => candidate.querySelector(".workbench-react__scope-identity")?.textContent?.includes("scenario.mutate-reinject"))`)) {
         await clickPanelButton(panelCdp, "Scope");
       }
       await clickVisiblePanelElement(
         panelCdp,
         `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
-          .find((candidate) => candidate.querySelector("span")?.textContent?.includes("scenario.mutate-reinject"))`,
+          .find((candidate) => candidate.querySelector(".workbench-react__scope-identity")?.textContent?.includes("scenario.mutate-reinject"))`,
         "the rendered fixture COMMAND Item Scope"
       );
 
@@ -711,8 +709,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         panelCdp,
         `(() => {
           const localRows = [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-            .filter((row) => [...row.querySelectorAll('[role="gridcell"]')]
-              .some((cell) => cell.textContent?.trim() === "LOCAL"));
+            .filter((row) => row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · LOCAL · "));
           return localRows.length === 2;
         })()`,
         "the authored Local Evidence"
@@ -1111,7 +1108,7 @@ async function focusScopeTreeLabel(
     const tree = document.querySelector('[aria-label^="Runtime Scope tree"]');
     if (!(tree instanceof HTMLElement)) throw new Error("Missing runtime Scope tree");
     const find = () => [...tree.querySelectorAll('[role="treeitem"]')].find(
-      (candidate) => candidate.querySelector("span")?.textContent?.trim() === ${JSON.stringify(label)}
+      (candidate) => candidate.querySelector(".workbench-react__scope-identity")?.textContent?.trim() === ${JSON.stringify(label)}
     );
     const initial = tree.querySelector('[role="treeitem"]');
     if (!(initial instanceof HTMLElement)) throw new Error("Missing runtime Scope item");

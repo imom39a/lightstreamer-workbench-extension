@@ -141,7 +141,10 @@ const ScopeTreeRow = memo(function ScopeTreeRow({
       data-scope-id={node.id}
       aria-expanded={hasChildren ? !collapsed : undefined}
       tabIndex={focused ? 0 : -1}
-      style={{ top: `${index * SCOPE_NODE_HEIGHT}px` }}
+      style={{
+        top: `${index * SCOPE_NODE_HEIGHT}px`,
+        "--workbench-scope-indent": `${node.depth * 10}px`
+      } as CSSProperties}
       ref={(element) => {
         if (element) nodeRefs.current.set(node.id, element);
         else nodeRefs.current.delete(node.id);
@@ -152,7 +155,12 @@ const ScopeTreeRow = memo(function ScopeTreeRow({
       }}
       onFocus={() => actionsRef.current.focus(node.id)}
       onKeyDown={(event) => actionsRef.current.key(event, node)}
-    ><span>{node.label}</span><em>{node.detail ? `${node.detail} · ${lifecycleLabel(node.lifecycle)}` : lifecycleLabel(node.lifecycle)}</em></button>
+    >
+      <span className="workbench-react__scope-type">{scopeKindLabel(node.kind)}</span>
+      <strong className="workbench-react__scope-identity" title={node.label}>{node.label}</strong>
+      <em className="workbench-react__scope-state">{lifecycleLabel(node.lifecycle)}</em>
+      {node.detail ? <span className="workbench-react__scope-facts" title={node.detail}>{node.detail}</span> : null}
+    </button>
   );
 });
 
@@ -243,12 +251,14 @@ const EvidenceRow = memo(function EvidenceRow({
   rowRefs: { current: Map<string, HTMLButtonElement> };
   actionsRef: { current: EvidenceRowActions };
 }): JSX.Element {
+  const orderLabel = evidenceOrderLabel(event.sequence);
   return (
     <button
       type="button"
       className="workbench-react__evidence-row"
       role="row"
       data-evidence-id={event.id}
+      data-evidence-sequence={event.sequence ?? undefined}
       data-find-current={findPosition ? true : undefined}
       aria-selected={selected}
       aria-current={findPosition ? "true" : undefined}
@@ -259,7 +269,22 @@ const EvidenceRow = memo(function EvidenceRow({
         else rowRefs.current.delete(event.id);
       }}
       onClick={() => actionsRef.current.select(event.id)}
-    ><span role="gridcell"><time>{event.time}</time><small title={event.id}>{event.id}</small>{findPosition ? <small className="workbench-react__find-match">{findPosition}</small> : null}</span><strong role="gridcell">{event.source}</strong><span role="gridcell">{event.phase}</span><b role="gridcell">{event.command ?? "—"}</b><span role="gridcell" title={event.object}><strong>{event.kind}</strong><small>{event.object}</small></span><span role="gridcell" title={event.commandKey ?? "No COMMAND key"}>{event.commandKey ?? "—"}</span></button>
+    >
+      <span className="workbench-react__evidence-order" role="gridcell" aria-label={`History sequence ${orderLabel}; Evidence identity ${event.id}`}>
+        <small>Event</small>
+        <strong title={event.id}>{orderLabel}</strong>
+        {findPosition ? <small className="workbench-react__find-match">{findPosition}</small> : null}
+      </span>
+      <span className="workbench-react__evidence-meaning" role="gridcell">
+        <strong>{event.kind}</strong>
+        <small><time>{event.time}</time> · {event.source} · {event.phase}</small>
+      </span>
+      <b className="workbench-react__evidence-command" role="gridcell">{event.command ?? "—"}</b>
+      <span className="workbench-react__evidence-object" role="gridcell">
+        <strong title={event.object}>{event.object}</strong>
+        <small title={event.commandKey ?? "No COMMAND key"}>Key {event.commandKey ?? "—"}</small>
+      </span>
+    </button>
   );
 });
 
@@ -269,6 +294,10 @@ function dispatch(runtime: WorkbenchRuntime, command: WorkbenchCommand): void {
 
 function uppercase(value: string | undefined, fallback: string): string {
   return (value ?? fallback).replaceAll("-", "_").toUpperCase();
+}
+
+function evidenceOrderLabel(sequence: number | null): string {
+  return sequence === null ? "—" : String(sequence);
 }
 
 type FilterComposerStep = "composer" | "facets" | "explorer";
@@ -369,7 +398,8 @@ const NORMAL_MIN_HEIGHT = PERSISTENT_CHROME_HEIGHT + EVIDENCE_MIN_HEIGHT + CONTE
 const SHALLOW_MIN_WIDTH = EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE;
 const WIDE_MIN_WIDTH = Math.max(1120, SCOPE_MIN_WIDTH + EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE * 2);
 const GEOMETRY_HYSTERESIS = 32;
-const SCOPE_NODE_HEIGHT = 27;
+const SCOPE_NODE_HEIGHT = 58;
+const EVIDENCE_ROW_HEIGHT = 52;
 const SCOPE_WINDOW_OVERSCAN = 8;
 const SCOPE_FALLBACK_VIEWPORT_ROWS = 48;
 const SCOPE_MAX_WINDOW_SIZE = 127;
@@ -402,6 +432,10 @@ function decideGeometry(width: number, height: number, previous?: WorkbenchGeome
 
 function lifecycleLabel(lifecycle: WorkbenchSnapshot["scope"]["nodes"][number]["lifecycle"]): string {
   return `${lifecycle.slice(0, 1).toUpperCase()}${lifecycle.slice(1)}`;
+}
+
+function scopeKindLabel(kind: WorkbenchSnapshot["scope"]["nodes"][number]["kind"]): string {
+  return `${kind.slice(0, 1).toUpperCase()}${kind.slice(1)}`;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -833,7 +867,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   };
 
   const moveEvidenceByViewport = (direction: -1 | 1) => {
-    const rowHeight = geometry === "compact" ? 48 : 27;
+    const measuredRowHeight = evidenceRows.current.values().next().value?.getBoundingClientRect().height ?? 0;
+    const rowHeight = measuredRowHeight > 0 ? measuredRowHeight : EVIDENCE_ROW_HEIGHT;
     const visibleRows = Math.max(1, Math.floor((evidenceLedger.current?.clientHeight || rowHeight * 10) / rowHeight));
     moveEvidence(direction * visibleRows);
   };
@@ -1878,7 +1913,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           <div className="workbench-react__evidence-window" data-complete-window={!evidence.hasOlder && !evidence.hasNewer || undefined} aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}
           {evidence.loading ? <div className="workbench-react__empty" role="status" aria-live="polite"><strong>Loading Evidence…</strong><span>Resolving the current Scope and Filter.</span></div> : events.length ? <div className="workbench-react__ledger" role="grid" aria-label="Ordered Lightstreamer Evidence" tabIndex={0} ref={evidenceLedger} onKeyDown={handleEvidenceKey}>
-            <div className="workbench-react__ledger-header" role="row"><span role="columnheader">Time / #</span><span role="columnheader">Source</span><span role="columnheader">Phase</span><span role="columnheader">Op</span><span role="columnheader">Evidence / object</span><span role="columnheader">COMMAND key</span></div>
+            <div className="workbench-react__ledger-header" role="row"><span role="columnheader">Order</span><span role="columnheader">Evidence</span><span role="columnheader">Command</span><span role="columnheader">Object</span></div>
             {events.map((event) => {
               const isSelected = event.id === selectedEventId;
               const isFindCurrent = event.id === findState.currentEventId;

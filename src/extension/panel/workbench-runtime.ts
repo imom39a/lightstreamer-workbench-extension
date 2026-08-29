@@ -253,6 +253,7 @@ export type WorkbenchCaptureSnapshot = Readonly<{
 
 export type WorkbenchEvidence = Readonly<{
   id: string;
+  sequence: number | null;
   time: string;
   source: "SERVER" | "LOCAL" | "RUNTIME" | "WORKBENCH";
   phase: "SNAPSHOT" | "LIVE" | "END OF SNAPSHOT" | "—";
@@ -5232,6 +5233,9 @@ class Runtime implements WorkbenchRuntime {
       : this.findCurrentEventId ?? findResult?.current?.eventId ?? null;
     const revealAvailability = this.revealSelectionAvailability();
     const activity = this.activitySnapshot(scope);
+    const selectedEvidenceSequence = this.selectedEvidenceIdentity?.eventId === this.selectionEventId
+      ? this.selectedEvidenceIdentity.sequence
+      : evidence.records.find((record) => record.identity.eventId === this.selectionEventId)?.identity.sequence ?? null;
     // Activity aggregation is evaluated while creating the presented snapshot.
     // Reconcile its condition here so Notifications and the footer describe
     // that same projection without eagerly rebuilding Activity on every
@@ -5251,7 +5255,7 @@ class Runtime implements WorkbenchRuntime {
       selectionEventId: this.selectionEventId,
       selectedEvidence:
         this.selectedEventEnvelope?.id === this.selectionEventId
-          ? this.presentEvidence(this.selectedEventEnvelope)
+          ? this.presentEvidence(this.selectedEventEnvelope, selectedEvidenceSequence)
           : null,
       contextId: this.contextId,
       context: this.contextSnapshot(evidence.events, scope),
@@ -5295,7 +5299,9 @@ class Runtime implements WorkbenchRuntime {
           })
         : null,
       evidence: Object.freeze({
-        events: Object.freeze(evidence.events.map((event) => this.presentEvidence(event))),
+        events: Object.freeze(evidence.events.map((event, index) =>
+          this.presentEvidence(event, evidence.records[index]?.identity.sequence ?? null)
+        )),
         loading: this.evidenceLoading,
         total: this.mode === "frozen" || this.evidenceLoading ? evidence.total : this.liveEvidence.total,
         windowSize: this.windowSize,
@@ -5358,10 +5364,10 @@ class Runtime implements WorkbenchRuntime {
     return { canReveal: true };
   }
 
-  private presentEvidence(event: LightstreamerEventEnvelope): WorkbenchEvidence {
+  private presentEvidence(event: LightstreamerEventEnvelope, sequence: number | null = null): WorkbenchEvidence {
     const cached = this.evidencePresentationCache.get(event);
-    if (cached) return cached;
-    const presentation = toWorkbenchEvidence(event);
+    if (cached?.sequence === sequence) return cached;
+    const presentation = toWorkbenchEvidence(event, sequence);
     this.evidencePresentationCache.set(event, presentation);
     return presentation;
   }
@@ -6897,9 +6903,10 @@ function topologyCheckpointSyncId(
   return typeof syncId === "string" && syncId.length > 0 ? syncId : null;
 }
 
-function toWorkbenchEvidence(event: LightstreamerEventEnvelope): WorkbenchEvidence {
+function toWorkbenchEvidence(event: LightstreamerEventEnvelope, sequence: number | null): WorkbenchEvidence {
   return Object.freeze({
     id: event.id,
+    sequence,
     time: new Date(event.timestamp).toISOString().slice(11, 23),
     source: evidenceSource(event),
     phase: evidencePhase(event),

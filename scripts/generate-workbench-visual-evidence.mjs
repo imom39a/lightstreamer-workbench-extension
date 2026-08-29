@@ -30,7 +30,7 @@ const baselineGrepArgument = grep ? ` -- --grep ${JSON.stringify(`visual baselin
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`Usage: npm run test:ui:visual [-- --print-matrix | --print-review-scope]
 
-Captures the accepted integrated prototype, the shipped Workbench scenario harness,
+Captures accepted Workbench design references, the shipped Workbench scenario harness,
 and an inspectable per-channel visual diff for the Material UI review packet.
 The artifacts are reference evidence, not a pixel-parity acceptance gate.
 
@@ -65,7 +65,7 @@ try {
   ));
 
   children.push(await startServer({
-    name: "accepted Workbench prototype",
+    name: "accepted Workbench prototypes",
     args: [
       resolve(projectRoot, "node_modules/vite/bin/vite.js"),
       "prototypes",
@@ -91,6 +91,8 @@ try {
   for (const scenario of scenarios) {
     const reference = scenario.reference?.source === "asset"
       ? await readFile(resolve(projectRoot, scenario.reference.path))
+      : scenario.reference?.source === "prototype-12"
+      ? await captureReadabilityPrototype(browser, scenario)
       : scenario.reference?.source === "production"
       ? (await captureProduction(browser, scenario, {
           ...scenario.production,
@@ -143,15 +145,18 @@ try {
         ? `initial Scenario 05 production baselines at ${scenarioHaltReferenceCommit}; the surface is absent at implementation base e74d4ca, so these are explicit new-baseline references`
         : scenarios.every(({ reference }) => reference?.source === "production")
           ? "clean production storage-headroom scenarios with the advisory estimate omitted"
-          : "accepted prototypes/workbench-ui-10 and archived reviewed Activity D images; storage-headroom states use clean production scenarios with the advisory estimate omitted",
+          : "accepted prototypes/workbench-ui-10, approved prototypes/workbench-ui-12 Variant C captures/assets for readability-c-*, and archived reviewed Activity D images; storage-headroom states use clean production scenarios with the advisory estimate omitted",
       current: "production Workbench scenario harness using shipped panel root document",
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
     contactSheets,
     review: !grep && results.length === allScenarios.length ? {
       classification: "Material UI",
-      changedWorkflow: "The integrated Workbench matrix covers the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, diagnostics, and compact operating actions in the shipped panel shell.",
+      changedWorkflow: "The integrated Workbench matrix covers the approved Variant C Scope priority blocks and Ordered Evidence order rail, the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, diagnostics, and compact operating actions in the shipped panel shell.",
       acceptanceCriteria: [
+        "Scope rows present object type and lifecycle first, identity on its own primary line with the exact value programmatically available and reachable, and facts as a secondary line across populated normal and compact pane pressure.",
+        "Ordered Evidence presents authoritative retained History sequence separately from exact Evidence identity, then semantic meaning, timestamp/provenance/phase, COMMAND operation, object, and key in that reading order.",
+        "The 58px Scope and 52px Evidence rows preserve complete-row geometry, one scroll owner per pane, tree virtualization, and one-viewport Page Up/Down movement.",
         "One shared SERVER/LOCAL timeline belongs above Evidence, uses elapsed time since the first retained timestamped event, and preserves exact range and captured-event routes without a separate Activity page.",
         "One collapsed Activity summary in Context retains exact SERVER/LOCAL counts, bounded SERVER busiest identities and captured facts, including 10,000-record, limited and memory-fallback states.",
         "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
@@ -171,7 +176,8 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; every captured footer Dismiss action is checked individually, and help-resource, shallow diagnostic-disclosure, and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
-      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; Activity, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
+      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; approved Variant C base/current/diff comparisons; Activity, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
+      readabilityComparison: results.filter(({ id }) => id.startsWith("readability-c-")).map(({ id, artifacts, changedPixels, totalPixels }) => ({ id, artifacts, changedPixels, totalPixels })),
       baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
     } : results.every(({ production }) => production.setup.startsWith("activity")) ? {
       classification: "Material UI",
@@ -304,9 +310,13 @@ function isStorageHeadroomSetup(setup) {
   return setup === "storage-headroom";
 }
 
+function isReadabilitySetup(setup) {
+  return setup === "readability" || setup === "readability-scope";
+}
+
 function contactSheetScenarioIds(matrix) {
   return matrix
-    .filter(({ id, production }) => id.startsWith("scenario-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup))
+    .filter(({ id, production }) => id.startsWith("scenario-") || id.startsWith("readability-c-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup))
     .map(({ id }) => id);
 }
 
@@ -321,10 +331,11 @@ function publicReviewScope() {
     .filter(({ production }) => production.setup === "diagnostics")
     .map(({ id }) => id);
   const activityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
+  const readabilityIds = allScenarios.filter(({ production }) => isReadabilitySetup(production.setup)).map(({ id }) => id);
   return {
     contactSheetScenarioIds: contactSheetScenarioIds(allScenarios),
-    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds],
-    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds]
+    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds],
+    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]
   };
 }
 
@@ -358,10 +369,11 @@ async function createContactSheets(runningBrowser, results) {
       .filter(({ production }) => isStorageHeadroomSetup(production.setup))
       .map(({ id }) => id);
     const requiredActivityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
-    const requiredFocusIds = [...requiredDiagnosticIds, ...requiredStorageIds, ...requiredActivityIds];
+    const requiredReadabilityIds = allScenarios.filter(({ production }) => isReadabilitySetup(production.setup)).map(({ id }) => id);
+    const requiredFocusIds = [...requiredDiagnosticIds, ...requiredStorageIds, ...requiredActivityIds, ...requiredReadabilityIds];
     const missingFocusIds = requiredFocusIds.filter((id) => !affectedIds.includes(id));
-    if (requiredDiagnosticIds.length !== 17 || requiredStorageIds.length !== 5 || missingFocusIds.length > 0) {
-      throw new Error(`Contact sheets require all integrated Activity, 12 diagnostic, 5 Notifications and 5 storage-headroom states; missing: ${missingFocusIds.join(", ") || "none"}.`);
+    if (requiredDiagnosticIds.length !== 17 || requiredStorageIds.length !== 5 || requiredReadabilityIds.length !== 2 || missingFocusIds.length > 0) {
+      throw new Error(`Contact sheets require all integrated Activity, 12 diagnostic, 5 Notifications, 5 storage-headroom and 2 Variant C readability states; missing: ${missingFocusIds.join(", ") || "none"}.`);
     }
   }
   const output = {};
@@ -479,6 +491,32 @@ async function capturePrototype(runningBrowser, scenario) {
     }
     await page.evaluate(() => document.fonts.ready);
     return await workbench.screenshot({ animations: "disabled", caret: "hide" });
+  } finally {
+    await context.close();
+  }
+}
+
+async function captureReadabilityPrototype(runningBrowser, scenario) {
+  const context = await runningBrowser.newContext({
+    viewport: scenario.viewport,
+    colorScheme: scenario.theme,
+    forcedColors: scenario.forcedColors ? "active" : "none"
+  });
+  const page = await context.newPage();
+  try {
+    const query = new URLSearchParams({
+      variant: scenario.reference.variant,
+      frame: scenario.reference.frame
+    });
+    await page.goto(`http://127.0.0.1:${prototypePort}/workbench-ui-12/?${query}`, { waitUntil: "networkidle" });
+    const workbench = page.locator(".workbench.variant-c");
+    await workbench.waitFor({ state: "visible" });
+    const text = await workbench.innerText();
+    for (const marker of ["Inspected page", "1 client · 15 subscriptions", "ORDERED EVIDENCE", "EVENT", "Item Update"]) {
+      if (!text.includes(marker)) throw new Error(`Variant C readability reference is missing ${JSON.stringify(marker)}.`);
+    }
+    await page.evaluate(() => document.fonts.ready);
+    return await page.screenshot({ animations: "disabled", caret: "hide" });
   } finally {
     await context.close();
   }
@@ -602,7 +640,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
     let focusEvidence = null;
     let memoryEvidence = null;
     let storageEvidence = null;
-    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
+    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -638,6 +676,27 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
       });
       if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
         throw new Error(`Activity focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
+      }
+    }
+    if (isReadabilitySetup(scenario.production.setup)) {
+      const action = page.getByRole("navigation", { name: "Structural runtime scope" }).getByRole("treeitem").first();
+      await action.scrollIntoViewIfNeeded();
+      await action.focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      focusEvidence = await action.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          action: element.getAttribute("aria-label") ?? element.textContent?.trim() ?? "",
+          focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+        };
+      });
+      if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
+        throw new Error(`Variant C Scope focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
     }
     if (scenario.production.setup === "diagnostics" || isStorageHeadroomSetup(scenario.production.setup) && scenario.production.storageMode !== "clean") {
@@ -969,6 +1028,17 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     return;
   }
   if (setup === "none") return;
+  if (isReadabilitySetup(setup)) {
+    if (setup === "readability-scope") await page.getByRole("button", { name: "Scope", exact: true }).click();
+    const scope = page.getByRole("navigation", { name: "Structural runtime scope" });
+    await scope.waitFor({ state: "visible" });
+    await scope.locator(".workbench-react__scope-identity", { hasText: "Inspected page" }).waitFor();
+    if (setup === "readability") {
+      await page.getByRole("region", { name: "Ordered Evidence" }).waitFor({ state: "visible" });
+      await page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" }).waitFor({ state: "visible" });
+    }
+    return;
+  }
   if (setup === "storage-headroom") {
     const warning = page.getByText("Warning · Estimated storage headroom is low", { exact: true });
     if (storageMode === "clean") {

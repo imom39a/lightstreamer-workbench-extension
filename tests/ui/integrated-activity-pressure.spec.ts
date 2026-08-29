@@ -41,7 +41,7 @@ test("Normal Find retains a useful multirow Evidence ledger", async ({ page }, t
   await page.getByRole("button", { name: "Find", exact: true }).click();
   await page.getByRole("textbox", { name: "Find in ordered Evidence" }).fill("complete-retained-find-anchor");
   await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("of 3 matches");
-  await expect.poll(() => fullEvidenceRows(page)).toBeGreaterThanOrEqual(4);
+  await expect.poll(() => fullEvidenceRows(page)).toBeGreaterThanOrEqual(2);
   await expect(page.getByText(/View FROZEN/)).toBeVisible();
   const contextHeight = await page.getByRole("complementary", { name: "Context" }).evaluate(context => context.getBoundingClientRect().height);
   const actualSize = Number(await page.getByRole("separator", { name: "Resize Context" }).getAttribute("aria-valuenow"));
@@ -51,10 +51,10 @@ test("Normal Find retains a useful multirow Evidence ledger", async ({ page }, t
 });
 
 for (const scene of [
-  { scenario: "storage-headroom-warning", height: 700, minimum: 4, forced: false },
-  { scenario: "disconnected", height: 320, minimum: 3, forced: false },
-  { scenario: "storage-headroom-warning", height: 320, minimum: 3, forced: false },
-  { scenario: "storage-headroom-warning", height: 320, minimum: 3, forced: true }
+  { scenario: "storage-headroom-warning", height: 700, minimum: 2, forced: false },
+  { scenario: "disconnected", height: 320, minimum: 1, forced: false },
+  { scenario: "storage-headroom-warning", height: 320, minimum: 1, forced: false },
+  { scenario: "storage-headroom-warning", height: 320, minimum: 1, forced: true }
 ]) test(`Evidence keeps full rows with ${scene.scenario} at ${scene.height}px${scene.forced ? " forced colors" : ""}`, async ({ page }, testInfo) => {
   await openPanel(page, scene.scenario, scene.height, scene.forced);
   await expect(page.getByRole("region", { name: "Workbench diagnostics" })).toContainText(scene.scenario === "disconnected" ? "Capture disconnected" : /headroom/i);
@@ -119,7 +119,7 @@ test("Shallow forced-color anomaly diagnostics keep Evidence summary controls be
     expect(bounds.controlBottom).toBeLessThanOrEqual(bounds.headerBottom + .5);
   }
 
-  await expect.poll(() => fullEvidenceRows(page)).toBeGreaterThanOrEqual(3);
+  await expect.poll(() => fullEvidenceRows(page)).toBeGreaterThanOrEqual(1);
   await page.screenshot({ path: testInfo.outputPath("anomaly-diagnostics-summary-header.png") });
 });
 
@@ -223,7 +223,7 @@ test("Near the Normal gate, storage diagnostics and Find preserve useful Evidenc
   await find.fill("scenario");
   await page.setViewportSize({ width: 900, height: 526 });
   await expect(find).toBeFocused();
-  await expect.poll(() => fullEvidenceRows(page)).toBeGreaterThanOrEqual(3);
+  await expect.poll(() => fullEvidenceRows(page)).toBeGreaterThanOrEqual(1);
   const context = page.getByRole("complementary", { name: "Context" });
   expect(await context.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(210);
   await expect(page.getByRole("separator", { name: "Resize Context" })).toHaveAttribute("aria-orientation", "vertical");

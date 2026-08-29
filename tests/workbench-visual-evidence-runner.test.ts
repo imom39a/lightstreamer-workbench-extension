@@ -20,7 +20,7 @@ describe("Workbench visual-evidence runner", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(result.stdout).toContain("--print-review-scope");
-    expect(matrix).toHaveLength(80);
+    expect(matrix).toHaveLength(82);
   });
 
   it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
@@ -38,7 +38,7 @@ describe("Workbench visual-evidence runner", () => {
   });
 
   it("describes the selected integrated matrix without stale batch-only baseline proof", () => {
-    expect(runnerSource).toContain('changedWorkflow: "The integrated Workbench matrix covers the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario');
+    expect(runnerSource).toContain('changedWorkflow: "The integrated Workbench matrix covers the approved Variant C Scope priority blocks and Ordered Evidence order rail, the main Evidence timeline');
     expect(runnerSource).toContain('result: "Run separately and record the exact Playwright result with this packet."');
     expect(runnerSource).not.toContain('visual baseline: scenario-checkpoint');
     expect(runnerSource).not.toContain('result: "8/8 passed"');
@@ -78,6 +78,9 @@ describe("Workbench visual-evidence runner", () => {
     const footerDiagnosticIds = matrix
       .filter((scenario: { production?: { setup?: string } }) => scenario.production?.setup === "diagnostics")
       .map((scenario: { id: string }) => scenario.id);
+    const readabilityIds = matrix
+      .filter((scenario: { id: string }) => scenario.id.startsWith("readability-c-"))
+      .map((scenario: { id: string }) => scenario.id);
 
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
@@ -86,21 +89,32 @@ describe("Workbench visual-evidence runner", () => {
     expect(storageIds).toHaveLength(5);
     expect(activityIds).toHaveLength(9);
     expect(footerDiagnosticIds).toHaveLength(4);
+    expect(readabilityIds).toHaveLength(2);
     expect(JSON.parse(result.stdout)).toMatchObject({
-      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds]),
-      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds]),
-      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds])
+      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]),
+      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]),
+      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds])
     });
   });
 
   it("keeps reviewed D screenshots as static design references for the production Activity states", () => {
-    const activityReferences = matrix.filter((scenario: { reference?: { source?: string } }) => scenario.reference?.source === "asset");
+    const activityReferences = matrix.filter((scenario: { reference?: { source?: string; path?: string } }) =>
+      scenario.reference?.source === "asset" && scenario.reference.path?.startsWith("docs/reference/integrated-activity/")
+    );
     expect(activityReferences).toHaveLength(3);
     for (const scenario of activityReferences) {
       const jpeg = readFileSync(join(rootDir, scenario.reference.path));
       expect(jpeg.subarray(0, 3)).toEqual(Buffer.from([255, 216, 255]));
       expect(scenario.reference.path).toMatch(/\.jpg$/);
     }
+  });
+
+  it("keeps the approved Variant C normal asset and compact prototype as readability references", () => {
+    const readabilityReferences = matrix.filter((scenario: { id: string }) => scenario.id.startsWith("readability-c-"));
+    expect(readabilityReferences).toMatchObject([
+      { id: "readability-c-normal-light", reference: { source: "asset", path: "prototypes/workbench-ui-12/screenshots/C-normal.jpg" } },
+      { id: "readability-c-compact-light", reference: { source: "prototype-12", variant: "C", frame: "compact" } }
+    ]);
   });
 
   it("defines isolated clean-base and low-headroom production references", () => {

@@ -57,6 +57,8 @@ Structural Topology provides the scope picker:
 
 Scope selection and evidence selection are separate state. Selecting an evidence row must not silently rescope the ledger. An explicit action may narrow or reveal related scope while preserving a history entry.
 
+Each structural Scope row uses a stable priority block: object type and runtime lifecycle first, complete identity as the primary line, then captured facts. Long identities may visually truncate only after receiving their own line; their complete value remains programmatically available and reachable from the owning Scope surface.
+
 ### Ordered evidence ledger
 
 The evidence ledger is always the dominant working surface. It presents
@@ -65,13 +67,14 @@ Committed Evidence Boundary, using bounded or virtualized rendering while
 preserving chronological order. A stopped or failed History Interval does not
 claim events beyond its final committed boundary.
 
-Its stable scanning grammar includes:
+Its stable scanning grammar uses four semantic columns:
 
-- time and order;
-- semantic evidence type or operation;
-- Lightstreamer primitive identity, such as Subscription, item, key, or listener;
-- concise changed-field or lifecycle summary;
-- Server versus local provenance in text as well as visual treatment.
+- **Order**: a labelled rail anchored by authoritative retained History sequence, with exact Evidence identity preserved independently;
+- **Evidence**: semantic evidence type first, with timestamp, textual provenance, and Snapshot/Live phase beneath it;
+- **Command**: neutral COMMAND operation, or an explicit unavailable mark;
+- **Object**: Lightstreamer primitive identity first, with the captured COMMAND key beneath it when applicable.
+
+Concise changed-field and lifecycle summaries remain in Context rather than competing with the row's scanning anchors. Server versus local provenance is always text, not color alone.
 
 Scope, Filter, and Find remain distinct:
 

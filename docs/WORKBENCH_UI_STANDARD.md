@@ -1,6 +1,6 @@
 # Workbench UI Standard
 
-Status: accepted, 2026-08-04
+Status: accepted, 2026-08-04; readability amendment accepted 2026-08-29
 
 This is the normative entry point for designing, changing, and reviewing the Lightstreamer Workbench Chrome DevTools panel. It keeps the product optimized for developer investigation rather than conventional web-application presentation, and it defines the minimum evidence required before a UI change is treated as ready.
 
@@ -57,7 +57,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 
 - Use **Elastic Triad**: Wide Triad, Normal Stack, Shallow Side, then Focused Compact as available width and height change.
 - Geometry may relocate or park Scope and Context; it never changes semantic state or reconstructs an investigation.
-- Reduce in the accepted order: unpin Scope, relocate Context, focus one surface, overflow low-frequency actions, then use compact two-line Evidence rows.
+- Reduce in the accepted order: unpin Scope, relocate Context, focus one surface, overflow low-frequency actions, then rebalance the persistent two-line Evidence grammar for compact width.
 - Every visible pane owns at most one content scroll. The Workbench shell and whole panel never scroll horizontally.
 - Use bounded horizontal scrolling only for inherently two-dimensional Evidence or raw documents.
 - Promote Local Injection and Source comparison to the full canvas. Promote other document-heavy work only when Context cannot remain useful.
@@ -87,6 +87,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 ### Visual semantics and text
 
 - Use **Plain Ledger**: explicit text first, stable placement second, typography and limited shape third, and color only as reinforcement.
+- Render structural Scope rows as type/state, identity, and captured-facts priority blocks. Render Ordered Evidence as stable Order / Evidence / Command / Object columns, with event identity independent from timestamp and semantic meaning before secondary provenance and phase.
 - Keep Capture operation, observation Coverage, Live/Frozen position, runtime lifecycle, provenance, Snapshot/Live phase, COMMAND operation, diagnostics, Injection readiness/outcome, and interaction state independent.
 - Keep `SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` textual at every density. Do not use provenance colors or treat Local as success, except the explicit shape-and-text-reinforced LOCAL mark within the [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#narrow-provenance-amendment).
 - Keep `ADD`, `UPDATE`, and `DELETE` neutral. A COMMAND verb is not diagnostic severity.
