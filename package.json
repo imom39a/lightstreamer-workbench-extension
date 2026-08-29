@@ -48,6 +48,7 @@
     "prototype:visual-semantics": "vite prototypes --host 127.0.0.1 --port 4178",
     "prototype:integrated-ui": "vite prototypes --host 127.0.0.1 --port 4179",
     "prototype:json-console": "vite prototypes --host 127.0.0.1 --port 4180",
+    "prototype:scope-evidence-readability": "vite prototypes/workbench-ui-12 --host 127.0.0.1 --port 4181",
     "test:ui": "node scripts/test-ui.mjs",
     "test:ui:update": "node scripts/test-ui-update.mjs",
     "test:ui:visual": "node scripts/generate-workbench-visual-evidence.mjs",

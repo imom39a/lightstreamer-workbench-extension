@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-variant="A" data-frame="normal">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="data:," />
+    <title>PROTOTYPE — Scope and Evidence readability</title>
+    <link rel="stylesheet" href="./prototype.css" />
+  </head>
+  <body>
+    <main id="prototype"></main>
+    <nav class="prototype-switcher" aria-label="Prototype comparison controls">
+      <button type="button" data-switch="previous" aria-label="Previous variant">←</button>
+      <div class="prototype-switcher-copy">
+        <span>THROWAWAY PROTOTYPE</span>
+        <strong id="variant-label">A</strong>
+      </div>
+      <button type="button" data-switch="next" aria-label="Next variant">→</button>
+      <label>
+        Frame
+        <select id="frame-select">
+          <option value="normal">Normal</option>
+          <option value="compact">Compact</option>
+        </select>
+      </label>
+    </nav>
+    <script type="module" src="./prototype.js"></script>
+  </body>
+</html>
