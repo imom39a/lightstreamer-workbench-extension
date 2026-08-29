@@ -316,6 +316,17 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
   await waitForCondition(
     cdp,
     `(() => {
+      const compare = [...document.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Compare Source");
+      return compare?.getAttribute("aria-pressed") === "true" &&
+        Boolean(document.querySelector('[aria-label="Immutable Injection Source JSON"]'));
+    })()`,
+    "the captured Source comparison to be open by default"
+  );
+  await clickPanelButton(cdp, "Compare Source");
+  await waitForCondition(
+    cdp,
+    `(() => {
       const text = document.querySelector('[aria-label="Local Injection JSON"]')?.textContent ?? "";
       return text.includes('"modelValues": {') &&
         text.includes(${JSON.stringify(initialMessage)}) &&
@@ -323,7 +334,6 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
     })()`,
     "the captured JSON-string field to expand as structured editor JSON"
   );
-
   const key = `fixture-local-${++localInjectionKeySequence}.TICKER`;
   const document = {
     command: "ADD",
@@ -341,13 +351,25 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
     }
   };
   await replaceLocalInjectionJson(cdp, JSON.stringify(document, null, 2));
+  await clickPanelButton(cdp, "Compare Source");
+  await waitForCondition(
+    cdp,
+    `(() => {
+      const draft = document.querySelector('[aria-label="Local Injection Draft"]');
+      const compare = [...document.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Compare Source");
+      return compare?.getAttribute("aria-pressed") === "true" &&
+        draft?.textContent?.includes("Changed from immutable Source");
+    })()`,
+    "the edited Source comparison to reopen as the delivery preview"
+  );
   try {
     await waitForCondition(
       cdp,
       `[...document.querySelectorAll("button")].some(
-        (button) => button.textContent?.trim() === "Review Local Injection" && !button.disabled
+        (button) => button.textContent?.trim() === "Inject locally" && !button.disabled
       )`,
-      "the edited Local Injection to pass preflight"
+      "the edited Local Injection to become directly executable"
     );
   } catch (error) {
     const diagnostics = await evaluateByValue<string>(
@@ -356,14 +378,6 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
     );
     throw new Error(`${error instanceof Error ? error.message : String(error)}\n${diagnostics}`);
   }
-  await clickPanelButton(cdp, "Review Local Injection");
-  await waitForCondition(
-    cdp,
-    `[...document.querySelectorAll("button")].some(
-      (button) => button.textContent?.trim() === "Inject locally" && !button.disabled
-    )`,
-    "the reviewed Local Injection to become executable"
-  );
   await clickPanelButton(cdp, "Inject locally");
   await waitForCondition(
     cdp,

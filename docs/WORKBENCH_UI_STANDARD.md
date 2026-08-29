@@ -1,6 +1,6 @@
 # Workbench UI Standard
 
-Status: accepted, 2026-08-04; readability amendment accepted 2026-08-29
+Status: accepted, 2026-08-04; readability and standalone Local Injection workflow amendments accepted 2026-08-29
 
 This is the normative entry point for designing, changing, and reviewing the Lightstreamer Workbench Chrome DevTools panel. It keeps the product optimized for developer investigation rather than conventional web-application presentation, and it defines the minimum evidence required before a UI change is treated as ready.
 
@@ -14,7 +14,7 @@ The following accepted contracts provide detailed rules:
 
 - [Canonical Developer Journeys](CANONICAL_DEVELOPER_JOURNEYS.md) — the operator, journey priority, completion conditions, and degraded paths.
 - [Workbench Workspace Information Architecture](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md) — Scoped Evidence Workspace.
-- [Local Injection interaction model](../prototypes/workbench-ui-05/COMPARISON.md) — one protected standalone target-anchored raw-JSON Injection Draft and the separate accepted Scenario boundary.
+- [Local Injection interaction model](../prototypes/workbench-ui-05/COMPARISON.md) — original decision evidence for one protected standalone target-anchored raw-JSON Injection Draft and the separate accepted Scenario boundary. This standard's standalone preview/direct-execution amendment supersedes that prototype's optional comparison and separate Review screen only.
 - [Local Injection Scenario model](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md) — explicit single-target membership, immutable reviewed Run plans, deterministic controls, fail-closed outcomes, assertions, and traceability.
 - [Workbench Panel Density and Docked Layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md) — Elastic Triad.
 - [Workbench Keyboard and Operation Model](WORKBENCH_KEYBOARD_AND_OPERATION_MODEL.md) — Roving Instrument.
@@ -111,8 +111,8 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 - Never edit Captured Item Update evidence in place. Create a separate Injection Draft from an immutable Injection Source or explicit source-free authoring entry.
 - The standalone workflow contains one protected target-anchored Draft. A Scenario is a separate mutually protected temporary document whose membership is always explicit; visible Evidence never joins either document automatically.
 - Raw JSON is the primary editor. Keep Subscription instance, Session, item identity, Source, validation, target, and execution boundary protected outside the editable document.
-- Keep Compare Source optional. Side-by-side Source/Draft comparison uses one synchronized scroll; narrower layouts use inline comparison.
-- The standalone workflow reviews and injects one focused Draft. There is no direct Injection or Scenario execution keyboard shortcut.
+- A captured-source standalone Draft opens Source/Draft comparison by default; that authoring surface is also its preview. Side-by-side comparison uses one synchronized scroll, and narrower layouts use inline comparison. A source-free authored Draft shows the editable Draft without inventing a Source.
+- A valid standalone Draft exposes a labelled **Inject locally** action on the authoring surface. Do not insert a separate Review screen or confirmation transition. Immediately before dispatch, atomically freeze the payload and target fingerprint and revalidate both. There is no Local Injection or Scenario execution keyboard shortcut.
 - State that Local Injection delivers one Logical Update locally to current listeners and does not contact Lightstreamer Server.
 - Successful Evidence is explicitly Local, advances only Local Effective COMMAND State, and leaves Observed Server COMMAND State unchanged.
 - Invalid and stale Drafts say that no Injection was attempted. Failed or uncertain outcomes state only what Workbench can prove and preserve safe recovery.
@@ -125,7 +125,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 
 - Prefer Undo over confirmation when recovery is reliable.
 - Require inline confirmation when an action permanently loses session Evidence, discards an edited Injection Draft, or cannot be safely reconstructed.
-- Use a dedicated Review step instead of a generic confirmation modal for Local Injection. Show exact target, Source/Draft state, Local-only boundary, and expected delivery scope.
+- For standalone Local Injection, keep the exact target, Source/Draft preview or source-free authored state, Local-only boundary, expected delivery scope, validation, and labelled **Inject locally** action together instead of adding a separate Review step or generic confirmation modal. Scenario Review remains the explicit boundary that seals a multi-Step immutable Run.
 - Name the verb, object, and scope, such as `Discard draft` or `Clear 12,482 retained events`.
 - Separate destructive actions from routine controls. Never make them icon-only, default-focused, or directly executable through a keyboard shortcut.
 - Keep the reason beside a disabled consequential action. Confirmation cannot make an invalid or stale target safe.

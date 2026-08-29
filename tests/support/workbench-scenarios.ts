@@ -142,7 +142,6 @@ export type WorkbenchScenario = Readonly<{
     compareOpen?: boolean;
     minimized?: boolean;
     parked?: boolean;
-    review?: boolean;
     staleBeforeReview?: boolean;
     staleAfterReview?: boolean;
     execute?: boolean;
@@ -619,7 +618,6 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
             isSnapshot: false,
             fields: { command: "UPDATE", key: "small-alpha", value: "9" }
           }, null, 2),
-          review: true,
           execute: true,
           executorOutcome: "delivered"
         }
@@ -658,7 +656,6 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
             isSnapshot: false,
             fields: { command: "UPDATE", key: "small-alpha", value: "9" }
           }, null, 2),
-          review: true,
           execute: true,
           executorOutcome: "delivered"
         }
@@ -763,12 +760,12 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
     case "local-injection-stale-review":
       return {
         ...localInjectionCapturedScenario(id),
-        localInjection: { entry: "selection", review: true, staleAfterReview: true, execute: true }
+        localInjection: { entry: "selection", staleAfterReview: true, execute: true }
       };
     case "local-injection-stale-edit":
       return {
         ...localInjectionCapturedScenario(id),
-        localInjection: { entry: "selection", staleBeforeReview: true, review: true }
+        localInjection: { entry: "selection", staleBeforeReview: true, execute: true }
       };
     case "local-injection-pending":
       return localInjectionOutcomeScenario(id, "pending");
@@ -1148,7 +1145,7 @@ function localInjectionOutcomeScenario(
 ): WorkbenchScenario {
   return {
     ...localInjectionCapturedScenario(id),
-    localInjection: { entry: "selection", review: true, execute: true, executorOutcome: outcome }
+    localInjection: { entry: "selection", execute: true, executorOutcome: outcome }
   };
 }
 

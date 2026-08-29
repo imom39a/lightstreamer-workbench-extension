@@ -6,6 +6,14 @@ Historical note (2026-08-09): version 2 subsequently retired product analytics.
 References below to analytics describe the parity target during the original UI
 cutover, not current product behavior.
 
+Historical note (2026-08-29): the standalone Local Injection workflow later
+made captured Source/Draft comparison the default authoring preview and exposed
+**Inject locally** on that same surface. It no longer presents the separate
+standalone Review screen described in the completed Slice 2 record below. The
+runtime still atomically freezes, fingerprints, and revalidates the payload and
+target immediately before dispatch. This amendment does not change Scenario
+Review, which continues to seal an immutable multi-Step Run.
+
 This document records the completed move from the feature-first DOM renderer to the accepted [integrated Workbench direction](../prototypes/workbench-ui-10/README.md). The original slice gates and fallback reasoning remain as implementation history; the current production state is authoritative wherever it differs from an earlier slice description.
 
 The migration preserved the Lightstreamer and extension semantics that existed at cutover. It replaced the panel renderer and its state boundary without reinterpreting Capture, COMMAND state, Local Injection, storage, privacy, export, or the then-current analytics behavior. The later Event History implementation and legacy contraction are now the current production boundary; the storage contract below is authoritative wherever this historical migration record is broader.

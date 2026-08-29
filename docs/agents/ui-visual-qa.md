@@ -224,3 +224,43 @@ npm run release:package
 npm run docs:check
 npm test
 ```
+
+## Standalone Local Injection direct-delivery batch
+
+This Material UI batch simplifies only standalone Local Injection. A captured
+Draft now opens with immutable Source and editable Draft comparison visible by
+default, while a source-free authored Draft remains a single editable pane.
+Both surfaces expose one direct **Inject locally** action. Delivery still runs
+the protected review, fingerprint freeze, and last-moment target revalidation
+atomically before execution; the explicit reviewed-run contract for Scenarios
+is unchanged.
+
+The maintained matrix replaces the former captured-Draft and authored-review
+states with five focused states: captured default preview at compact geometry,
+authored direct delivery under shallow pressure, changed captured comparison
+at normal and wide geometry, and authored direct delivery in forced colors.
+The visual packet passed `5/5` with zero browser diagnostics, zero shell or
+document overflows, zero serious or critical axe findings, and visible,
+unobscured focus in all five states. An independent reviewer inspected every
+reference/current/diff triplet and all ten Darwin/Linux baselines and passed
+the batch with no material findings.
+
+Read-only Darwin and pinned-Linux snapshot comparisons each passed `5/5`.
+Ten focused semantic browser checks passed, as did the shipped panel smoke,
+the direct Lightstreamer transport proof, and all `7/7` loaded-extension
+official-client journeys. The serialized release package passed `127` test
+files with `1,611` tests passed and one skipped, then produced a ZIP below the
+one-megabyte budget. Type checking, the production build, and documentation
+validation also passed.
+
+Exact visual commands used for this batch:
+
+```text
+CI=1 npm run test:ui -- --grep "visual baseline: local-injection"
+docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui -- --grep "visual baseline: local-injection"'
+npm run test:ui:visual -- --grep local-injection-
+npm run test:ui:extension
+LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers npm run fixture:test:browser
+npm run release:package
+npm run docs:check
+```

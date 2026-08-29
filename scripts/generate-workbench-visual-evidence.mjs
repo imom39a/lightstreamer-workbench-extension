@@ -179,6 +179,28 @@ try {
       matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; approved Variant C base/current/diff comparisons; Activity, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
       readabilityComparison: results.filter(({ id }) => id.startsWith("readability-c-")).map(({ id, artifacts, changedPixels, totalPixels }) => ({ id, artifacts, changedPixels, totalPixels })),
       baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
+    } : results.every(({ id }) => id.startsWith("local-injection-")) ? {
+      classification: "Material UI",
+      changedWorkflow: "A standalone Local Injection uses the authoring surface as its preview: captured Drafts compare Source and Draft by default, and valid captured or authored Drafts inject directly without a separate Review document.",
+      acceptanceCriteria: [
+        "Captured Drafts open with Compare Source active, preserve immutable Source and editable Draft labels, and adapt from inline compact/normal comparison to useful side-by-side wide comparison.",
+        "The exact target, Session, Source or authored state, validation, Local-only boundary, and one labelled Inject locally action remain visible and reachable on the authoring surface.",
+        "Authored Drafts remain source-free and expose direct delivery only after validation; no standalone Review action or Review document appears.",
+        "Compact, normal, shallow, and wide geometry plus Dark, Light, and forced colors preserve one document scroll, visible keyboard focus, and no shell or document overflow.",
+        "Every captured state emits no browser diagnostics and has no serious or critical axe violations."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0),
+        shellOrDocumentOverflows: results.reduce((count, result) => count + Number(result.checks.horizontalOverflow.shell || result.checks.horizontalOverflow.document), 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked Local Injection states retained a visible, unobscured Inject locally control; maintained browser scenarios separately cover physical keyboard entry and traversal.`,
+      matrixRationale: "Five deterministic states cover captured preview at compact Light, a changed captured Draft at normal Dark and wide Light, authored direct delivery at shallow Dark, and the same shallow action in forced colors.",
+      baselineIntent: "Replace the obsolete standalone Review baselines, update the captured Draft baseline for default comparison, and add Darwin/Linux normal, wide, and forced-colors baselines for the simplified workflow."
     } : results.every(({ production }) => production.setup.startsWith("activity")) ? {
       classification: "Material UI",
       changedWorkflow: "Activity is integrated into the existing Evidence and Context workspace; the separate Activity page is retired.",
@@ -320,9 +342,13 @@ function isReadabilitySetup(setup) {
   return setup === "readability" || setup === "readability-scope";
 }
 
+function isLocalInjectionSetup(setup) {
+  return setup === "captured-draft" || setup === "captured-draft-changed" || setup === "authored-direct";
+}
+
 function contactSheetScenarioIds(matrix) {
   return matrix
-    .filter(({ id, production }) => id.startsWith("scenario-") || id.startsWith("readability-c-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup) || isHistoryFooterSetup(production.setup))
+    .filter(({ id, production }) => id.startsWith("scenario-") || id.startsWith("readability-c-") || id.startsWith("local-injection-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup) || isHistoryFooterSetup(production.setup))
     .map(({ id }) => id);
 }
 
@@ -338,10 +364,11 @@ function publicReviewScope() {
     .map(({ id }) => id);
   const activityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
   const readabilityIds = allScenarios.filter(({ production }) => isReadabilitySetup(production.setup)).map(({ id }) => id);
+  const localInjectionIds = allScenarios.filter(({ production }) => isLocalInjectionSetup(production.setup)).map(({ id }) => id);
   return {
     contactSheetScenarioIds: contactSheetScenarioIds(allScenarios),
-    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds],
-    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]
+    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds],
+    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds]
   };
 }
 
@@ -646,7 +673,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
     let focusEvidence = null;
     let memoryEvidence = null;
     let storageEvidence = null;
-    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || isHistoryFooterSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
+    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isLocalInjectionSetup(scenario.production.setup) || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || isHistoryFooterSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -703,6 +730,27 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
       });
       if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
         throw new Error(`Variant C Scope focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
+      }
+    }
+    if (isLocalInjectionSetup(scenario.production.setup)) {
+      const action = page.getByRole("region", { name: "Local Injection Draft" }).getByRole("button", { name: "Inject locally" });
+      await action.scrollIntoViewIfNeeded();
+      await action.focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      focusEvidence = await action.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          action: element.textContent?.trim() ?? "",
+          focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+        };
+      });
+      if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
+        throw new Error(`Local Injection focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
     }
     if (scenario.production.setup === "diagnostics" || isHistoryFooterSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) && scenario.production.storageMode !== "clean") {
@@ -1153,44 +1201,52 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     }
     return;
   }
-  if (setup === "captured-draft") {
-    await page.getByRole("button", { name: "Open selected Context" }).click();
-    await page.getByRole("button", { name: "Create Local Injection Draft" }).click();
-    await page.getByRole("region", { name: "Local Injection Draft" }).waitFor();
+  if (setup === "captured-draft" || setup === "captured-draft-changed") {
+    const create = page.getByRole("button", { name: "Create Local Injection Draft" });
+    if (!await create.isVisible()) {
+      await page.getByRole("button", { name: /^(Open selected Context|Restore selected Context|Focus selected Context)$/ }).click();
+    }
+    await create.click();
+    const draft = page.getByRole("region", { name: "Local Injection Draft" });
+    await draft.waitFor();
+    const compare = draft.getByRole("button", { name: "Compare Source" });
+    if (await compare.getAttribute("aria-pressed") !== "true") {
+      throw new Error("Captured Local Injection must open with Compare Source active.");
+    }
+    await draft.getByText("Immutable Source", { exact: true }).waitFor();
+    await draft.getByText("Injection Draft", { exact: true }).waitFor();
+    if (setup === "captured-draft-changed") {
+      await compare.click();
+      const editor = draft.getByRole("textbox", { name: "Local Injection JSON", exact: true });
+      const rawText = await editor.textContent();
+      if (!rawText?.includes('"value": "1"')) {
+        throw new Error("Captured Local Injection visual fixture is missing the editable value field.");
+      }
+      await editor.fill(rawText.replace('"value": "1"', '"value": "2"'));
+      await compare.click();
+      await draft.getByText("Changed from immutable Source", { exact: true }).waitFor();
+    }
+    const inject = draft.getByRole("button", { name: "Inject locally" });
+    await inject.waitFor();
+    await inject.focus();
+    if (await draft.getByRole("button", { name: "Review Local Injection" }).count()) {
+      throw new Error("Standalone Local Injection must not expose a separate Review action.");
+    }
     return;
   }
-  if (setup === "authored-review") {
+  if (setup === "authored-direct") {
     await page.getByRole("button", { name: "Author COMMAND Item Update" }).click();
     await page.getByRole("textbox", { name: "Local Injection JSON", exact: true }).fill(JSON.stringify({
       command: "ADD", key: "visual-review", isSnapshot: false,
       fields: { command: "ADD", key: "visual-review", value: "42" }
     }, null, 2));
-    await page.getByRole("button", { name: "Review Local Injection" }).click();
-    const review = page.getByRole("region", { name: "Review Local Injection" });
-    await review.waitFor();
-    await review.getByRole("heading", { name: "Review Local Injection" }).focus();
-    await page.keyboard.press("ArrowDown");
-    await page.waitForFunction(() => {
-      const owner = document.querySelector(".workbench-react__local-scroll");
-      return owner instanceof HTMLElement && owner.scrollTop > 0;
-    });
-    const localOnly = review.getByText(/Local only:/);
-    await localOnly.scrollIntoViewIfNeeded();
-    await localOnly.waitFor();
-    const partiallyClippedParagraphs = await review.locator("p").evaluateAll((paragraphs) => {
-      const owner = document.querySelector(".workbench-react__local-scroll");
-      if (!(owner instanceof HTMLElement)) throw new Error("Local Injection scroll owner is missing.");
-      const ownerRect = owner.getBoundingClientRect();
-      return paragraphs.flatMap((paragraph) => {
-        const rect = paragraph.getBoundingClientRect();
-        const intersects = rect.bottom > ownerRect.top && rect.top < ownerRect.bottom;
-        const contained = rect.top >= ownerRect.top && rect.bottom <= ownerRect.bottom;
-        return intersects && !contained ? [paragraph.textContent?.trim() ?? ""] : [];
-      });
-    });
-    if (partiallyClippedParagraphs.length) {
-      throw new Error(`Shallow Review clips explanatory text: ${JSON.stringify(partiallyClippedParagraphs)}`);
+    const inject = page.getByRole("button", { name: "Inject locally" });
+    await inject.waitFor();
+    await inject.focus();
+    if (await page.getByRole("region", { name: "Review Local Injection" }).count()) {
+      throw new Error("Standalone Local Injection must not expose a separate Review surface.");
     }
+    await page.getByRole("textbox", { name: "Local Injection JSON", exact: true }).waitFor();
     return;
   }
   if (setup === "command-comparison") {

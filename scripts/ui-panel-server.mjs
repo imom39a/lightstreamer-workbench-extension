@@ -204,7 +204,6 @@ if (scenario.localInjection) {
   if (scenario.localInjection.minimized) runtime.dispatch({ type: "set-local-injection-minimized", minimized: true });
   if (scenario.localInjection.parked) runtime.dispatch({ type: "park-local-injection" });
   if (scenario.localInjection.staleBeforeReview) runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
-  if (scenario.localInjection.review) runtime.dispatch({ type: "review-local-injection" });
   if (scenario.localInjection.staleAfterReview) runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
   if (scenario.localInjection.execute) runtime.dispatch({ type: "execute-local-injection" });
   if (scenario.localInjection.secondEntry) runtime.dispatch({ type: scenario.localInjection.secondEntry === "selection" ? "begin-local-injection-from-selection" : "begin-local-injection-from-scope" });

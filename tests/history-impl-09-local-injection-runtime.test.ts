@@ -113,7 +113,6 @@ async function prepareAndExecute(
   runtime.dispatch({ type: "open-context" });
   runtime.dispatch({ type: "begin-local-injection-from-selection" });
   runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(qty) });
-  runtime.dispatch({ type: "review-local-injection" });
   runtime.dispatch({ type: "execute-local-injection" });
   await flushAsync();
 }

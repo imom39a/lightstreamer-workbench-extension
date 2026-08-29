@@ -7,18 +7,40 @@
     "production": { "scenario": "live-selected", "setup": "none" }
   },
   {
-    "id": "compact-captured-draft-light",
+    "id": "local-injection-captured-preview-compact-light",
     "viewport": { "width": 563, "height": 700 },
     "theme": "light",
     "prototype": { "variant": "B", "state": "edit", "frame": "compact", "setup": "captured-draft" },
     "production": { "scenario": "local-injection-json", "setup": "captured-draft" }
   },
   {
-    "id": "shallow-authored-review-dark",
+    "id": "local-injection-authored-direct-shallow-dark",
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "prototype": { "variant": "B", "state": "review", "frame": "shallow", "setup": "authored-review" },
-    "production": { "scenario": "local-injection-authored", "setup": "authored-review" }
+    "production": { "scenario": "local-injection-authored", "setup": "authored-direct" }
+  },
+  {
+    "id": "local-injection-captured-diff-normal-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "B", "state": "edit", "frame": "normal", "setup": "captured-draft" },
+    "production": { "scenario": "local-injection-captured", "setup": "captured-draft-changed" }
+  },
+  {
+    "id": "local-injection-captured-diff-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "B", "state": "edit", "frame": "wide", "setup": "captured-draft" },
+    "production": { "scenario": "local-injection-captured", "setup": "captured-draft-changed" }
+  },
+  {
+    "id": "local-injection-authored-direct-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": { "variant": "B", "state": "review", "frame": "shallow", "setup": "authored-review" },
+    "production": { "scenario": "local-injection-authored", "setup": "authored-direct" }
   },
   {
     "id": "wide-command-comparison-light",

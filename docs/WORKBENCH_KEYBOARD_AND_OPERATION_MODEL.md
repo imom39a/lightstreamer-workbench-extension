@@ -94,7 +94,7 @@ The Local Injection editor is a promoted document, not a special keyboard mode.
 - Undo, redo, text selection, cursor, scroll, folding, validation markers, and document Find remain editor-owned.
 - Opening a draft restores its editor cursor while keeping Target, Source, Local-only provenance, validation, and action controls outside the document.
 
-Keyboard users reach Review and the labelled **Inject locally** control by ordinary focus navigation, then activate the focused control with Enter or Space. An invalid or retired target keeps the action visible with a textual blocking reason. Workbench never moves the editor cursor, discards the draft, or chooses a replacement target automatically.
+Keyboard users reach the labelled **Inject locally** control directly from the raw editor or default Source/Draft comparison by ordinary focus navigation, then activate the focused control with Enter or Space. There is no intermediate standalone Review surface. Immediately before dispatch, Workbench freezes and revalidates the payload and target without moving focus to another document. An invalid or retired target keeps the action visible with a textual blocking reason. Workbench never moves the editor cursor, discards the draft, or chooses a replacement target automatically.
 
 ## Find, Filter, Jump, and Scope
 
@@ -139,7 +139,7 @@ Preserve the selected event and Context and show **Selected event outside curren
 
 If retention or runtime retirement removes a focused row or node, recover to the nearest logical survivor in this order: next sibling, previous sibling, parent. Announce the recovery once only when the developer was operating that surface. Preserve historical selection whenever retained evidence still supports it.
 
-A retired Injection Target blocks Review and execution in place. It does not move editor focus, discard the draft, or select another target.
+A retired Injection Target blocks execution in place. It does not move editor focus, discard the draft, or select another target.
 
 ## Live Capture, following, and announcements
 

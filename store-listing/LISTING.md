@@ -59,7 +59,7 @@ Key features:
 - A Panel Session-wide Notifications document for active operational conditions and recent Lightstreamer diagnostics, with stable identities, independent filters, supporting Evidence routes, and dismissible footer copies.
 - Side-by-side Observed Server COMMAND State and Local Effective COMMAND State projections; neither is presented as authoritative server state.
 - Exactly one protected Local Injection Draft, created from an immutable captured Source or authored from a live COMMAND scope.
-- Full-size raw JSON editing with validation, Review, and optional immutable Source/Draft comparison and diff.
+- Full-size raw JSON editing with validation, default immutable Source/Draft comparison for captured updates, and a direct labelled **Inject locally** action after atomic payload and target revalidation.
 - Explicit Local Injection Scenarios with ordered single-target Steps, immutable reviewed Runs, serial controls, Checkpoints, per-Step outcomes, and complete correlation.
 - Local-only delivery to the exact live Subscription through the inspected page, with delivered, failed, partial, unknown, and stale-target outcomes that state only what Workbench can prove.
 - WebSocket/TLCP fallback diagnostics when primary Web Client instrumentation is unavailable.
@@ -81,7 +81,7 @@ Remove every legacy screenshot that shows the retired three-section interface be
 2. `screenshots/02-ordered-evidence-context.png`
    - Caption: Complete raw Evidence preserves the immutable captured envelope, provenance, and Lightstreamer-native runtime context for detailed inspection.
 3. `screenshots/03-local-injection-editor.png`
-   - Caption: One protected Local Injection Draft provides raw JSON editing, validation, exact target details, and deliberate Review.
+   - Caption: One protected Local Injection Draft provides default Source/Draft comparison, raw JSON editing, validation, exact target details, and direct local delivery.
 4. `screenshots/04-notifications.png`
    - Caption: Notifications keeps active Workbench conditions and recent Lightstreamer diagnostics reviewable without taking over selected Evidence Context.
 
@@ -150,7 +150,7 @@ No account or login is required.
 
 This is a Chrome DevTools extension. After installing it, open Chrome DevTools on a page that uses the official Lightstreamer Web Client and select the "Lightstreamer Workbench" panel. The panel stays idle until the inspected page creates Lightstreamer clients or Subscriptions. Captured activity appears chronologically in Ordered Evidence. Use Runtime Scope to choose a client, Session, Subscription, item, or listener; Context explains the active runtime object or selected Evidence and shows COMMAND key lifecycles and projections when applicable.
 
-To inspect Local Injection, select one compatible captured Item Update and choose **Create Local Injection Draft**, or choose **Author COMMAND Item Update** from an applicable live COMMAND scope. Workbench protects exactly one Draft. Edit its raw JSON, optionally choose **Compare Source** to view the immutable Source/Draft diff, resolve validation problems, and use **Review Local Injection** before **Inject locally**. The outcome document distinguishes delivered, failed, partial, unknown, and stale-target results without claiming downstream application effects.
+To inspect Local Injection, select one compatible captured Item Update and choose **Create Local Injection Draft**, or choose **Author COMMAND Item Update** from an applicable live COMMAND scope. Workbench protects exactly one Draft. A captured Draft opens with its immutable Source and editable Draft compared by default; a newly authored Draft uses the single editor and has no invented Source. Edit the raw JSON, resolve validation problems, verify the exact target and Local-only boundary on that same preview surface, and choose **Inject locally** directly. Immediately before dispatch, Workbench freezes and revalidates the payload and target. The outcome document distinguishes delivered, failed, partial, unknown, and stale-target results without claiming downstream application effects. Multi-Step Scenarios still require **Review Scenario** to seal an immutable Run.
 
 Open **More actions** and confirm the **Help & resources** section links to first-party Documentation, Privacy, and Support routes. Version 2 has no analytics disclosure or analytics preference control.
 

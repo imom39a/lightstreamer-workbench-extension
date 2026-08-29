@@ -525,13 +525,37 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       await waitForCondition(
         panelCdp,
         `(() => {
-          const text = document.querySelector('[aria-label="Local Injection JSON"]')?.textContent ?? "";
-          return text.includes('"modelValues": {') &&
-            text.includes('"messageId": "fixture-1"') &&
-            !text.includes('\\\\"messageId\\\\"');
+          const compare = [...document.querySelectorAll("button")]
+            .find((button) => button.textContent?.trim() === "Compare Source");
+          return compare?.getAttribute("aria-pressed") === "true" &&
+            Boolean(document.querySelector('[aria-label="Immutable Injection Source JSON"]'));
         })()`,
-        "the captured JSON-string field to expand as structured editor JSON"
+        "the captured Source comparison to be open by default"
       );
+      await clickPanelButton(panelCdp, "Compare Source");
+      try {
+        await waitForCondition(
+          panelCdp,
+          `(() => {
+            const text = document.querySelector('[aria-label="Local Injection JSON"]')?.textContent ?? "";
+            return text.includes('"modelValues": {') &&
+              text.includes('"messageId": "fixture-1"') &&
+              !text.includes('\\\\"messageId\\\\"');
+          })()`,
+          "the captured JSON-string field to expand as structured editor JSON"
+        );
+      } catch (error) {
+        const editorProof = await evaluateByValue(panelCdp, `(() => {
+          const editor = document.querySelector('[aria-label="Local Injection JSON"]');
+          const compare = [...document.querySelectorAll("button")]
+            .find((button) => button.textContent?.trim() === "Compare Source");
+          return {
+            text: editor?.textContent ?? "",
+            comparePressed: compare?.getAttribute("aria-pressed") ?? null
+          };
+        })()`);
+        throw new Error(`${error instanceof Error ? error.message : String(error)}\nEditor proof: ${JSON.stringify(editorProof)}`);
+      }
       await expect
         .poll(
           () =>
@@ -545,27 +569,29 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         panelCdp,
         JSON.stringify(localInjectionDocument, null, 2)
       );
+      await clickPanelButton(panelCdp, "Compare Source");
       await waitForCondition(
         panelCdp,
-        `
-          [...document.querySelectorAll("button")].some(
-            (button) => button.textContent?.trim() === "Review Local Injection" && !button.disabled
-          )
-        `,
-        "the edited Local Injection document to pass preflight"
+        `(() => {
+          const draft = document.querySelector('[aria-label="Local Injection Draft"]');
+          const compare = [...document.querySelectorAll("button")]
+            .find((button) => button.textContent?.trim() === "Compare Source");
+          return compare?.getAttribute("aria-pressed") === "true" &&
+            draft?.textContent?.includes("Changed from immutable Source");
+        })()`,
+        "the edited Source comparison to reopen as the delivery preview"
       );
-      await clickPanelButton(panelCdp, "Review Local Injection");
       await waitForCondition(
         panelCdp,
         `
           [...document.querySelectorAll("button")].some(
             (button) => button.textContent?.trim() === "Inject locally" && !button.disabled
           ) &&
-          [...document.querySelectorAll("button")].some(
-            (button) => button.textContent?.trim() === "Compare Source"
+          ![...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.trim() === "Review Local Injection"
           )
         `,
-        "the reviewed Local Injection and its optional source comparison"
+        "the edited Local Injection document to become directly executable"
       );
       await clickPanelButton(panelCdp, "Inject locally");
       await waitForCondition(
@@ -679,18 +705,17 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       await replaceLocalInjectionJson(panelCdp, JSON.stringify(authoredDocument, null, 2));
       await waitForCondition(
         panelCdp,
-        `[...document.querySelectorAll("button")].some(
-          (button) => button.textContent?.trim() === "Review Local Injection" && !button.disabled
-        )`,
-        "the authored document to pass preflight"
-      );
-      await clickPanelButton(panelCdp, "Review Local Injection");
-      await waitForCondition(
-        panelCdp,
-        `[...document.querySelectorAll("button")].some(
-          (button) => button.textContent?.trim() === "Inject locally" && !button.disabled
-        )`,
-        "the authored Local Injection review to become executable"
+        `(() => {
+          const inject = [...document.querySelectorAll("button")]
+            .find((button) => button.textContent?.trim() === "Inject locally");
+          const compare = [...document.querySelectorAll("button")]
+            .find((button) => button.textContent?.trim() === "Compare Source");
+          return Boolean(inject && !inject.disabled) && Boolean(compare?.disabled) &&
+            ![...document.querySelectorAll("button")].some(
+              (button) => button.textContent?.trim() === "Review Local Injection"
+            );
+        })()`,
+        "the authored Local Injection to become directly executable without a Source comparison"
       );
       await clickPanelButton(panelCdp, "Inject locally");
       await waitForCondition(
@@ -953,6 +978,14 @@ async function replaceScenarioStepJson(
     `document.querySelector('[aria-label="Step ${step} Local Injection JSON"][contenteditable="true"]')`,
     `Scenario Step ${step} editor`
   );
+  const compareOpen = await evaluateByValue<boolean>(panelCdp, `(() => {
+    const compare = [...document.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === "Compare Source" && button.getAttribute("aria-pressed") === "true");
+    if (!(compare instanceof HTMLElement)) return false;
+    const rect = compare.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  })()`);
+  if (compareOpen) await clickPanelButton(panelCdp, "Compare Source");
   await replaceLocalInjectionJson(panelCdp, JSON.stringify(document, null, 2), `Step ${step} Local Injection JSON`);
 }
 
