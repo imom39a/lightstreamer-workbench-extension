@@ -18,7 +18,7 @@
 <section class="outcome-strip" aria-label="Product boundaries">
   <p><strong>Lightstreamer-native</strong><span>Observe official Web Client objects and callbacks instead of guessing from generic socket frames.</span></p>
   <p><strong>Evidence-first</strong><span>Keep event order, timestamp, Source, phase, operation, object, and COMMAND key explicit.</span></p>
-  <p><strong>Safe reproduction</strong><span>Review local-only Item Updates before delivery; Server Evidence remains distinct.</span></p>
+  <p><strong>Safe reproduction</strong><span>Preview changes and inject a valid local-only Item Update directly; Server Evidence remains distinct.</span></p>
 </section>
 
 <section class="section" id="capabilities">
@@ -32,7 +32,7 @@
     <article class="capability-card"><span>Evidence</span><h3>Read retained order</h3><p>Scan a stable event sequence with exact identities, timestamps, provenance, snapshot/live phase, operation, object, and key.</p></article>
     <article class="capability-card"><span>Diagnostics</span><h3>Notifications without noise</h3><p>Review active conditions and recent Lightstreamer notices in one document. Dismiss a footer copy without deleting the notification or changing Evidence.</p></article>
     <article class="capability-card"><span>COMMAND</span><h3>Compare two projections</h3><p>Separate Observed Server COMMAND State from Local Effective COMMAND State without calling either authoritative server state.</p></article>
-    <article class="capability-card"><span>Reproduction</span><h3>Inject one update—or a sequence</h3><p>Edit, validate, review, and deliver a local-only Draft. Build ordered Scenarios with explicit Steps, Checkpoints, and immutable reviewed Runs.</p></article>
+    <article class="capability-card"><span>Reproduction</span><h3>Inject one update—or a sequence</h3><p>Compare, edit, validate, and inject a standalone local-only Draft from one surface. Build ordered Scenarios with explicit Steps, Checkpoints, and immutable reviewed Runs.</p></article>
     <article class="capability-card"><span>History</span><h3>Filter, find, freeze, and export</h3><p>Investigate high-volume current-session history with bounded rendering, deliberate navigation, and credential-safe JSON or offline HTML export.</p></article>
   </div>
 </section>
@@ -66,12 +66,12 @@
   <div class="media-copy">
     <span class="eyebrow">Deliberate Local Injection</span>
     <h2>Reproduce the hard sequence locally.</h2>
-    <p>Create a protected Draft from captured Evidence or author a COMMAND update against a live Scope. Edit raw JSON, validate, compare immutable Source with Draft, review the exact target, and deliver through the inspected page.</p>
+    <p>Create a protected Draft from captured Evidence or author a COMMAND update against a live Scope. Captured Drafts open in Source/Draft comparison by default. Edit, validate, preview the exact target on the same surface, and choose <strong>Inject locally</strong> directly.</p>
     <p>For multi-event cases, turn the work into an explicit Scenario with ordered Steps, active-time delays, Checkpoints, per-Step outcomes, and fresh identities for every reviewed Run.</p>
     <a href="{{site}}docs/local-injection/">Follow the Local Injection workflow →</a>
   </div>
   <figure class="product-frame">
-    <img src="{{site}}assets/app-local-injection-editor.png" alt="Protected Local Injection Draft with raw JSON editing, validation, exact target details, and review controls." width="960" height="600" loading="lazy">
+    <img src="{{site}}assets/app-local-injection-editor.png" alt="Protected Local Injection Draft with default Source and Draft comparison, validation, exact target details, and a direct Inject locally action." width="960" height="600" loading="lazy">
   </figure>
 </section>
 
@@ -86,7 +86,7 @@
     <li><span>01</span><div><strong>Attach before activity</strong><p>Open DevTools and reload when the page created its client before Workbench attached.</p></div></li>
     <li><span>02</span><div><strong>Choose the smallest useful Scope</strong><p>Keep the investigation boundary explicit before filtering or selecting Evidence.</p></div></li>
     <li><span>03</span><div><strong>Read the Evidence boundary</strong><p>Check Capture, Coverage, History, Source, and phase before drawing a conclusion.</p></div></li>
-    <li><span>04</span><div><strong>Reproduce deliberately</strong><p>Review the target and local-only boundary before a Draft or Scenario can deliver.</p></div></li>
+    <li><span>04</span><div><strong>Preview, then inject</strong><p>Use the standalone authoring surface as the preview, or use Scenario Review before a multi-Step Run.</p></div></li>
   </ol>
 </section>
 

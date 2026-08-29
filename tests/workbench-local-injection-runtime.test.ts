@@ -939,7 +939,6 @@ describe("WorkbenchRuntime Local Injection", () => {
     await flushAsync();
     beginSelected(runtime);
 
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
@@ -973,7 +972,6 @@ describe("WorkbenchRuntime Local Injection", () => {
 
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(2) });
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(null) });
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
@@ -1040,6 +1038,8 @@ describe("WorkbenchRuntime Local Injection", () => {
         phase: "edit",
         ready: true,
         compareStatus: "unchanged",
+        compareOpen: true,
+        editorPresentation: { compareOpen: true },
         source: { kind: "captured-event" },
         anchor: {
           sourceEventId: "source-6",
@@ -1093,13 +1093,21 @@ describe("WorkbenchRuntime Local Injection", () => {
         }
       }
     });
-    runtime.dispatch({ type: "review-local-injection" });
-    expect(runtime.getSnapshot().localInjection.draft?.phase).toBe("review");
+    expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
+      phase: "edit",
+      compareOpen: true,
+      editorPresentation: { compareOpen: true }
+    });
     runtime.dispose();
   });
 
-  it("blocks invalid raw JSON, then becomes ready after a corrected edit", async () => {
-    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+  it("blocks invalid raw JSON from direct execution, then executes after a corrected edit", async () => {
+    const executor = { execute: vi.fn(async () => result("success")) };
+    const runtime = createWorkbenchRuntime({
+      history: historyWithCommandTarget(),
+      captureStatus: "capturing",
+      localInjectionExecutor: executor
+    });
     await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({
@@ -1110,16 +1118,16 @@ describe("WorkbenchRuntime Local Injection", () => {
       ready: false,
       diagnostics: [expect.objectContaining({ code: "unknown-key-update" })]
     });
-    runtime.dispatch({ type: "review-local-injection" });
+    runtime.dispatch({ type: "execute-local-injection" });
     expect(runtime.getSnapshot().localInjection.draft?.phase).toBe("edit");
+    expect(executor.execute).not.toHaveBeenCalled();
 
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument() });
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({ ready: true, diagnostics: [] });
-    runtime.dispatch({ type: "review-local-injection" });
-    expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
-      phase: "review",
-      preflightFingerprint: expect.stringMatching(/^li-/)
-    });
+    runtime.dispatch({ type: "execute-local-injection" });
+    await flushAsync();
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(runtime.getSnapshot().localInjection.draft?.phase).toBe("outcome");
     runtime.dispose();
   });
 
@@ -1137,6 +1145,8 @@ describe("WorkbenchRuntime Local Injection", () => {
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       source: { kind: "authored", rawText: null },
       compareStatus: "no-source",
+      compareOpen: false,
+      editorPresentation: { compareOpen: false },
       ready: false,
       anchor: {
         sourceEventId: null,
@@ -1156,6 +1166,8 @@ describe("WorkbenchRuntime Local Injection", () => {
     expect(itemRuntime.getSnapshot().localInjection.draft).toMatchObject({
       source: { kind: "authored", rawText: null },
       compareStatus: "no-source",
+      compareOpen: false,
+      editorPresentation: { compareOpen: false },
       ready: false,
       anchor: {
         sourceEventId: null,
@@ -1293,19 +1305,19 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("refreshes target retirement in edit and invalidates Review without calling the executor", async () => {
-    const beforeHistory = historyWithCommandTarget();
-    const beforeScheduler = scheduler();
-    const beforeExecutor = { execute: vi.fn(async () => result("success")) };
-    const before = createWorkbenchRuntime({
-      history: beforeHistory,
-      scheduler: beforeScheduler,
+  it("refreshes target retirement during direct preflight without calling the executor", async () => {
+    const history = historyWithCommandTarget();
+    const runtimeScheduler = scheduler();
+    const executor = { execute: vi.fn(async () => result("success")) };
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler: runtimeScheduler,
       captureStatus: "capturing",
-      localInjectionExecutor: beforeExecutor
+      localInjectionExecutor: executor
     });
     await flushAsync();
-    beginSelected(before);
-    beforeHistory.offer(commandEvent("retire-10", "subscription-ended", {
+    beginSelected(runtime);
+    history.offer(commandEvent("retire-10", "subscription-ended", {
       subscription: {
         id: identity.subscriptionId,
         mode: "COMMAND",
@@ -1315,54 +1327,16 @@ describe("WorkbenchRuntime Local Injection", () => {
       }
     }));
     await flushAsync();
-    beforeScheduler.flush();
-    before.dispatch({ type: "review-local-injection" });
-    expect(before.getSnapshot().localInjection.draft).toMatchObject({
+    runtimeScheduler.flush();
+    runtime.dispatch({ type: "execute-local-injection" });
+    expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "edit",
       ready: false,
+      outcome: null,
       diagnostics: [expect.objectContaining({ code: "stale-subscription" })]
     });
-    expect(beforeExecutor.execute).not.toHaveBeenCalled();
-    before.dispose();
-
-    const betweenHistory = historyWithCommandTarget();
-    const betweenScheduler = scheduler();
-    const betweenExecutor = { execute: vi.fn(async () => result("success")) };
-    const between = createWorkbenchRuntime({
-      history: betweenHistory,
-      scheduler: betweenScheduler,
-      captureStatus: "capturing",
-      localInjectionExecutor: betweenExecutor
-    });
-    await flushAsync();
-    beginSelected(between);
-    between.dispatch({ type: "review-local-injection" });
-    betweenHistory.offer(commandEvent("retire-11", "subscription-ended", {
-      subscription: {
-        id: identity.subscriptionId,
-        mode: "COMMAND",
-        fields: ["command", "key", "qty"],
-        active: false,
-        subscribed: false
-      }
-    }));
-    await flushAsync();
-    betweenScheduler.flush();
-    await flushAsync();
-    expect(between.getSnapshot().localInjection.draft).toMatchObject({
-      phase: "edit",
-      ready: false,
-      preflightFingerprint: null,
-      diagnostics: [expect.objectContaining({ code: "stale-subscription" })]
-    });
-    between.dispatch({ type: "execute-local-injection" });
-    expect(between.getSnapshot().localInjection.draft).toMatchObject({
-      phase: "edit",
-      ready: false,
-      outcome: null
-    });
-    expect(betweenExecutor.execute).not.toHaveBeenCalled();
-    between.dispose();
+    expect(executor.execute).not.toHaveBeenCalled();
+    runtime.dispose();
   });
 
   it("keeps the captured listener as provenance when another current item listener replaces it", async () => {
@@ -1401,7 +1375,6 @@ describe("WorkbenchRuntime Local Injection", () => {
       anchor: { listenerId: identity.listenerId },
       diagnostics: []
     });
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
@@ -1448,7 +1421,6 @@ describe("WorkbenchRuntime Local Injection", () => {
       available: false,
       reason: "The protected Subscription has no current Item Update listeners."
     });
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     expect(executor.execute).not.toHaveBeenCalled();
     runtime.dispose();
@@ -1487,13 +1459,15 @@ describe("WorkbenchRuntime Local Injection", () => {
         })),
       "stale-listener"
     ]
-  ] as const)("blocks a stale %s target before Review", async (_label, makeStale, code) => {
+  ] as const)("blocks a stale %s target during direct preflight", async (_label, makeStale, code) => {
     const history = historyWithCommandTarget();
     const runtimeScheduler = scheduler();
+    const executor = { execute: vi.fn(async () => result("success")) };
     const runtime = createWorkbenchRuntime({
       history,
       scheduler: runtimeScheduler,
-      captureStatus: "capturing"
+      captureStatus: "capturing",
+      localInjectionExecutor: executor
     });
     await flushAsync();
     beginSelected(runtime);
@@ -1510,16 +1484,17 @@ describe("WorkbenchRuntime Local Injection", () => {
       ready: false,
       diagnostics: expect.arrayContaining([expect.objectContaining({ code })])
     });
-    runtime.dispatch({ type: "review-local-injection" });
+    runtime.dispatch({ type: "execute-local-injection" });
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "edit",
       ready: false,
       diagnostics: expect.arrayContaining([expect.objectContaining({ code })])
     });
+    expect(executor.execute).not.toHaveBeenCalled();
     runtime.dispose();
   });
 
-  it("requires a new Review when the current Subscription listener set changes but remains nonempty", async () => {
+  it("performs a fresh direct preflight after the current listener set changes but remains nonempty", async () => {
     const history = historyWithCommandTarget();
     const runtimeScheduler = scheduler();
     const executor = { execute: vi.fn(async () => result("success")) };
@@ -1532,9 +1507,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(7) });
-    runtime.dispatch({ type: "review-local-injection" });
-    const reviewedFingerprint = runtime.getSnapshot().localInjection.draft?.preflightFingerprint;
-    const reviewedText = runtime.getSnapshot().localInjection.draft?.rawText;
+    const draftText = runtime.getSnapshot().localInjection.draft?.rawText;
 
     history.offer(commandEvent("listener-change-30", "listener-added", {
       listener: { id: "orders-listener-2", callbacks: ["onItemUpdate"] },
@@ -1547,29 +1520,17 @@ describe("WorkbenchRuntime Local Injection", () => {
       phase: "edit",
       ready: true,
       preflightFingerprint: null,
-      rawText: reviewedText,
+      rawText: draftText,
       diagnostics: []
     });
     runtime.dispatch({ type: "execute-local-injection" });
-    expect(executor.execute).not.toHaveBeenCalled();
-
-    runtime.dispatch({ type: "review-local-injection" });
-    expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
-      phase: "review",
-      ready: true,
-      diagnostics: [],
-      preflightFingerprint: expect.stringMatching(/^li-/)
-    });
-    expect(runtime.getSnapshot().localInjection.draft?.preflightFingerprint).not.toBe(
-      reviewedFingerprint
-    );
-    runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
     expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(runtime.getSnapshot().localInjection.draft?.phase).toBe("outcome");
     runtime.dispose();
   });
 
-  it("does not invalidate Review when only lifecycle listeners are added or removed", async () => {
+  it("keeps direct preflight valid when only lifecycle listeners are added or removed", async () => {
     const history = historyWithCommandTarget();
     const runtimeScheduler = scheduler();
     const executor = { execute: vi.fn(async () => result("success")) };
@@ -1581,8 +1542,6 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     await flushAsync();
     beginSelected(runtime);
-    runtime.dispatch({ type: "review-local-injection" });
-    const reviewedFingerprint = runtime.getSnapshot().localInjection.draft?.preflightFingerprint;
 
     history.offer(commandEvent("lifecycle-listener-added-36", "listener-added", {
       listener: { id: "orders-lifecycle-listener", callbacks: ["onSubscription"] }
@@ -1591,9 +1550,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtimeScheduler.flush();
     await flushAsync();
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
-      phase: "review",
+      phase: "edit",
       ready: true,
-      preflightFingerprint: reviewedFingerprint,
+      preflightFingerprint: null,
       diagnostics: []
     });
 
@@ -1604,45 +1563,15 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtimeScheduler.flush();
     await flushAsync();
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
-      phase: "review",
+      phase: "edit",
       ready: true,
-      preflightFingerprint: reviewedFingerprint,
+      preflightFingerprint: null,
       diagnostics: []
     });
 
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
     expect(executor.execute).toHaveBeenCalledTimes(1);
-    runtime.dispose();
-  });
-
-  it("returns to edit instead of reporting stale when a nonempty listener set changes before passive publication", async () => {
-    const history = historyWithCommandTarget();
-    const runtimeScheduler = scheduler();
-    const executor = { execute: vi.fn(async () => result("success")) };
-    const runtime = createWorkbenchRuntime({
-      history,
-      scheduler: runtimeScheduler,
-      captureStatus: "capturing",
-      localInjectionExecutor: executor
-    });
-    await flushAsync();
-    beginSelected(runtime);
-    runtime.dispatch({ type: "review-local-injection" });
-
-    history.offer(commandEvent("listener-race-35", "listener-added", {
-      listener: { id: "orders-listener-2", callbacks: ["onItemUpdate"] }
-    }));
-    runtime.dispatch({ type: "execute-local-injection" });
-
-    expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
-      phase: "edit",
-      ready: true,
-      preflightFingerprint: null,
-      diagnostics: [],
-      outcome: null
-    });
-    expect(executor.execute).not.toHaveBeenCalled();
     runtime.dispose();
   });
 
@@ -1664,7 +1593,6 @@ describe("WorkbenchRuntime Local Injection", () => {
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(11) });
     const retainedText = runtime.getSnapshot().localInjection.draft?.rawText;
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
 
     history.offer(commandEvent("pending-listener-retired-40", "listener-removed", {
@@ -1729,7 +1657,6 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     await flushAsync();
     beginSelected(runtime);
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
@@ -1755,7 +1682,6 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     await flushAsync();
     beginSelected(runtime);
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
@@ -1783,7 +1709,6 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     await flushAsync();
     beginSelected(runtime);
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
@@ -1810,13 +1735,11 @@ describe("WorkbenchRuntime Local Injection", () => {
     await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(9) });
-    runtime.dispatch({ type: "review-local-injection" });
-    const reviewedText = runtime.getSnapshot().localInjection.draft?.rawText;
-    runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(99) });
-    expect(runtime.getSnapshot().localInjection.draft?.rawText).toBe(reviewedText);
+    const submittedText = runtime.getSnapshot().localInjection.draft?.rawText;
     runtime.dispatch({ type: "execute-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     expect(runtime.getSnapshot().localInjection.draft?.phase).toBe("pending");
+    expect(runtime.getSnapshot().localInjection.draft?.rawText).toBe(submittedText);
     expect(executor.execute).toHaveBeenCalledTimes(1);
 
     resolveExecution(result("success", {
@@ -1894,7 +1817,6 @@ describe("WorkbenchRuntime Local Injection", () => {
     await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(17) });
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
@@ -1939,7 +1861,6 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     await flushAsync();
     beginSelected(runtime);
-    runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
 
     runtime.dispose();

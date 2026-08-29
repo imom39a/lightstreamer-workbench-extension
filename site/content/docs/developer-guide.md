@@ -88,13 +88,11 @@ Local Injection delivers an Item Update through the inspected page. It never con
 ### One update
 
 1. Select compatible captured Item Update Evidence and choose **Create Local Injection Draft**, or choose **Author COMMAND Item Update** from a compatible live Scope.
-2. Confirm the protected target, Session, Source, and local-only boundary.
-3. Edit the raw JSON.
-4. Resolve validation errors.
-5. Use **Compare Source** when the Draft began from captured Evidence.
-6. Choose **Review Local Injection** and verify the exact target and payload.
-7. Choose **Inject locally**.
-8. Read the outcome and correlated **LOCAL** Evidence. A delivered outcome proves the Workbench delivery boundary only; it does not prove an application business effect.
+2. For a captured update, use the Source/Draft comparison that opens by default. For a newly authored update, use the single Draft editor; Workbench does not invent a Source.
+3. Confirm the protected target, Session, Source or newly authored state, and local-only boundary on that authoring surface.
+4. Edit the raw JSON and resolve validation errors. The authoring surface is also the preview.
+5. Choose **Inject locally** directly from the valid Draft. Immediately before delivery, Workbench freezes and rechecks the exact payload and target.
+6. Read the outcome and correlated **LOCAL** Evidence. A delivered outcome proves the Workbench delivery boundary only; it does not prove an application business effect.
 
 Workbench never silently retargets, retries, or turns a stale or uncertain outcome into success.
 
@@ -102,7 +100,7 @@ Workbench never silently retargets, retries, or turns a stale or uncertain outco
 
 Convert a protected Draft into a **Local Injection Scenario** when order matters. Add compatible Steps deliberately; visible or filtered Evidence is never included automatically.
 
-Review freezes one immutable Run with one exact target, Step order, payloads, active-time delays, speed, Checkpoints, and committed-Evidence seed boundary. **Step next**, **Play**, **Pause**, and **Stop** remain serial and visible. Each executed Step creates its own Injection and outcome. **Run again** performs a new Review with fresh Run, Injection, request, and Evidence identities.
+Scenario Review freezes one immutable Run with one exact target, Step order, payloads, active-time delays, speed, Checkpoints, and committed-Evidence seed boundary. The simplified standalone direct-injection path does not bypass this multi-Step boundary. **Step next**, **Play**, **Pause**, and **Stop** remain serial and visible. Each executed Step creates its own Injection and outcome. **Run again** performs a new Review with fresh Run, Injection, request, and Evidence identities.
 
 Use Checkpoints for Workbench-owned facts such as prior Injection outcomes, correlated Local Evidence, COMMAND key presence, listener counts when supported, and strict primitive field equality. Checkpoints do not execute inspected-page JavaScript or assert arbitrary DOM or server state.
 
@@ -128,7 +126,7 @@ Use **More actions → Export current Scope** for a versioned JSON snapshot or o
 - **Control/Command+F** opens Evidence Find when Workbench chrome or Evidence owns focus; inside raw documents and editors it remains document-local.
 - Escape clears or closes only the Workbench transient that owns it. It never injects, clears history, changes Scope, or toggles Capture.
 
-Consequential actions—clear, Review, Inject locally, Scenario controls, and export—always retain visible labelled controls.
+Consequential actions—clear, standalone **Inject locally**, Scenario Review and controls, and export—always retain visible labelled controls.
 
 ## When the evidence is incomplete
 

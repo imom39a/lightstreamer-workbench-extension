@@ -49,7 +49,7 @@ The redesigned production panel now provides:
 - Independent Scope, text Filter, Find, Evidence selection, Context, and Live/Frozen state. Frozen Evidence continues Capture and reports newer matching Evidence.
 - Full committed-Evidence copy for the current interval plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in interval-bounded evidence, category redaction, and unconditional credential exclusion.
 - Named **Observed Server COMMAND State** and **Local Effective COMMAND State** projections.
-- One protected standalone Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, optional Source comparison, validation, Review, explicit local delivery, persistent outcome, and marked Local Evidence.
+- One protected standalone Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, default Source/Draft comparison for captured updates, inline validation, direct labelled local delivery after atomic preflight revalidation, persistent outcome, and marked Local Evidence.
 - Deterministic Local Injection Scenarios with one to 100 explicit single-target Steps, optional zero-Injection Checkpoints, an 8 MiB accounted-state boundary, immutable reviewed Runs, serial controls, Workbench-owned assertions, per-Step outcomes, and complete Scenario/Run/Step/Injection/request/Evidence correlation.
 - Scenario Checkpoints now include normalized Diagnostic Observation existence assertions against the shipped journal contract; richer selected-update inspection and full contextual diagnostics remain parallel enhancements rather than Scenario execution gates.
 - Primary public-API instrumentation plus WebSocket/TLCP fallback, including documented connection and subscription metadata, `onPropertyChange`, real maximum frequency, and second-level COMMAND error/loss callbacks.
@@ -445,7 +445,7 @@ Guardrails:
 
 - Visible Evidence is never implicit Scenario membership.
 - A Scenario is not a Draft Set or automatic queue.
-- Current Source comparison, validation, undo, Review, target, and outcome remain per Draft.
+- Source comparison, validation, undo, target, and outcome remain per Scenario Step, and Scenario Review still seals the exact Steps into an immutable Run. The standalone default-comparison/direct-execution amendment does not collapse or bypass that Scenario boundary.
 - Every execution remains Local Injection and never implies that an Item Update entered the server stream.
 
 Accepted decision: [ADR 0012 — Run Local Injection Scenarios as immutable single-target plans](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md).

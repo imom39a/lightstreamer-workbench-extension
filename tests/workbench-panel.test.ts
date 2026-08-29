@@ -301,8 +301,8 @@ function activeLocalInjection(
       },
       source: { kind: "captured-event", rawText },
       compareStatus: "unchanged",
-      compareOpen: false,
-      editorPresentation: { cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, scrollLeft: 0, compareOpen: false, serializedState: null },
+      compareOpen: true,
+      editorPresentation: { cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, scrollLeft: 0, compareOpen: true, serializedState: null },
       minimized: false,
       parked: false,
       open: true,
@@ -1880,6 +1880,12 @@ describe("React Workbench Diagnose panel", () => {
     expect(region.textContent).toContain("LOCAL ONLY");
     expect(region.textContent).toContain("READY");
     expect(document.querySelector('[aria-label="Local Injection JSON"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="Immutable Injection Source JSON"]')).toBeTruthy();
+    const compare = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent === "Compare Source"
+    );
+    expect(compare?.getAttribute("aria-pressed")).toBe("true");
+    expect(region.textContent).not.toContain("Review Local Injection");
     const click = async (name: string) => {
       const button = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find(
         (candidate) => candidate.textContent === name
@@ -1888,13 +1894,13 @@ describe("React Workbench Diagnose panel", () => {
       await act(async () => button?.click());
     };
     await click("Compare Source");
-    await click("Review Local Injection");
+    await click("Inject locally");
     await click("Collapse Draft event");
     await click("Park draft and return to Evidence");
     await click("Discard draft");
     expect(runtime.commands).toEqual(expect.arrayContaining([
-      { type: "set-local-injection-compare", open: true },
-      { type: "review-local-injection" },
+      { type: "set-local-injection-compare", open: false },
+      { type: "execute-local-injection" },
       { type: "set-local-injection-minimized", minimized: true },
       { type: "park-local-injection" },
       { type: "request-discard-local-injection" }

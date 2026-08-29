@@ -135,7 +135,7 @@ The selected workspace supports:
 - live COMMAND item or key scope → **Author COMMAND Item Update**;
 - contextual menus as accelerators only, never the sole route.
 
-The draft keeps the exact Local Injection Target visible and separates the immutable Injection Source from the editable Injection Draft. Target availability, validation, labelled execution, Injection Outcome, marked Injected Update, Timeline trace, and Local Effective COMMAND State effect remain explicit.
+The draft keeps the exact Local Injection Target visible and separates the immutable Injection Source from the editable Injection Draft. A captured-source Draft opens Source/Draft comparison by default and uses that authoring surface as its preview; source-free authoring stays explicit and never invents a Source. Once validation and target readiness pass, the same surface exposes the labelled **Inject locally** action without a separate standalone Review transition. Immediately before dispatch, the runtime atomically freezes the payload and target fingerprint and revalidates both. Target availability, validation, labelled execution, Injection Outcome, marked Injected Update, Timeline trace, and Local Effective COMMAND State effect remain explicit. Scenario Review remains the separate boundary for sealing a multi-Step immutable Run.
 
 The draft occupies the contextual detail area where space permits. In compact geometry it becomes the one primary surface and Back restores the exact evidence selection and investigation state. Target retirement preserves safe edits, disables execution, and requires explicit reselection; Workbench never silently retargets.
 

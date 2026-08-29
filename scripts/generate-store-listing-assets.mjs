@@ -159,12 +159,16 @@ if (scenario.openRawEvidence && scenario.selectedEventId) {
 }
 if (scene === "local-injection") {
   runtime.dispatch({ type: "begin-local-injection-from-selection" });
+  await new Promise((resolveReady) => setTimeout(resolveReady, 160));
   const rawText = runtime.getSnapshot().localInjection.draft?.rawText;
   if (!rawText) throw new Error("Store-listing Local Injection draft did not open.");
   const edited = JSON.parse(rawText);
-  edited.fields.field_249 = "edited-for-local-injection";
+  edited.fields.field_001 = "edited-for-local-injection";
   runtime.dispatch({ type: "set-local-injection-json", text: JSON.stringify(edited, null, 2) });
   runtime.dispatch({ type: "set-local-injection-compare", open: true });
+  if (runtime.getSnapshot().localInjection.draft?.compareStatus !== "changed") {
+    throw new Error("Store-listing Local Injection preview must contain a visible Source-to-Draft change.");
+  }
 }
 await new Promise((resolveReady) => setTimeout(resolveReady, 160));
 if (scene === "notifications") {

@@ -10,7 +10,7 @@ type VisualCase = Readonly<{
   forcedColors?: boolean;
   visualEvidenceOnly?: boolean;
   prototype?: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
+  production: { scenario: string; setup: "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "captured-draft-changed" | "authored-direct" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
 }>;
 const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
 
@@ -303,17 +303,35 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expect.poll(() => entries.evaluate((element) => element.scrollTop)).toBe(0);
       return;
     }
-    case "captured-draft": {
-      await page.getByRole("button", { name: "Open selected Context" }).click();
+    case "captured-draft":
+    case "captured-draft-changed": {
       const create = page.getByRole("button", { name: "Create Local Injection Draft" });
+      if (!await create.isVisible()) {
+        await page.getByRole("button", { name: /^(Open selected Context|Restore selected Context|Focus selected Context)$/ }).click();
+      }
       await expectVisibleKeyboardTarget(page, create);
       await page.keyboard.press("Enter");
       const draft = page.getByRole("region", { name: "Local Injection Draft" });
       await expect(draft).toBeVisible();
       await expect(draft).toContainText("LOCAL ONLY");
+      await expect(draft.getByRole("button", { name: "Compare Source" })).toHaveAttribute("aria-pressed", "true");
+      await expect(draft.getByText("Immutable Source", { exact: true })).toBeVisible();
+      await expect(draft.getByText("Injection Draft", { exact: true })).toBeVisible();
+      if (visual.production.setup === "captured-draft-changed") {
+        const compare = draft.getByRole("button", { name: "Compare Source" });
+        await compare.click();
+        const editor = draft.getByRole("textbox", { name: "Local Injection JSON", exact: true });
+        const rawText = await editor.textContent();
+        expect(rawText).toContain('"value": "1"');
+        await editor.fill(rawText!.replace('"value": "1"', '"value": "2"'));
+        await compare.click();
+        await expect(draft).toContainText("Changed from immutable Source");
+      }
+      await expectVisibleKeyboardTarget(page, draft.getByRole("button", { name: "Inject locally" }));
+      await expect(draft.getByRole("button", { name: "Review Local Injection" })).toHaveCount(0);
       return;
     }
-    case "authored-review": {
+    case "authored-direct": {
       const author = page.getByRole("button", { name: "Author COMMAND Item Update" });
       await expectVisibleKeyboardTarget(page, author);
       await page.keyboard.press("Enter");
@@ -323,31 +341,10 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         isSnapshot: false,
         fields: { command: "ADD", key: "visual-review", value: "42" }
       }, null, 2));
-      const review = page.getByRole("button", { name: "Review Local Injection" });
-      await expectVisibleKeyboardTarget(page, review);
-      await page.keyboard.press("Enter");
-      const reviewRegion = page.getByRole("region", { name: "Review Local Injection" });
-      await expect(reviewRegion).toBeVisible();
-      const heading = reviewRegion.getByRole("heading", { name: "Review Local Injection" });
-      await heading.focus();
-      await page.keyboard.press("ArrowDown");
-      const scrollOwner = page.locator(".workbench-react__local-scroll");
-      await expect.poll(() => scrollOwner.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(0);
-      const localOnly = reviewRegion.getByText(/Local only:/);
-      await localOnly.scrollIntoViewIfNeeded();
-      await expect(localOnly).toBeInViewport();
-      const partiallyClippedParagraphs = await reviewRegion.locator("p").evaluateAll((paragraphs, ownerSelector) => {
-        const owner = document.querySelector(String(ownerSelector));
-        if (!(owner instanceof HTMLElement)) throw new Error("Local Injection scroll owner is missing.");
-        const ownerRect = owner.getBoundingClientRect();
-        return paragraphs.flatMap((paragraph) => {
-          const rect = paragraph.getBoundingClientRect();
-          const intersects = rect.bottom > ownerRect.top && rect.top < ownerRect.bottom;
-          const contained = rect.top >= ownerRect.top && rect.bottom <= ownerRect.bottom;
-          return intersects && !contained ? [paragraph.textContent?.trim() ?? ""] : [];
-        });
-      }, ".workbench-react__local-scroll");
-      expect(partiallyClippedParagraphs).toEqual([]);
+      const inject = page.getByRole("button", { name: "Inject locally" });
+      await expectVisibleKeyboardTarget(page, inject);
+      await expect(page.getByRole("region", { name: "Review Local Injection" })).toHaveCount(0);
+      await expect(page.getByRole("textbox", { name: "Local Injection JSON", exact: true })).toBeVisible();
       return;
     }
     case "command-comparison": {

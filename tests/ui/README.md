@@ -7,8 +7,10 @@ suite contains no production Capture data or third-party visual assets.
 The browser checks cover Diagnose, structural Scope, Ordered Evidence,
 Context, Live/Frozen behavior, degraded operation, responsive geometry,
 keyboard and focus restoration, accessibility, export, one protected
-standalone Local Injection Draft through both accepted entry paths, and the
-temporary Local Injection Scenario document. Scenario coverage includes
+standalone Local Injection Draft through both accepted entry paths, including
+default captured Source/Draft comparison and direct execution from the
+authoring surface, and the temporary Local Injection Scenario document.
+Scenario coverage includes
 explicit membership, 100-Step and accounted-state capacity, immutable Review,
 serial clock controls and hidden auto-pause, drift, fail-closed terminal
 outcomes, and Checkpoint authoring, evaluation, and retained-Evidence routes.
@@ -25,8 +27,8 @@ traces, video, page HTML, and console output when a check fails.
 
 `visual-regression.spec.ts` is the small committed production baseline matrix.
 Its original four states cover normal `900×700` Evidence density (Dark),
-compact `563×700` captured Draft (Light), shallow `900×320` authored
-Review (Dark), and wide `1440×900` COMMAND comparison (Light). Four field-UX
+compact `563×700` captured Draft (Light), shallow `900×320` authored direct
+injection Draft (Dark), and wide `1440×900` COMMAND comparison (Light). Four field-UX
 states cover complete retained Find at normal geometry (Dark), long identities
 at compact geometry (Light), reversible More actions at shallow geometry
 (Dark), and a matching COMMAND projection summary in runtime-object Context at

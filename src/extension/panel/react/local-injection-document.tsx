@@ -25,7 +25,7 @@ type LocalInjectionPresentation = Readonly<{
 
 /**
  * CodeMirror intentionally has no scrollable viewport in this document: the
- * Local Injection canvas owns both axes so the editor, diagnostics, and review
+ * Local Injection canvas owns both axes so the editor, diagnostics, and outcome
  * material travel together.  Page navigation from CodeMirror therefore has to
  * target that outer owner explicitly.
  */
@@ -55,7 +55,7 @@ function phaseLabel(localInjection: WorkbenchLocalInjectionSnapshot): string {
   if (draft.phase === "pending") return "DELIVERY PENDING";
   if (draft.phase === "outcome") return draft.outcome?.headline ?? "OUTCOME";
   if (!draft.ready) return "BLOCKED";
-  return draft.phase === "review" ? "READY TO INJECT" : "READY";
+  return "READY TO INJECT";
 }
 
 function deliveryCounts(localInjection: WorkbenchLocalInjectionSnapshot): string | null {
@@ -83,7 +83,6 @@ export function LocalInjectionDocument({
 }: LocalInjectionDocumentProps): JSX.Element | null {
   const [tabIndents, setTabIndents] = useState(false);
   const regionRef = useRef<HTMLElement | null>(null);
-  const reviewHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const pendingHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const outcomeHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const minimizeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -99,8 +98,9 @@ export function LocalInjectionDocument({
   const draft = localInjection.draft;
   const minimized = draft?.minimized ?? false;
   const editing = draft?.phase === "edit";
+  const authoring = draft?.phase === "edit" || draft?.phase === "review";
   const scrollKey = draft
-    ? `${draft.id}:${editing ? `edit-${draft.compareOpen ? "compare" : "single"}` : draft.phase}`
+    ? `${draft.id}:${authoring ? `author-${draft.compareOpen ? "compare" : "single"}` : draft.phase}`
     : "none";
 
   useLayoutEffect(() => {
@@ -120,11 +120,7 @@ export function LocalInjectionDocument({
       return editor ?? null;
     };
     const focusPhase = () => {
-      if (draft.phase === "edit") return focusEditor();
-      if (draft.phase === "review") {
-        reviewHeadingRef.current?.focus();
-        return reviewHeadingRef.current;
-      }
+      if (draft.phase === "edit" || draft.phase === "review") return focusEditor();
       if (draft.phase === "pending") {
         pendingHeadingRef.current?.focus();
         return pendingHeadingRef.current;
@@ -172,7 +168,6 @@ export function LocalInjectionDocument({
   }, [draft?.id, draft?.phase, hidden, localInjection.blockedEntry, localInjection.discardConfirmation, minimized]);
 
   if (!draft) return null;
-  const review = draft.phase === "review";
   const pending = draft.phase === "pending";
   const outcome = draft.phase === "outcome" ? draft.outcome : null;
   const compareAvailable = draft.source.rawText !== null;
@@ -302,12 +297,12 @@ export function LocalInjectionDocument({
           };
         }}
       >
-        <section className="workbench-react__local-editor-document" hidden={!editing} aria-label="Local Injection JSON document">
+        <section className="workbench-react__local-editor-document" hidden={!authoring} aria-label="Local Injection JSON document">
           <header className="workbench-react__local-editor-toolbar">
             <div><strong>Raw JSON</strong><span>{draft.compareStatus === "no-source" ? "Newly authored · no immutable Source" : `${draft.compareStatus === "unchanged" ? "Unchanged from" : "Changed from"} immutable Source`}</span></div>
             <div>
               <button type="button" disabled={!compareAvailable} aria-pressed={draft.compareOpen} onClick={() => {
-                carryScrollTo(`edit-${draft.compareOpen ? "single" : "compare"}`);
+                carryScrollTo(`author-${draft.compareOpen ? "single" : "compare"}`);
                 dispatch(runtime, { type: "set-local-injection-compare", open: !draft.compareOpen });
               }}>Compare Source</button>
               <label><input type="checkbox" checked={tabIndents} onChange={(event) => setTabIndents(event.currentTarget.checked)} />Tab inserts indentation</label>
@@ -327,24 +322,9 @@ export function LocalInjectionDocument({
             onPresentationChange={(presentation) => dispatch(runtime, { type: "set-local-injection-editor-presentation", presentation })}
           />
           <section className="workbench-react__local-problems" aria-label="Local Injection validation">
-            <strong>{draft.ready ? "Ready for Review" : `${draft.diagnostics.length} blocking problem${draft.diagnostics.length === 1 ? "" : "s"}`}</strong>
+            <strong>{draft.ready ? "Ready to inject" : `${draft.diagnostics.length} blocking problem${draft.diagnostics.length === 1 ? "" : "s"}`}</strong>
             {draft.diagnostics.length ? <ul>{draft.diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}-${diagnostic.path ?? "document"}-${index}`}><b>{diagnostic.category.toUpperCase()}</b><span>{diagnostic.path ? `${diagnostic.path} · ` : ""}{diagnostic.message}</span></li>)}</ul> : <p>JSON, schema, COMMAND semantics, and the protected live target are valid.</p>}
           </section>
-        </section>
-
-        <section className="workbench-react__local-review" hidden={!review} aria-label="Review Local Injection" onKeyDown={(event) => {
-          if (event.key !== "PageDown") return;
-          const owner = scrollOwnerRef.current;
-          if (!owner) return;
-          event.preventDefault();
-          scrollLocalInjectionOwnerByPage(owner, "PageDown");
-        }}>
-          <header><span className="workbench-react__eyebrow">Read-only execution boundary</span><h2 ref={reviewHeadingRef} tabIndex={-1}>Review Local Injection</h2></header>
-          <p className="workbench-react__local-review-local-only"><strong>Local only:</strong> one Logical Update is delivered to every current listener. Lightstreamer Server is not contacted.</p>
-          <p><strong>Projection boundary:</strong> successful delivery advances Local Effective COMMAND State only. Observed Server COMMAND State remains unchanged.</p>
-          <p><strong>Target:</strong> {draft.anchor.subscriptionId} · {draft.anchor.itemName ?? `Item #${draft.anchor.itemPosition ?? "Unknown"}`} · Session {draft.anchor.sessionId ?? "Unknown"}</p>
-          <pre aria-label="Reviewed Local Injection JSON" tabIndex={0}>{draft.rawText}</pre>
-          {!draft.ready ? <p role="alert"><strong>NOT READY.</strong> The protected target or reviewed JSON changed. No Injection can be attempted.</p> : null}
         </section>
 
         {pending ? <section className="workbench-react__local-pending" role="status" aria-live="polite"><h2 ref={pendingHeadingRef} tabIndex={-1}>Local Injection pending</h2><p>Workbench is waiting for one trustworthy delivery acknowledgement. No repeat or automatic retry is available.</p><pre tabIndex={0}>{draft.rawText}</pre></section> : null}
@@ -353,14 +333,7 @@ export function LocalInjectionDocument({
       </div>
 
       <footer className="workbench-react__local-footer">
-        {editing ? <><button type="button" data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "convert-local-injection-to-scenario" })}>Convert to Scenario</button><span>{draft.ready ? "READY · Review the protected payload and target before delivery." : "BLOCKED · No Injection will be attempted."}</span><button type="button" disabled={!draft.ready} data-local-focus-transition="true" onClick={() => {
-          carryScrollTo("review");
-          dispatch(runtime, { type: "review-local-injection" });
-        }}>Review Local Injection</button></> : null}
-        {review ? <><button type="button" data-local-focus-transition="true" onClick={() => {
-          carryScrollTo(`edit-${draft.compareOpen ? "compare" : "single"}`);
-          dispatch(runtime, { type: "edit-local-injection" });
-        }}>Back to JSON</button><span>{draft.ready ? "Ready to deliver locally." : "Target changed after Review. No Injection will be attempted."}</span><button type="button" disabled={!draft.ready} data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "execute-local-injection" })}>Inject locally</button></> : null}
+        {authoring ? <><button type="button" data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "convert-local-injection-to-scenario" })}>Convert to Scenario</button><span>{draft.ready ? draft.source.kind === "captured-event" ? "READY · Compare Source and Draft, then inject locally." : "READY · Verify the protected Draft and target, then inject locally." : "BLOCKED · No Injection will be attempted."}</span><button type="button" disabled={!draft.ready} data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "execute-local-injection" })}>Inject locally</button></> : null}
         {pending ? <span>DELIVERY PENDING · keep this document open until the outcome is known.</span> : null}
         {outcome ? <><span>{outcome.headline} · outcome is retained in this document until you finish.</span><button type="button" data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "finish-local-injection" })}>Finish Local Injection</button></> : null}
       </footer>

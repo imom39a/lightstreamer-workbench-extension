@@ -499,7 +499,7 @@
   scrollbar-gutter: stable;
 }
 .workbench-react__local-editor-document { min-width: 680px; min-height: 100%; background: var(--wb-bg); }
-.workbench-react__local-editor-document[hidden], .workbench-react__local-review[hidden] { display: none; }
+.workbench-react__local-editor-document[hidden] { display: none; }
 .workbench-react__local-editor-toolbar {
   position: sticky;
   z-index: 5;
@@ -543,10 +543,10 @@
 .workbench-react__local-problems ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .workbench-react__local-problems li { display: grid; grid-template-columns: 90px minmax(0, 1fr); border-left: 3px solid var(--wb-error); background: var(--wb-error-soft); color: var(--wb-error); padding: 5px 7px; }
 .workbench-react__local-problems li span { color: var(--wb-text); }
-.workbench-react__local-review, .workbench-react__local-pending, .workbench-react__local-outcome { display: grid; min-width: 0; gap: 9px; padding: 14px; }
-.workbench-react__local-review h2, .workbench-react__local-pending h2, .workbench-react__local-outcome h2 { margin: 0; font-size: 17px; }
-.workbench-react__local-review p, .workbench-react__local-pending p, .workbench-react__local-outcome p { margin: 0; }
-.workbench-react__local-review pre, .workbench-react__local-pending pre { min-width: max-content; margin: 0; border: 1px solid var(--wb-border); background: var(--wb-surface); padding: 10px; color: var(--wb-text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__local-pending, .workbench-react__local-outcome { display: grid; min-width: 0; gap: 9px; padding: 14px; }
+.workbench-react__local-pending h2, .workbench-react__local-outcome h2 { margin: 0; font-size: 17px; }
+.workbench-react__local-pending p, .workbench-react__local-outcome p { margin: 0; }
+.workbench-react__local-pending pre { min-width: max-content; margin: 0; border: 1px solid var(--wb-border); background: var(--wb-surface); padding: 10px; color: var(--wb-text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__local-outcome { border-left: 4px solid var(--wb-info); }
 .workbench-react__local-outcome[data-disposition="failed"], .workbench-react__local-outcome[data-disposition="acknowledgement-unknown"] { border-left-color: var(--wb-error); }
 .workbench-react__local-outcome[data-disposition="partial"], .workbench-react__local-outcome[data-disposition="blocked"] { border-left-color: var(--wb-warning); }
@@ -706,7 +706,6 @@
 .workbench-react[data-geometry="shallow"] .workbench-react__status,
 .workbench-react[data-geometry="shallow"] .workbench-react__status-line { min-height: 24px; }
 .workbench-react[data-geometry="shallow"] .workbench-react__status-line { padding-block: 0; }
-.workbench-react[data-geometry="shallow"] .workbench-react__local-review { gap: 2px; padding: 4px 8px; }
 .workbench-react[data-geometry="shallow"] .workbench-react__projection-columns { grid-template-columns: 1fr; }
 .workbench-react[data-geometry="shallow"] .workbench-react__projection-column { min-width: 0; }
 .workbench-react[data-geometry="shallow"] .workbench-react__projection-explanation { grid-template-columns: 1fr auto; }

@@ -20,7 +20,7 @@ describe("Workbench visual-evidence runner", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(result.stdout).toContain("--print-review-scope");
-    expect(matrix).toHaveLength(82);
+    expect(matrix).toHaveLength(85);
   });
 
   it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
@@ -81,6 +81,9 @@ describe("Workbench visual-evidence runner", () => {
     const readabilityIds = matrix
       .filter((scenario: { id: string }) => scenario.id.startsWith("readability-c-"))
       .map((scenario: { id: string }) => scenario.id);
+    const localInjectionIds = matrix
+      .filter((scenario: { id: string }) => scenario.id.startsWith("local-injection-"))
+      .map((scenario: { id: string }) => scenario.id);
 
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
@@ -90,10 +93,11 @@ describe("Workbench visual-evidence runner", () => {
     expect(activityIds).toHaveLength(9);
     expect(footerDiagnosticIds).toHaveLength(4);
     expect(readabilityIds).toHaveLength(2);
+    expect(localInjectionIds).toHaveLength(5);
     expect(JSON.parse(result.stdout)).toMatchObject({
-      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]),
-      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]),
-      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds])
+      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds]),
+      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds]),
+      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds])
     });
   });
 

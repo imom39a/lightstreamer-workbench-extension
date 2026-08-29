@@ -122,6 +122,7 @@ These are entry paths into one journey, not three unrelated tools.
 
 - The immutable Injection Source, when a captured update is used.
 - The Injection Draft as a separate editable object, including every deliberate difference from its source.
+- For captured-source Drafts, a default Source/Draft comparison that also serves as the execution preview; source-free authoring never invents a Source.
 - The exact Local Injection Target: one selected Subscription, with its runtime identity, mode, items, fields, and current availability.
 - COMMAND key, command, field values, changed-field semantics, and snapshot flag where applicable.
 - Validation results before execution, attached to fields or target conditions that the developer can correct.
@@ -132,17 +133,17 @@ These are entry paths into one journey, not three unrelated tools.
 ### Canonical sequence
 
 1. Enter from relevant captured evidence or start explicit COMMAND Item Update authoring.
-2. Confirm the Local Injection Target before editing or execution.
-3. Review the immutable Injection Source and the separate Injection Draft. If no source exists, make the newly authored status explicit.
-4. Make deliberate mutations or author the required command, key, field values, and snapshot semantics.
-5. Validate the draft and target. Keep execution unavailable while a correctable validation error remains.
-6. Invoke a clearly labelled Inject action at an explicit execution boundary.
+2. Keep the exact Local Injection Target and Local-only delivery boundary visible throughout authoring.
+3. Open captured-source Drafts in Source/Draft comparison by default. If no Source exists, make the source-free authored state explicit without inventing one.
+4. Make deliberate mutations or author the required command, key, field values, and snapshot semantics on the same surface that serves as the preview.
+5. Validate the Draft and target. Keep execution unavailable while a correctable validation error remains.
+6. Invoke the clearly labelled **Inject locally** action directly from that authoring surface; do not require a separate standalone Review transition. Immediately before dispatch, Workbench atomically freezes the payload and target fingerprint and revalidates both.
 7. Report the Injection Outcome without claiming a downstream business effect.
 8. Trace a successful Injected Update in the ordered Timeline and, for COMMAND, verify its effect only in Local Effective COMMAND State.
 
 ### Completion condition
 
-The developer has verified the exact target, understood the source-to-draft relationship, passed validation, received a clear outcome, and can trace the explicitly local result through the same evidence model used for captured activity. Nothing in the UI implies that the Item Update entered Lightstreamer Server's update flow or changed Authoritative COMMAND State.
+The developer has verified the exact target, understood the source-to-draft relationship from the authoring preview, passed validation, injected without an extra standalone Review screen, received a clear outcome, and can trace the explicitly local result through the same evidence model used for captured activity. Nothing in the UI implies that the Item Update entered Lightstreamer Server's update flow or changed Authoritative COMMAND State. Scenario Review remains a separate multi-Step Run boundary.
 
 ### Important failure and degraded states
 

@@ -3685,6 +3685,7 @@ class Runtime implements WorkbenchRuntime {
 
     const document = createLocalInjectionDocumentFromDraft(baseDraft);
     const rawText = serializeLocalInjectionDocument(document);
+    const compareOpen = sourceDocument !== null;
     const state: LocalInjectionDraftState = {
       id: `local-injection-draft-${++this.localInjectionSequence}`,
       baseDraft,
@@ -3697,8 +3698,8 @@ class Runtime implements WorkbenchRuntime {
       sourceRawText: sourceDocument ? serializeLocalInjectionDocument(sourceDocument) : null,
       explicitConcreteFields: new Set<string>(),
       phase: "edit",
-      compareOpen: false,
-      editorPresentation: emptyScenarioEditorState(false),
+      compareOpen,
+      editorPresentation: emptyScenarioEditorState(compareOpen),
       minimized: false,
       parked: false,
       open: true,
@@ -3742,34 +3743,31 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     if (draft.phase !== "edit") return;
-    this.refreshLocalInjectionValidation(draft);
-    if (localInjectionReady(draft)) {
-      const fingerprint = this.localInjectionFingerprint(draft);
-      const executionDraft = applyLocalInjectionDocumentToDraft(
-        draft.baseDraft,
-        draft.document!,
-        draft.explicitConcreteFields
-      );
-      const reviewed = this.localInjectionExecutionCoordinator.review({
-        fingerprint,
-        executionTarget: draft.anchor.executionTarget,
-        document: freezeLocalInjectionDocument(draft.document!),
-        draft: cloneReinjectionDraft(executionDraft),
-        correlation: {}
-      });
-      if (reviewed.kind === "reviewed") {
-        draft.phase = "review";
-        draft.preflightFingerprint = fingerprint;
-        draft.reviewedExecution = reviewed;
-        draft.reviewRefusal = null;
-      } else {
-        draft.phase = "review";
-        draft.preflightFingerprint = fingerprint;
-        draft.reviewedExecution = reviewed;
-        draft.reviewRefusal = reviewed.reason;
-      }
-    }
+    this.prepareLocalInjectionPreflight(draft);
     this.publish();
+  }
+
+  private prepareLocalInjectionPreflight(draft: LocalInjectionDraftState): boolean {
+    this.refreshLocalInjectionValidation(draft);
+    if (!localInjectionReady(draft)) return false;
+    const fingerprint = this.localInjectionFingerprint(draft);
+    const executionDraft = applyLocalInjectionDocumentToDraft(
+      draft.baseDraft,
+      draft.document!,
+      draft.explicitConcreteFields
+    );
+    const reviewed = this.localInjectionExecutionCoordinator.review({
+      fingerprint,
+      executionTarget: draft.anchor.executionTarget,
+      document: freezeLocalInjectionDocument(draft.document!),
+      draft: cloneReinjectionDraft(executionDraft),
+      correlation: {}
+    });
+    draft.phase = "review";
+    draft.preflightFingerprint = fingerprint;
+    draft.reviewedExecution = reviewed;
+    draft.reviewRefusal = reviewed.kind === "refused" ? reviewed.reason : null;
+    return true;
   }
 
   private editLocalInjection(): void {
@@ -3786,6 +3784,10 @@ class Runtime implements WorkbenchRuntime {
     const draft = this.localInjectionDraft;
     if (!draft) {
       if (this.pendingLocalInjectionEntry) this.pendingLocalInjectionEntry.execute = true;
+      return;
+    }
+    if (draft.phase === "edit" && !this.prepareLocalInjectionPreflight(draft)) {
+      this.publish();
       return;
     }
     if (
