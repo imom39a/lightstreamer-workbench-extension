@@ -115,7 +115,7 @@ When no evidence row is selected, it presents a **runtime-object dossier** for t
 - distinct COMMAND projections where the scope supports them;
 - valid contextual actions for a live object.
 
-When an evidence row is selected, the same secondary surface becomes an **evidence inspector**. Applicable lenses include Summary, Fields, Deliveries, COMMAND State, and Raw. Evidence remains primary; the inspector explains it and exposes valid follow-up actions.
+When an evidence row is selected, the same secondary surface becomes an **evidence inspector**. Applicable lenses include Summary, Fields, Deliveries, COMMAND State, and Raw. The collapsed Activity summary, Filter selected Evidence, and Evidence metadata disclosures precede Selected update, keeping captured Fields in the initial viewport while the supporting context remains directly expandable. Selected provenance remains visible in the inspector header, and the Filter disclosure remains stable with an explicit unavailable state when it has no typed actions. Runtime-object dossiers remain expanded when no Evidence is selected. Evidence remains primary; the inspector explains it and exposes valid follow-up actions.
 
 This conditional dossier is the selected contribution from Runtime Lens. Runtime objects do not replace ordered evidence as the workspace organizer.
 

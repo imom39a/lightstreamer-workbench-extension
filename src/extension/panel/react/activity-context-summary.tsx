@@ -33,7 +33,7 @@ export function ActivityContextSummary({ projection, scopeLabel, filterSummary, 
   const rankingTitle = `Busiest SERVER ${projection.scope.kind === "SUBSCRIPTION" ? "items" : "Subscriptions"}`;
   const usable = projection.state === "AVAILABLE" || projection.state === "LIMITED" || projection.state === "EMPTY_MATCH" || projection.state === "EMPTY_INTERVAL";
   const identity = projection.logicalUpdateIdentity;
-  return <details className="workbench-activity-summary" aria-label="Activity summary" open={open} onToggle={event => onOpenChange(event.currentTarget.open)}>
+  return <details className="workbench-activity-summary workbench-context-disclosure" aria-label="Activity summary" open={open} onToggle={event => onOpenChange(event.currentTarget.open)}>
     <summary>Activity summary — {scopeLabel}</summary>
     <div className="workbench-activity-summary__content" aria-busy={projection.state === "LOADING"}>
       <p>Current Scope and Filter · {frozen ? "Frozen" : "Committed"} read point · {projection.readPoint.coverage} observation Coverage.</p>

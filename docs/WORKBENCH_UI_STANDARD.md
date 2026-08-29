@@ -60,6 +60,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 - Reduce in the accepted order: unpin Scope, relocate Context, focus one surface, overflow low-frequency actions, then rebalance the persistent two-line Evidence grammar for compact width.
 - Every visible pane owns at most one content scroll. The Workbench shell and whole panel never scroll horizontally.
 - Use bounded horizontal scrolling only for inherently two-dimensional Evidence or raw documents.
+- In selected-Evidence Context, keep Activity summary, Filter selected Evidence, and Evidence metadata as stable collapsed native disclosures ahead of Selected update. Fields remain visible by default; each supporting section stays one interaction away. Keep selected provenance visible outside the disclosures, and keep an unavailable Filter disclosure mounted when no typed action can be offered.
 - Promote Local Injection and Source comparison to the full canvas. Promote other document-heavy work only when Context cannot remain useful.
 - Wide geometry may expose more context but never capabilities unavailable at compact geometry.
 

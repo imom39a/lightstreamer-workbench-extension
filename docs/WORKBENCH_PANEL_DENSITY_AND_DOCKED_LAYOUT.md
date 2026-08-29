@@ -127,7 +127,7 @@ The following always or conditionally promote into one full-canvas document surf
 The following normally remain in Context:
 
 - runtime-object dossier;
-- selected-event Summary, Fields, Deliveries, and COMMAND projections;
+- selected-event Fields, Deliveries, and COMMAND projections, with Activity summary, Filter selected Evidence, and Evidence metadata collapsed ahead of Fields;
 - workflow-local validation and recovery guidance;
 - initial export controls and scoped manifest summary.
 

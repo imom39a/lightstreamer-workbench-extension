@@ -782,6 +782,81 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
+  it("collapses selected-Evidence Filter actions until the developer expands them", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const runtime = createTestRuntime(snapshot({
+      context: {
+        ...base.context,
+        filterActions: [{
+          id: "around:evt-2",
+          kind: "around",
+          label: "Around selected Evidence ±5 seconds",
+          around: { intervalId: "panel-test:interval-1", start: 0, end: 10_000 }
+        }]
+      }
+    }));
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const context = rootElement.querySelector<HTMLElement>('aside[aria-label="Context"]');
+    expect(context?.querySelector("header")?.textContent).toContain("Selected Evidence · SERVER");
+    const disclosure = rootElement.querySelector<HTMLDetailsElement>('details[aria-label="Filter selected Evidence"]');
+    expect(disclosure).not.toBeNull();
+    expect(disclosure!.open).toBe(false);
+    expect(disclosure!.querySelector("summary")?.textContent).toBe("Filter selected Evidence");
+    const metadataDisclosure = rootElement.querySelector<HTMLDetailsElement>('details[aria-label="Evidence metadata"]');
+    expect(metadataDisclosure).not.toBeNull();
+    expect(metadataDisclosure!.open).toBe(false);
+    expect(metadataDisclosure!.querySelector("summary")?.textContent).toBe("Evidence metadata");
+    expect(disclosure!.nextElementSibling).toBe(metadataDisclosure);
+    expect(metadataDisclosure!.nextElementSibling?.getAttribute("aria-label")).toBe("Selected update");
+    await act(async () => disclosure!.querySelector("summary")!.click());
+    expect(disclosure!.open).toBe(true);
+    expect(disclosure!.querySelector<HTMLButtonElement>('button[aria-label="Around selected Evidence ±5 seconds"]')).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps selected-Evidence Filter disclosure and focus when typed actions become unavailable", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const runtime = createTestRuntime(snapshot({
+      context: {
+        ...base.context,
+        filterActions: [{
+          id: "around:evt-2",
+          kind: "around",
+          label: "Around selected Evidence ±5 seconds",
+          around: { intervalId: "panel-test:interval-1", start: 0, end: 10_000 }
+        }]
+      }
+    }));
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const disclosure = rootElement.querySelector<HTMLDetailsElement>('details[aria-label="Filter selected Evidence"]')!;
+    await act(async () => disclosure.querySelector("summary")!.click());
+    const action = disclosure.querySelector<HTMLButtonElement>('button[aria-label="Around selected Evidence ±5 seconds"]')!;
+    action.focus();
+    expect(document.activeElement).toBe(action);
+
+    await act(async () => runtime.setSnapshot({
+      ...runtime.getSnapshot(),
+      context: { ...runtime.getSnapshot().context, filterActions: [] }
+    }));
+
+    const stableDisclosure = rootElement.querySelector<HTMLDetailsElement>('details[aria-label="Filter selected Evidence"]');
+    expect(stableDisclosure).not.toBeNull();
+    expect(stableDisclosure!.open).toBe(true);
+    expect(stableDisclosure?.textContent).toContain("No typed Filter actions are available for this Evidence.");
+    expect(document.activeElement).toBe(stableDisclosure!.querySelector("summary"));
+
+    await act(async () => root.unmount());
+  });
+
   it("keeps retained selected Item Update Context focused on that Evidence", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");

@@ -62,6 +62,7 @@ Context retains the selected event or runtime object while focus moves elsewhere
 
 - Context tabs use Left, Right, Home, and End with immediate activation because their content is local and immediate.
 - Enter from Evidence focuses the active Context lens at simultaneous-pane geometries.
+- Native Activity summary, Filter selected Evidence, and Evidence metadata disclosures use Enter or Space and expose their expanded state programmatically. If passive retention removes the focused Filter action, focus returns to its still-mounted disclosure summary.
 - Compact Back returns to the exact originating Evidence row, selection, virtual-list anchor, and focused control.
 - A hidden or geometry-parked Context surface is absent from Tab order.
 

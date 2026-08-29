@@ -80,33 +80,57 @@ function SelectedUpdateDetails({
 function SelectedFilterActions({
   actions,
   expectedRevision,
+  open,
+  onOpenChange,
   onAction
 }: Readonly<{
   actions: readonly EvidenceFilterActionDescriptor[];
   expectedRevision: number;
+  open: boolean;
+  onOpenChange(open: boolean): void;
   onAction(action: EvidenceFilterActionDescriptor): void;
 }>): JSX.Element | null {
-  if (actions.length === 0) return null;
-  return <section className="workbench-react__filter-actions" aria-label="Filter selected Evidence">
-    <h3>Filter selected Evidence</h3>
-    <p>Typed actions apply immediately to Filter revision {expectedRevision} and preserve unrelated Criteria.</p>
-    <div className="workbench-react__filter-action-list" role="list" aria-label="Selected Evidence Filter actions">
-      {actions.map((action) => {
-        const valueLabel = action.kind === "around"
-          ? "Retained Evidence interval"
-          : `${action.facetDescriptor?.label ?? action.facet ?? "Evidence value"}: ${action.value?.label ?? "Unavailable"}`;
-        const controlLabel = action.kind === "around"
-          ? action.label
-          : action.kind === "include"
-            ? `Include ${valueLabel}; typed identity ${action.value?.identity ?? "unavailable"}`
-            : `Exclude ${valueLabel}; typed identity ${action.value?.identity ?? "unavailable"}`;
-        return <div className="workbench-react__filter-action-row" role="listitem" key={action.id} data-filter-action-kind={action.kind} data-filter-facet={action.facet}>
-          <span>{valueLabel}</span>
-          <button type="button" aria-label={controlLabel} onClick={() => onAction(action)}>{action.kind === "around" ? "Around" : action.kind === "include" ? "Include" : "Exclude"}</button>
-        </div>;
-      })}
+  const summaryRef = useRef<HTMLElement>(null);
+  const focusWithin = useRef(false);
+  const previousActionCount = useRef(actions.length);
+  useLayoutEffect(() => {
+    const actionsBecameUnavailable = previousActionCount.current > 0 && actions.length === 0;
+    previousActionCount.current = actions.length;
+    if (actionsBecameUnavailable && focusWithin.current) summaryRef.current?.focus();
+  }, [actions.length]);
+  return <details
+    className="workbench-react__filter-actions workbench-context-disclosure"
+    aria-label="Filter selected Evidence"
+    open={open}
+    onToggle={event => onOpenChange(event.currentTarget.open)}
+    onFocusCapture={() => { focusWithin.current = true; }}
+    onBlurCapture={event => {
+      if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) focusWithin.current = false;
+    }}
+  >
+    <summary ref={summaryRef}>Filter selected Evidence</summary>
+    <div className="workbench-react__filter-actions-content">
+      {actions.length ? <>
+        <p>Typed actions apply immediately to Filter revision {expectedRevision} and preserve unrelated Criteria.</p>
+        <div className="workbench-react__filter-action-list" role="list" aria-label="Selected Evidence Filter actions">
+          {actions.map((action) => {
+            const valueLabel = action.kind === "around"
+              ? "Retained Evidence interval"
+              : `${action.facetDescriptor?.label ?? action.facet ?? "Evidence value"}: ${action.value?.label ?? "Unavailable"}`;
+            const controlLabel = action.kind === "around"
+              ? action.label
+              : action.kind === "include"
+                ? `Include ${valueLabel}; typed identity ${action.value?.identity ?? "unavailable"}`
+                : `Exclude ${valueLabel}; typed identity ${action.value?.identity ?? "unavailable"}`;
+            return <div className="workbench-react__filter-action-row" role="listitem" key={action.id} data-filter-action-kind={action.kind} data-filter-facet={action.facet}>
+              <span>{valueLabel}</span>
+              <button type="button" aria-label={controlLabel} onClick={() => onAction(action)}>{action.kind === "around" ? "Around" : action.kind === "include" ? "Include" : "Exclude"}</button>
+            </div>;
+          })}
+        </div>
+      </> : <p role="status">No typed Filter actions are available for this Evidence.</p>}
     </div>
-  </section>;
+  </details>;
 }
 
 const ScopeTreeRow = memo(function ScopeTreeRow({
@@ -529,6 +553,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const [scopeCollapsed, setScopeCollapsed] = useState(false);
   const [contextCollapsed, setContextCollapsed] = useState(false);
   const [activitySummaryOpen, setActivitySummaryOpen] = useState(false);
+  const [selectedFilterActionsOpen, setSelectedFilterActionsOpen] = useState(false);
+  const [selectedEvidenceMetadataOpen, setSelectedEvidenceMetadataOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState("");
   const [filterDraftCriteria, setFilterDraftCriteria] = useState<Filter["criteria"]>({});
@@ -1930,7 +1956,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </section>
         <div ref={contextSplitter} className="workbench-react__splitter workbench-react__splitter--context" role="separator" aria-label="Resize Context" aria-orientation={isNormalGeometry() ? "horizontal" : "vertical"} aria-valuemin={contextMinimum} aria-valuemax={Math.min(CONTEXT_MAX_SIZE, contextMaximum)} aria-valuenow={contextSize} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("context", event)} onPointerDown={(event) => startResize("context", event)} />
         <aside className="workbench-react__pane workbench-react__context" id="workbench-context" aria-label="Context">
-          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? "Selected Evidence" : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div>{contextMode !== "actions" ? <button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button> : null}{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
+          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? `Selected Evidence · ${selected.source}` : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div>{contextMode !== "actions" ? <button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button> : null}{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
           <div className="workbench-react__context-body" ref={contextBody}>
             {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
               <p>The current Panel Session owns one temporary Event History using <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong>. Closing attempts controlled erasure; abnormal termination relies on guarded cleanup, and residual data may remain until the extension next runs.</p>
@@ -1949,13 +1975,18 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               {exportDownloadStatus ? <p className="workbench-react__copy-status" role="status" aria-live="polite">{exportDownloadStatus}</p> : null}
             </section> : <>
               {snapshot.activity ? <ActivityContextSummary projection={snapshot.activity.projection} scopeLabel={scopeLabel} filterSummary={appliedFilterSummary} hasActiveFilter={hasActiveFilter} frozen={evidence.mode === "frozen"} open={activitySummaryOpen} onOpenChange={setActivitySummaryOpen} onRankingFilter={(expectedRevision, rankingId) => dispatch(runtime, { type: "apply-activity-ranking-filter", expectedRevision, rankingId })} onResetFilter={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })} /> : null}
-              <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
-              <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
               {selected ? <SelectedFilterActions
                 actions={snapshot.context.filterActions ?? []}
                 expectedRevision={appliedFilter.revision}
+                open={selectedFilterActionsOpen}
+                onOpenChange={setSelectedFilterActionsOpen}
                 onAction={applySelectedFilterAction}
               /> : null}
+              {selected ? <details className="workbench-react__evidence-metadata workbench-context-disclosure" aria-label="Evidence metadata" open={selectedEvidenceMetadataOpen} onToggle={event => setSelectedEvidenceMetadataOpen(event.currentTarget.open)}>
+                <summary>Evidence metadata</summary>
+                <dl className="workbench-react__context-fields">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
+              </details> : <dl className="workbench-react__context-fields" aria-label="Runtime metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>}
+              <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
               {!selected ? <CommandProjectionContextSummary
                 projections={snapshot.commandProjections}
                 hasSupportingLocalEvidence={Boolean(supportingProjectionEvidenceId)}

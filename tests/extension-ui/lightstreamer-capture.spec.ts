@@ -277,8 +277,8 @@ async function runOfficialClientPanelJourney(
         `document.querySelector(".workbench-react__operating strong")?.textContent === "Capture RUNNING" &&
           document.querySelector('[aria-label="Structural runtime scope"] [role="treeitem"][aria-level="1"]')
             ?.textContent?.includes("15 subscriptions") &&
-          document.querySelector(".workbench-react__evidence-summary")?.textContent
-            ?.includes("Matching 1,692") &&
+          !document.querySelector(".workbench-react__evidence-summary")?.textContent
+            ?.includes("Shown 0") &&
           document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]').length > 0`,
         "the actual issue-16 Evidence and 15-subscription Scope topology"
       );

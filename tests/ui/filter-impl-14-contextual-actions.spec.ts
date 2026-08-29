@@ -24,7 +24,30 @@ test("filter-impl-14 exposes typed selected-Evidence actions and immediate recov
   await expect(selected).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "Focus selected Context" }).click();
   const actions = page.getByRole("complementary", { name: "Context" });
-  await expect(actions.getByRole("heading", { name: "Filter selected Evidence" })).toBeVisible();
+  const activitySummary = actions.locator('details[aria-label="Activity summary"]');
+  const selectedFilter = actions.locator('details[aria-label="Filter selected Evidence"]');
+  const selectedFilterSummary = selectedFilter.locator("summary");
+  const evidenceMetadata = actions.locator('details[aria-label="Evidence metadata"]');
+  await expect(selectedFilter).not.toHaveAttribute("open", "");
+  await expect(activitySummary.locator("xpath=following-sibling::*[1]")).toHaveAttribute("aria-label", "Filter selected Evidence");
+  await expect(selectedFilter.locator("xpath=following-sibling::*[1]")).toHaveAttribute("aria-label", "Evidence metadata");
+  await expect(evidenceMetadata).not.toHaveAttribute("open", "");
+  await expect(actions.getByRole("region", { name: "Selected update" })).toBeVisible();
+  const fieldsHeading = actions.getByRole("heading", { name: "Fields", exact: true });
+  await expect(fieldsHeading).toBeVisible();
+  await expect(fieldsHeading).toBeInViewport();
+  await expect(evidenceMetadata.getByText("Source", { exact: true })).toBeHidden();
+  const metadataSummary = evidenceMetadata.locator("summary");
+  await metadataSummary.focus();
+  await page.keyboard.press("Enter");
+  await expect(evidenceMetadata).toHaveAttribute("open", "");
+  await expect(evidenceMetadata.getByText("Source", { exact: true })).toBeVisible();
+  await page.keyboard.press("Space");
+  await expect(evidenceMetadata).not.toHaveAttribute("open", "");
+  await expect(selectedFilterSummary).toBeVisible();
+  await selectedFilterSummary.focus();
+  await page.keyboard.press("Enter");
+  await expect(selectedFilter).toHaveAttribute("open", "");
   await expect(actions.getByRole("button", { name: /^Include Client/ })).toBeVisible();
   await expect(actions.getByRole("button", { name: /^Exclude Client/ })).toBeVisible();
   await expect(actions.locator('[data-filter-action-kind="around"]')).toHaveCount(1);
@@ -50,6 +73,45 @@ test("filter-impl-14 exposes typed selected-Evidence actions and immediate recov
   await expect(activeFilter).toHaveCount(0);
   await expect(selected).toHaveAttribute("aria-selected", "true");
   await assertAxe(page);
+});
+
+test("selected Context disclosures preserve Fields real estate across compact, normal, shallow and wide layouts", async ({ page }, testInfo: TestInfo) => {
+  test.setTimeout(120_000);
+  mkdirSync(evidenceRoot, { recursive: true });
+  const scenes = [
+    { name: "compact-dark", width: 563, height: 700, theme: "dark" as const, forcedColors: "none" as const },
+    { name: "normal-light", width: 900, height: 700, theme: "light" as const, forcedColors: "none" as const },
+    { name: "shallow-forced-dark", width: 900, height: 320, theme: "dark" as const, forcedColors: "active" as const },
+    { name: "wide-light", width: 1440, height: 900, theme: "light" as const, forcedColors: "none" as const }
+  ];
+  for (const scene of scenes) {
+    await page.setViewportSize({ width: scene.width, height: scene.height });
+    await page.emulateMedia({ colorScheme: scene.theme, forcedColors: scene.forcedColors });
+    await page.goto(`/?scenario=filter-find&theme=${scene.theme}`);
+    await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
+    const contextEntry = page.getByRole("button", { name: /^(Open|Focus|Restore) selected Context$/ });
+    await contextEntry.focus();
+    await page.keyboard.press("Enter");
+    const context = page.getByRole("complementary", { name: "Context" });
+    await expect(context.getByText("Selected Evidence · SERVER", { exact: true })).toBeVisible();
+    const activitySummary = context.locator('details[aria-label="Activity summary"]');
+    const selectedFilter = context.locator('details[aria-label="Filter selected Evidence"]');
+    const evidenceMetadata = context.locator('details[aria-label="Evidence metadata"]');
+    await expect(activitySummary).not.toHaveAttribute("open", "");
+    await expect(selectedFilter).not.toHaveAttribute("open", "");
+    await expect(evidenceMetadata).not.toHaveAttribute("open", "");
+    await expect(activitySummary.locator("xpath=following-sibling::*[1]")).toHaveAttribute("aria-label", "Filter selected Evidence");
+    await expect(selectedFilter.locator("xpath=following-sibling::*[1]")).toHaveAttribute("aria-label", "Evidence metadata");
+    const fieldsHeading = context.getByRole("heading", { name: "Fields", exact: true });
+    await expect(fieldsHeading).toBeVisible();
+    await expect(fieldsHeading).toBeInViewport();
+    await context.screenshot({ path: `${evidenceRoot}/context-disclosures-${scene.name}.png` });
+    await testInfo.attach(`context-disclosures-${scene.name}.png`, {
+      path: `${evidenceRoot}/context-disclosures-${scene.name}.png`,
+      contentType: "image/png"
+    });
+    await assertAxe(page);
+  }
 });
 
 test("filter-impl-14 retains hidden selection and exposes minimal Reveal recovery", async ({ page }, testInfo: TestInfo) => {

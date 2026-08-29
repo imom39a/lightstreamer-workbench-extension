@@ -1,6 +1,6 @@
-.workbench-activity-summary { min-width: 0; margin: 0 0 10px; border-bottom: 1px solid var(--wb-border); font-size: 11px; }
-.workbench-activity-summary > summary { min-height: 24px; padding: 4px 0; cursor: pointer; overflow-wrap: anywhere; font-weight: 600; }
-.workbench-activity-summary > summary:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 1px; }
+.workbench-context-disclosure { min-width: 0; margin: 0 0 10px; border-bottom: 1px solid var(--wb-border); font-size: 11px; }
+.workbench-context-disclosure > summary { min-height: 24px; padding: 4px 0; cursor: pointer; overflow-wrap: anywhere; font-weight: 600; }
+.workbench-context-disclosure > summary:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 1px; }
 .workbench-activity-summary__content { padding-bottom: 7px; }
 .workbench-activity-summary__content p { margin: 4px 0; color: var(--wb-muted); }
 .workbench-activity-summary table { width: 100%; border-collapse: collapse; }

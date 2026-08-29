@@ -828,6 +828,11 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   await page.getByRole("button", { name: "Focus selected Context" }).click();
   const context = page.getByRole("complementary", { name: "Context" });
   await expect(context.getByRole("heading", { name: new RegExp(selectedIdentity) })).toBeVisible();
+  const metadata = context.locator('details[aria-label="Evidence metadata"]');
+  await expect(metadata).not.toHaveAttribute("open", "");
+  await metadata.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(metadata).toHaveAttribute("open", "");
   await expect(context.getByText(longClient, { exact: true })).toBeVisible();
   await expect(context.getByText(longSession, { exact: true })).toBeVisible();
   await expect(context.getByText(longSubscription, { exact: true })).toBeVisible();
@@ -2142,26 +2147,33 @@ test("Workbench keeps retired Scope selectable and explicitly historical", async
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench exposes selected Item Update fields after Evidence metadata and preserves readable JSON strings", async ({ page }, testInfo) => {
+test("Workbench exposes selected Item Update Fields while Evidence metadata is collapsed and preserves readable JSON strings", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-json", { width: 1440, height: 900 }, "dark");
 
   const context = page.getByRole("complementary", { name: "Context" });
   const selectedUpdate = context.getByRole("region", { name: "Selected update" });
-  const contextFields = context.locator(".workbench-react__context-fields");
+  const metadata = context.locator('details[aria-label="Evidence metadata"]');
+  const contextFields = metadata.locator(".workbench-react__context-fields");
+  await expect(metadata).not.toHaveAttribute("open", "");
+  await expect(contextFields.getByText("Source", { exact: true })).toBeHidden();
   await expect(selectedUpdate).toBeVisible();
   await expect(selectedUpdate.getByRole("region", { name: "Fields", exact: true })).toContainText("modelValues");
   await expect(selectedUpdate.getByRole("region", { name: "Changed fields", exact: true })).toHaveCount(0);
   await expect(selectedUpdate.getByRole("region", { name: "JSON patches", exact: true })).toHaveCount(0);
-  await expect(contextFields.getByText("Source", { exact: true })).toBeVisible();
   await expect(selectedUpdate.getByText("JSON string", { exact: true })).toHaveCount(1);
   await expect(selectedUpdate).toContainText('"selected": false');
   await expect(selectedUpdate).toContainText('{"passenger":');
   await expect(context.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
   await expect(context.getByRole("button", { name: /COMMAND projections/ })).toHaveCount(0);
-  expect(await contextFields.evaluate((fields, update) =>
-    Boolean(fields.compareDocumentPosition(update as Node) & Node.DOCUMENT_POSITION_FOLLOWING),
+  expect(await metadata.evaluate((details, update) =>
+    Boolean(details.compareDocumentPosition(update as Node) & Node.DOCUMENT_POSITION_FOLLOWING),
     await selectedUpdate.elementHandle()
   )).toBe(true);
+  await metadata.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(contextFields.getByText("Source", { exact: true })).toBeVisible();
+  await page.keyboard.press("Space");
+  await expect(metadata).not.toHaveAttribute("open", "");
 
   await page.setViewportSize({ width: 900, height: 700 });
   const selectedHeading = selectedUpdate.getByRole("heading", { name: "Selected update" });
