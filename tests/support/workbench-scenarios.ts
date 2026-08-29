@@ -22,7 +22,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "activity-layers",
   "activity-clock-discontinuity",
   "activity-aggregation-failure",
-  "activity-terminal",
+  "activity-rolling-retention",
   "activity-rebucket",
   "activity-ranking-pages",
   "integrated-activity-main",
@@ -46,6 +46,10 @@ export const WORKBENCH_SCENARIO_IDS = [
   "notifications-volume",
   "notifications-empty",
   "notifications-operational",
+  "history-rolling-high-volume",
+  "history-journal-recovered",
+  "history-journal-memory-fallback",
+  "history-evidence-gap",
   "raw-evidence",
   "filter-find",
   "filter-hidden-selection",
@@ -122,6 +126,8 @@ export type WorkbenchScenario = Readonly<{
   freezeBeforeLaterEvents?: boolean;
   storage?: Readonly<{ mode: "memory"; reason: string }>;
   historyCapacity?: HistoryCapacityOverrides;
+  historyCommitFailure?: Readonly<{ eventId: string; failures: number }>;
+  historyOversizedEventId?: string;
   activityProjectionFailure?: string;
   storageEstimate?: Readonly<{ usageBytes: number; quotaBytes: number }>;
   openRawEvidence?: boolean;
@@ -295,11 +301,11 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
     }
     case "activity-aggregation-failure":
       return { id, initialEvents: highVolumeEvents(1, 8), captureStatus: "capturing", activityProjectionFailure: "Synthetic Activity aggregation failure for browser verification." };
-    case "activity-terminal":
+    case "activity-rolling-retention":
       return {
         id,
         initialEvents: highVolumeEvents(1, 8),
-        selectedEventId: highVolumeEventId(4),
+        selectedEventId: highVolumeEventId(8),
         captureStatus: "capturing",
         historyCapacity: { maxRetainedCount: 4, retainedWarningCount: 3 }
       };
@@ -446,6 +452,52 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return { id, initialEvents: [], captureStatus: "idle" };
     case "notifications-operational":
       return { id, initialEvents: [], captureStatus: "idle", storage: { mode: "memory", reason: "IndexedDB is unavailable" } };
+    case "history-rolling-high-volume":
+      return {
+        id,
+        initialEvents: highVolumeEvents(1, 3),
+        laterEvents: highVolumeEvents(4, 3),
+        captureStatus: "capturing",
+        historyCapacity: { maxRetainedCount: 4, maxRetainedBytes: 1_000_000 }
+      };
+    case "history-journal-recovered": {
+      const source = serverOnlyCanonical[0];
+      if (!source) throw new Error("The canonical scenario must include a Server event.");
+      const recovered = { ...source, id: "history-journal-recovered-event" };
+      return {
+        id,
+        initialEvents: serverOnlyCanonical.slice(0, 2),
+        laterEvents: [recovered],
+        captureStatus: "capturing",
+        historyCommitFailure: { eventId: recovered.id, failures: 2 }
+      };
+    }
+    case "history-journal-memory-fallback": {
+      const source = serverOnlyCanonical[0];
+      if (!source) throw new Error("The canonical scenario must include a Server event.");
+      const fallbackEvent = { ...source, id: "history-journal-memory-event" };
+      return {
+        id,
+        initialEvents: serverOnlyCanonical.slice(0, 2),
+        laterEvents: [fallbackEvent],
+        captureStatus: "capturing",
+        historyCommitFailure: { eventId: fallbackEvent.id, failures: 3 }
+      };
+    }
+    case "history-evidence-gap": {
+      const source = serverOnlyCanonical[0];
+      if (!source) throw new Error("The canonical scenario must include a Server event.");
+      const oversized = { ...source, id: "history-oversized-event" };
+      const later = { ...source, id: "history-after-gap-event", timestamp: source.timestamp + 2 };
+      return {
+        id,
+        initialEvents: [{ ...source, id: "history-before-gap-event" }],
+        laterEvents: [oversized, later],
+        captureStatus: "capturing",
+        historyCapacity: { maxRetainedCount: 10, maxRetainedBytes: 100 },
+        historyOversizedEventId: oversized.id
+      };
+    }
     case "disconnected":
       return {
         id,

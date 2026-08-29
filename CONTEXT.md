@@ -49,7 +49,7 @@ An Evidence record containing one validated Workbench topology-synchronization o
 _Avoid_: Topology sync frame, cached topology, current topology
 
 **Event History**:
-The ordered collection of Evidence retained during one History Interval.
+The ordered, bounded flight recorder of Evidence for one History Interval. It keeps accepting valid Capture while storage conditions allow any canonical segment to accept it, and rolls its oldest retained prefix when a retention budget is reached.
 _Avoid_: Event Store, Timeline history
 
 **Committed Evidence Boundary**:
@@ -60,6 +60,14 @@ _Avoid_: Latest captured event, storage cursor
 The contiguous span of Evidence currently available within a History Interval, bounded by its first and last Evidence sequences. An empty Event History has no Retained Range.
 _Avoid_: History completeness, visible window
 
+**Retention Advance**:
+The deliberate removal of the oldest accepted Evidence as the bounded Retained Range rolls forward. It limits later replay and export, but is not an Evidence Gap and does not reduce Observation Coverage.
+_Avoid_: Dropped event, Capture loss
+
+**Evidence Gap**:
+An exact captured ordinal or ordinal range that could not enter any canonical Event History segment before later Evidence acceptance continued. It limits continuity-dependent conclusions until a trustworthy checkpoint or snapshot restores their basis.
+_Avoid_: Retention Advance, missing visible row
+
 **Panel Session**:
 The lifetime of one mounted Workbench panel, which owns one Event History and may contain multiple History Intervals separated by Clear. Reloading or remounting the panel starts a new Panel Session and never recovers the prior one.
 _Avoid_: DevTools session, tab session, browser session
@@ -69,7 +77,7 @@ The period whose retained Evidence is considered together, beginning when a Pane
 _Avoid_: DevTools session, storage lifetime
 
 **Complete History**:
-An Event History with no missing captured events from the start of its History Interval through its Committed Evidence Boundary. Completeness is qualified by that interval and boundary, not by the full panel lifetime after Clear or stopped Capture.
+An Event History with no Evidence Gap from the start of its History Interval through its Committed Evidence Boundary. Complete History and complete retention are different claims: a Retention Advance can make the interval start unavailable without inventing an Evidence Gap.
 _Avoid_: Complete session history, all observed activity
 
 **Diagnostic Observation**:
@@ -81,7 +89,7 @@ The greatest Panel Session-local Diagnostic Observation sequence committed in on
 _Avoid_: Evidence boundary, diagnostic timestamp, footer position
 
 **History Capacity**:
-The supported workload envelope within which Event History can continue accepting complete, ordered Evidence. A lower-capacity history changes neither Observation Coverage nor the completeness of Evidence already accepted.
+The bounded count, canonical-byte, and pending-work envelope used to keep Event History responsive. Reaching a retained high-water mark rolls the oldest prefix toward a lower target; it does not stop Capture. A lower-capacity or memory-backed segment changes neither Observation Coverage nor the validity of Evidence already accepted.
 _Avoid_: Observation Coverage, retained count, storage quota
 
 ### Injection

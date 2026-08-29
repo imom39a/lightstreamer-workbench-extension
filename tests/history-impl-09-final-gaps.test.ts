@@ -66,12 +66,12 @@ describe("history-impl-09 final audit gaps", () => {
     runtime.dispose();
   });
 
-  it("preserves exact terminal Evidence fields in degraded runtime state", async () => {
+  it("preserves exact Evidence-gap fields while later Capture remains eligible", async () => {
     const commit = deferred<void>();
     const commitStarted = deferred<void>();
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "history-impl-09-final-gaps-terminal",
-      byteEstimator: () => 60,
+      byteEstimator: (event) => event.id === "event-2" ? 101 : 60,
       capacity: { maxRetainedBytes: 100, maxRetainedCount: 10 },
       commitBatch: async () => {
         commitStarted.resolve();
@@ -85,24 +85,25 @@ describe("history-impl-09 final audit gaps", () => {
 
     runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(1) });
     await commitStarted.promise;
-    runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(2) });
-
-    expect(runtime.getSnapshot().capture).toMatchObject({
-      operation: "STOPPED",
-      coverage: "LIMITED"
-    });
-
     commit.resolve();
+    await settle();
+    runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(2) });
     await settle();
 
     expect(runtime.getSnapshot().capture).toMatchObject({
-      operation: "STOPPED",
+      operation: "RUNNING",
       coverage: "LIMITED",
       firstMissingEventId: "event-2",
       committedEvidenceBoundary: {
         sequence: 1,
         eventId: "event-1"
       }
+    });
+    expect(history.status()).toMatchObject({
+      phase: "RUNNING",
+      accepted: 1,
+      notAccepted: 1,
+      continuity: { state: "GAPPED", gapCount: 1 }
     });
     runtime.dispose();
     await settle();

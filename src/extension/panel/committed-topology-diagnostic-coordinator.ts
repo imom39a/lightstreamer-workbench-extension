@@ -446,18 +446,6 @@ function topologyLimitations(
       evidence: boundary
     }));
   }
-  if (historyStatus?.fallback !== null && historyStatus?.capacity.tier === "LOWER") {
-    limitations.push(Object.freeze({
-      id: `lower-history:${historyStatus.interval.id}`,
-      kind: "history-capacity",
-      state: "lower-capacity",
-      affected,
-      current: true,
-      detail: "future retained Evidence is bounded by the fixed memory fallback tier",
-      weakens: conclusions("future-evidence-retention"),
-      evidence: boundary
-    }));
-  }
   if (historyStatus?.phase === "STOPPED") {
     limitations.push(Object.freeze({
       id: `terminal-history:${historyStatus.interval.id}`,

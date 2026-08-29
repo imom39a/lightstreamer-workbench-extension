@@ -212,7 +212,7 @@ describe("history-100k-03 incremental Evidence operations", () => {
     runtime.dispose();
   });
 
-  it("keeps Complete History export on the same incremental latch", async () => {
+  it("keeps retained Evidence export on the same incremental latch", async () => {
     const calls: unknown[] = [];
     const runtime: WorkbenchRuntime = createWorkbenchRuntime({
       evidenceQuery: {

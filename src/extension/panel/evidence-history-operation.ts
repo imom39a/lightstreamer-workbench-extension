@@ -77,21 +77,21 @@ export async function streamEvidencePages(options: StreamEvidenceOptions): Promi
       expectedPageCount = Math.max(1, Math.ceil(expectedTotal / pageSize) + 1);
       options.onLatch(readPoint, expectedTotal);
     } else if (!sameEvidenceReadPoint(result.value.readPoint, readPoint)) {
-      return queryFailure("QUERY_FAILED", "The Complete History read crossed a committed boundary.");
+      return queryFailure("QUERY_FAILED", "The retained Evidence read crossed its committed boundary.");
     }
     if (result.value.totals.inScope !== expectedTotal) {
-      return queryFailure("QUERY_FAILED", "The Complete History read changed its latched Evidence total.");
+      return queryFailure("QUERY_FAILED", "The retained Evidence read changed its latched total.");
     }
     if (result.value.page.evidence.some((record) => record.payload === undefined)) {
       return queryFailure("QUERY_FAILED", "The complete Evidence read did not return full payloads.");
     }
     if (options.signal.aborted) {
-      return queryFailure("QUERY_CANCELLED", "The Complete History operation was cancelled before its artifact was published.");
+      return queryFailure("QUERY_CANCELLED", "The retained Evidence operation was cancelled before its artifact was published.");
     }
     const pageOperation = options.onPage(result.value.page.evidence, readPoint);
     if (pageOperation !== undefined) await pageOperation;
     if (options.signal.aborted) {
-      return queryFailure("QUERY_CANCELLED", "The Complete History operation was cancelled before its artifact was published.");
+      return queryFailure("QUERY_CANCELLED", "The retained Evidence operation was cancelled before its artifact was published.");
     }
     count += result.value.page.evidence.length;
     pageCount += 1;
@@ -131,7 +131,7 @@ export async function createScopedEvidenceCopy(
   });
   if (!result.ok) return result;
   if (options.signal.aborted) {
-    return { ok: false, problem: { code: "QUERY_CANCELLED", message: "The Complete History operation was cancelled before its artifact was published." } };
+    return { ok: false, problem: { code: "QUERY_CANCELLED", message: "The retained Evidence operation was cancelled before its artifact was published." } };
   }
   let text: string;
   try {

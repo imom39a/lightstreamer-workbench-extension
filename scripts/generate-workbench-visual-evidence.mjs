@@ -303,7 +303,13 @@ function isIntegratedDiagnosticSetup(setup) {
     || setup === "diagnostic-subscription"
     || setup === "diagnostic-anomaly"
     || setup === "notifications-volume"
-    || setup === "notifications-empty";
+    || setup === "notifications-empty"
+    || setup === "notifications-history-rollover"
+    || setup === "notifications-history-recovered";
+}
+
+function isHistoryFooterSetup(setup) {
+  return setup === "history-memory" || setup === "history-gap";
 }
 
 function isStorageHeadroomSetup(setup) {
@@ -316,7 +322,7 @@ function isReadabilitySetup(setup) {
 
 function contactSheetScenarioIds(matrix) {
   return matrix
-    .filter(({ id, production }) => id.startsWith("scenario-") || id.startsWith("readability-c-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup))
+    .filter(({ id, production }) => id.startsWith("scenario-") || id.startsWith("readability-c-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup) || isHistoryFooterSetup(production.setup))
     .map(({ id }) => id);
 }
 
@@ -528,7 +534,7 @@ async function assertPrototypeSetup(page, workbench, setup) {
     "captured-draft": ["topology-small-subscription", "json-string-event", "json-string-alpha"],
     "authored-review": ["topology-small-subscription", "None · newly authored", "visual-review"],
     "command-comparison": ["Why matching?", "scenario-subscription-1 / scenario.snapshot-basic / alpha"],
-    "more-actions": ["Session operations", "Copy complete scoped Evidence"],
+    "more-actions": ["Session operations", "Copy retained scoped Evidence"],
     "memory-operations": ["in-memory fallback", "Panel Session closes."],
     "clear-confirmation": ["Clear retained events", "This removes retained Evidence from this Panel Session and cannot be undone."],
     "matching-summary": ["Matching projections", "Neither projection is Authoritative COMMAND State."],
@@ -640,7 +646,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
     let focusEvidence = null;
     let memoryEvidence = null;
     let storageEvidence = null;
-    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
+    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || isHistoryFooterSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -699,7 +705,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
         throw new Error(`Variant C Scope focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
     }
-    if (scenario.production.setup === "diagnostics" || isStorageHeadroomSetup(scenario.production.setup) && scenario.production.storageMode !== "clean") {
+    if (scenario.production.setup === "diagnostics" || isHistoryFooterSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) && scenario.production.storageMode !== "clean") {
       const dismissActions = page.getByRole("button", { name: /^Dismiss / });
       const actions = [];
       for (let index = 0; index < await dismissActions.count(); index += 1) {
@@ -1055,7 +1061,7 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     const diagnostics = page.getByLabel("Workbench diagnostic entries");
     await diagnostics.waitFor();
     const text = await diagnostics.innerText();
-    for (const marker of ["3 diagnostics · Scroll to review all", "Warning · History near capacity", "Error · Capture disconnected", "Information · Retired Scope"]) {
+    for (const marker of ["2 diagnostics · Scroll to review all", "Error · Capture disconnected", "Information · Retired Scope"]) {
       if (!text.includes(marker)) throw new Error(`Mixed diagnostic visual state is missing ${JSON.stringify(marker)}.`);
     }
     await diagnostics.focus();
@@ -1074,6 +1080,18 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     }
     return;
   }
+  if (isHistoryFooterSetup(setup)) {
+    const diagnostics = page.getByLabel("Workbench diagnostic entries");
+    await diagnostics.waitFor();
+    const marker = setup === "history-memory"
+      ? "Warning · History using memory"
+      : "Warning · History has an Evidence gap";
+    const text = await diagnostics.innerText();
+    if (!text.includes(marker)) throw new Error(`Continuous-History visual state is missing ${JSON.stringify(marker)}.`);
+    await diagnostics.focus();
+    await page.keyboard.press("Home");
+    return;
+  }
   if (isIntegratedDiagnosticSetup(setup)) {
     await page.getByRole("button", { name: /^Notifications/ }).click();
     const notifications = page.getByRole("region", { name: "Notifications", exact: true });
@@ -1086,6 +1104,10 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
           ? ["Warning · Snapshot phase incomplete", "Warning · Unknown COMMAND key update", "Warning · Subscription updates lost"]
           : setup === "notifications-volume"
             ? ["100 of 100 notifications", "Information · Snapshot completed"]
+            : setup === "notifications-history-rollover"
+              ? ["Information · Older Evidence removed", "This Retention Advance is not an Evidence Gap"]
+              : setup === "notifications-history-recovered"
+                ? ["Information · History storage recovered", "recovered after 2 retries"]
             : ["No notifications in this Panel Session."];
     const text = await notifications.textContent();
     for (const marker of markers) {

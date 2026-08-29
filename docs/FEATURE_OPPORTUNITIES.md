@@ -6,6 +6,12 @@ Reassessment date: 2026-08-12
 
 Status: product opportunity assessment, not an implementation commitment
 
+Continuity update (2026-08-29): ADR 0014 supersedes this document's shipped
+fixed-adapter and fail-closed Event History claims. The historical Build 1
+narrative remains below as delivery context; the current product contract is a
+bounded rolling Retained Range, bounded commit recovery, memory continuation,
+and explicit Evidence Gaps.
+
 ## Recommendation
 
 The redesign is complete. Workbench now has a stable product shape: compact live-session orientation, focused investigation in a **Scoped Evidence Workspace**, and deliberate scoped action. The next evolution should deepen that operating model rather than rebuild the old feature-first panel under new labels.
@@ -44,8 +50,8 @@ The redesigned production panel now provides:
 
 - A React **Scoped Evidence Workspace** with structural Page → client → Session → Subscription → item → listener Scope.
 - Live and retired runtime structure, Session recovery epochs, bounded historical Sessions, subscription configuration, duplicate/overlap findings, snapshot phase, listener and delivery counts, and COMMAND generation summaries.
-- Accepted ordered Evidence through the current History Interval's Committed Evidence Boundary, backed by one Panel Session-owned Event History, with bounded query windows, high-volume navigation, and deliberate Clear. Normal capacity is 100,000 records/256 MiB; startup memory fallback is 5,000 records/32 MiB, and the adapter is fixed for the session.
-- A committed Evidence boundary, History Intervals, exact Clear cuts, fail-closed terminal stops, fixed adapter selection, and ownership-safe abnormal cleanup now define the shipped history contract. New Panel Sessions start empty and never replay stale Evidence.
+- Accepted ordered Evidence through the current History Interval's Committed Evidence Boundary, backed by one Panel Session-owned rolling Event History, with bounded query windows, high-volume navigation, and deliberate Clear. Normal retention is 100,000 records/256 MiB; memory-backed retention is 5,000 records/32 MiB.
+- A committed Evidence boundary, History Intervals, exact Clear cuts, retention advances, explicit Evidence Gaps, bounded commit recovery, and ownership-safe abnormal cleanup define the current history contract. New Panel Sessions start empty and never replay stale Evidence.
 - Independent Scope, text Filter, Find, Evidence selection, Context, and Live/Frozen state. Frozen Evidence continues Capture and reports newer matching Evidence.
 - Full committed-Evidence copy for the current interval plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in interval-bounded evidence, category redaction, and unconditional credential exclusion.
 - Named **Observed Server COMMAND State** and **Local Effective COMMAND State** projections.
@@ -57,7 +63,7 @@ The redesigned production panel now provides:
 
 The most important remaining gaps are:
 
-- Event History acceptance, the Committed Evidence Boundary, History Intervals, Complete History, History Capacity, fail-closed terminal behavior, and Local Injection retention are delivered through the production state machine. Complete History is only the committed boundary of the current interval; Clear cannot restart stopped Capture, and a storage fallback changes History Capacity without automatically changing Observation Coverage.
+- Event History acceptance, the Committed Evidence Boundary, History Intervals, Complete History, rolling History Capacity, explicit Evidence Gaps, and Local Injection retention are delivered through the production state machine. Storage fallback and Retention Advance do not automatically change Observation Coverage.
 - `ClientListener.onServerError` and `onServerKeepalive` are not captured as first-class Evidence.
 - `LightstreamerClient.sendMessage` calls and `ClientMessageListener` outcomes are not captured, so Captured Client Messages and Server Injection are not yet available.
 - The filter engine supports structured fields, but the redesigned panel primarily exposes Scope and free-text filtering rather than contextual facets and clickable values.
@@ -170,7 +176,7 @@ Opportunity headings below carry the build number, not the usefulness rank. The 
 
 ## P0 Opportunity Details
 
-### Build 1 — Committed Evidence Boundary and Fail-Closed History Capacity (delivered)
+### Build 1 — Committed Evidence Boundary and Fail-Closed History Capacity (delivered, superseded in part)
 
 The implementation train delivered one Event History state machine that owns:
 
@@ -197,7 +203,8 @@ Why it was first:
 - Every additional capture kind, scenario, import, projection, and profiler depends on trustworthy ordered Evidence.
 - The workload measurements show that large JSON bursts can create long pending ages and material queued bytes. Capacity and overload need explicit behavior rather than an implicit performance assumption.
 
-This delivered opportunity does not introduce rolling retention or a permanent history dashboard. The throwaway [Event History state-machine prototype](../prototypes/event-history-03/event-history-state-machine.html) remains decision evidence only. Release proof, including the real-Chrome verdict and any accepted `REVIEW` disposition, is retained on the internal Project ticket; `FAIL` remains a release blocker.
+ADR 0014 later superseded the fixed-adapter and fail-closed portions with rolling
+retention and continuation. The throwaway [Event History state-machine prototype](../prototypes/event-history-03/event-history-state-machine.html) remains decision evidence only.
 
 ### Build 2 — Contextual Faceted Evidence Filtering
 
@@ -262,7 +269,7 @@ Interaction and placement contract:
 - Each chart is one keyboard composite: Left/Right moves between buckets, Up/Down moves between series or lanes, Home/End moves to the bounds, and Enter opens supporting Evidence. Tab and Shift+Tab remain the only cross-surface navigation commands.
 - Live graphical publication is coalesced to approximately once per second even though every accepted event is aggregated. Hidden panels do not redraw; returning publishes one consolidated snapshot without replay animation. Passive updates never move focus, selection, or scroll and do not flash or pulse.
 - Wide and normal layouts use the full canvas for aligned charts and the ranked breakdown. Compact and shallow layouts stack the same sections in one document scroll; an inherently two-dimensional time plot may own bounded horizontal scrolling, while the panel shell never scrolls horizontally.
-- Confirmed Clear empties the prior interval and invalidates its aggregate selections; Back never manufactures removed Evidence. A capacity or journal stop leaves the final dashboard inspectable through its last Committed Evidence Boundary with the terminal limitation visible.
+- Confirmed Clear empties the prior interval and invalidates its aggregate selections; Back never manufactures removed Evidence. Retention advance removes older aggregate input without stopping Capture, while an Evidence Gap leaves continuity-dependent dashboard conclusions explicitly limited.
 
 Explicitly deferred from this first release:
 
@@ -640,7 +647,7 @@ For applications using the optional MPN module, inspect device registration/susp
 
 | Area | Additions or changes |
 | --- | --- |
-| Event History | Explicit pending/accepted states, Evidence sequence, Committed Evidence Boundary, History Interval, exact Clear cut, capacity/failure stop, adapter-independent state contract |
+| Event History | Explicit pending/accepted states, Evidence sequence, Committed Evidence Boundary, History Interval, rolling Retained Range, bounded retry and memory continuation, exact Evidence Gaps, exact Clear cut |
 | Activity projection | Accepted-Evidence-only Logical Update deduplication, Update Delivery counts, deterministic time buckets, Scope/Filter aggregation, snapshot/live and Server/Local separation, connection/error/loss markers, ranked identities, Clear reset, clock-discontinuity handling, and explicit aggregation failure |
 | Client listener | `onServerError` and `onServerKeepalive`; retain synchronous property reads in `onPropertyChange` |
 | Outbound client API | `sendMessage` call, protected arguments, and every `ClientMessageListener` outcome |

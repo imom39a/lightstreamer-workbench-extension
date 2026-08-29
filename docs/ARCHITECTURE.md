@@ -467,19 +467,21 @@ close()
 `createIndexedDbEventHistory()` is the normal session-backed implementation. If
 IndexedDB startup, ownership coordination, schema validation, or guarded cleanup
 cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the
-remainder of that Panel Session. This is a storage fallback within the same
-interface, not a second event model or a mid-session migration. The normal
-IndexedDB tier is bounded at 100,000 Evidence records or 256 MiB of retained
-serialized journal bytes; the startup memory tier is bounded at 5,000 records or
-32 MiB. Count and retained bytes are independent limits, and the first limit
-reached controls admission.
+same Panel Session. The normal IndexedDB tier retains at most 100,000 Evidence
+records or 256 MiB of canonical accounted bytes; memory-backed operation retains
+at most 5,000 records or 32 MiB. These are rolling retention budgets, not
+lifetime acceptance caps. Crossing either retained high-water mark removes the
+oldest complete prefix toward a lower target before later Evidence is published.
 
-Each Panel Session owns exactly one Event History. The selected adapter is fixed
-before the first offer. A lower-capacity memory fallback changes History Capacity
-only: it does not by itself reduce Observation Coverage, alter Capture semantics,
-or change Live/Frozen view state. Accepted candidates retain Capture order, and
-only committed publications drive Topology, COMMAND projections, and the
-Evidence window.
+Each Panel Session owns exactly one Event History coordinator and one Evidence
+sequence. IndexedDB and bounded memory are canonical storage segments behind
+that coordinator, not separate histories. A definitively aborted commit is
+retried at most twice. Persistent storage failure opens a session-local circuit
+and continues acceptance in memory; deterministic corruption does not trigger
+endless probes. Storage fallback changes retention and durability, but does not
+by itself reduce Observation Coverage, alter Capture semantics, or change
+Live/Frozen view state. Only accepted publications drive Topology, COMMAND
+projections, and the Evidence window.
 
 The panel overlays a bounded 60-event live tail on the latest retained page while a query is in flight. The overlay is presentation-only; every accepted candidate still follows the ordered EventHistory path.
 
@@ -496,11 +498,11 @@ openEventHistory({
 ```
 
 `createIndexedDbEventHistory()` acquires an exclusive per-journal ownership lock,
-claims a live Panel Session lease, validates and sweeps only recognized orphan
-generations, and keeps the selected journal implementation fixed for the Panel
-Session. If acquisition fails, `openEventHistory()` logs the error and creates
-`createInMemoryEventHistory()` with the lower-capacity fallback reason; there is
-no mid-session migration.
+claims a live Panel Session lease, and validates and sweeps only recognized
+orphan generations. If acquisition fails, `openEventHistory()` starts directly
+in lower-capacity memory. If a running journal later fails after bounded retry,
+the same coordinator preserves ordering and continues through a bounded volatile
+segment. The failed condition and recovery outcome are coalesced in Notifications.
 
 The panel requests Close on `dispose` and the actual `pagehide` lifecycle event.
 Controlled Close makes a final synchronous intake cut, refuses later offers,
@@ -515,13 +517,18 @@ empty Event History; there is no cross-session recovery.
 
 Each successful `clear()` is an exact History Interval cut. Already accepted
 work settles before the prior interval is erased; post-cut offers belong only to
-the new interval. A failed Clear either proves the prior interval unchanged and
-continues in that interval, or becomes a terminal journal failure when that
-boundary cannot be proven. Clear never restarts a stopped history.
+the new interval. A failed Clear leaves the proven prior interval active and
+rejoins post-cut offers in Capture order. Clear is not a storage-recovery control
+and remains the only deliberate interval reset.
 
 ### History Status
 
-`EventHistory.status()` is the authoritative runtime status. It reports phase, capture operation, accepted and refused counts, retained range, and capacity pressure through `capacity.tier` and `capacity.state` (`AVAILABLE`, `NEAR_LIMIT`, or `EXHAUSTED`). The panel renders those fields directly and uses the same status publications to derive history diagnostics. There is no generic event-count warning threshold or parallel retained-count authority.
+`EventHistory.status()` is the authoritative runtime status. It reports Capture
+operation, accepted and unaccepted counts, Retained Range, cumulative retention
+advance, continuity, and persistence mode. The panel renders those facts
+directly and uses the same publications for history diagnostics. Routine
+retention advance is quiet; active retry/backlog, sustained memory fallback, and
+an actual Evidence Gap have distinct condition lifecycles.
 
 The panel also makes one session-local `navigator.storage.estimate()` sample
 before it connects Capture, then permits at most one additional sample when the
@@ -535,14 +542,16 @@ count/byte admission and an actual `QuotaExceededError` remain authoritative.
 The estimate is neither exported nor persisted, and the extension requests no
 `unlimitedStorage` permission.
 
-Complete History is a qualified claim: it means every accepted candidate in the
-current History Interval through its Committed Evidence Boundary, not every event
-that the inspected page may have produced and not an unbounded panel-lifetime
-archive. On a retained-count, retained-byte, pending-byte, pending-age, or journal
-failure stop, Event History refuses later offers, settles any already queued
-prefix, records the final committed boundary and typed terminal cause, and cannot
-resume through Clear or an adapter switch. Failed, refused, or discarded
-candidates do not receive Evidence sequence numbers or projection effects.
+Complete History is a qualified claim: it means no captured candidate is missing
+through the current Committed Evidence Boundary. A Retention Advance makes older
+accepted Evidence unavailable without creating an Evidence Gap or retroactively
+invalidating projections already applied in the live Panel Session. When a valid
+candidate cannot enter any canonical segment, Event History records its exact
+capture ordinal as an Evidence Gap, settles that candidate explicitly, marks
+continuity-dependent projections limited, and continues accepting later valid
+activity. Failed candidates never receive Evidence sequence numbers or projection
+effects. Rebuildable query indexes may lag or rebuild independently of canonical
+acceptance.
 
 ## Diagnostic Observation Architecture
 
@@ -944,7 +953,7 @@ The default `npm test` command runs the Vitest files ending in `.test.ts`. The L
 npm run fixture:test
 ```
 
-Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` builds the single Store artifact, runs the static fixture assertions, and exercises the loaded extension against the official client in real DevTools sessions. The browser coverage verifies Capture, both protected standalone Draft entry paths, direct and compatibility delivery where applicable, truthful success/error rendering, and distinct Observed Server and Local Effective COMMAND projections. It also proves a reviewed three-Step ADD → UPDATE → DELETE Scenario through exactly three ordinary page requests and application callbacks, stable Scenario/Run/Step/Injection/request/Evidence correlation, the final projection split, and fresh identities on deliberate Run again.
+Run `npm run fixture:browser:install` once to install the pinned Chrome for Testing 151 into the ignored project cache. `fixture:test` builds the single Store artifact, runs the static fixture assertions, and exercises the loaded extension against the official client in real DevTools sessions. The browser coverage verifies Capture, both protected standalone Draft entry paths, direct and compatibility delivery where applicable, truthful success/error rendering, and distinct Observed Server and Local Effective COMMAND projections. It also proves a reviewed three-Step ADD → UPDATE → DELETE Scenario through exactly three ordinary page requests and application callbacks, stable Scenario/Run/Step/Injection/request/Evidence correlation, the final projection split, and fresh identities on deliberate Run again.
 
 All fixture lifecycle and test entry points route through `scripts/lightstreamer/fixture.mjs`; the browser installer uses Puppeteer's cross-platform CLI. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
 

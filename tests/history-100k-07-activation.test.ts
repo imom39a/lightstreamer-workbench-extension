@@ -46,7 +46,31 @@ function normalNearLimitStatus(): HistoryStatus {
     awaitingAcceptance: 0,
     accepted: limits.retainedWarningCount,
     notAccepted: 0,
-    retained: limits.retainedWarningCount
+    retained: limits.retainedWarningCount,
+    retention: {
+      policy: "ROLLING",
+      highWater: { count: limits.maxRetainedCount, bytes: limits.maxRetainedBytes },
+      lowWater: {
+        count: Math.floor(limits.maxRetainedCount * 0.9),
+        bytes: Math.floor(limits.maxRetainedBytes * 0.9)
+      },
+      evicted: { count: 0, bytes: 0 },
+      lastAdvance: null
+    },
+    persistence: {
+      mode: "JOURNAL",
+      health: "HEALTHY",
+      commitAttempts: limits.retainedWarningCount,
+      retryCount: 0,
+      failureCount: 0,
+      lastFailureAt: null
+    },
+    continuity: {
+      state: "CONTIGUOUS",
+      gapCount: 0,
+      firstGap: null,
+      latestGap: null
+    }
   };
 }
 
@@ -74,11 +98,19 @@ describe("history-100k-07 production activation contract", () => {
     });
   });
 
-  it("states count and byte pressure without promising arbitrary-size payloads", () => {
-    const condition = historyConditionFor({ status: normalNearLimitStatus() });
-    expect(condition?.detail).toContain("80,000 / 100,000 Evidence records");
-    expect(condition?.detail).toContain("/ 268,435,456 bytes (256 MiB)");
-    expect(condition?.detail).not.toMatch(/arbitrary|any size|unlimited/i);
+  it("keeps normal rolling-retention pressure quiet while preserving explicit count and byte bounds", () => {
+    const status = normalNearLimitStatus();
+
+    expect(historyConditionFor({ status })).toBeNull();
+    expect(status.capacity.measurements).toMatchObject({
+      retainedCount: 80_000,
+      retainedBytes: Math.ceil(256 * MIB * 0.8)
+    });
+    expect(status.retention).toMatchObject({
+      policy: "ROLLING",
+      highWater: { count: 100_000, bytes: 256 * MIB },
+      lowWater: { count: 90_000, bytes: Math.floor(256 * MIB * 0.9) }
+    });
   });
 
   it("defaults the activation command to headless and requires the one visible override flag", () => {

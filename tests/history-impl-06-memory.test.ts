@@ -153,7 +153,7 @@ describe("history-impl-06 memory contract", () => {
     await history.close();
   });
 
-  it("terminalizes clear failure and rejects clear-window capture", async () => {
+  it("reports clear failure and rejoins clear-window Capture to the unchanged interval", async () => {
     const panelSessionId = "impl-06-clear-terminal";
     let release!: () => void;
     let clearStarted!: () => void;
@@ -206,34 +206,39 @@ describe("history-impl-06 memory contract", () => {
       ok: false,
       problem: { code: "CLEAR_FAILED" }
     });
-    expect(phases.some((phase) => phase !== "RUNNING")).toBe(true);
+    expect(phases.every((phase) => phase === "RUNNING")).toBe(true);
     await expect(duringClear.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "during-clear" }
     });
     await expect(afterWindow.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 3, eventId: "after-window" }
     });
     expect(duringClearSettlementCount).toBe(1);
     expect(afterWindowSettlementCount).toBe(1);
-    const postTerminal = history.offer(candidate("post-terminal"));
-    expect(postTerminal.intake).toBe("REFUSED");
-    await expect(postTerminal.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+    const postFailure = history.offer(candidate("post-clear-failure"));
+    expect(postFailure.intake).toBe("QUEUED");
+    await expect(postFailure.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 4, eventId: "post-clear-failure" }
     });
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
       value: {
-        evidence: [{ eventId: "pre-clear", sequence: 1 }],
+        evidence: [
+          { eventId: "pre-clear", sequence: 1 },
+          { eventId: "during-clear", sequence: 2 },
+          { eventId: "after-window", sequence: 3 },
+          { eventId: "post-clear-failure", sequence: 4 }
+        ],
         interval: { id: `${panelSessionId}:interval-1` }
       }
     });
     await history.close();
   });
 
-  it("settles clear-window captures as terminal when commit fails while clear waits", async () => {
+  it("keeps clear-window captures ordered when commit fallback occurs while Clear waits", async () => {
     const panelSessionId = "impl-06-clear-waiting-commit-fails";
     let release!: () => void;
     let commitStarted!: () => void;
@@ -276,32 +281,33 @@ describe("history-impl-06 memory contract", () => {
     void inFlight.settled.finally(() => { inFlightSettledCount += 1; });
 
     release();
-    await expect(clear).resolves.toMatchObject({
-      ok: false,
-      problem: { code: "HISTORY_STOPPED" }
-    });
-    expect(phases).toContain("STOPPED");
+    await expect(clear).resolves.toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
+    expect(phases.every((phase) => phase === "RUNNING")).toBe(true);
     await expect(inFlight.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" },
-      committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "in-flight" }
     });
     await expect(duringClear.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" },
-      committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 3, eventId: "during-clear", intervalId: `${panelSessionId}:interval-2` }
     });
     expect(inFlightSettledCount).toBe(1);
     expect(duringClearSettledCount).toBe(1);
-    const postTerminal = history.offer(candidate("post-terminal"));
-    expect(postTerminal.intake).toBe("REFUSED");
-    await expect(postTerminal.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+    const postFallback = history.offer(candidate("post-fallback"));
+    expect(postFallback.intake).toBe("QUEUED");
+    await expect(postFallback.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 4, eventId: "post-fallback" }
     });
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
-      value: { interval: { id: `${panelSessionId}:interval-1` }, evidence: [{ eventId: "pre-clear", sequence: 1 }] }
+      value: {
+        interval: { id: `${panelSessionId}:interval-2` },
+        evidence: [
+          { eventId: "during-clear", sequence: 3 },
+          { eventId: "post-fallback", sequence: 4 }
+        ]
+      }
     });
     await history.close();
   });

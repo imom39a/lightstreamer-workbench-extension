@@ -124,7 +124,7 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
       await history.close();
     });
 
-    it("keeps clear-race captures terminal when the pending commit fails", async () => {
+    it("keeps clear-race Capture ordered when a pending commit falls back to memory", async () => {
       let releaseCommit!: () => void;
       let commitStarted!: () => void;
       const commitGate = new Promise<void>((resolve) => {
@@ -155,33 +155,30 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
 
       releaseCommit();
 
-      await expect(clear).resolves.toMatchObject({
-        ok: false,
-        problem: { code: "HISTORY_STOPPED" }
-      });
+      await expect(clear).resolves.toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
       await expect(inFlight.settled).resolves.toMatchObject({
-        outcome: "NOT_EVIDENCE",
-        problem: { code: "JOURNAL_COMMIT_FAILED" },
-        committedEvidenceBoundary: { sequence: 1, eventId: "clear-failure-before" }
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 2, eventId: "clear-failure-in-flight" }
       });
       await expect(duringClear.settled).resolves.toMatchObject({
-        outcome: "NOT_EVIDENCE",
-        problem: { code: "JOURNAL_COMMIT_FAILED" },
-        committedEvidenceBoundary: { sequence: 1, eventId: "clear-failure-before" }
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 3, eventId: "clear-failure-during", intervalId: expect.stringContaining(":interval-2") }
       });
-      const afterTerminal = history.offer(candidate("clear-failure-after"));
-      expect(afterTerminal.intake).toBe("REFUSED");
-      await expect(afterTerminal.settled).resolves.toMatchObject({
-        outcome: "NOT_EVIDENCE",
-        problem: { code: "JOURNAL_COMMIT_FAILED" },
-        committedEvidenceBoundary: { sequence: 1, eventId: "clear-failure-before" }
+      const afterFallback = history.offer(candidate("clear-failure-after"));
+      expect(afterFallback.intake).toBe("QUEUED");
+      await expect(afterFallback.settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 4, eventId: "clear-failure-after" }
       });
       await expect(history.read({})).resolves.toMatchObject({
         ok: true,
         value: {
-          interval: { ordinal: 1 },
-          evidence: [expect.objectContaining({ eventId: "clear-failure-before", sequence: 1 })],
-          committedEvidenceBoundary: { sequence: 1, eventId: "clear-failure-before" }
+          interval: { ordinal: 2 },
+          evidence: [
+            expect.objectContaining({ eventId: "clear-failure-during", sequence: 3 }),
+            expect.objectContaining({ eventId: "clear-failure-after", sequence: 4 })
+          ],
+          committedEvidenceBoundary: { sequence: 4, eventId: "clear-failure-after" }
         }
       });
       await history.close();

@@ -48,13 +48,31 @@ describe("authoritative panel performance harness history seam", () => {
     await inner.close();
   });
 
-  it("rejects a refused receipt and unsubscribes instead of hanging", async () => {
+  it("waits through three failed commits, accepts memory Evidence, and unsubscribes", async () => {
+    let attempts = 0;
     const inner = await createMemoryEventHistoryForTests({
-      commitBatch: async () => { throw new Error("commit rejected"); }
+      commitBatch: async () => {
+        attempts += 1;
+        throw new Error("commit rejected");
+      }
     });
     const observed = observableHistory(inner);
 
-    await expect(offerAndAwaitCommitted(observed.history, [candidate("rejected")])).rejects.toThrow(/not committed|terminal/);
+    await expect(offerAndAwaitCommitted(observed.history, [candidate("memory-evidence")])).resolves.toMatchObject({
+      sequence: 1,
+      eventId: "memory-evidence"
+    });
+    expect(attempts).toBe(3);
+    expect(inner.status()).toMatchObject({
+      phase: "RUNNING",
+      persistence: {
+        mode: "MEMORY_ONLY",
+        commitAttempts: 3,
+        retryCount: 2,
+        failureCount: 3
+      },
+      continuity: { state: "CONTIGUOUS", gapCount: 0 }
+    });
     expect(observed.activeSubscriptions()).toBe(0);
     await inner.close();
   });

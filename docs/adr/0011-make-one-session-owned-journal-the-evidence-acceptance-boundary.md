@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Make one session-owned journal the Evidence acceptance boundary
+
+Superseded in part by [ADR 0014](0014-continue-event-history-with-rolling-retention.md). Panel Session ownership, ordered Evidence acceptance, exact Clear cuts, and controlled cleanup remain; fixed-adapter and fail-closed capacity/failure behavior do not.
 
 Workbench will use one Event History owned by each Panel Session as the acceptance boundary for Evidence. A captured event is not Evidence, does not extend the Committed Evidence Boundary, and cannot influence Topology or COMMAND projections until a successful ordered journal transaction accepts it. The journal publishes only committed Evidence in Capture order, and reads and replay use committed snapshots. This is the implementation contract for the later production cutover; this documentation increment does not change the current shipped architecture.
 

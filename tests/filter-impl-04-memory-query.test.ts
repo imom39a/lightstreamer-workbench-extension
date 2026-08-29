@@ -126,18 +126,28 @@ describe("in-memory Evidence Snapshot reads", () => {
     expect(result.ok && result.value.page.evidence[0]?.identity.eventId).toBe("event-1");
   });
 
-  it("returns one final exact terminal snapshot and refuses later capture", async () => {
+  it("advances a one-record Retained Range while later Capture continues", async () => {
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "filter-impl-04-terminal-snapshot",
       capacityTier: "LOWER",
       capacity: { maxRetainedCount: 1, retainedWarningCount: 1 }
     });
     await history.offer(event("event-1", 1)).settled;
-    const refused = history.offer(event("event-2", 2));
-    await expect(refused.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE" });
+    const crossing = history.offer(event("event-2", 2));
+    await expect(crossing.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "event-2" }
+    });
 
     const final = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
-    expect(final).toMatchObject({ ok: true, value: { totals: { matching: 1, inScope: 1 }, coverage: "LIMITED" } });
-    expect(history.status().phase).toBe("STOPPED");
+    expect(final).toMatchObject({
+      ok: true,
+      value: {
+        totals: { matching: 1, inScope: 1 },
+        coverage: "LIMITED",
+        page: { evidence: [expect.objectContaining({ identity: expect.objectContaining({ eventId: "event-2", sequence: 2 }) })] }
+      }
+    });
+    expect(history.status()).toMatchObject({ phase: "RUNNING", accepted: 2, retained: 1 });
   });
 });

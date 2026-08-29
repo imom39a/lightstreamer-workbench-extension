@@ -4,7 +4,8 @@ import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   createMemoryEventHistoryForTests,
   type EvidenceCandidate,
-  type EventHistory
+  type EventHistory,
+  type HistoryPublication
 } from "../src/core/event-history-authoritative";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
 import {
@@ -158,10 +159,14 @@ describe("history-impl-09 Local Injection committed Evidence boundary", () => {
   });
 
   it("keeps DELIVERED independent when synthetic Evidence is NOT_EVIDENCE", async () => {
-    const history = createAuthoritativeHistory({
-      precommitted: commandHistory,
-      decideOffer: (candidate) => (isSyntheticCandidate(candidate) ? "refuse" : "commit")
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-09-local-injection-gap",
+      byteEstimator: (candidate) => isSyntheticCandidate(candidate) ? 1_001 : 5,
+      capacity: { maxRetainedCount: 100, maxRetainedBytes: 1_000 }
     });
+    for (const event of commandHistory) await history.offer(event).settled;
+    const publications: HistoryPublication[] = [];
+    history.follow({ from: "NOW" }, (publication) => publications.push(publication));
     const executor = { execute: vi.fn(async () => successResult("not-retained-1")) };
     const runtime = createWorkbenchRuntime({
       history,
@@ -181,8 +186,30 @@ describe("history-impl-09 Local Injection committed Evidence boundary", () => {
     expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=1");
     expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).not.toContain("qty=17");
     expect(runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId).toBeUndefined();
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "acceptance-gap",
+      gap: expect.objectContaining({
+        captureOrdinal: 7,
+        eventId: "synthetic-not-retained-1",
+        candidateBytes: 1_001,
+        dimension: "RETAINED_BYTES",
+        afterEvidence: expect.objectContaining({ sequence: 6, eventId: "source-6" })
+      })
+    }));
+
+    await expect(history.offer(commandEvent("later-7", "client-status")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 7, eventId: "later-7" }
+    });
+    expect(history.status()).toMatchObject({
+      phase: "RUNNING",
+      accepted: 7,
+      notAccepted: 1,
+      continuity: { state: "GAPPED", gapCount: 1 }
+    });
 
     runtime.dispose();
+    await history.close();
   });
 
   it("does not project a delivered Local Injection while its commit is delayed", async () => {
@@ -212,11 +239,11 @@ describe("history-impl-09 Local Injection committed Evidence boundary", () => {
     expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).not.toContain("qty=23");
 
     commit.resolve();
-    await flushAsync();
-
-    expect(runtime.getSnapshot().localInjection.draft?.outcome).toMatchObject({
-      disposition: "delivered",
-      headline: "DELIVERED LOCALLY"
+    await vi.waitFor(() => {
+      expect(runtime.getSnapshot().localInjection.draft?.outcome).toMatchObject({
+        disposition: "delivered",
+        headline: "DELIVERED LOCALLY"
+      });
     });
     expect((await syntheticEvidence(history)).map(({ eventId }) => eventId)).toEqual([
       "synthetic-delayed-1"

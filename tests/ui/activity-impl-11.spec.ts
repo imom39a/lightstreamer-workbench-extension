@@ -93,12 +93,12 @@ test("Activity keeps a clock discontinuity explicit instead of inventing elapsed
   ).toContainText("Timeline unavailable across a clock change");
 });
 
-test("Activity summary retains terminal Coverage and exact counts", async ({ page }) => {
-  await prepareScenario(page, "activity-terminal", "dark");
+test("Activity summary remains useful after rolling retention", async ({ page }) => {
+  await prepareScenario(page, "activity-rolling-retention", "dark");
   const summary = await openSummary(page);
 
-  await expect(summary).toContainText("LIMITED observation Coverage");
-  await expect(summary.getByRole("status")).toContainText("terminal Committed Evidence Boundary");
+  await expect(summary).toContainText("USEFUL observation Coverage");
+  await expect(summary).toContainText("Committed read point");
   await expect(summary.getByRole("table", { name: "Activity counts" })).toBeVisible();
 });
 

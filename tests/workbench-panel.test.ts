@@ -396,6 +396,38 @@ describe("React Workbench Diagnose panel", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
   });
 
+  it("renders independent operating status fields without weakening the History meter", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const runtime = createTestRuntime(snapshot({
+      retention: {
+        ...base.retention,
+        historyStatus: {
+          ...base.retention.historyStatus,
+          captured: 10_000,
+          accepted: 10_000,
+          retained: 10_000
+        }
+      }
+    }));
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const operating = rootElement.querySelector<HTMLElement>(".workbench-react__operating");
+    expect(operating?.querySelector(".workbench-react__operating-capture")?.textContent).toBe("Capture RUNNING");
+    expect(operating?.querySelector(".workbench-react__operating-coverage")?.textContent).toBe("Coverage USEFUL");
+    expect(operating?.querySelector(".workbench-react__operating-history")?.textContent).toBe(
+      "10,000/10,000 Evidence · IndexedDB"
+    );
+    expect(operating?.querySelector(".workbench-react__operating-history")?.getAttribute("aria-label")).toBe(
+      "10,000 retained Evidence of 10,000 accepted"
+    );
+    expect(operating?.querySelector(".workbench-react__operating-view")?.textContent).toBe("View FOLLOW LIVE");
+
+    await act(async () => root.unmount());
+  });
+
   it("renders a promoted COMMAND projection comparison with distinct complete bases", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
@@ -1122,7 +1154,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("routes retained-window controls and complete scoped Evidence copy through runtime commands", async () => {
+  it("routes retained-window controls and retained scoped Evidence copy through runtime commands", async () => {
     const base = snapshot();
     const operationsSnapshot = {
       ...base,
@@ -1153,7 +1185,7 @@ describe("React Workbench Diagnose panel", () => {
       Support: "https://imom39a.github.io/lightstreamer-workbench-extension/support/"
     });
     expect(document.body.textContent).not.toContain("Usage analytics");
-    await click("Copy complete scoped Evidence");
+    await click("Copy retained scoped Evidence");
     expect(runtime.commands).toEqual(expect.arrayContaining([
       { type: "show-oldest-evidence" },
       { type: "show-older-evidence" },
@@ -1191,7 +1223,7 @@ describe("React Workbench Diagnose panel", () => {
     const root = createRoot(document.querySelector("#app")!);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
-    expect(document.body.textContent).toContain("Reading Complete History: 1 of 4 Evidence");
+    expect(document.body.textContent).toContain("Reading retained Evidence: 1 of 4 Evidence");
     expect(document.body.textContent).toContain("1 accepted after the latched boundary excluded");
     expect(document.querySelector('[role="status"][aria-busy="true"]')).not.toBeNull();
     const cancelCopy = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Cancel copy");
@@ -1199,7 +1231,7 @@ describe("React Workbench Diagnose panel", () => {
     expect(runtime.commands).toContainEqual({ type: "cancel-evidence-operation" });
 
     await act(async () => runtime.setSnapshot({ ...runtime.getSnapshot(), contextId: "context:export" }));
-    expect(document.body.textContent).toContain("Preparing Complete History export: 1 of 4 Evidence");
+    expect(document.body.textContent).toContain("Preparing retained-Evidence export: 1 of 4 Evidence");
     const cancelExport = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Cancel export");
     await act(async () => cancelExport?.click());
     expect(runtime.commands.filter(({ type }) => type === "cancel-evidence-operation")).toHaveLength(2);

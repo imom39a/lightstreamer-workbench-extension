@@ -301,7 +301,7 @@ describe("filter-impl-09 durable public-result parity", () => {
     } finally { await Promise.all([memory.close(), durable.close()]); }
   });
 
-  it("preserves unsupported/read-point, Clear invalidation, terminal final reads, and lower fallback semantics", async () => {
+  it("preserves unsupported/read-point, Clear invalidation, rolling retention, and lower fallback semantics", async () => {
     const { memory, durable } = await paired(`filter-impl-09-lifecycle-${Date.now()}`);
     const first = await memory.query!(requestAt("LATEST_COMMITTED", emptyFilter(), [{ facet: "key", size: 10 }]));
     expect(first.ok).toBe(true);
@@ -331,13 +331,11 @@ describe("filter-impl-09 durable public-result parity", () => {
       const secondCandidate = event("lower-two", 2, "lower-two");
       const firstReceipts = [lowerMemory.offer(firstCandidate), lowerDurable.offer(firstCandidate)];
       expect((await Promise.all(firstReceipts.map((receipt) => receipt.settled))).every((result) => result.outcome === "BECAME_EVIDENCE")).toBe(true);
-      const terminalReceipts = [lowerMemory.offer(secondCandidate), lowerDurable.offer(secondCandidate)];
-      const terminalResults = await Promise.all(terminalReceipts.map((receipt) => receipt.settled));
-      expect(terminalResults.every((result) => result.outcome === "NOT_EVIDENCE")).toBe(true);
-      expect(lowerMemory.status().phase).toBe("STOPPED");
-      expect(lowerDurable.status().phase).toBe("STOPPED");
-      expect(lowerMemory.status().terminal).toBeDefined();
-      expect(lowerDurable.status().terminal).toBeDefined();
+      const crossingReceipts = [lowerMemory.offer(secondCandidate), lowerDurable.offer(secondCandidate)];
+      const crossingResults = await Promise.all(crossingReceipts.map((receipt) => receipt.settled));
+      expect(crossingResults.every((result) => result.outcome === "BECAME_EVIDENCE")).toBe(true);
+      expect(lowerMemory.status()).toMatchObject({ phase: "RUNNING", accepted: 2, retained: 1 });
+      expect(lowerDurable.status()).toMatchObject({ phase: "RUNNING", accepted: 2, retained: 1 });
       const lowerExpected = await lowerMemory.query!(requestAt("LATEST_COMMITTED", emptyFilter(), [{ facet: "key", size: 10 }]));
       const lowerActual = await lowerDurable.query!(requestAt("LATEST_COMMITTED", emptyFilter(), [{ facet: "key", size: 10 }]));
       expect(lowerExpected.ok).toBe(true);
@@ -345,6 +343,7 @@ describe("filter-impl-09 durable public-result parity", () => {
       if (lowerExpected.ok && lowerActual.ok) {
         expectPublicParity(lowerActual.value, lowerExpected.value);
         expect(lowerActual.value.coverage).toBe("LIMITED");
+        expect(lowerActual.value.page.evidence[0]?.identity).toMatchObject({ eventId: "lower-two", sequence: 2 });
       }
     } finally { await Promise.all([lowerMemory.close(), lowerDurable.close()]); }
 

@@ -9,6 +9,8 @@ import { createPlaywrightLaunchOptions } from "./scripts/chrome-launch-args.mjs"
 const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const selectedTheme = parseTheme(process.env.LSEW_UI_THEME ?? "auto");
 const viewport = parseViewport(process.env.LSEW_UI_VIEWPORT ?? "1280x800");
+const uiPort = parsePort(process.env.LSEW_UI_PORT ?? "4173");
+const uiBaseUrl = `http://127.0.0.1:${uiPort}`;
 const chromeExecutable = resolveChromeExecutable();
 
 export default defineConfig({
@@ -30,7 +32,7 @@ export default defineConfig({
   updateSnapshots: process.env.LSEW_UI_UPDATE === "1" ? "all" : "none",
   reporter: [["list"], ["html", { outputFolder: "test-results/ui-report", open: "never" }]],
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: uiBaseUrl,
     colorScheme: selectedTheme === "auto" ? null : selectedTheme,
     headless: true,
     screenshot: "only-on-failure",
@@ -44,7 +46,7 @@ export default defineConfig({
   },
   webServer: {
     command: "node scripts/ui-panel-server.mjs",
-    url: "http://127.0.0.1:4173/index.html",
+    url: `${uiBaseUrl}/index.html`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000
   }
@@ -65,6 +67,14 @@ function parseViewport(value: string): { width: number; height: number } {
     throw new Error(`Unsupported UI viewport ${JSON.stringify(value)}. Use WIDTHxHEIGHT.`);
   }
   return { width, height };
+}
+
+function parsePort(value: string): number {
+  const port = Number(value);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`Unsupported UI port ${JSON.stringify(value)}. Use an integer from 1 to 65535.`);
+  }
+  return port;
 }
 
 function resolveChromeExecutable(): string | undefined {

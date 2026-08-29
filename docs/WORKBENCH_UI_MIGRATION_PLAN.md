@@ -23,17 +23,17 @@ The current repository has one panel implementation and one production artifact.
 ## Current Event History outcome
 
 The production panel now gives each Panel Session exactly one temporary Event
-History. The normal IndexedDB journal allows 100,000 Evidence records or 256 MiB
-of retained serialized journal bytes; startup memory fallback allows 5,000
-records or 32 MiB. The adapter is selected before the first offer and is never
-switched during the session. Fallback changes History Capacity only, not Capture
-Operation, Observation Coverage, or Live/Frozen state.
+History. ADR 0014 supersedes the fixed-adapter and fail-closed details recorded by
+the original migration: normal retention rolls at 100,000 Evidence records or
+256 MiB, memory-backed retention rolls at 5,000 records or 32 MiB, and a running
+session can continue in memory after bounded journal retry. This changes neither
+Observation Coverage nor Live/Frozen state by itself.
 
-Complete History is qualified by the current History Interval's Committed
-Evidence Boundary. Clear is an exact interval cut after accepted work settles;
-it cannot restart a stopped history. Capacity pressure or journal failure stops
-acceptance fail-closed at the final committed boundary, and failed, refused, or
-discarded candidates never become Evidence or advance projections.
+Complete History is qualified by the current History Interval, Committed Evidence
+Boundary, and absence of an Evidence Gap. Clear is an exact interval cut after
+accepted work settles. Retention advance and journal degradation do not stop
+later acceptance; a candidate that cannot enter any canonical segment is
+reported as an exact gap and never advances projections.
 
 Controlled Close makes a final intake cut, attempts erasure, and reports whether
 erasure and cleanup were confirmed. A crash, renderer termination, extension
@@ -134,7 +134,7 @@ Visual compatibility means conformance to the accepted prototype and UI standard
 | --- | --- | --- |
 | Capture | Remains observational; never alters or suppresses application updates or messages. Capture operation stays distinct from Coverage and Live/Frozen view state. | Shared Capture scenarios plus unpacked-extension fixture. |
 | Official Web Client instrumentation | Existing MAIN-world instrumentation and typed bridge envelopes remain unchanged unless separately approved. React never enters inspected-page code. | Build bundle audit and official-client fixture. |
-| Event history | Ordered IndexedDB batches, in-memory fallback, current Panel Session ownership, exact History Interval cuts, qualified Complete History through the Committed Evidence Boundary, fail-closed stopping, and guarded cleanup remain intact. | In-memory and IndexedDB sustained-Capture, Clear/Close, terminal, and lifecycle scenarios. |
+| Event history | Ordered IndexedDB batches, bounded in-memory continuation, current Panel Session ownership, rolling Retained Range, exact History Interval cuts, explicit Evidence Gaps, and guarded cleanup remain intact. | In-memory and IndexedDB sustained-Capture, rollover, retry/fallback, gap, Clear/Close, and lifecycle scenarios. |
 | Scope and Topology | Structural Topology chooses Scope; Evidence selection never silently changes it. Retired objects remain readable but cannot be targets. | Live, retired, limited-Coverage, and disconnected scenarios. |
 | COMMAND projections | Observed Server uses captured Server Updates only. Local Effective additionally applies successful Local Injected Updates. Names and provenance never collapse. | Projection comparison and lifecycle scenarios. |
 | Local Injection | Forks an immutable Source into one prospective Draft, remains local and Subscription-scoped, validates the exact live target, and uses the existing delivery path. | Draft, stale-target, delivered, partial-failure, and acknowledgement-loss scenarios plus extension fixture. |

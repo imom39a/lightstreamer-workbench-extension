@@ -841,19 +841,19 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
 
   useLayoutEffect(() => {
     if (["error", "refused", "cancelled"].includes(snapshot.evidenceCopy.state)) {
-      setScopedCopyStatus(snapshot.evidenceCopy.error ?? "Complete scoped Evidence was not copied.");
+      setScopedCopyStatus(snapshot.evidenceCopy.error ?? "Retained scoped Evidence was not copied.");
       dispatch(runtime, { type: "clear-scoped-evidence-copy" });
       return;
     }
     if (snapshot.evidenceCopy.state !== "ready" || !snapshot.evidenceCopy.text) return;
     if (!navigator.clipboard?.writeText) {
-      setScopedCopyStatus("Could not copy complete scoped Evidence.");
+      setScopedCopyStatus("Could not copy retained scoped Evidence.");
       dispatch(runtime, { type: "clear-scoped-evidence-copy" });
       return;
     }
     void navigator.clipboard.writeText(snapshot.evidenceCopy.text).then(
-      () => setScopedCopyStatus(`Copied complete scoped Evidence (${snapshot.evidenceCopy.eventCount.toLocaleString()} events).`),
-      () => setScopedCopyStatus("Could not copy complete scoped Evidence.")
+      () => setScopedCopyStatus(`Copied retained scoped Evidence (${snapshot.evidenceCopy.eventCount.toLocaleString()} events).`),
+      () => setScopedCopyStatus("Could not copy retained scoped Evidence.")
     ).finally(() => dispatch(runtime, { type: "clear-scoped-evidence-copy" }));
   }, [snapshot.evidenceCopy]);
 
@@ -1777,9 +1777,15 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       }}
     >
       <header className="workbench-react__operating">
-        <strong>Capture {captureOperation}</strong>
-        <span data-condition={coverage.toLowerCase()}>Coverage {coverage}</span>
-        <span>View {evidenceMode}{newerCount ? ` · ${newerCount.toLocaleString()} newer` : ""}</span>
+        <strong className="workbench-react__operating-capture">Capture {captureOperation}</strong>
+        <span className="workbench-react__operating-coverage" data-condition={coverage.toLowerCase()}>Coverage {coverage}</span>
+        <span
+          className="workbench-react__operating-history"
+          data-history-status
+          aria-label={`${historyStatus.retained.toLocaleString()} retained Evidence of ${historyStatus.accepted.toLocaleString()} accepted`}
+          title={`${historyStatus.retained.toLocaleString()} retained Evidence of ${historyStatus.accepted.toLocaleString()} accepted`}
+        >{historyStatus.retained.toLocaleString()}/{historyStatus.accepted.toLocaleString()} Evidence · {snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}</span>
+        <span className="workbench-react__operating-view">View {evidenceMode}{newerCount ? ` · ${newerCount.toLocaleString()} newer` : ""}</span>
         <div className="workbench-react__operating-actions">
           <button type="button" aria-label="Back investigation" disabled={!snapshot.evidence.restoration.canBack} onClick={() => dispatch(runtime, { type: "back-investigation" })}>Back</button>
           <button type="button" aria-label="Forward investigation" disabled={!snapshot.evidence.restoration.canForward} onClick={() => dispatch(runtime, { type: "forward-investigation" })}>Forward</button>
@@ -1961,13 +1967,13 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
               <p>The current Panel Session owns one temporary Event History using <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong>. Closing attempts controlled erasure; abnormal termination relies on guarded cleanup, and residual data may remain until the extension next runs.</p>
               {geometry === "compact" ? <section><h3>Panel appearance</h3><label htmlFor="workbench-actions-theme">Panel theme</label><select id="workbench-actions-theme" value={snapshot.theme} onChange={(event) => dispatch(runtime, { type: "set-theme", theme: event.currentTarget.value as "auto" | "dark" | "light" })}><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select></section> : null}
-              <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}).</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading Complete History: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy complete scoped Evidence</button>}</section>
+              <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}).</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading retained Evidence: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy retained scoped Evidence</button>}</section>
               <section className="workbench-react__operations-danger"><h3>Clear retained Evidence</h3><p>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>{snapshot.retention.clearState === "confirming" ? <div className="workbench-react__confirmation"><strong>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button className="workbench-react__confirmation-primary" type="button" onClick={() => dispatch(runtime, { type: "confirm-clear-history" })}>Clear retained events</button><button type="button" onClick={() => dispatch(runtime, { type: "cancel-clear-history" })}>Keep Evidence</button></div></div> : <button type="button" onClick={() => dispatch(runtime, { type: "request-clear-history" })}>Clear retained Evidence…</button>}</section>
               <section><h3>Help &amp; resources</h3><p>Open first-party guides and reporting routes for this Workbench release.</p><nav className="workbench-react__resource-links" aria-label="Help and resources">{WORKBENCH_PUBLIC_RESOURCES.map((resource) => <a className="workbench-react__resource-link" href={resource.href} target="_blank" rel="noopener noreferrer" key={resource.href}>{resource.label}</a>)}</nav></section>
-              <section><h3>Scoped export</h3><p>Prepare a versioned download for the current Scope. Credentials are always excluded.</p>{snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing Complete History export: {(snapshot.export.operation.progress.completed ?? 0).toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence · {snapshot.export.operation.progress.excludedAfterLatch} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : <button ref={exportTrigger} type="button" onClick={() => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); }}>Export Scope…</button>}</section>
+              <section><h3>Scoped export</h3><p>Prepare a versioned download for the current Scope. Credentials are always excluded.</p>{snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing retained-Evidence export: {(snapshot.export.operation.progress.completed ?? 0).toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence · {snapshot.export.operation.progress.excludedAfterLatch} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : <button ref={exportTrigger} type="button" onClick={() => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); }}>Export Scope…</button>}</section>
             </section> : contextMode === "export" ? <section className="workbench-react__export" aria-label="Scoped export options">
               <p>Download the current Scope as versioned JSON or offline HTML. Credentials are always excluded.</p>
-              {snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing Complete History export: {snapshot.export.operation.progress.completed.toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : null}
+              {snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing retained-Evidence export: {snapshot.export.operation.progress.completed.toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : null}
               {snapshot.export.operation && snapshot.export.operation.state !== "preparing" && snapshot.export.operation.error ? <p className="workbench-react__copy-status" role="status">{snapshot.export.operation.error} {snapshot.export.operation.recovery ?? ""}</p> : null}
               <fieldset><legend>Redact sensitive categories</legend>{TOPOLOGY_SENSITIVE_CATEGORIES.map((category) => <label key={category}><input type="checkbox" checked={snapshot.export.redactions.includes(category)} onChange={(event) => toggleExportRedaction(category, event.currentTarget.checked)} />{sensitiveCategoryLabel(category)} ({snapshot.export.sensitiveCounts[category].toLocaleString()})</label>)}</fieldset>
               <label><input type="checkbox" checked={snapshot.export.completeEvidence} onChange={(event) => setCompleteEvidence(event.currentTarget.checked)} />Include complete establishment and COMMAND generation evidence</label>

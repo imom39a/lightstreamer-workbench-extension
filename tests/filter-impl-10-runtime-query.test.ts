@@ -432,7 +432,7 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
     await history.close();
   });
 
-  it("publishes LIMITED investigation coverage after a terminal history boundary", async () => {
+  it("keeps investigation available after the Retained Range rolls", async () => {
     const history = createInMemoryEventHistory({
       panelSessionId: `runtime-terminal-coverage-${Date.now()}`,
       capacity: { maxRetainedCount: 1 }
@@ -441,12 +441,13 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
     const runtime = createWorkbenchRuntime({ history });
     await flushStorage();
     await waitForReady(runtime);
-    await history.offer(event("terminal-rejected")).settled;
+    await expect(history.offer(event("rolling-second")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
     await flushStorage();
     await waitForReady(runtime);
-    expect(runtime.getSnapshot().capture).toMatchObject({ operation: "STOPPED", coverage: "LIMITED" });
+    expect(runtime.getSnapshot().capture).toMatchObject({ operation: "RUNNING", coverage: "USEFUL" });
     expect(projection(runtime)).toMatchObject({ queryState: "ready" });
-    expect((runtime.getSnapshot().evidence.investigation as { coverage: string }).coverage).toBe("LIMITED");
+    expect((runtime.getSnapshot().evidence.investigation as { coverage: string }).coverage).toBe("COMPLETE");
+    expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(["rolling-second"]);
     runtime.dispose();
     await history.close();
   });

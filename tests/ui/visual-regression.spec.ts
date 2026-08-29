@@ -262,7 +262,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     }
     case "diagnostics": {
       const diagnostics = page.getByLabel("Workbench diagnostic entries");
-      await expect(diagnostics).toContainText("3 diagnostics · Scroll to review all");
+      await expect(diagnostics).toContainText("2 diagnostics · Scroll to review all");
       await diagnostics.focus();
       const overflows = await diagnostics.evaluate((element) => element.scrollHeight > element.clientHeight);
       if (overflows) {

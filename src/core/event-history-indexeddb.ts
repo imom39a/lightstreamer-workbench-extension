@@ -1,9 +1,7 @@
 import {
-  admissionFailure,
   defaultHistoryTimer,
   estimateHistoryCandidateBytes,
   historyCapacityLimits,
-  pendingAgeFailure,
   pressureFor,
   type HistoryCapacityOptions,
   type HistoryCapacityTier,
@@ -49,6 +47,11 @@ import {
   type HistoryPublication,
   type HistoryFollowOptions,
   type HistoryStatus,
+  type HistoryAcceptanceGap,
+  type HistoryContinuityStatus,
+  type HistoryPersistenceStatus,
+  type HistoryRetentionAdvance,
+  type HistoryRetentionStatus,
   type Outcome,
   type CloseResult,
   type EventHistoryStorage,
@@ -62,7 +65,7 @@ import {
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
 import { extractEvidenceFacets, canonicalEvidenceSearchText, canonicalEvidenceSearchTextWithExtraction, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
-import { discoverFacetFromAccounting, discoverFacetFromAggregates, type DiscoveryAccountingEntry, type DiscoveryAggregateEntry } from "./evidence-filter-discovery";
+import { discoverFacet, discoverFacetFromAccounting, discoverFacetFromAggregates, type DiscoveryAccountingEntry, type DiscoveryAggregateEntry } from "./evidence-filter-discovery";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor, type EvidenceQueryCursor } from "./evidence-filter-cursor";
@@ -86,6 +89,8 @@ export const AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT = 256;
 export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 2_097_152;
 /** Commit transactions may fan out to Evidence, projection, posting, and aggregate indexes. */
 export const AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS = 30_000;
+const JOURNAL_COMMIT_MAX_ATTEMPTS = 3;
+const RETENTION_LOW_WATER_RATIO = 0.9;
 const EVIDENCE_FACET_COUNT = 12;
 // Persist exact words for every projection, but only materialize trigrams for
 // short semantic tokens. High-cardinality replay identifiers and JSON values
@@ -170,6 +175,29 @@ type PreparedEvidence = Readonly<{
   projection: QueryProjection;
   postings: readonly FacetPostingRecord[];
   aggregateValues: readonly Readonly<{ facet: string; facetIdentity: string; type: string; value: string; label: string; observation: Readonly<{ sequence: number; eventId: string }> }>[];
+}>;
+
+type VolatileEvidence = Readonly<{
+  evidence: CommittedEvidence;
+  capacityBytes: number;
+}>;
+
+type DurableRetentionEntry = Readonly<{
+  evidence: EvidenceRef;
+  replayPayloadBytes: number;
+  accountedBytes: number;
+  capacityBytes: number;
+}>;
+
+type RetentionTrimPlan = Readonly<{
+  cutoffSequence: number;
+  evictedCount: number;
+  evictedReplayPayloadBytes: number;
+  evictedAccountedBytes: number;
+  evictedCapacityBytes: number;
+  firstEvicted: EvidenceRef | null;
+  lastEvicted: EvidenceRef | null;
+  firstRetained: EvidenceRef | null;
 }>;
 
 type FacetAggregateCache = Map<string, AuthoritativeFacetAggregateRecord | null>;
@@ -278,7 +306,13 @@ export async function createIndexedDbEventHistory(
       });
       const ownedDatabase = database;
       const ownedHistory: EventHistory = {
-        ...baseHistory,
+        get storage(): EventHistoryStorage { return baseHistory.storage; },
+        status: baseHistory.status,
+        offer: baseHistory.offer,
+        read: baseHistory.read,
+        query: baseHistory.query,
+        clear: baseHistory.clear,
+        follow: baseHistory.follow,
         close: () => closeCurrent(baseHistory, ownedDatabase)
       };
       await startupSweep();
@@ -452,6 +486,7 @@ type LoadedJournal = {
   retainedCount: number;
   retainedRange: { first: EvidenceRef; last: EvidenceRef } | null;
   committedEvidenceBoundary: EvidenceRef | null;
+  durableRetentionEntries: readonly DurableRetentionEntry[];
 };
 
 type ReadLatch = Readonly<{
@@ -489,6 +524,27 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let durableAccountedBytes = loaded.durableAccountedBytes;
   let retainedCount = loaded.retainedCount;
   let retainedRange = loaded.retainedRange;
+  let durableRetainedCount = loaded.retainedCount;
+  let durableRetainedCapacityBytes = loaded.retainedBytes;
+  let durableRetainedRange = loaded.retainedRange;
+  let persistenceMode: "INDEXEDDB" | "MEMORY" = "INDEXEDDB";
+  let persistenceFailure: string | null = null;
+  let journalCommitAttempts = 0;
+  let journalRetryCount = 0;
+  let journalFailureCount = 0;
+  let journalLastFailureAt: number | null = null;
+  let journalLastProblem: HistoryProblem | undefined;
+  let evictedCount = 0;
+  let evictedBytes = 0;
+  let lastRetentionAdvance: HistoryRetentionAdvance | null = null;
+  let firstGap: HistoryAcceptanceGap | null = null;
+  let latestGap: HistoryAcceptanceGap | null = null;
+  let gapCount = 0;
+  const volatileEvidence: VolatileEvidence[] = [];
+  const durableRetentionEntries = [...loaded.durableRetentionEntries];
+  const capacityBytesBySequence = new Map(
+    durableRetentionEntries.map((entry) => [entry.evidence.sequence, entry.capacityBytes] as const)
+  );
   let generation = 0;
   let captured = Math.max(0, nextSequence - 1);
   let accepted = Math.max(0, nextSequence - 1);
@@ -523,8 +579,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   // not issue a read for every repeated facet identity. Cache entries are
   // published only after their containing journal transaction commits.
   const facetAggregateCache: FacetAggregateCache = new Map();
-  const capacityTier = options.capacityTier ?? "NORMAL";
-  const limits = historyCapacityLimits(capacityTier, options.capacity);
+  let capacityTier = options.capacityTier ?? "NORMAL";
+  let limits = historyCapacityLimits(capacityTier, options.capacity);
   const clock = options.clock ?? Date.now;
   const timer = options.timer ?? defaultHistoryTimer();
 
@@ -547,6 +603,40 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         const oldest = oldestAwaiting();
         return oldest ? Math.max(0, clock() - oldest.offeredAt) : null;
       })()
+    });
+  }
+
+  function persistenceStatus(): HistoryPersistenceStatus {
+    return deepFreeze({
+      mode: persistenceMode === "INDEXEDDB" ? "JOURNAL" : "MEMORY_ONLY",
+      health: persistenceMode === "INDEXEDDB" ? "HEALTHY" : "DEGRADED",
+      commitAttempts: journalCommitAttempts,
+      retryCount: journalRetryCount,
+      failureCount: journalFailureCount,
+      lastFailureAt: journalLastFailureAt,
+      ...(journalLastProblem ? { lastProblem: journalLastProblem } : {})
+    });
+  }
+
+  function continuityStatus(): HistoryContinuityStatus {
+    return deepFreeze({
+      state: gapCount > 0 ? "GAPPED" : "CONTIGUOUS",
+      gapCount,
+      firstGap,
+      latestGap
+    });
+  }
+
+  function retentionStatus(): HistoryRetentionStatus {
+    return deepFreeze({
+      policy: "ROLLING",
+      highWater: { count: limits.maxRetainedCount, bytes: limits.maxRetainedBytes },
+      lowWater: {
+        count: retentionLowWater(limits.maxRetainedCount),
+        bytes: retentionLowWater(limits.maxRetainedBytes)
+      },
+      evicted: { count: evictedCount, bytes: evictedBytes },
+      lastAdvance: lastRetentionAdvance
     });
   }
 
@@ -613,6 +703,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       accepted,
       notAccepted,
       retained: retainedCount,
+      retention: retentionStatus(),
+      persistence: persistenceStatus(),
+      continuity: continuityStatus(),
       ...(terminal ? { terminal } : {}),
       ...(lastCoherentQuery ? { lastCoherentQuery } : {})
     });
@@ -799,6 +892,177 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     notAccepted += 1;
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: problem("HISTORY_CLOSED", "Event History is closed."), committedEvidenceBoundary: currentBoundary() }) };
   }
+
+  function retentionLowWater(maximum: number): number {
+    if (maximum <= 0) return 0;
+    return Math.max(1, Math.floor(maximum * RETENTION_LOW_WATER_RATIO));
+  }
+
+  function adoptMemoryCapacity(): void {
+    capacityTier = "LOWER";
+    limits = historyCapacityLimits(capacityTier, options.capacity);
+  }
+
+  function retainedFirstReference(): EvidenceRef | null {
+    return durableRetainedRange?.first ?? volatileEvidence[0]?.evidence ?? null;
+  }
+
+  function refreshRetainedRange(): void {
+    const first = retainedFirstReference();
+    retainedRange = first && committedEvidenceBoundary
+      ? { first: { intervalId: first.intervalId, sequence: first.sequence, eventId: first.eventId }, last: committedEvidenceBoundary }
+      : null;
+  }
+
+  async function advanceRetentionIfNeeded(): Promise<import("./event-history-authoritative").HistoryRetentionAdvance | null> {
+    if (retainedCount <= limits.maxRetainedCount && retainedBytes <= limits.maxRetainedBytes) return null;
+    const previousRetainedRange = retainedRange;
+    if (!previousRetainedRange) return null;
+
+    const targetCount = retentionLowWater(limits.maxRetainedCount);
+    const targetBytes = retentionLowWater(limits.maxRetainedBytes);
+    const volatileCapacityBytes = volatileEvidence.reduce((total, entry) => total + entry.capacityBytes, 0);
+    const targetDurableCount = Math.max(0, targetCount - volatileEvidence.length);
+    const targetDurableBytes = Math.max(0, targetBytes - volatileCapacityBytes);
+    let removedCount = 0;
+    let removedBytes = 0;
+    let firstRemoved: EvidenceRef | null = null;
+    let lastRemoved: EvidenceRef | null = null;
+
+    if (
+      durableRetainedRange !== null
+      && (durableRetainedCount > targetDurableCount || durableRetainedCapacityBytes > targetDurableBytes)
+    ) {
+      const trim = persistenceMode === "INDEXEDDB"
+        ? await planJournalRetentionTrim(
+            database,
+            interval,
+            durableRetainedRange,
+            durableRetainedCount,
+            durableRetainedCapacityBytes,
+            targetDurableCount,
+            targetDurableBytes,
+            capacityBytesBySequence
+          )
+        : planCachedRetentionTrim(
+            durableRetentionEntries,
+            durableRetainedCount,
+            durableRetainedCapacityBytes,
+            targetDurableCount,
+            targetDurableBytes
+          );
+      if (trim.evictedCount > 0) {
+        const nextDurableCount = durableRetainedCount - trim.evictedCount;
+        const nextReplayPayloadBytes = Math.max(0, replayPayloadBytes - trim.evictedReplayPayloadBytes);
+        const nextDurableAccountedBytes = Math.max(0, durableAccountedBytes - trim.evictedAccountedBytes);
+        const nextDurableRange = trim.firstRetained && durableRetainedRange
+          ? { first: trim.firstRetained, last: durableRetainedRange.last }
+          : null;
+        if (persistenceMode === "INDEXEDDB") {
+          await applyJournalRetentionTrim(
+            database,
+            loaded.panelSessionId,
+            interval,
+            nextSequence,
+            committedEvidenceBoundary,
+            nextDurableRange,
+            nextDurableCount,
+            nextReplayPayloadBytes,
+            nextDurableAccountedBytes,
+            trim.cutoffSequence
+          );
+          durableAccountedBytes = nextDurableAccountedBytes;
+          facetAggregateCache.clear();
+        }
+        for (let sequence = durableRetainedRange.first.sequence; sequence <= trim.cutoffSequence; sequence += 1) {
+          capacityBytesBySequence.delete(sequence);
+        }
+        durableRetentionEntries.splice(0, trim.evictedCount);
+        durableRetainedCount = nextDurableCount;
+        durableRetainedCapacityBytes = Math.max(0, durableRetainedCapacityBytes - trim.evictedCapacityBytes);
+        durableRetainedRange = nextDurableRange;
+        replayPayloadBytes = nextReplayPayloadBytes;
+        retainedCount -= trim.evictedCount;
+        retainedBytes = Math.max(0, retainedBytes - trim.evictedCapacityBytes);
+        evictedCount += trim.evictedCount;
+        evictedBytes += trim.evictedCapacityBytes;
+        removedCount += trim.evictedCount;
+        removedBytes += trim.evictedCapacityBytes;
+        firstRemoved ??= trim.firstEvicted;
+        lastRemoved = trim.lastEvicted;
+      }
+    }
+
+    while (
+      volatileEvidence.length > 0
+      && (retainedCount > targetCount || retainedBytes > targetBytes)
+    ) {
+      const removed = volatileEvidence.shift()!;
+      retainedCount -= 1;
+      retainedBytes = Math.max(0, retainedBytes - removed.capacityBytes);
+      evictedCount += 1;
+      evictedBytes += removed.capacityBytes;
+      removedCount += 1;
+      removedBytes += removed.capacityBytes;
+      firstRemoved ??= toRef(removed.evidence);
+      lastRemoved = toRef(removed.evidence);
+    }
+    refreshRetainedRange();
+    if (removedCount === 0 || firstRemoved === null || lastRemoved === null) return null;
+    lastRetentionAdvance = deepFreeze({
+      interval,
+      occurredAt: clock(),
+      previousRetainedRange,
+      retainedRange,
+      evicted: { count: removedCount, bytes: removedBytes, first: firstRemoved, last: lastRemoved }
+    });
+    return lastRetentionAdvance;
+  }
+
+  function acceptVolatileBatch(batch: readonly Pending[], prepared: readonly PreparedEvidence[]): void {
+    for (const [index, entry] of batch.entries()) {
+      volatileEvidence.push({ evidence: prepared[index]!.evidence, capacityBytes: entry.bytes });
+    }
+  }
+
+  function refuseUnretainable(
+    candidate: EvidenceCandidate,
+    bytes: number,
+    dimension: HistoryAcceptanceGap["dimension"]
+  ): CaptureReceipt {
+    const captureOrdinal = captured + 1;
+    captured += 1;
+    notAccepted += 1;
+    rejectedCount += 1;
+    rejectedBytes += bytes;
+    const gap = deepFreeze({
+      interval,
+      captureOrdinal,
+      eventId: candidate.id,
+      candidateBytes: bytes,
+      occurredAt: clock(),
+      dimension,
+      afterEvidence: committedEvidenceBoundary
+    });
+    firstGap ??= gap;
+    latestGap = gap;
+    gapCount += 1;
+    const issue = dimension === "PENDING_BYTES"
+      ? problem("PENDING_OVERFLOW", `The candidate would exceed the ${limits.pendingStopBytes}-byte pending Capture budget; later Capture continues.`, { dimension })
+      : problem(
+          "CANDIDATE_UNRETAINABLE",
+          dimension === "RETAINED_COUNT"
+            ? "The candidate cannot enter a History configured to retain zero records."
+            : `The candidate requires ${bytes} accounted bytes, above the ${limits.maxRetainedBytes}-byte retention budget.`,
+          { dimension }
+        );
+    publish(deepFreeze({ type: "acceptance-gap" as const, interval, gap, status: status(issue), problem: issue }));
+    return {
+      intake: "REFUSED",
+      settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary })
+    };
+  }
+
   function clearBlockedProblem(): HistoryProblem {
     if (trigger) {
       return terminalProblem(trigger);
@@ -819,8 +1083,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       ageTimer = null;
       pressureChanged();
       const currentAge = measurements().oldestPendingAgeMs;
-      if (pendingAgeFailure(limits, currentAge)) beginDrain("PENDING_AGE_LIMIT", "PENDING_AGE", null);
-      else scheduleAgeCheck();
+      if (currentAge !== null && currentAge < limits.pendingAgeStopMs) scheduleAgeCheck();
     }, delay);
   }
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
@@ -837,18 +1100,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       const issue = problem("INVALID_CANDIDATE", error instanceof Error ? error.message : "Candidate is not valid Evidence input.");
       return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary: currentBoundary() }) };
     }
-    const failure = admissionFailure(limits, measurements(), bytes);
-    if (failure) {
-      notAccepted += 1;
-      rejectedCount += 1;
-      rejectedBytes += bytes;
-      beginDrain(failure.reason, failure.dimension, candidate.id);
-      const completion = terminalFinalization ?? terminalSettled;
-      const settled = completion
-        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary: currentBoundary() }))
-        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary: currentBoundary() });
-      return { intake: "REFUSED", settled };
-    }
+    if (limits.maxRetainedCount < 1) return refuseUnretainable(candidate, bytes, "RETAINED_COUNT");
+    if (bytes > limits.maxRetainedBytes) return refuseUnretainable(candidate, bytes, "RETAINED_BYTES");
+    if (awaitingBytes + bytes > limits.pendingStopBytes) return refuseUnretainable(candidate, bytes, "PENDING_BYTES");
     let resolve!: (result: ReceiptResult) => void;
     const settled = new Promise<ReceiptResult>((finish) => { resolve = finish; });
     const ordinal = captured + 1;
@@ -878,7 +1132,11 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       while (pending.length > 0 && (phase === "RUNNING" || phase === "DRAINING_TO_STOP")) {
         const batch: Pending[] = [];
         let batchSerializedBytes = 0;
-        while (pending.length > 0 && batch.length < AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT) {
+        const retentionBatchLimit = Math.max(1, Math.min(
+          AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT,
+          retentionLowWater(limits.maxRetainedCount) || 1
+        ));
+        while (pending.length > 0 && batch.length < retentionBatchLimit) {
           const next = pending[0];
           if (batch.length > 0 && batchSerializedBytes + next.serialized.bytes > AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES) break;
           batch.push(pending.shift()!);
@@ -889,73 +1147,159 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         let evidence: CommittedEvidence[] = [];
         let prepared: PreparedEvidence[] = [];
         let candidates: EvidenceCandidate[] = [];
-        try {
-          prepared = batch.map((entry, index) => {
-            const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
-            registerJournalOwnedCandidate(candidate, entry.serialized.payload);
-            const committed = toCommittedEvidence(candidate, interval, nextSequence + index);
-            return prepareEvidence(committed, entry.serialized, retainedCount + index >= SEARCH_TOKEN_FULL_INDEX_RECORD_LIMIT);
-          });
-          evidence = prepared.map((entry) => entry.evidence);
-          candidates = evidence.map((entry) => entry.candidate);
-          await options.failure?.commitBatch?.(candidates);
-          await options.commitBatch?.(candidates);
-          const controlPhase = phase === "RUNNING" ? "RUNNING" as const : "DRAINING_TO_STOP" as const;
-          const controlTerminal = controlPhase === "DRAINING_TO_STOP" ? terminalDiagnostic() : null;
-          const batchDurableAccountedBytes = batch.reduce((sum, entry) => sum + journalAccountedBytes(entry.serialized.bytes), 0);
-          await commitBatch(
-            database,
-            loaded.panelSessionId,
+        prepared = batch.map((entry, index) => {
+          const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
+          registerJournalOwnedCandidate(candidate, entry.serialized.payload);
+          const committed = toCommittedEvidence(candidate, interval, nextSequence + index);
+          return prepareEvidence(committed, entry.serialized, retainedCount + index >= SEARCH_TOKEN_FULL_INDEX_RECORD_LIMIT);
+        });
+        evidence = prepared.map((entry) => entry.evidence);
+        candidates = evidence.map((entry) => entry.candidate);
+        let durableCommit = false;
+        let commitFailure: unknown = null;
+        let failuresThisBatch = 0;
+        if (persistenceMode === "INDEXEDDB") {
+          for (let attempt = 1; attempt <= JOURNAL_COMMIT_MAX_ATTEMPTS; attempt += 1) {
+            journalCommitAttempts += 1;
+            try {
+              await options.failure?.commitBatch?.(candidates);
+              await options.commitBatch?.(candidates);
+              const batchDurableAccountedBytes = batch.reduce((sum, entry) => sum + journalAccountedBytes(entry.serialized.bytes), 0);
+              await commitBatch(
+                database,
+                loaded.panelSessionId,
+                interval,
+                nextSequence,
+                durableRetainedRange,
+                durableRetainedCount,
+                prepared,
+                facetAggregateCache,
+                replayPayloadBytes + batchSerializedBytes,
+                durableAccountedBytes + batchDurableAccountedBytes,
+                "RUNNING",
+                null
+              );
+              durableCommit = true;
+              if (failuresThisBatch > 0) {
+                publish(deepFreeze({
+                  type: "persistence-state" as const,
+                  interval,
+                  transition: "RECOVERED" as const,
+                  persistence: persistenceStatus(),
+                  status: status()
+                }));
+              }
+              break;
+            } catch (error) {
+              commitFailure = error;
+              failuresThisBatch += 1;
+              journalFailureCount += 1;
+              journalLastFailureAt = clock();
+              const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
+              journalLastProblem = problem(
+                reason,
+                describeJournalError(error),
+                { reason, dimension: "JOURNAL" }
+              );
+              if (attempt < JOURNAL_COMMIT_MAX_ATTEMPTS) journalRetryCount += 1;
+            }
+          }
+        }
+        if (persistenceMode === "INDEXEDDB" && !durableCommit) {
+          persistenceMode = "MEMORY";
+          adoptMemoryCapacity();
+          persistenceFailure = describeJournalError(commitFailure);
+          terminalFailureDetail = persistenceFailure;
+          publish(deepFreeze({
+            type: "persistence-state" as const,
             interval,
-            nextSequence,
-            retainedRange,
-            retainedCount,
-            prepared,
-            facetAggregateCache,
-            replayPayloadBytes + batchSerializedBytes,
-            durableAccountedBytes + batchDurableAccountedBytes,
-            controlPhase,
-            controlTerminal
-          );
-        } catch (error) {
-          const reason: HistoryTerminalReason = isQuotaError(error) ? "QUOTA_EXCEEDED" : "JOURNAL_COMMIT_FAILED";
-          terminalFailureDetail = describeJournalError(error);
-          const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.eventId ?? null, describeJournalError(error));
-          trigger = failedTrigger;
-          phase = "DRAINING_TO_STOP";
-          ensureTerminalSettled();
-          const discarded = [...batch, ...pending.splice(0)];
-          inFlight.length = 0;
-          awaitingCount -= discarded.length;
-          awaitingBytes -= discarded.reduce((total, entry) => total + entry.bytes, 0);
-          notAccepted += discarded.length;
-          discardedCount += discarded.length;
-          discardedBytes += discarded.reduce((sum, entry) => sum + entry.bytes, 0);
-          terminalReceipts.push(...discarded);
-          startTerminalPersistence();
-          finishTerminal();
-          break;
+            transition: "MEMORY_FALLBACK" as const,
+            persistence: persistenceStatus(),
+            status: status(journalLastProblem),
+            ...(journalLastProblem ? { problem: journalLastProblem } : {})
+          }));
+        }
+        if (!durableCommit) {
+          acceptVolatileBatch(batch, prepared);
         }
         nextSequence += evidence.length;
         replayPayloadBytes += batchSerializedBytes;
-        durableAccountedBytes += batch.reduce((sum, entry) => sum + journalAccountedBytes(entry.serialized.bytes), 0);
+        if (durableCommit) {
+          const batchDurableAccountedBytes = batch.reduce((sum, entry) => sum + journalAccountedBytes(entry.serialized.bytes), 0);
+          durableAccountedBytes += batchDurableAccountedBytes;
+          durableRetainedCount += evidence.length;
+          durableRetainedCapacityBytes += batchAccountedBytes;
+          durableRetainedRange = durableRetainedRange
+            ? { first: durableRetainedRange.first, last: toRef(evidence.at(-1)!) }
+            : { first: toRef(evidence[0]!), last: toRef(evidence.at(-1)!) };
+          for (const [index, entry] of batch.entries()) {
+            const reference = toRef(evidence[index]!);
+            const accountedBytes = journalAccountedBytes(entry.serialized.bytes);
+            capacityBytesBySequence.set(reference.sequence, entry.bytes);
+            durableRetentionEntries.push({
+              evidence: reference,
+              replayPayloadBytes: entry.serialized.bytes,
+              accountedBytes,
+              capacityBytes: entry.bytes
+            });
+          }
+        }
         inFlight.length = 0;
         awaitingCount -= batch.length;
         awaitingBytes -= batch.reduce((total, entry) => total + entry.bytes, 0);
         committedEvidenceBoundary = toRef(evidence.at(-1)!);
         retainedBytes += batchAccountedBytes;
         retainedCount += evidence.length;
-        retainedRange = retainedRange
-          ? { first: retainedRange.first, last: committedEvidenceBoundary }
-          : { first: toRef(evidence[0]), last: committedEvidenceBoundary };
+        refreshRetainedRange();
         generation += 1;
         accepted += evidence.length;
         const boundary = currentBoundary()!;
         publish(deepFreeze({ type: "committed-evidence" as const, interval, evidence, committedEvidenceBoundary: boundary }));
+        let retentionAdvance: HistoryRetentionAdvance | null = null;
+        try {
+          retentionAdvance = await advanceRetentionIfNeeded();
+        } catch (error) {
+          if (persistenceMode === "INDEXEDDB") {
+            persistenceMode = "MEMORY";
+            adoptMemoryCapacity();
+            persistenceFailure = describeJournalError(error);
+            journalFailureCount += 1;
+            journalLastFailureAt = clock();
+            journalLastProblem = problem("JOURNAL_COMMIT_FAILED", persistenceFailure, {
+              reason: "JOURNAL_COMMIT_FAILED",
+              dimension: "JOURNAL"
+            });
+            publish(deepFreeze({
+              type: "persistence-state" as const,
+              interval,
+              transition: "MEMORY_FALLBACK" as const,
+              persistence: persistenceStatus(),
+              status: status(journalLastProblem),
+              problem: journalLastProblem
+            }));
+            retentionAdvance = await advanceRetentionIfNeeded();
+          } else {
+            throw error;
+          }
+        }
+        if (retentionAdvance) {
+          for (const subscriber of [...subscribers]) {
+            if (subscriber.replaying && subscriber.cooperativeReplay) {
+              failCooperativeReplay(subscriber, replayFailure("Replay expired because retained History advanced."));
+            }
+          }
+          publish(deepFreeze({
+            type: "retention-advanced" as const,
+            interval,
+            previousRetainedRange: retentionAdvance.previousRetainedRange,
+            retainedRange: retentionAdvance.retainedRange,
+            evicted: retentionAdvance.evicted,
+            status: status()
+          }));
+        }
         for (const [index, entry] of batch.entries()) {
           const reference = toRef(evidence[index]);
-          if (phase === "DRAINING_TO_STOP") committedReceipts.push({ entry, evidence: reference });
-          else entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: reference });
+          entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: reference });
         }
         scheduleAgeCheck();
         pressureChanged();
@@ -995,7 +1339,11 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         })
       });
     }
-    return readJournal(database, latch, query).then((selected) => ({
+    const volatileSnapshot = volatileEvidence.map((entry) => entry.evidence);
+    const selectedRead = volatileSnapshot.length > 0
+      ? readHybridJournal(database, latch, query, volatileSnapshot)
+      : readJournal(database, latch, query);
+    return selectedRead.then((selected) => ({
       ok: true as const,
       value: deepFreeze({
         interval: latch.interval,
@@ -1040,17 +1388,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         await clearJournalRecords(database, loaded.panelSessionId, nextInterval, nextSequence, committedEvidenceBoundary);
         facetAggregateCache.clear();
       } catch (error) {
-        const clearFailureProblem = problem("HISTORY_STOPPED", error instanceof Error ? error.message : "The History Interval could not be cleared.");
-        if (phase === "RUNNING" && !terminal) {
-          phase = "DRAINING_TO_STOP";
-          trigger = makeTrigger("JOURNAL_COMMIT_FAILED", "JOURNAL", null);
-          rejectPostClearDuringClearFailure(terminalProblem(trigger));
-          startTerminalPersistence();
-          finishTerminal();
-        } else {
-          rejoinPostClearQueue();
-        }
-        const issue = problem("CLEAR_FAILED", clearFailureProblem.message);
+        rejoinPostClearQueue();
+        const issue = problem("CLEAR_FAILED", error instanceof Error ? error.message : "The History Interval could not be cleared.");
         publish({ type: "status", status: status(issue), problem: issue });
         return { ok: false, problem: issue };
       }
@@ -1061,6 +1400,18 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       replayPayloadBytes = 0;
       retainedBytes = 0;
       durableAccountedBytes = 0;
+      durableRetainedCount = 0;
+      durableRetainedCapacityBytes = 0;
+      durableRetainedRange = null;
+      durableRetentionEntries.length = 0;
+      volatileEvidence.length = 0;
+      capacityBytesBySequence.clear();
+      evictedCount = 0;
+      evictedBytes = 0;
+      lastRetentionAdvance = null;
+      gapCount = 0;
+      firstGap = null;
+      latestGap = null;
       lastNearLimit = false;
       generation += 1;
       rejoinPostClearQueue();
@@ -1443,15 +1794,17 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     });
   }
 
-  const storage: EventHistoryStorage = Object.freeze({ mode: "indexeddb" });
   const query: EvidenceFilterQueryAdapter["query"] = (request) => {
     if (phase === "CLOSED") return Promise.resolve(queryFailure("HISTORY_TERMINAL", "Event History is closed."));
-    return queryIndexedDb(database, loaded.panelSessionId, request, {
-      tier: options.capacityTier ?? "NORMAL",
-      fallback: null,
-      terminal: Boolean(terminal),
-      projectionStore: AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections
-    }).then((result) => {
+    const resultPromise = persistenceMode === "MEMORY"
+      ? queryHybridJournal(database, latchForCurrentInterval(), volatileEvidence.map((entry) => entry.evidence), request)
+      : queryIndexedDb(database, loaded.panelSessionId, request, {
+          tier: options.capacityTier ?? "NORMAL",
+          fallback: null,
+          terminal: Boolean(terminal),
+          projectionStore: AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections
+        });
+    return resultPromise.then((result) => {
       if (result.ok) {
         lastCoherentQuery = result.value;
       } else if (result.problem.code !== "QUERY_CANCELLED") {
@@ -1460,14 +1813,27 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       return result;
     });
   };
-  return { storage, status, offer, read, query, clear, follow, close };
+  return {
+    get storage(): EventHistoryStorage {
+      return persistenceMode === "INDEXEDDB"
+        ? Object.freeze({ mode: "indexeddb" })
+        : Object.freeze({ mode: "memory", reason: persistenceFailure ?? "IndexedDB became unavailable." });
+    },
+    status,
+    offer,
+    read,
+    query,
+    clear,
+    follow,
+    close
+  };
 }
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
   const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readonly");
   try {
     const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
-    await validateJournalRecords(
+    const durableRetentionEntries = await validateJournalRecords(
       panelSessionId,
       control,
       transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence),
@@ -1481,7 +1847,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
       await writeControl(database, createControl(panelSessionId, interval, "RUNNING", null, 1, null, null, 0, 0, 0));
-      return { panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, durableAccountedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null };
+      return { panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, durableAccountedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null, durableRetentionEntries };
     }
     if (control.phase === "DRAINING_TO_STOP") {
       if (!control.terminal) throw new Error("A draining history control must contain a terminal intent.");
@@ -1510,6 +1876,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
         retainedCount: control.retainedCount,
         retainedRange: control.retainedRange,
         committedEvidenceBoundary: control.committedEvidenceBoundary,
+        durableRetentionEntries,
       };
     }
     return {
@@ -1524,6 +1891,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       retainedCount: control.retainedCount,
       retainedRange: control.retainedRange,
       committedEvidenceBoundary: control.committedEvidenceBoundary,
+      durableRetentionEntries,
     };
   } catch (error) {
     try { transaction.abort(); } catch { /* the transaction may already be complete */ }
@@ -1578,6 +1946,220 @@ type IndexedDbQueryOptions = Readonly<{
   terminal: boolean;
   projectionStore: string;
 }>;
+
+function hybridQueryReadPoint(latch: ReadLatch): EvidenceReadPoint {
+  const identity = (reference: EvidenceRef): EvidenceIdentity => Object.freeze({
+    intervalId: reference.intervalId,
+    pageId: latch.interval.id,
+    ownerId: "memory-event-history",
+    sequence: reference.sequence,
+    eventId: reference.eventId
+  });
+  return Object.freeze({
+    interval: Object.freeze({ ...latch.interval }),
+    committedEvidenceBoundary: latch.committedEvidenceBoundary ? identity(latch.committedEvidenceBoundary) : null,
+    retainedRange: latch.retainedRange
+      ? Object.freeze({ first: identity(latch.retainedRange.first), last: identity(latch.retainedRange.last) })
+      : null
+  });
+}
+
+function hybridQueryTelemetry(pageSize: number): QueryTelemetryMutable {
+  return {
+    postingReads: 0, postingCandidates: 0, postingDriver: null, postingDriverCandidateCount: 0,
+    evidenceCursorReads: 0, payloadHydrations: 0, lookupPayloadHydrations: 0,
+    candidateBound: 0, pageBound: pageSize, retainedCount: 0, cursorWorkBound: 0, aroundCursorBound: 0,
+    findCursorBound: 0, findCursorReads: 0, fullRetainedScan: true, shortFindFallback: false, residualScan: true,
+    aroundIndexReads: 0, aroundCandidates: 0, aroundAnchorValidated: false, elapsedMs: 0,
+    projectionReads: 0, projectionCoverageReads: 0, fullEvidencePayloadHydrations: 0,
+    discoveryProjectionReads: 0, discoveryCandidateCount: 0, discoveryMaterializedValues: 0,
+    discoveryPostingValidationReads: 0, discoveryEvidencePayloadHydrations: 0, discoveryAggregateReads: 0,
+    discoveryAggregateObservationReads: 0, discoveryCompactIdentityCount: 0,
+    discoveryMaterializedCandidates: 0, discoveryMaterializationBound: 0
+  };
+}
+
+async function queryHybridJournal(
+  database: AuthoritativeEventDatabase,
+  latch: ReadLatch,
+  volatileEvidence: readonly CommittedEvidence[],
+  request: EvidenceQueryRequest
+): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
+  if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > MAX_EVIDENCE_PAGE_SIZE) {
+    return queryFailure("QUERY_FAILED", request.page.size > MAX_EVIDENCE_PAGE_SIZE ? `Page size must not exceed ${MAX_EVIDENCE_PAGE_SIZE}.` : "Page size must be a positive integer.");
+  }
+  if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was read.");
+  const startedAt = Date.now();
+  const telemetry = hybridQueryTelemetry(request.page.size);
+  const currentReadPoint = hybridQueryReadPoint(latch);
+  const readPoint = request.at === "LATEST_COMMITTED" ? currentReadPoint : request.at;
+  if (request.at !== "LATEST_COMMITTED") {
+    if (readPoint.interval.id !== latch.interval.id || readPoint.interval.ordinal !== latch.interval.ordinal) {
+      return queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.");
+    }
+    if (!readPointFitsCurrentInterval(readPoint, currentReadPoint)) {
+      return queryFailure("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.");
+    }
+  }
+
+  try {
+    const read = await readHybridJournal(database, latch, {}, volatileEvidence);
+    if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
+    const boundary = readPoint.committedEvidenceBoundary?.sequence ?? 0;
+    const retained = readPoint.retainedRange;
+    const retainedEntries = retained === null
+      ? []
+      : read.evidence.filter((entry) => entry.intervalId === readPoint.interval.id
+          && entry.sequence >= retained.first.sequence
+          && entry.sequence <= retained.last.sequence
+          && entry.sequence <= boundary);
+    const evidenceEntries = retainedEntries.filter((entry) => entry.candidate.kind !== "topology-checkpoint");
+    const entriesBySequence = new Map(evidenceEntries.map((entry) => [entry.sequence, entry]));
+    const records: SelectionRecord[] = evidenceEntries.map((entry) => deterministicQueryRecord(entry, latch.interval));
+    telemetry.retainedCount = records.length;
+    telemetry.cursorWorkBound = records.length;
+    telemetry.candidateBound = records.length;
+    telemetry.evidenceCursorReads = records.length;
+    telemetry.projectionReads = records.length;
+
+    const around = normalizeAround(request.filter.around, readPoint.retainedRange);
+    const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
+    if (around !== null) {
+      telemetry.aroundCursorBound = records.length;
+      telemetry.aroundIndexReads = records.length;
+      telemetry.aroundCandidates = records.filter((record) => isInAround(record, around)).length;
+    }
+    if (filter.around?.anchor) {
+      const anchor = records.find((record) => sameQueryIdentity(record.identity, filter.around!.anchor!));
+      if (!anchor || (filter.around.anchorSequence !== undefined && filter.around.anchorSequence !== anchor.identity.sequence)) {
+        return queryFailure("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.");
+      }
+      telemetry.aroundAnchorValidated = true;
+    }
+
+    let cursor: EvidenceQueryCursor | null;
+    try {
+      cursor = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
+    } catch (error) {
+      return queryFailure("QUERY_FAILED", error instanceof Error ? error.message : "The page cursor is invalid.");
+    }
+
+    const discoveries = new Map<string, FacetDiscoveryResult>();
+    const recordWithPayload = (record: SelectionRecord): SelectionRecord => {
+      const entry = entriesBySequence.get(record.identity.sequence);
+      if (!entry) return record;
+      return Object.freeze({ ...record, payload: copyCandidate(entry.candidate) });
+    };
+    let lookupRecords = records;
+    if (request.lookup !== undefined) {
+      lookupRecords = records.map((record) => sameQueryIdentity(record.identity, request.lookup!) ? recordWithPayload(record) : record);
+      if (lookupRecords.some((record) => sameQueryIdentity(record.identity, request.lookup!))) {
+        telemetry.payloadHydrations += 1;
+        telemetry.lookupPayloadHydrations += 1;
+        telemetry.fullEvidencePayloadHydrations += 1;
+      }
+    }
+
+    if (filter.unsupported.length > 0) {
+      for (const discoveryRequest of request.discover ?? []) {
+        discoveries.set(discoveryRequest.facet, {
+          state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "UNSUPPORTED_AT_READ_POINT",
+          values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
+        });
+      }
+      const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
+      const find = request.find === undefined ? null : findEvidence(records, request.find);
+      telemetry.findCursorBound = request.find === undefined ? 0 : records.length;
+      telemetry.findCursorReads = telemetry.findCursorBound;
+      telemetry.elapsedMs = Math.max(0, Date.now() - startedAt);
+      return {
+        ok: true,
+        value: querySnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", "COMPLETE", "MEMORY_FALLBACK", null, lookup, find, telemetry)
+      };
+    }
+
+    const matchesFilter = (record: SelectionRecord): boolean => evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+      timestamp: record.timestamp,
+      intervalId: record.identity.intervalId,
+      searchText: record.searchText,
+      facets: record.facets as unknown as FilterRecord["facets"]
+    }).matches;
+    const matchingRecords = records.filter(matchesFilter);
+    const inScopeRecords = matchingRecords.filter((record) => isInAround(record, around));
+    const ordered = [...inScopeRecords].sort((left, right) => request.page.order === "NEWEST_FIRST"
+      ? right.identity.sequence - left.identity.sequence
+      : left.identity.sequence - right.identity.sequence);
+    let start = 0;
+    if (cursor !== null) {
+      const anchor = ordered.findIndex((record) => sameQueryIdentity(record.identity, cursor!.anchor));
+      if (anchor < 0) return queryFailure("QUERY_FAILED", "The page cursor anchor is stale or is not part of the filtered Evidence result.");
+      start = anchor + 1;
+    }
+    const selected = ordered.slice(start, start + request.page.size);
+    const hasMore = start + selected.length < ordered.length;
+    const page = request.includePayload === true ? selected.map(recordWithPayload) : selected;
+    if (request.includePayload === true) {
+      telemetry.payloadHydrations += page.length;
+      telemetry.fullEvidencePayloadHydrations += page.length;
+    }
+
+    for (const discoveryRequest of request.discover ?? []) {
+      if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
+      try {
+        discoveries.set(discoveryRequest.facet, discoverFacet(records, filter, readPoint, discoveryRequest, {
+          onResult: (stats) => {
+            telemetry.discoveryProjectionReads += records.length;
+            telemetry.discoveryCandidateCount += stats.candidateCount;
+            telemetry.discoveryMaterializedValues += stats.materializedCandidates;
+            telemetry.discoveryCompactIdentityCount += stats.compactIdentityCount;
+            telemetry.discoveryMaterializedCandidates += stats.materializedCandidates;
+            telemetry.discoveryMaterializationBound += stats.materializationBound;
+          }
+        }));
+      } catch {
+        discoveries.set(discoveryRequest.facet, {
+          state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "DISCOVERY_FAILED",
+          values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
+        });
+      }
+    }
+
+    const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
+    let find: EvidenceFindResult | null = null;
+    if (request.find !== undefined) {
+      const eligible = request.find.scopeToFilter
+        ? (record: SelectionRecord) => matchesFilter(record) && isInAround(record, around)
+        : undefined;
+      find = findEvidence(records, request.find, eligible);
+      telemetry.findCursorBound = records.length;
+      telemetry.findCursorReads = records.length;
+    }
+    telemetry.elapsedMs = Math.max(0, Date.now() - startedAt);
+    const nextCursor = hasMore && page.length > 0
+      ? encodeEvidenceQueryCursor(readPoint, request, page.at(-1)!.identity)
+      : null;
+    return {
+      ok: true,
+      value: querySnapshot(
+        readPoint,
+        page,
+        matchingRecords.length,
+        inScopeRecords.length,
+        discoveries,
+        "COMPLETE",
+        "COMPLETE",
+        "MEMORY_FALLBACK",
+        nextCursor,
+        lookup,
+        find,
+        telemetry
+      )
+    };
+  } catch (error) {
+    if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
+    return queryFailure("QUERY_FAILED", error instanceof Error ? error.message : "Memory fallback Evidence query failed.");
+  }
+}
 
 /**
  * The query transaction is deliberately separate from the legacy scalar read.
@@ -3027,6 +3609,212 @@ function readPointFitsCurrentInterval(point: EvidenceReadPoint, current: Evidenc
 }
 function sameNullableQueryIdentity(left: EvidenceIdentity | null, right: EvidenceIdentity | null): boolean { return left === null || right === null ? left === right : sameQueryIdentity(left, right); }
 function sameNullableQueryRange(left: EvidenceReadPoint["retainedRange"], right: EvidenceReadPoint["retainedRange"]): boolean { return left === null || right === null ? left === right : sameQueryIdentity(left.first, right.first) && sameQueryIdentity(left.last, right.last); }
+
+function planCachedRetentionTrim(
+  entries: readonly DurableRetentionEntry[],
+  retainedCount: number,
+  retainedCapacityBytes: number,
+  targetCount: number,
+  targetCapacityBytes: number
+): RetentionTrimPlan {
+  let remainingCount = retainedCount;
+  let remainingCapacityBytes = retainedCapacityBytes;
+  let evictedCount = 0;
+  let evictedReplayPayloadBytes = 0;
+  let evictedAccountedBytes = 0;
+  let evictedCapacityBytes = 0;
+  while (
+    evictedCount < entries.length
+    && (remainingCount > targetCount || remainingCapacityBytes > targetCapacityBytes)
+  ) {
+    const entry = entries[evictedCount]!;
+    remainingCount -= 1;
+    remainingCapacityBytes = Math.max(0, remainingCapacityBytes - entry.capacityBytes);
+    evictedReplayPayloadBytes += entry.replayPayloadBytes;
+    evictedAccountedBytes += entry.accountedBytes;
+    evictedCapacityBytes += entry.capacityBytes;
+    evictedCount += 1;
+  }
+  const firstEvicted = evictedCount > 0 ? entries[0]!.evidence : null;
+  const lastEvicted = evictedCount > 0 ? entries[evictedCount - 1]!.evidence : null;
+  const firstRetained = entries[evictedCount]?.evidence ?? null;
+  return {
+    cutoffSequence: lastEvicted?.sequence ?? (firstRetained?.sequence ?? 1) - 1,
+    evictedCount,
+    evictedReplayPayloadBytes,
+    evictedAccountedBytes,
+    evictedCapacityBytes,
+    firstEvicted,
+    lastEvicted,
+    firstRetained
+  };
+}
+
+async function planJournalRetentionTrim(
+  database: AuthoritativeEventDatabase,
+  interval: HistoryInterval,
+  durableRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }>,
+  retainedCount: number,
+  retainedCapacityBytes: number,
+  targetCount: number,
+  targetCapacityBytes: number,
+  capacityBytesBySequence: ReadonlyMap<number, number>
+): Promise<RetentionTrimPlan> {
+  if (retainedCount <= targetCount && retainedCapacityBytes <= targetCapacityBytes) {
+    return {
+      cutoffSequence: durableRange.first.sequence - 1,
+      evictedCount: 0,
+      evictedReplayPayloadBytes: 0,
+      evictedAccountedBytes: 0,
+      evictedCapacityBytes: 0,
+      firstEvicted: null,
+      lastEvicted: null,
+      firstRetained: durableRange.first
+    };
+  }
+  const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
+  const completed = transactionDone(transaction, "planning Event History retention");
+  const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+  let remainingCount = retainedCount;
+  let remainingCapacityBytes = retainedCapacityBytes;
+  let cutoffSequence = durableRange.first.sequence - 1;
+  let evictedCount = 0;
+  let evictedReplayPayloadBytes = 0;
+  let evictedAccountedBytes = 0;
+  let evictedCapacityBytes = 0;
+  let firstEvicted: EvidenceRef | null = null;
+  let lastEvicted: EvidenceRef | null = null;
+  const plan = await new Promise<RetentionTrimPlan>((resolve, reject) => {
+    const request = store.openCursor(queryBoundRange(durableRange.first.sequence, durableRange.last.sequence));
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB retention planning failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve({ cutoffSequence, evictedCount, evictedReplayPayloadBytes, evictedAccountedBytes, evictedCapacityBytes, firstEvicted, lastEvicted, firstRetained: null });
+        return;
+      }
+      const record = cursor.value as EvidenceRecord;
+      if (record.intervalId !== interval.id) {
+        reject(new Error("IndexedDB retention planning crossed a History Interval boundary."));
+        return;
+      }
+      if (remainingCount <= targetCount && remainingCapacityBytes <= targetCapacityBytes) {
+        resolve({
+          cutoffSequence,
+          evictedCount,
+          evictedReplayPayloadBytes,
+          evictedAccountedBytes,
+          evictedCapacityBytes,
+          firstEvicted,
+          lastEvicted,
+          firstRetained: evidenceRef(record)
+        });
+        return;
+      }
+      const capacityBytes = capacityBytesBySequence.get(record.sequence) ?? record.accountedBytes;
+      remainingCount -= 1;
+      remainingCapacityBytes = Math.max(0, remainingCapacityBytes - capacityBytes);
+      cutoffSequence = record.sequence;
+      evictedCount += 1;
+      evictedReplayPayloadBytes += record.serializedBytes;
+      evictedAccountedBytes += record.accountedBytes;
+      evictedCapacityBytes += capacityBytes;
+      firstEvicted ??= evidenceRef(record);
+      lastEvicted = evidenceRef(record);
+      cursor.continue();
+    };
+  });
+  await completed;
+  return plan;
+}
+
+async function applyJournalRetentionTrim(
+  database: AuthoritativeEventDatabase,
+  panelSessionId: string,
+  interval: HistoryInterval,
+  nextSequence: number,
+  boundary: EvidenceRef | null,
+  range: { first: EvidenceRef; last: EvidenceRef } | null,
+  retainedCount: number,
+  replayPayloadBytes: number,
+  accountedBytes: number,
+  cutoffSequence: number
+): Promise<void> {
+  if (cutoffSequence < 1) return;
+  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
+  const completed = transactionDone(transaction, "rolling Event History retention", AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS);
+  const evidenceStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+  const projectionStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
+  const postingStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
+  const aggregateStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates);
+  const prefix = queryBoundRange(1, cutoffSequence);
+  if (!prefix) throw new Error("IndexedDB retention requires bounded key ranges.");
+  evidenceStore.delete(prefix);
+  projectionStore.delete(prefix);
+  aggregateStore.clear();
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(
+    createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, range, retainedCount, replayPayloadBytes, accountedBytes)
+  );
+
+  await Promise.all([
+    new Promise<void>((resolve, reject) => {
+      const request = postingStore.openCursor();
+      request.onerror = () => reject(request.error ?? new Error("IndexedDB retention posting cleanup failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(); return; }
+        const posting = cursor.value as FacetPostingRecord;
+        if (posting.sequence <= cutoffSequence) cursor.delete();
+        cursor.continue();
+      };
+    }),
+    new Promise<void>((resolve, reject) => {
+      const aggregates = new Map<string, AuthoritativeFacetAggregateRecord>();
+      const request = evidenceStore.openCursor();
+      request.onerror = () => reject(request.error ?? new Error("IndexedDB retention aggregate rebuild failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          for (const aggregate of aggregates.values()) aggregateStore.add(aggregate);
+          resolve();
+          return;
+        }
+        const record = cursor.value as EvidenceRecord;
+        if (record.intervalId === interval.id && record.sequence > cutoffSequence) {
+          const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
+          if (candidate.kind !== "topology-checkpoint") {
+            const identity: EvidenceIdentity = {
+              intervalId: record.intervalId,
+              pageId: record.intervalId,
+              ownerId: "memory-event-history",
+              sequence: record.sequence,
+              eventId: record.eventId
+            };
+            const extracted = extractEvidenceFacets(candidate, {
+              identity,
+              pageId: record.intervalId,
+              listenerOwner: identity.ownerId,
+              summary: candidate.kind
+            });
+            for (const value of extracted.selectableValues.slice(0, EVIDENCE_FACET_COUNT)) {
+              aggregates.set(value.identity, {
+                intervalId: record.intervalId,
+                facet: value.facet,
+                facetIdentity: value.identity,
+                type: value.type,
+                value: value.value,
+                label: value.label
+              });
+            }
+          }
+        }
+        cursor.continue();
+      };
+    })
+  ]);
+  await completed;
+}
+
 async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, preparedBatch: readonly PreparedEvidence[], aggregateCache: FacetAggregateCache, replayPayloadBytes: number, accountedBytes: number, phase: "RUNNING" | "DRAINING_TO_STOP", terminal: HistoryTerminalDiagnostic | null): Promise<void> {
   const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
   const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
@@ -3175,7 +3963,7 @@ async function clearJournalRecords(
   await transactionDone(transaction, "clearing Event History", timeoutMs);
 }
 
-function validateJournalRecords(panelSessionId: string, control: ControlRecord | undefined, store: IDBObjectStore, postingStore: IDBObjectStore, aggregateStore: IDBObjectStore): Promise<void> {
+function validateJournalRecords(panelSessionId: string, control: ControlRecord | undefined, store: IDBObjectStore, postingStore: IDBObjectStore, aggregateStore: IDBObjectStore): Promise<readonly DurableRetentionEntry[]> {
   if (!control) {
     return Promise.all([
       requestToPromise<number>(store.count(), "checking for Evidence residue"),
@@ -3183,6 +3971,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
       requestToPromise<number>(aggregateStore.count(), "checking for facet aggregate residue")
     ]).then(([count, postingCount, aggregateCount]) => {
       if (count > 0 || postingCount > 0 || aggregateCount > 0) throw new Error("Evidence or derived facet residue exists without a history control record.");
+      return [];
     });
   }
   if ((control as { recordVersion?: unknown }).recordVersion === 1) {
@@ -3216,9 +4005,10 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
   let accountedBytes = 0;
   let previous: EvidenceRecord | null = null;
   const evidenceBySequence = new Map<number, EvidenceRecord>();
+  const durableRetentionEntries: DurableRetentionEntry[] = [];
   let first: EvidenceRef | null = null;
   let last: EvidenceRef | null = null;
-  return new Promise((resolve, reject) => {
+  return new Promise<readonly DurableRetentionEntry[]>((resolve, reject) => {
     const request = store.openCursor();
     request.onerror = () => reject(request.error ?? new Error("IndexedDB evidence validation failed."));
     request.onsuccess = () => {
@@ -3228,10 +4018,6 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
         const expectedRange = first && last ? { first, last } : null;
         if (control.retainedCount !== count || control.replayPayloadBytes !== payloadBytes || control.accountedBytes !== accountedBytes || control.nextSequence !== expectedNext || !sameRange(control.retainedRange, expectedRange)) {
           reject(new Error("The history control totals or range do not match its evidence records."));
-          return;
-        }
-        if (first && control.interval.ordinal === 1 && first.sequence !== 1) {
-          reject(new Error("The first retained Evidence sequence is incoherent with the Panel Session interval."));
           return;
         }
         if (last && !sameRef(control.committedEvidenceBoundary, last)) {
@@ -3244,7 +4030,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
         }
         if (control.phase !== "DRAINING_TO_STOP" && control.committedEvidenceBoundary !== null) {
           const boundaryOrdinal = intervalOrdinal(panelSessionId, control.committedEvidenceBoundary.intervalId);
-          if (boundaryOrdinal === null || boundaryOrdinal > control.interval.ordinal || (!first && boundaryOrdinal >= control.interval.ordinal)) {
+          if (boundaryOrdinal === null || boundaryOrdinal > control.interval.ordinal) {
             reject(new Error("The history control committed boundary interval is incoherent."));
             return;
           }
@@ -3252,7 +4038,8 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
           reject(new Error("A non-initial History Interval must retain its panel-lifetime boundary."));
           return;
         }
-        validateFacetPostingRecords(panelSessionId, control, postingStore, aggregateStore, evidenceBySequence).then(resolve, reject);
+        validateFacetPostingRecords(panelSessionId, control, postingStore, aggregateStore, evidenceBySequence)
+          .then(() => resolve(durableRetentionEntries), reject);
         return;
       }
       const record = cursor.value as EvidenceRecord;
@@ -3266,6 +4053,12 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
         last = reference;
         previous = record;
         evidenceBySequence.set(record.sequence, record);
+        durableRetentionEntries.push({
+          evidence: reference,
+          replayPayloadBytes: record.serializedBytes,
+          accountedBytes: record.accountedBytes,
+          capacityBytes: record.accountedBytes
+        });
         count += 1;
         payloadBytes += record.serializedBytes;
         accountedBytes += record.accountedBytes;
@@ -3699,6 +4492,35 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
     };
     void completed.catch(fail);
   });
+}
+
+async function readHybridJournal(
+  database: AuthoritativeEventDatabase,
+  latch: ReadLatch,
+  query: EvidenceQuery,
+  volatileEvidence: readonly CommittedEvidence[]
+): Promise<JournalRead> {
+  const unpagedQuery: EvidenceQuery = {
+    ...(query.candidateKind !== undefined ? { candidateKind: query.candidateKind } : {}),
+    ...(query.intervalId !== undefined ? { intervalId: query.intervalId } : {}),
+    ...(query.afterSequence !== undefined ? { afterSequence: query.afterSequence } : {}),
+    ...(query.eventId !== undefined ? { eventId: query.eventId } : {})
+  };
+  const durable = await readJournal(database, latch, unpagedQuery);
+  const retainedRange = latch.retainedRange;
+  const volatile = retainedRange === null
+    ? []
+    : volatileEvidence.filter((entry) => (
+        entry.intervalId === latch.interval.id
+        && entry.sequence >= retainedRange.first.sequence
+        && entry.sequence <= retainedRange.last.sequence
+        && matchesEvidenceQuery(entry, unpagedQuery)
+      ));
+  const combined = [...durable.evidence, ...volatile].sort((left, right) => left.sequence - right.sequence);
+  return {
+    evidence: pageJournalSelection(combined, query, combined.length),
+    total: combined.length
+  };
 }
 
 function recordMatchesCandidateKind(record: EvidenceRecord, candidateKind: NonNullable<EvidenceQuery["candidateKind"]>): boolean {

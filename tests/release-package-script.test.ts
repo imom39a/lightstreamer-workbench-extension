@@ -5,11 +5,13 @@ import { inflateRawSync } from "node:zlib";
 import { join, relative } from "node:path";
 import { tmpdir as systemTmpdir } from "node:os";
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const projectRoot = process.cwd();
 const packageVersion = (JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")) as { version: string }).version;
 const releaseZipName = `lightstreamer-workbench-v${packageVersion}.zip`;
+const packageFixtureRoot = mkdtempSync(join(systemTmpdir(), "lsew-package-dist-"));
+const packageFixtureDist = join(packageFixtureRoot, "dist");
 
 function discoverUnitTestFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -20,6 +22,23 @@ function discoverUnitTestFiles(directory: string): string[] {
 }
 
 describe("release packaging verification gate", () => {
+  beforeAll(() => {
+    const result = spawnSync(
+      process.execPath,
+      [join(projectRoot, "scripts/build-extension.mjs"), "--outDir", packageFixtureDist],
+      {
+        cwd: projectRoot,
+        encoding: "utf8",
+        env: { ...process.env, NODE_ENV: "production" }
+      }
+    );
+    expect(result.status, [result.stdout, result.stderr].filter(Boolean).join("\n")).toBe(0);
+  });
+
+  afterAll(() => {
+    rmSync(packageFixtureRoot, { recursive: true, force: true });
+  });
+
   it("isolates the fake-IndexedDB suites while keeping the release gate serial", () => {
     const packageJson = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")) as {
       scripts: Record<string, string>;
@@ -84,14 +103,14 @@ describe("release packaging verification gate", () => {
   it("writes deterministic raw-DEFLATE entries with valid headers and contents", () => {
     const output = mkdtempSync(join(systemTmpdir(), "lsew-package-test-"));
     try {
-      const first = spawnSync(process.execPath, [join(projectRoot, "scripts/package-extension.mjs"), "--skip-tests", "--skip-typecheck", "--skip-build", "--out-dir", output], {
+      const first = spawnSync(process.execPath, [join(projectRoot, "scripts/package-extension.mjs"), "--skip-tests", "--skip-typecheck", "--skip-build", "--dist", packageFixtureDist, "--out-dir", output], {
         cwd: projectRoot,
         encoding: "utf8"
       });
       expect(first.status, first.stderr).toBe(0);
       const zipPath = join(output, releaseZipName);
       const firstBytes = readFileSync(zipPath);
-      const second = spawnSync(process.execPath, [join(projectRoot, "scripts/package-extension.mjs"), "--skip-tests", "--skip-typecheck", "--skip-build", "--out-dir", output], {
+      const second = spawnSync(process.execPath, [join(projectRoot, "scripts/package-extension.mjs"), "--skip-tests", "--skip-typecheck", "--skip-build", "--dist", packageFixtureDist, "--out-dir", output], {
         cwd: projectRoot,
         encoding: "utf8"
       });
@@ -139,7 +158,7 @@ describe("release packaging verification gate", () => {
   it("proves central-directory, EOCD, UTF-8, CRC, path, and local parity", () => {
     const output = mkdtempSync(join(systemTmpdir(), "lsew-package-integrity-"));
     try {
-      const result = spawnSync(process.execPath, [join(projectRoot, "scripts/package-extension.mjs"), "--skip-tests", "--skip-typecheck", "--skip-build", "--out-dir", output], { cwd: projectRoot, encoding: "utf8" });
+      const result = spawnSync(process.execPath, [join(projectRoot, "scripts/package-extension.mjs"), "--skip-tests", "--skip-typecheck", "--skip-build", "--dist", packageFixtureDist, "--out-dir", output], { cwd: projectRoot, encoding: "utf8" });
       expect(result.status, result.stderr).toBe(0);
       const bytes = readFileSync(join(output, releaseZipName));
       const eocd = bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));

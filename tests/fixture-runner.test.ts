@@ -27,7 +27,7 @@ describe("cross-platform Lightstreamer fixture commands", () => {
 
   it("uses the cross-platform Puppeteer browser installer", () => {
     expect(packageJson.scripts["fixture:browser:install"]).toBe(
-      "browsers install chrome@stable --path .cache/lsew-browsers"
+      "browsers install chrome@151 --path .cache/lsew-browsers"
     );
   });
 

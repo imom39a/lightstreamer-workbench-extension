@@ -33,18 +33,19 @@ Version 2 focuses on local, current-session debugging for the inspected tab thro
 ### Event History contract
 
 Each Panel Session owns one temporary Event History. The normal IndexedDB journal
-supports up to 100,000 Evidence records or 256 MiB of retained serialized journal
-bytes; when startup selects the in-memory fallback, the truthful lower-capacity
-limits are 5,000 records or 32 MiB. The adapter is selected before the first
-offer and never changes during the session. The fallback changes History Capacity
-only; it does not by itself reduce Observation Coverage or alter Live/Frozen view
-state.
+uses a rolling retention budget of 100,000 Evidence records or 256 MiB of
+canonical accounted bytes. Memory-backed operation uses the smaller rolling
+budget of 5,000 records or 32 MiB. Event History retries a definitively aborted
+commit a bounded number of times and can continue in memory when IndexedDB is
+unavailable. Storage degradation does not by itself reduce Observation Coverage
+or alter Live/Frozen view state.
 
 Evidence is complete only through the current History Interval's Committed
-Evidence Boundary. A successful Clear makes an exact interval cut after already
-accepted work settles; it does not restart a stopped history. Capacity pressure or
-a journal failure stops acceptance fail-closed at the final committed boundary,
-with queued work settled explicitly and no silent drop or later resume.
+Evidence Boundary and only when no Evidence Gap has occurred. Reaching a
+retention budget quietly removes the oldest accepted prefix while later Capture
+continues. A candidate that cannot enter any canonical segment creates an exact,
+visible Evidence Gap; later valid activity remains eligible. Clear remains the
+only deliberate History Interval reset.
 
 ## What It Does Not Do
 

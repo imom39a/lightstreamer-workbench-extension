@@ -260,7 +260,7 @@ describe("commit-authoritative EventHistory", () => {
     expect(history.offer(candidate("after-close")).intake).toBe("REFUSED");
   });
 
-  it("stops at the prior committed boundary when an atomic batch fails", async () => {
+  it("keeps the atomic batch as memory Evidence when its journal commit keeps failing", async () => {
     const history = await createMemoryEventHistoryForTests({
       commitBatch: async (batch) => {
         if (batch.some((entry) => entry.id === "fails")) {
@@ -273,19 +273,27 @@ describe("commit-authoritative EventHistory", () => {
     const tail = history.offer(candidate("tail"));
 
     await expect(failed.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" },
-      committedEvidenceBoundary: { sequence: 1 }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "fails" }
     });
     await expect(tail.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 3, eventId: "tail" }
     });
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
-      value: { evidence: [expect.objectContaining({ eventId: "committed" })] }
+      value: {
+        evidence: [
+          expect.objectContaining({ eventId: "committed" }),
+          expect.objectContaining({ eventId: "fails" }),
+          expect.objectContaining({ eventId: "tail" })
+        ]
+      }
     });
-    expect(history.offer(candidate("after-stop")).intake).toBe("REFUSED");
+    const afterFailure = history.offer(candidate("after-failure"));
+    expect(afterFailure.intake).toBe("QUEUED");
+    await expect(afterFailure.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 4 } });
+    expect(history.status()).toMatchObject({ phase: "RUNNING", persistence: { mode: "MEMORY_ONLY" } });
     await history.close();
   });
 
@@ -313,6 +321,11 @@ describe("commit-authoritative EventHistory", () => {
       ok: true,
       value: { evidence: [expect.objectContaining({ eventId: "retained" })] }
     });
+    await expect(history.offer(candidate("after-clear-error")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "after-clear-error" }
+    });
+    expect(history.status()).toMatchObject({ phase: "RUNNING", captureOperation: "RUNNING" });
     await history.close();
   });
 

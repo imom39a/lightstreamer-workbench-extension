@@ -58,7 +58,7 @@ describe("history-impl-09 runtime cutover", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("surfaces STOPPED and LIMITED at the first refused committed boundary once", async () => {
+  it("rolls old Evidence out of the runtime while Capture stays running", async () => {
     const commit = deferred<void>();
     const commitStarted = deferred<void>();
     const history = await createMemoryEventHistoryForTests({
@@ -70,28 +70,13 @@ describe("history-impl-09 runtime cutover", () => {
         await commit.promise;
       }
     });
-    const stopPublications: HistoryPublication[] = [];
+    const continuityPublications: HistoryPublication[] = [];
     history.follow({ from: "NOW" }, (publication) => {
-      if (
-        (publication.type === "status" && publication.status.phase !== "RUNNING") ||
-        publication.type === "terminal"
-      ) {
-        stopPublications.push(publication);
+      if (publication.type === "retention-advanced" || publication.type === "terminal") {
+        continuityPublications.push(publication);
       }
     });
     const runtime = createWorkbenchRuntime({ history, scheduler: immediateScheduler() });
-    const degradedCaptures: Array<{ operation: string; coverage: string; detail?: string }> = [];
-    let lastDegradedCapture: string | null = null;
-    runtime.subscribe(() => {
-      const capture = runtime.getSnapshot().capture;
-      if (capture.operation === "STOPPED" || capture.coverage === "LIMITED") {
-        const identity = JSON.stringify(capture);
-        if (identity !== lastDegradedCapture) {
-          degradedCaptures.push(capture);
-          lastDegradedCapture = identity;
-        }
-      }
-    });
 
     runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(1) });
     await commitStarted.promise;
@@ -100,45 +85,34 @@ describe("history-impl-09 runtime cutover", () => {
 
     expect(runtime.getSnapshot()).toMatchObject({
       capture: {
-        operation: "STOPPED",
-        coverage: "LIMITED",
-        detail: expect.stringContaining("RETAINED_BYTE_LIMIT")
+        operation: "RUNNING",
+        coverage: "USEFUL"
       },
       evidence: { total: 0 }
     });
 
     commit.resolve();
     await settle();
-    expect(runtime.getSnapshot().evidence.total).toBe(1);
-    expect(degradedCaptures).toHaveLength(2);
-    expect(degradedCaptures[0]).toMatchObject({
-      operation: "STOPPED",
-      coverage: "LIMITED",
-      detail: expect.stringContaining("RETAINED_BYTE_LIMIT")
+    await settle();
+    expect(runtime.getSnapshot()).toMatchObject({
+      capture: { operation: "RUNNING", coverage: "USEFUL" },
+      evidence: { total: 1 },
+      historyCondition: null
     });
-    expect(degradedCaptures[1]).toMatchObject({
-      operation: "STOPPED",
-      coverage: "LIMITED",
-      firstMissingEventId: "event-2",
-      committedEvidenceBoundary: { sequence: 1, eventId: "event-1" }
+    expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(["event-2"]);
+    expect(runtime.getSnapshot().notifications.entries.filter(({ title }) => title === "Older Evidence removed")).toHaveLength(1);
+    expect(history.status()).toMatchObject({
+      phase: "RUNNING",
+      captureOperation: "RUNNING",
+      accepted: 2,
+      retained: 1,
+      continuity: { state: "CONTIGUOUS", gapCount: 0 }
     });
-    expect(stopPublications).toHaveLength(3);
-    expect(stopPublications[0]).toMatchObject({
-      type: "status",
-      status: { phase: "DRAINING_TO_STOP", captureOperation: "STOPPED" },
-      problem: { reason: "RETAINED_BYTE_LIMIT" }
-    });
-    expect(stopPublications[1]).toMatchObject({
-      type: "terminal",
-      terminal: { reason: "RETAINED_BYTE_LIMIT" },
-      status: { phase: "STOPPED", captureOperation: "STOPPED" }
-    });
-    expect(stopPublications[2]).toMatchObject({
-      type: "status",
-      status: { phase: "STOPPED", captureOperation: "STOPPED" },
-      problem: { reason: "RETAINED_BYTE_LIMIT" }
-    });
-    expect(stopPublications.filter((publication) => publication.type === "terminal")).toHaveLength(1);
+    expect(continuityPublications).toContainEqual(expect.objectContaining({
+      type: "retention-advanced",
+      evicted: expect.objectContaining({ count: 1 })
+    }));
+    expect(continuityPublications.some(({ type }) => type === "terminal")).toBe(false);
 
     runtime.dispose();
     await settle();

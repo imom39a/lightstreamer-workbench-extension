@@ -69,12 +69,15 @@ describe("Event History admission accounting", () => {
     const fourth = history.offer(candidate("pending-fourth"));
     expect(fourth.intake).toBe("REFUSED");
     releaseCommit();
-    await expect(fourth.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "PENDING_BYTE_LIMIT" } });
+    await expect(fourth.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "PENDING_OVERFLOW" } });
     expect(publications).toContainEqual(expect.objectContaining({
-      type: "terminal",
-      terminal: expect.objectContaining({ triggerMeasurements: expect.objectContaining({ pendingCount: 3, pendingBytes: 30 }) })
+      type: "acceptance-gap",
+      gap: expect.objectContaining({ eventId: "pending-fourth", dimension: "PENDING_BYTES" })
     }));
     await expect(Promise.all([first, second, third].map((receipt) => receipt.settled))).resolves.toHaveLength(3);
+    await expect(history.offer(candidate("after-pressure")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    expect(history.status()).toMatchObject({ phase: "RUNNING", accepted: 4, notAccepted: 1 });
+    await history.close();
   });
 
   it("retains post-clear pending pressure and rejoins it without changing order", async () => {
@@ -134,12 +137,14 @@ describe("Event History admission accounting", () => {
     const fourth = history.offer(candidate("idb-pending-fourth"));
     expect(fourth.intake).toBe("REFUSED");
     releaseCommit();
-    await expect(fourth.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "PENDING_BYTE_LIMIT" } });
+    await expect(fourth.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "PENDING_OVERFLOW" } });
     expect(publications).toContainEqual(expect.objectContaining({
-      type: "terminal",
-      terminal: expect.objectContaining({ triggerMeasurements: expect.objectContaining({ pendingCount: 3, pendingBytes: 30 }) })
+      type: "acceptance-gap",
+      gap: expect.objectContaining({ eventId: "idb-pending-fourth", dimension: "PENDING_BYTES" })
     }));
     await expect(Promise.all([first, second, third].map((receipt) => receipt.settled))).resolves.toHaveLength(3);
+    await expect(history.offer(candidate("idb-after-pressure")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    expect(history.status()).toMatchObject({ phase: "RUNNING", accepted: 4, notAccepted: 1 });
     await history.close();
   });
 });

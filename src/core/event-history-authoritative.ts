@@ -26,11 +26,9 @@ import {
 } from "./event-history-serialization";
 import { type AuthoritativeEventDatabaseRuntime } from "./indexeddb/authoritative-event-db";
 import {
-  admissionFailure,
   defaultHistoryTimer,
   estimateHistoryCandidateBytes,
   historyCapacityLimits,
-  pendingAgeFailure,
   pressureFor,
   type HistoryCapacityDimension,
   type HistoryCapacityLimits,
@@ -104,6 +102,8 @@ export type HistoryInterval = Readonly<{
 
 export type HistoryProblemCode =
   | "INVALID_CANDIDATE"
+  | "CANDIDATE_UNRETAINABLE"
+  | "PENDING_OVERFLOW"
   | "HISTORY_STOPPED"
   | "HISTORY_CLOSED"
   | "CLEAR_IN_PROGRESS"
@@ -120,6 +120,54 @@ export type HistoryProblem = Readonly<{
   reason?: HistoryTerminalReason;
   dimension?: HistoryCapacityDimension | "JOURNAL";
   terminal?: HistoryTerminalDiagnostic;
+}>;
+
+export type HistoryAcceptanceGap = Readonly<{
+  interval: HistoryInterval;
+  captureOrdinal: number;
+  eventId: string;
+  candidateBytes: number;
+  occurredAt: number;
+  dimension: "RETAINED_COUNT" | "RETAINED_BYTES" | "PENDING_BYTES";
+  afterEvidence: EvidenceRef | null;
+}>;
+
+export type HistoryContinuityStatus = Readonly<{
+  state: "CONTIGUOUS" | "GAPPED";
+  gapCount: number;
+  firstGap: HistoryAcceptanceGap | null;
+  latestGap: HistoryAcceptanceGap | null;
+}>;
+
+export type HistoryPersistenceStatus = Readonly<{
+  mode: "JOURNAL" | "MEMORY_ONLY";
+  health: "HEALTHY" | "DEGRADED";
+  commitAttempts: number;
+  retryCount: number;
+  failureCount: number;
+  lastFailureAt: number | null;
+  lastProblem?: HistoryProblem;
+}>;
+
+export type HistoryRetentionAdvance = Readonly<{
+  interval: HistoryInterval;
+  occurredAt: number;
+  previousRetainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }>;
+  retainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }> | null;
+  evicted: Readonly<{
+    count: number;
+    bytes: number;
+    first: EvidenceRef;
+    last: EvidenceRef;
+  }>;
+}>;
+
+export type HistoryRetentionStatus = Readonly<{
+  policy: "ROLLING";
+  highWater: Readonly<{ count: number; bytes: number }>;
+  lowWater: Readonly<{ count: number; bytes: number }>;
+  evicted: Readonly<{ count: number; bytes: number }>;
+  lastAdvance: HistoryRetentionAdvance | null;
 }>;
 
 export type Outcome<T> =
@@ -191,6 +239,12 @@ export type HistoryStatus = Readonly<{
   accepted: number;
   notAccepted: number;
   retained: number;
+  /** Present on continuity-first adapters while older adapters migrate. */
+  retention?: HistoryRetentionStatus;
+  /** Present on continuity-first adapters while older adapters migrate. */
+  persistence?: HistoryPersistenceStatus;
+  /** Present on continuity-first adapters while older adapters migrate. */
+  continuity?: HistoryContinuityStatus;
   terminal?: HistoryTerminalDiagnostic;
   /** Diagnostic-only last successful Evidence query retained across a failed publication. */
   lastCoherentQuery?: import("./evidence-filter-contract").EvidenceSnapshot;
@@ -225,6 +279,29 @@ export type HistoryPublication =
       previousInterval: HistoryInterval;
       interval: HistoryInterval;
       status: HistoryStatus;
+    }>
+  | Readonly<{
+      type: "retention-advanced";
+      interval: HistoryInterval;
+      previousRetainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }>;
+      retainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }> | null;
+      evicted: HistoryRetentionAdvance["evicted"];
+      status: HistoryStatus;
+    }>
+  | Readonly<{
+      type: "persistence-state";
+      interval: HistoryInterval;
+      transition: "RECOVERED" | "MEMORY_FALLBACK";
+      persistence: HistoryPersistenceStatus;
+      status: HistoryStatus;
+      problem?: HistoryProblem;
+    }>
+  | Readonly<{
+      type: "acceptance-gap";
+      interval: HistoryInterval;
+      gap: HistoryAcceptanceGap;
+      status: HistoryStatus;
+      problem: HistoryProblem;
     }>
   | Readonly<{ type: "closed"; result: CloseResult }>
   | Readonly<{ type: "terminal"; terminal: HistoryTerminalDiagnostic; status: HistoryStatus }>
@@ -341,7 +418,7 @@ const MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE = 2_048;
 
 type MemoryEventHistoryOptions = Readonly<{
   panelSessionId?: string;
-  commitBatch?: (batch: readonly EvidenceCandidate[]) => Promise<void>;
+  commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void>;
   clearJournal?: () => Promise<void | boolean> | void | boolean;
   closeJournal?: () => Promise<void>;
   persistTerminalIntent?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
@@ -480,6 +557,34 @@ function clearMemoryQueryIndex(index: MemoryQueryIndex): void {
   index.facetPostings.clear();
   index.searchPostings.clear();
   index.timestampOrder.length = 0;
+}
+
+function removeMemoryQueryPrefix(index: MemoryQueryIndex, sequences: ReadonlySet<number>): void {
+  if (sequences.size === 0) return;
+  for (const sequence of sequences) {
+    const record = index.bySequence.get(sequence);
+    if (!record) continue;
+    index.bySequence.delete(sequence);
+    for (const [facet, value] of Object.entries(record.facets)) {
+      if (!value) continue;
+      const key = memoryFacetPostingKey(facet, value.identity);
+      const posting = index.facetPostings.get(key);
+      posting?.delete(sequence);
+      if (posting?.size === 0) index.facetPostings.delete(key);
+    }
+    for (const token of memoryQueryTokens(record.searchText)) {
+      const posting = index.searchPostings.get(token);
+      posting?.delete(sequence);
+      if (posting?.size === 0) index.searchPostings.delete(token);
+    }
+  }
+  index.records = index.records.filter((record) => !sequences.has(record.identity.sequence));
+  index.timestampOrder = index.timestampOrder.filter((sequence) => !sequences.has(sequence));
+}
+
+function rollingLowWater(highWater: number): number {
+  if (highWater <= 0) return 0;
+  return Math.max(1, Math.floor(highWater * 0.9));
 }
 
 type MemoryPostingSelection = Readonly<{
@@ -724,6 +829,7 @@ export function createInMemoryEventHistory(
 function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHistory {
   const sessionId = options.panelSessionId ?? `session-${nextId()}`;
   assertBoundedPanelSessionId(sessionId);
+  const fallback = options.fallback ?? null;
   const journal: HistoryJournal = {
     async commitBatch(batch) {
       await options.failure?.commitBatch?.(batch);
@@ -736,11 +842,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     },
     async close() { await options.closeJournal?.(); }
   };
-  const capacityTier = options.capacityTier ?? "NORMAL";
-  const limits = historyCapacityLimits(capacityTier, options.capacity);
+  let capacityTier = options.capacityTier ?? (fallback === null ? "NORMAL" : "LOWER");
+  let limits = historyCapacityLimits(capacityTier, options.capacity);
   const clock = options.clock ?? Date.now;
   const timer = options.timer ?? defaultHistoryTimer();
-  const fallback = options.fallback ?? null;
   const storage: EventHistoryStorage = deepFreeze({
     mode: "memory",
     ...(fallback
@@ -762,7 +867,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   const deterministicRecordCache = new WeakMap<object, DeterministicEvidenceRecord>();
   const memoryQueryIndex = createMemoryQueryIndex();
   const committedBySequence = new Map<number, CommittedEvidence>();
+  const committedBytesBySequence = new Map<number, number>();
   const idleWaiters: Array<() => void> = [];
+  let retentionLowWater = Object.freeze({
+    count: rollingLowWater(limits.maxRetainedCount),
+    bytes: rollingLowWater(limits.maxRetainedBytes)
+  });
   let intervalOrdinal = 1;
   let interval = createInterval(sessionId, intervalOrdinal);
   let nextCaptureOrdinal = 1;
@@ -770,8 +880,20 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   let committedEvidenceBoundary: EvidenceRef | null = null;
   let retainedCount = 0;
   let retainedBytes = 0;
+  let evictedCount = 0;
+  let evictedBytes = 0;
+  let lastRetentionAdvance: HistoryRetentionAdvance | null = null;
   let accepted = 0;
   let notAccepted = 0;
+  let firstGap: HistoryAcceptanceGap | null = null;
+  let latestGap: HistoryAcceptanceGap | null = null;
+  let gapCount = 0;
+  let journalEnabled = fallback === null;
+  let journalCommitAttempts = 0;
+  let journalRetryCount = 0;
+  let journalFailureCount = 0;
+  let journalLastFailureAt: number | null = null;
+  let journalLastProblem: HistoryProblem | undefined;
   let rejectedCount = 0;
   let rejectedBytes = 0;
   let discardedCount = 0;
@@ -822,9 +944,54 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     });
   }
 
+  function currentRetainedRange(): Readonly<{ first: EvidenceRef; last: EvidenceRef }> | null {
+    return committed.length > 0
+      ? { first: toRef(committed[0]!), last: toRef(committed.at(-1)!) }
+      : null;
+  }
+
+  function persistenceStatus(): HistoryPersistenceStatus {
+    return deepFreeze({
+      mode: journalEnabled ? "JOURNAL" : "MEMORY_ONLY",
+      health: journalEnabled ? "HEALTHY" : "DEGRADED",
+      commitAttempts: journalCommitAttempts,
+      retryCount: journalRetryCount,
+      failureCount: journalFailureCount,
+      lastFailureAt: journalLastFailureAt,
+      ...(journalLastProblem ? { lastProblem: journalLastProblem } : {})
+    });
+  }
+
+  function adoptMemoryCapacity(): void {
+    capacityTier = "LOWER";
+    limits = historyCapacityLimits(capacityTier, options.capacity);
+    retentionLowWater = Object.freeze({
+      count: rollingLowWater(limits.maxRetainedCount),
+      bytes: rollingLowWater(limits.maxRetainedBytes)
+    });
+  }
+
+  function continuityStatus(): HistoryContinuityStatus {
+    return deepFreeze({
+      state: gapCount > 0 ? "GAPPED" : "CONTIGUOUS",
+      gapCount,
+      firstGap,
+      latestGap
+    });
+  }
+
+  function retentionStatus(): HistoryRetentionStatus {
+    return deepFreeze({
+      policy: "ROLLING",
+      highWater: { count: limits.maxRetainedCount, bytes: limits.maxRetainedBytes },
+      lowWater: retentionLowWater,
+      evicted: { count: evictedCount, bytes: evictedBytes },
+      lastAdvance: lastRetentionAdvance
+    });
+  }
+
   function status(problem?: HistoryProblem): HistoryStatus {
-    const intervalEvidence = committed.filter((entry) => entry.intervalId === interval.id);
-    const retainedRange = intervalEvidence.length ? { first: toRef(intervalEvidence[0]), last: toRef(intervalEvidence.at(-1)!) } : null;
+    const retainedRange = currentRetainedRange();
     const pressure = pressureFor(limits, measurements());
     const base: HistoryStatus = deepFreeze({
       phase,
@@ -838,7 +1005,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       awaitingAcceptance: awaitingCount,
       accepted,
       notAccepted,
-      retained: intervalEvidence.length,
+      retained: committed.length,
+      retention: retentionStatus(),
+      persistence: persistenceStatus(),
+      continuity: continuityStatus(),
       ...(terminal ? { terminal } : {})
     });
     return problem ? deepFreeze({ ...base, problem }) as HistoryStatus : base;
@@ -1108,9 +1278,48 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       ageTimer = null;
       pressureChanged();
       const currentAge = measurements().oldestPendingAgeMs;
-      if (pendingAgeFailure(limits, currentAge)) beginDrain("PENDING_AGE_LIMIT", "PENDING_AGE", null);
-      else scheduleAgeCheck();
+      // Pending age is diagnostic pressure, never a Capture stop trigger. Once
+      // the stop-era threshold is reached, wait for queue progress instead of
+      // scheduling a zero-delay timer loop.
+      if (currentAge !== null && currentAge < limits.pendingAgeStopMs) scheduleAgeCheck();
     }, delay);
+  }
+
+  function refuseUnretainable(
+    candidate: EvidenceCandidate,
+    bytes: number,
+    dimension: HistoryAcceptanceGap["dimension"]
+  ): CaptureReceipt {
+    const captureOrdinal = nextCaptureOrdinal++;
+    notAccepted += 1;
+    rejectedCount += 1;
+    rejectedBytes += bytes;
+    const gap = deepFreeze({
+      interval,
+      captureOrdinal,
+      eventId: candidateId(candidate),
+      candidateBytes: bytes,
+      occurredAt: clock(),
+      dimension,
+      afterEvidence: committedEvidenceBoundary
+    });
+    firstGap ??= gap;
+    latestGap = gap;
+    gapCount += 1;
+    const issue = problem(
+      dimension === "PENDING_BYTES" ? "PENDING_OVERFLOW" : "CANDIDATE_UNRETAINABLE",
+      dimension === "RETAINED_COUNT"
+        ? "The candidate cannot enter a History configured to retain zero records."
+        : dimension === "RETAINED_BYTES"
+          ? `The candidate requires ${bytes} accounted bytes, above the ${limits.maxRetainedBytes}-byte retention budget.`
+          : `The candidate would cross the ${limits.pendingStopBytes}-byte pending admission budget.`,
+      { dimension }
+    );
+    publish(deepFreeze({ type: "acceptance-gap" as const, interval, gap, status: status(issue), problem: issue }));
+    return {
+      intake: "REFUSED",
+      settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary })
+    };
   }
 
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
@@ -1127,19 +1336,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const issue = problem("INVALID_CANDIDATE", error instanceof Error ? error.message : "Candidate is not valid Evidence input.");
       return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
     }
-    const current = measurements();
-    const failure = admissionFailure(limits, current, bytes);
-    if (failure) {
-      notAccepted += 1;
-      rejectedCount += 1;
-      rejectedBytes += bytes;
-      beginDrain(failure.reason, failure.dimension, candidate.id);
-      const completion = terminalFinalization ?? terminalSettled;
-      const settled = completion
-        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary }))
-        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary });
-      return { intake: "REFUSED", settled };
-    }
+    if (limits.maxRetainedCount < 1) return refuseUnretainable(candidate, bytes, "RETAINED_COUNT");
+    if (bytes > limits.maxRetainedBytes) return refuseUnretainable(candidate, bytes, "RETAINED_BYTES");
+    if (awaitingBytes + bytes > limits.pendingStopBytes) return refuseUnretainable(candidate, bytes, "PENDING_BYTES");
     return offerForClearInProgress(serialized, bytes);
   }
 
@@ -1147,6 +1346,112 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     if (scheduled || processing || pending.length === 0) return;
     scheduled = true;
     queueMicrotask(() => { scheduled = false; void processPending(); });
+  }
+
+  async function commitWithMemoryFallback(candidates: readonly EvidenceCandidate[]): Promise<void> {
+    if (!journalEnabled) return;
+    let failuresThisBatch = 0;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      journalCommitAttempts += 1;
+      try {
+        await journal.commitBatch(candidates);
+        if (failuresThisBatch > 0) {
+          publish(deepFreeze({
+            type: "persistence-state" as const,
+            interval,
+            transition: "RECOVERED" as const,
+            persistence: persistenceStatus(),
+            status: status()
+          }));
+        }
+        return;
+      } catch (error) {
+        failuresThisBatch += 1;
+        journalFailureCount += 1;
+        journalLastFailureAt = clock();
+        const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
+        journalLastProblem = problem(
+          reason,
+          error instanceof Error ? error.message : "The Event History journal commit failed.",
+          { reason, dimension: "JOURNAL" }
+        );
+        if (attempt < 3) {
+          journalRetryCount += 1;
+          continue;
+        }
+        journalEnabled = false;
+        adoptMemoryCapacity();
+        publish(deepFreeze({
+          type: "persistence-state" as const,
+          interval,
+          transition: "MEMORY_FALLBACK" as const,
+          persistence: persistenceStatus(),
+          status: status(journalLastProblem),
+          problem: journalLastProblem
+        }));
+        return;
+      }
+    }
+  }
+
+  function advanceRetentionIfNeeded(): void {
+    if (retainedCount <= limits.maxRetainedCount && retainedBytes <= limits.maxRetainedBytes) return;
+    const previousRetainedRange = currentRetainedRange();
+    if (!previousRetainedRange) return;
+
+    let nextCount = retainedCount;
+    let nextBytes = retainedBytes;
+    let removeCount = 0;
+    while (
+      removeCount < committed.length
+      && (nextCount > retentionLowWater.count || nextBytes > retentionLowWater.bytes)
+    ) {
+      const entry = committed[removeCount]!;
+      nextCount -= 1;
+      nextBytes -= committedBytesBySequence.get(entry.sequence) ?? 0;
+      removeCount += 1;
+    }
+    if (removeCount === 0) return;
+
+    const removed = committed.splice(0, removeCount);
+    const removedSequences = new Set(removed.map((entry) => entry.sequence));
+    let removedBytes = 0;
+    for (const entry of removed) {
+      removedBytes += committedBytesBySequence.get(entry.sequence) ?? 0;
+      committedBytesBySequence.delete(entry.sequence);
+      committedBySequence.delete(entry.sequence);
+    }
+    removeMemoryQueryPrefix(memoryQueryIndex, removedSequences);
+    retainedCount -= removed.length;
+    retainedBytes -= removedBytes;
+    evictedCount += removed.length;
+    evictedBytes += removedBytes;
+    const retainedRange = currentRetainedRange();
+    lastRetentionAdvance = deepFreeze({
+      interval,
+      occurredAt: clock(),
+      previousRetainedRange,
+      retainedRange,
+      evicted: {
+        count: removed.length,
+        bytes: removedBytes,
+        first: toRef(removed[0]!),
+        last: toRef(removed.at(-1)!)
+      }
+    });
+    for (const subscriber of [...subscribers]) {
+      if (subscriber.replaying && subscriber.cooperativeReplay) {
+        failCooperativeReplay(subscriber, replayBoundaryProblem("Replay expired because retained History advanced."));
+      }
+    }
+    publish(deepFreeze({
+      type: "retention-advanced" as const,
+      interval,
+      previousRetainedRange,
+      retainedRange,
+      evicted: lastRetentionAdvance.evicted,
+      status: status()
+    }));
   }
 
   async function processPending(): Promise<void> {
@@ -1157,31 +1462,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         const batch = pending.splice(0);
         inFlight.push(...batch);
         let candidates: EvidenceCandidate[] = [];
-        try {
-          candidates = batch.map((entry) => {
-            const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
-            registerJournalOwnedCandidate(candidate, entry.serialized.payload);
-            return candidate;
-          });
-          await journal.commitBatch(candidates);
-        } catch (error) {
-          const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
-          const failedTrigger = makeTrigger(reason, "JOURNAL", candidates[0]?.id ?? null);
-          trigger = failedTrigger;
-          ensureTerminalSettled();
-          const discarded = [...batch, ...pending.splice(0)];
-          inFlight.length = 0;
-          awaitingCount -= discarded.length;
-          awaitingBytes -= discarded.reduce((total, entry) => total + entry.bytes, 0);
-          notAccepted += discarded.length;
-          discardedCount += discarded.length;
-          discardedBytes += discarded.reduce((sum, entry) => sum + entry.bytes, 0);
-          terminalReceipts.push(...discarded);
-          phase = "DRAINING_TO_STOP";
-          startTerminalPersistence();
-          finishTerminal();
-          break;
-        }
+        candidates = batch.map((entry) => {
+          const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
+          registerJournalOwnedCandidate(candidate, entry.serialized.payload);
+          return candidate;
+        });
+        await commitWithMemoryFallback(candidates);
         const evidence = batch.map((entry, index) => {
           const candidate = candidates[index]!;
           const reference = deepFreeze({ intervalId: interval.id, sequence: nextEvidenceSequence++, eventId: candidateId(candidate) });
@@ -1191,8 +1477,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         awaitingCount -= batch.length;
         awaitingBytes -= batch.reduce((total, entry) => total + entry.bytes, 0);
         committed.push(...evidence);
-        for (const committedEntry of evidence) {
+        for (const [index, committedEntry] of evidence.entries()) {
           committedBySequence.set(committedEntry.sequence, committedEntry);
+          committedBytesBySequence.set(committedEntry.sequence, batch[index]!.bytes);
           if (committedEntry.candidate.kind === "topology-checkpoint") continue;
           const queryRecord = toMemoryIndexedRecord(committedEntry, interval);
           addMemoryQueryRecord(memoryQueryIndex, queryRecord);
@@ -1202,10 +1489,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         accepted += evidence.length;
         committedEvidenceBoundary = toRef(evidence.at(-1)!);
         publish(deepFreeze({ type: "committed-evidence" as const, interval, evidence, committedEvidenceBoundary }));
+        advanceRetentionIfNeeded();
         for (const [index, entry] of batch.entries()) {
           const reference = toRef(evidence[index]);
-          if (phase === "DRAINING_TO_STOP") committedReceipts.push({ entry, evidence: reference });
-          else entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: reference });
+          entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: reference });
         }
         scheduleAgeCheck();
         pressureChanged();
@@ -1581,9 +1868,16 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         interval = nextInterval;
         committed.length = 0;
         committedBySequence.clear();
+        committedBytesBySequence.clear();
         clearMemoryQueryIndex(memoryQueryIndex);
         retainedBytes = 0;
         retainedCount = 0;
+        evictedCount = 0;
+        evictedBytes = 0;
+        lastRetentionAdvance = null;
+        gapCount = 0;
+        firstGap = null;
+        latestGap = null;
         lastNearLimit = false;
         rejoinPostClearQueue();
         clearInProgress = false;
@@ -1599,20 +1893,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         );
         return { ok: true, value: result };
       } catch (error) {
-        const clearFailureProblem = problem(
-          "HISTORY_STOPPED",
+        rejoinPostClearQueue();
+        lastClearResult = null;
+        const issue = problem(
+          "CLEAR_FAILED",
           error instanceof Error ? error.message : "The History Interval could not be cleared."
         );
-        if (phase === "RUNNING" && !terminal) {
-          phase = "DRAINING_TO_STOP";
-          trigger = makeTrigger("JOURNAL_COMMIT_FAILED", "JOURNAL", null);
-          rejectPostClearDuringClearFailure(terminalProblem(trigger));
-          startTerminalPersistence();
-          finishTerminal();
-        } else {
-          rejoinPostClearQueue();
-        }
-        const issue = problem("CLEAR_FAILED", clearFailureProblem.message);
         publish({ type: "status", status: status(issue), problem: issue });
         return { ok: false, problem: issue };
       }

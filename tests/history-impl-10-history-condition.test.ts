@@ -1,20 +1,22 @@
 import { describe, expect, it } from "vitest";
 
+import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import {
+  createMemoryEventHistoryForTests,
+  type HistoryStatus
+} from "../src/core/event-history-authoritative";
 import {
   historyConditionFor,
+  historyConditionsFor,
   type HistoryConditionInput
 } from "../src/extension/panel/history-condition";
-import type {
-  HistoryProblem,
-  HistoryStatus
-} from "../src/core/event-history-authoritative";
 import {
-  createMemoryEventHistoryForTests
-} from "../src/core/event-history-authoritative";
-import { createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
-import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
+  createWorkbenchRuntime,
+  type WorkbenchRuntimeScheduler
+} from "../src/extension/panel/workbench-runtime";
 
 const interval = { id: "panel:interval-1", ordinal: 1 } as const;
+const boundary = { intervalId: interval.id, sequence: 41, eventId: "event-41" } as const;
 const limits = {
   maxRetainedCount: 100_000,
   maxRetainedBytes: 256 * 1_048_576,
@@ -31,14 +33,10 @@ function status(overrides: Partial<HistoryStatus> = {}): HistoryStatus {
     phase: "RUNNING",
     captureOperation: "RUNNING",
     interval,
-    committedEvidenceBoundary: {
-      intervalId: interval.id,
-      sequence: 41,
-      eventId: "event-41"
-    },
+    committedEvidenceBoundary: boundary,
     retainedRange: {
       first: { intervalId: interval.id, sequence: 1, eventId: "event-1" },
-      last: { intervalId: interval.id, sequence: 41, eventId: "event-41" }
+      last: boundary
     },
     capacity: {
       tier: "NORMAL",
@@ -62,11 +60,8 @@ function status(overrides: Partial<HistoryStatus> = {}): HistoryStatus {
   };
 }
 
-function input(
-  statusOverrides: Partial<HistoryStatus> = {},
-  problem?: HistoryProblem
-): HistoryConditionInput {
-  return { status: status(statusOverrides), problem };
+function input(overrides: Partial<HistoryStatus> = {}): HistoryConditionInput {
+  return { status: status(overrides) };
 }
 
 function candidate(id: string): LightstreamerEventEnvelope {
@@ -88,279 +83,298 @@ async function flushRuntime(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
 }
 
-describe("history-impl-10 footer condition", () => {
-  it("uses journal failure before capacity stop, drain, pressure, and fallback", () => {
-    const condition = historyConditionFor(input({
-      phase: "STOPPED",
-      capacity: {
-        tier: "LOWER",
-        state: "EXHAUSTED",
-        limits,
-        measurements: {
-          retainedCount: 80_001,
-          retainedBytes: 214_748_365,
-          pendingCount: 4,
-          pendingBytes: 20_000_000,
-          oldestPendingAgeMs: 30_000
-        }
-      },
-      fallback: "PRIMARY_JOURNAL_UNAVAILABLE",
-      terminal: {
-        reason: "JOURNAL_COMMIT_FAILED",
-        dimension: "JOURNAL",
-        tier: "LOWER",
-        triggerTime: 1_700_000_000_000,
-        triggerInterval: interval,
-        interval,
-        committedEvidenceBoundary: {
-          intervalId: interval.id,
-          sequence: 41,
-          eventId: "event-41"
-        },
-        retainedRange: {
-          first: { intervalId: interval.id, sequence: 1, eventId: "event-1" },
-          last: { intervalId: interval.id, sequence: 41, eventId: "event-41" }
-        },
-        firstMissingEventId: "event-42",
-        rejected: { count: 2, bytes: 200 },
-        discarded: { count: 3, bytes: 300 },
-        triggerMeasurements: {
-          retainedCount: 80_001,
-          retainedBytes: 214_748_365,
-          pendingCount: 4,
-          pendingBytes: 20_000_000,
-          oldestPendingAgeMs: 30_000
-        }
-      }
-    }));
-
-    expect(condition).toMatchObject({
-      kind: "journal-failure",
-      severity: "Error",
-      title: "Capture stopped — History commit failed",
-      affected: "History Interval panel:interval-1"
+function immediateScheduler(): WorkbenchRuntimeScheduler {
+  let nextHandle = 0;
+  const cancelled = new Set<number>();
+  const schedule = (callback: () => void): number => {
+    const handle = ++nextHandle;
+    queueMicrotask(() => {
+      if (cancelled.delete(handle)) return;
+      callback();
     });
-    expect(condition?.detail).toContain("JOURNAL_COMMIT_FAILED");
-    expect(condition?.detail).toContain("event-42");
-    expect(condition?.detail).toContain("Committed Evidence Boundary");
-    expect(condition?.detail).toContain("Retained Range");
-    expect(condition?.detail).toContain("rejected 2 / 200 bytes");
-    expect(condition?.detail).toContain("discarded 3 / 300 bytes");
-    expect(condition?.detail).toContain("did not affect Topology or COMMAND projections");
-    expect(condition?.detail).toContain("Clear cannot restart Capture");
-    expect(condition?.recovery).toContain("restore storage");
+    return handle;
+  };
+  return {
+    requestFrame: schedule,
+    cancelFrame: (handle) => { if (typeof handle === "number") cancelled.add(handle); },
+    setTimeout: (callback) => schedule(callback),
+    clearTimeout: (handle) => { if (typeof handle === "number") cancelled.add(handle); }
+  };
+}
+
+describe("history-impl-10 continuity-first History condition", () => {
+  it("keeps routine rolling retention out of the footer", () => {
+    expect(historyConditionFor(input({
+      retention: {
+        policy: "ROLLING",
+        highWater: { count: 100_000, bytes: 256 * 1_048_576 },
+        lowWater: { count: 90_000, bytes: Math.floor(256 * 1_048_576 * 0.9) },
+        evicted: { count: 10_000, bytes: 10_000_000 },
+        lastAdvance: null
+      }
+    }))).toBeNull();
   });
 
-  it("selects one pending pressure condition before retained pressure and fallback", () => {
+  it("shows one catching-up warning for pending pressure", () => {
     const condition = historyConditionFor(input({
       capacity: {
-        tier: "LOWER",
+        tier: "NORMAL",
         state: "NEAR_LIMIT",
-        limits: { ...limits, pendingAgeWarningMs: 1_000, pendingAgeStopMs: 5_000 },
+        limits,
         measurements: {
-          retainedCount: 4_200,
-          retainedBytes: 27_000_000,
+          retainedCount: 41,
+          retainedBytes: 41_000,
           pendingCount: 2,
           pendingBytes: 17_000_000,
-          oldestPendingAgeMs: 1_100
+          oldestPendingAgeMs: 11_000
         }
-      },
-      fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+      }
     }));
 
     expect(condition).toMatchObject({
       kind: "pending-pressure",
-      title: "History backlog near stop",
-      affected: "History Interval panel:interval-1"
+      title: "History catching up",
+      severity: "Warning"
     });
-    expect(condition?.detail).toContain("17,000,000 bytes");
-    expect(condition?.detail).toContain("1,100 ms");
-    expect(condition?.detail).toContain("Capture continues while commits catch up");
-    expect(condition?.detail).toContain("Committed Evidence Boundary");
+    expect(condition?.detail).toContain("Capture remains running");
+    expect(condition?.detail).not.toContain("stop threshold");
   });
 
-  it("renders retained pressure, drain, capacity stop, fallback, and healthy history distinctly", () => {
-    const retained = historyConditionFor(input({
-      capacity: {
-        tier: "NORMAL",
-        state: "NEAR_LIMIT",
-        limits,
-        measurements: {
-          retainedCount: 80_001,
-          retainedBytes: 50_000_000,
-          pendingCount: 0,
-          pendingBytes: 0,
-          oldestPendingAgeMs: null
-        }
-      }
-    }));
-    expect(retained).toMatchObject({ kind: "retained-pressure", title: "History near capacity" });
-    expect(retained?.detail).toContain("80,001 / 100,000 Evidence records");
-
-    const draining = historyConditionFor(input(
-      {
-        phase: "DRAINING_TO_STOP",
-        captureOperation: "STOPPED",
-        capacity: {
-          tier: "NORMAL",
-          state: "EXHAUSTED",
-          limits,
-          measurements: {
-            retainedCount: 41,
-            retainedBytes: 41_000,
-            pendingCount: 2,
-            pendingBytes: 800,
-            oldestPendingAgeMs: 50
-          }
-        }
+  it("shows memory fallback without lowering Observation Coverage", () => {
+    const condition = historyConditionFor(input({
+      persistence: {
+        mode: "MEMORY_ONLY",
+        health: "DEGRADED",
+        commitAttempts: 3,
+        retryCount: 2,
+        failureCount: 3,
+        lastFailureAt: 1,
+        lastProblem: { code: "JOURNAL_COMMIT_FAILED", message: "journal unavailable" }
       },
-      {
-        code: "PENDING_BYTE_LIMIT",
-        reason: "PENDING_BYTE_LIMIT",
-        dimension: "PENDING_BYTES",
-        message: "stopping"
-      }
-    ));
-    expect(draining).toMatchObject({ kind: "draining-to-stop", title: "History stopping" });
-    expect(draining?.detail).toContain("provisional");
-    expect(draining?.detail).toContain("queued 2 / 800 bytes");
-    expect(draining?.detail).toContain("PENDING_BYTE_LIMIT");
-
-    const capacityStop = historyConditionFor(input({
-      phase: "STOPPED",
-      captureOperation: "STOPPED",
-      capacity: { ...status().capacity, state: "EXHAUSTED" },
-      terminal: {
-        reason: "RETAINED_COUNT_LIMIT",
-        dimension: "RETAINED_COUNT",
-        tier: "NORMAL",
-        triggerTime: 1,
-        triggerInterval: interval,
-        interval,
-        committedEvidenceBoundary: status().committedEvidenceBoundary,
-        retainedRange: status().retainedRange,
-        firstMissingEventId: "event-42",
-        rejected: { count: 1, bytes: 100 },
-        discarded: { count: 0, bytes: 0 },
-        triggerMeasurements: status().capacity.measurements!
+      retention: {
+        policy: "ROLLING",
+        highWater: { count: 5_000, bytes: 32 * 1_048_576 },
+        lowWater: { count: 4_500, bytes: Math.floor(32 * 1_048_576 * 0.9) },
+        evicted: { count: 0, bytes: 0 },
+        lastAdvance: null
       }
     }));
-    expect(capacityStop).toMatchObject({ kind: "capacity-stop", title: "Capture stopped — History Capacity exhausted" });
-    expect(capacityStop?.detail).toContain("RETAINED_COUNT_LIMIT");
-    expect(capacityStop?.detail).toContain("Clear cannot restart Capture");
 
-    const fallback = historyConditionFor(input({
-      capacity: { tier: "LOWER", state: "AVAILABLE", limits, measurements: status().capacity.measurements },
-      fallback: "UNKNOWN_NEWER_SCHEMA"
-    }));
-    expect(fallback).toMatchObject({ kind: "lower-capacity-fallback", title: "Lower History Capacity" });
-    expect(fallback?.detail).toContain("UNKNOWN_NEWER_SCHEMA");
-    expect(fallback?.detail).toContain("5,000 Evidence records or 32 MiB");
-    expect(fallback?.detail).toContain("Observation Coverage is unchanged");
-
-    expect(historyConditionFor(input())).toBeNull();
+    expect(condition).toMatchObject({
+      kind: "memory-fallback",
+      title: "History using memory",
+      severity: "Warning"
+    });
+    expect(condition?.detail).toContain("Capture continues");
+    expect(condition?.detail).toContain("Observation Coverage is unchanged");
   });
 
-  it("publishes the semantic condition once, suppresses history-caused Coverage, and announces terminal transition once", async () => {
-    const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-runtime",
-      byteEstimator: () => 10,
-      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000 }
-    });
-    const runtime = createWorkbenchRuntime({ history });
-    await flushRuntime();
+  it("prioritizes an exact Evidence gap while Capture remains running", () => {
+    const gap = {
+      interval,
+      captureOrdinal: 42,
+      eventId: "event-42",
+      candidateBytes: 300,
+      occurredAt: 1,
+      dimension: "RETAINED_BYTES" as const,
+      afterEvidence: boundary
+    };
+    const condition = historyConditionFor(input({
+      continuity: { state: "GAPPED", gapCount: 1, firstGap: gap, latestGap: gap }
+    }));
 
-    await history.offer(candidate("accepted")).settled;
-    await history.offer(candidate("missing")).settled;
+    expect(condition).toMatchObject({
+      kind: "evidence-gap",
+      title: "History has an Evidence gap",
+      severity: "Warning"
+    });
+    expect(condition?.detail).toContain("#42 (event-42)");
+    expect(condition?.detail).toContain("Later Capture continues");
+    expect(condition?.detail).toContain("LIMITED");
+  });
+
+  it("keeps simultaneous Evidence-gap and memory-fallback conditions independently visible", () => {
+    const gap = {
+      interval,
+      captureOrdinal: 42,
+      eventId: "event-42",
+      candidateBytes: 300,
+      occurredAt: 1,
+      dimension: "RETAINED_BYTES" as const,
+      afterEvidence: boundary
+    };
+    const conditions = historyConditionsFor(input({
+      continuity: { state: "GAPPED", gapCount: 1, firstGap: gap, latestGap: gap },
+      persistence: {
+        mode: "MEMORY_ONLY",
+        health: "DEGRADED",
+        commitAttempts: 3,
+        retryCount: 2,
+        failureCount: 3,
+        lastFailureAt: 1,
+        lastProblem: { code: "JOURNAL_COMMIT_FAILED", message: "journal unavailable" }
+      }
+    }));
+
+    expect(conditions.map(({ kind }) => kind)).toEqual(["evidence-gap", "memory-fallback"]);
+  });
+
+  it("coalesces rollover into Notifications without a footer warning", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-10-rollover",
+      byteEstimator: () => 10,
+      capacity: { maxRetainedCount: 2, maxRetainedBytes: 1_000 }
+    });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scheduler: immediateScheduler() });
+
+    for (let sequence = 1; sequence <= 4; sequence += 1) {
+      await history.offer(candidate(`event-${sequence}`)).settled;
+    }
     await flushRuntime();
 
     const snapshot = runtime.getSnapshot();
-    expect(snapshot.historyCondition).toMatchObject({
-      kind: "capacity-stop",
-      title: "Capture stopped — History Capacity exhausted"
-    });
-    expect(snapshot.diagnostics.filter((diagnostic) => diagnostic.category === "history")).toHaveLength(1);
-    expect(snapshot.diagnostics.map(({ title }) => title)).not.toContain("Coverage LIMITED");
-    expect(snapshot.historyAnnouncement).toBe(
-      "Capture stopped because History Capacity is exhausted."
-    );
-
-    await flushRuntime();
-    expect(runtime.getSnapshot().historyAnnouncement).toBe(
-      "Capture stopped because History Capacity is exhausted."
-    );
+    expect(snapshot.capture).toMatchObject({ operation: "RUNNING", coverage: "USEFUL" });
+    expect(snapshot.historyCondition).toBeNull();
+    expect(snapshot.notifications.entries.filter(({ title }) => title === "Older Evidence removed")).toHaveLength(1);
     runtime.dispose();
   });
 
-  it("uses lower-capacity semantic fallback without limiting Coverage", async () => {
+  it("keeps Capture running and records one warning when the journal falls back to memory", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-fallback",
-      capacityTier: "LOWER",
-      fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+      panelSessionId: "history-impl-10-memory-fallback",
+      commitBatch: async () => { throw new Error("journal unavailable"); }
     });
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scheduler: immediateScheduler() });
+
+    await history.offer(candidate("accepted-in-memory")).settled;
     await flushRuntime();
 
-    expect(runtime.getSnapshot().historyCondition).toMatchObject({
-      kind: "lower-capacity-fallback",
-      title: "Lower History Capacity"
-    });
-    expect(runtime.getSnapshot().capture.coverage).toBe("USEFUL");
-    expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain("Coverage LIMITED");
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.capture).toMatchObject({ operation: "RUNNING", coverage: "USEFUL" });
+    expect(snapshot.historyCondition).toMatchObject({ kind: "memory-fallback", title: "History using memory" });
+    expect(snapshot.notifications.entries.filter(({ title }) => title === "History using memory")).toHaveLength(1);
     runtime.dispose();
   });
 
-  it("keeps a dismissed History backlog notification reviewable and resurfaces a later recurrence", async () => {
-    const commitReleases: Array<() => void> = [];
+  it("keeps later Capture running while one Evidence gap limits continuity", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-backlog-notification",
-      byteEstimator: () => 10,
-      capacity: {
-        pendingWarningBytes: 1,
-        pendingStopBytes: 1_000,
-        pendingAgeWarningMs: 10_000,
-        pendingAgeStopMs: 30_000
+      panelSessionId: "history-impl-10-gap",
+      byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
+      capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 }
+    });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scheduler: immediateScheduler() });
+
+    await history.offer(candidate("too-large")).settled;
+    await history.offer(candidate("later")).settled;
+    await flushRuntime();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.capture).toMatchObject({
+      operation: "RUNNING",
+      coverage: "LIMITED",
+      firstMissingEventId: "too-large"
+    });
+    expect(snapshot.evidence.total).toBe(1);
+    expect(snapshot.historyCondition).toMatchObject({ kind: "evidence-gap" });
+    expect(snapshot.notifications.entries.filter(({ title }) => title === "History has an Evidence gap")).toHaveLength(1);
+    runtime.dispose();
+  });
+
+  it("restores useful Capture coverage when Clear starts a fresh interval after an Evidence gap", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-10-gap-clear",
+      byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
+      capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 }
+    });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scheduler: immediateScheduler() });
+
+    await history.offer(candidate("too-large")).settled;
+    await flushRuntime();
+    expect(runtime.getSnapshot().capture).toMatchObject({
+      operation: "RUNNING",
+      coverage: "LIMITED",
+      firstMissingEventId: "too-large"
+    });
+
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await flushRuntime();
+
+    expect(history.status()).toMatchObject({
+      interval: { ordinal: 2 },
+      continuity: { state: "CONTIGUOUS", gapCount: 0 }
+    });
+    expect(runtime.getSnapshot()).toMatchObject({
+      capture: {
+        operation: "RUNNING",
+        coverage: "USEFUL",
+        firstMissingEventId: null,
+        committedEvidenceBoundary: null
       },
-      commitBatch: () => new Promise<void>((resolve) => commitReleases.push(resolve))
+      historyCondition: null,
+      retention: { clearState: "idle" }
     });
-    const runtime = createWorkbenchRuntime({ history });
-    const first = history.offer(candidate("pending-first"));
-    await flushRuntime();
+    runtime.dispose();
+  });
 
-    const backlog = runtime.getSnapshot().diagnostics.find(({ title }) => title === "History backlog near stop");
-    expect(backlog).toMatchObject({
-      severity: "Warning",
-      affected: "History Interval history-impl-10-backlog-notification:interval-1"
+  it("preserves the gap boundary and reports an unsuccessful durable Clear", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-10-gap-clear-failed",
+      byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
+      capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 },
+      clearJournal: () => { throw new Error("durable Clear unavailable"); }
     });
-    expect(backlog?.dismissalId).toBeTruthy();
-    expect(runtime.getSnapshot().notifications.entries).toContainEqual(expect.objectContaining({
-      title: "History backlog near stop"
-    }));
-    expect(runtime.getSnapshot().notifications.entries.filter(({ title }) => title === "History backlog near stop")).toHaveLength(1);
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scheduler: immediateScheduler() });
 
-    runtime.dispatch({ type: "dismiss-diagnostic", dismissalId: backlog!.dismissalId! });
-    expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain("History backlog near stop");
-    expect(runtime.getSnapshot().notifications.entries).toContainEqual(expect.objectContaining({
-      title: "History backlog near stop"
-    }));
-    expect(runtime.getSnapshot().notifications.entries.filter(({ title }) => title === "History backlog near stop")).toHaveLength(1);
-
-    runtime.dispatch({ type: "set-visible", visible: false });
-    commitReleases.shift()?.();
-    await first.settled;
+    await history.offer(candidate("too-large")).settled;
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
     await flushRuntime();
 
-    const second = history.offer(candidate("pending-second"));
+    expect(history.status()).toMatchObject({
+      interval: { ordinal: 1 },
+      continuity: { state: "GAPPED", gapCount: 1 }
+    });
+    expect(runtime.getSnapshot()).toMatchObject({
+      capture: {
+        operation: "RUNNING",
+        coverage: "LIMITED",
+        firstMissingEventId: "too-large"
+      },
+      historyCondition: { kind: "evidence-gap" },
+      retention: {
+        clearState: "error",
+        clearError: "durable Clear unavailable"
+      }
+    });
+    runtime.dispose();
+  });
+
+  it("keeps a later memory fallback in Notifications when an Evidence gap owns the footer", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-10-gap-then-memory-fallback",
+      byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
+      capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 },
+      commitBatch: async () => { throw new Error("journal unavailable"); }
+    });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scheduler: immediateScheduler() });
+
+    await history.offer(candidate("too-large")).settled;
+    await history.offer(candidate("later-in-memory")).settled;
     await flushRuntime();
-    runtime.dispatch({ type: "set-visible", visible: true });
-    await flushRuntime();
-    expect(runtime.getSnapshot().diagnostics).toContainEqual(expect.objectContaining({
-      title: "History backlog near stop"
-    }));
-    commitReleases.shift()?.();
-    await second.settled;
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.capture).toMatchObject({ operation: "RUNNING", coverage: "LIMITED" });
+    expect(snapshot.historyCondition).toMatchObject({ kind: "evidence-gap" });
+    expect(snapshot.diagnostics.map(({ title }) => title)).toEqual(expect.arrayContaining([
+      "History has an Evidence gap",
+      "History using memory"
+    ]));
+    expect(snapshot.notifications.entries.filter(({ title }) => title === "History has an Evidence gap")).toHaveLength(1);
+    expect(snapshot.notifications.entries.filter(({ title }) => title === "History using memory")).toHaveLength(1);
     runtime.dispose();
   });
 });

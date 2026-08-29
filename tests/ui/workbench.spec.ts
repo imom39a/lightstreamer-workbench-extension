@@ -64,6 +64,40 @@ async function expectShellFits(page: Page): Promise<void> {
   expect(dimensions.documentScrollWidth).toBeLessThanOrEqual(dimensions.documentClientWidth);
 }
 
+async function expectOperatingStatusFullyVisible(page: Page, statuses: readonly string[]): Promise<void> {
+  const operating = page.locator(".workbench-react__operating");
+  for (const status of statuses) {
+    const item = operating.getByText(status, { exact: true });
+    await expect(item).toBeVisible();
+    const dimensions = await item.evaluate((element) => {
+      const itemRect = element.getBoundingClientRect();
+      const operatingRect = element.parentElement!.getBoundingClientRect();
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        left: itemRect.left,
+        right: itemRect.right,
+        operatingLeft: operatingRect.left,
+        operatingRight: operatingRect.right
+      };
+    });
+    expect(dimensions.scrollWidth, `${status} is horizontally clipped`).toBeLessThanOrEqual(dimensions.clientWidth);
+    expect(dimensions.left, `${status} starts outside the operating strip`).toBeGreaterThanOrEqual(dimensions.operatingLeft);
+    expect(dimensions.right, `${status} ends outside the operating strip`).toBeLessThanOrEqual(dimensions.operatingRight);
+  }
+  const intersections = await operating.locator(":scope > strong, :scope > span, :scope > .workbench-react__operating-actions")
+    .evaluateAll((items) => items.flatMap((item, index) => {
+      const first = item.getBoundingClientRect();
+      return items.slice(index + 1).flatMap((other) => {
+        const second = other.getBoundingClientRect();
+        const overlaps = Math.min(first.right, second.right) - Math.max(first.left, second.left) > 0.5
+          && Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top) > 0.5;
+        return overlaps ? [`${item.textContent?.trim()} overlaps ${other.textContent?.trim()}`] : [];
+      });
+    }));
+  expect(intersections).toEqual([]);
+}
+
 async function expectShellFitsExactly(page: Page): Promise<void> {
   const dimensions = await page.locator(".workbench-react").evaluate((shell) => {
     const rect = shell.getBoundingClientRect();
@@ -163,6 +197,40 @@ test("Workbench keeps selected Evidence focused without COMMAND projection UI", 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench keeps Capture, Coverage, and View explicit across docked geometries", async ({ page }, testInfo) => {
+  await openScenario(page, "activity-10k", { width: 563, height: 700 }, "dark");
+  await page.evaluate(() => window.__setWorkbenchStorageMode("indexeddb"));
+  const shell = page.locator(".workbench-react");
+  const operating = page.locator(".workbench-react__operating");
+  const historyStatus = operating.locator("[data-history-status]");
+
+  for (const viewport of [
+    { width: 563, height: 700, geometry: "compact" },
+    { width: 900, height: 320, geometry: "shallow" },
+    { width: 900, height: 700, geometry: "normal" },
+    { width: 1440, height: 900, geometry: "wide" }
+  ] as const) {
+    await page.setViewportSize(viewport);
+    await expect(shell).toHaveAttribute("data-geometry", viewport.geometry);
+    await expectOperatingStatusFullyVisible(page, [
+      "Capture RUNNING",
+      "Coverage USEFUL",
+      "10,000/10,000 Evidence · IndexedDB",
+      "View FOLLOW LIVE"
+    ]);
+    await expect(historyStatus).toHaveAttribute("aria-label", "10,000 retained Evidence of 10,000 accepted");
+
+    for (const name of ["Find", "Filter", "More actions"] as const) {
+      const action = operating.getByRole("button", { name, exact: true });
+      await action.focus();
+      await expect(action).toBeFocused();
+      await expect(action).toBeInViewport();
+    }
+    await expectShellFits(page);
+    await attachNamedScenarioScreenshot(page, testInfo, `operating-status-${viewport.geometry}`);
+  }
 });
 
 test("Workbench promotes distinct COMMAND projections and restores the investigation", async ({ page }, testInfo) => {
@@ -1147,9 +1215,9 @@ test("Workbench keeps active capture without selection and selected Local Eviden
   await expect(unavailableDraft).toHaveAttribute("aria-describedby", "workbench-local-injection-unavailable-reason");
   await expect(page.locator("#workbench-local-injection-unavailable-reason")).toHaveText("Selected Evidence is not a compatible captured Item Update.");
   await expect(page.getByRole("button", { name: "Export Scope…" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Copy complete scoped Evidence" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy retained scoped Evidence" })).toHaveCount(0);
   await page.getByRole("button", { name: "More actions" }).click();
-  await expect(page.getByRole("button", { name: "Copy complete scoped Evidence" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy retained scoped Evidence" })).toBeVisible();
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -1547,16 +1615,16 @@ test("Notifications retains operational warnings after their footer copy is dism
   const trigger = page.getByRole("button", { name: "Notifications (1) · Warning", exact: true });
   await trigger.click();
   const notifications = page.getByRole("region", { name: "Notifications", exact: true });
-  await expect(notifications).toContainText("Lower History Capacity");
+  await expect(notifications).toContainText("History using memory");
   await expect(notifications).toContainText("1 of 1 notifications");
-  const activeCondition = notifications.getByRole("article").filter({ hasText: "Lower History Capacity" });
+  const activeCondition = notifications.getByRole("article").filter({ hasText: "History using memory" });
   await expect(activeCondition.locator("details")).not.toHaveAttribute("open", "");
   await expect(activeCondition.getByText(/^Recovery:/)).toBeVisible();
   const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
-  await expect(diagnostics).toContainText("Lower History Capacity");
-  await diagnostics.getByRole("button", { name: "Dismiss Lower History Capacity", exact: true }).click();
-  await expect(diagnostics).not.toContainText("Lower History Capacity");
-  await expect(notifications).toContainText("Lower History Capacity");
+  await expect(diagnostics).toContainText("History using memory");
+  await diagnostics.getByRole("button", { name: "Dismiss History using memory", exact: true }).click();
+  await expect(diagnostics).not.toContainText("History using memory");
+  await expect(notifications).toContainText("History using memory");
   await expect(trigger).toBeFocused();
   await expect(notifications.getByRole("button", { name: "Back to Evidence" })).toBeInViewport();
   await expectShellFits(page);
@@ -1583,6 +1651,62 @@ test("Notifications retains operational warnings after their footer copy is dism
   await expect(page.getByRole("button", { name: "Follow Live", exact: true })).toBeVisible();
   await expect(page.locator('[data-evidence-id="notification-snapshot-100"]')).toHaveAttribute("aria-selected", "true");
   await expect(page.locator('.workbench-react__evidence-row')).toHaveCount(1);
+});
+
+test("continuous Event History keeps rollover and journal incidents low-attention without stopping Capture", async ({ page }, testInfo) => {
+  await openScenario(page, "history-rolling-high-volume", { width: 1440, height: 900 }, "light");
+  await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
+  await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
+  await expect(page.getByText("3/6 Evidence · Memory", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(3);
+  await expect(page.getByRole("region", { name: "Workbench diagnostics" })).not.toContainText("Older Evidence removed");
+  const rolloverTrigger = page.getByRole("button", { name: /^Notifications/ });
+  await rolloverTrigger.click();
+  let notifications = page.getByRole("region", { name: "Notifications", exact: true });
+  await expect(notifications).toContainText("Older Evidence removed");
+  await expect(notifications).toContainText("This Retention Advance is not an Evidence Gap");
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "history-rollover-notifications-wide-light");
+  await notifications.getByRole("button", { name: "Back to Evidence", exact: true }).click();
+  await expect(rolloverTrigger).toBeFocused();
+
+  await openScenario(page, "history-journal-recovered", { width: 900, height: 700 }, "dark");
+  await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
+  await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workbench diagnostics" })).not.toContainText("History storage recovered");
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  notifications = page.getByRole("region", { name: "Notifications", exact: true });
+  await expect(notifications).toContainText("History storage recovered");
+  await expect(notifications).toContainText("recovered after 2 retries");
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "history-journal-recovered-notifications-normal-dark");
+
+  await openScenario(page, "history-journal-memory-fallback", { width: 563, height: 700 }, "light");
+  const memoryFooter = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
+  await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
+  await expect(memoryFooter.getByText("Warning · History using memory", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("3/3 Evidence · Memory", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  notifications = page.getByRole("region", { name: "Notifications", exact: true });
+  await expect(notifications.getByRole("article").filter({ hasText: "History using memory" })).toHaveCount(1);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "history-journal-memory-compact-light");
+
+  await openScenario(page, "history-evidence-gap", { width: 900, height: 320 }, "dark");
+  await page.emulateMedia({ forcedColors: "active" });
+  const gapFooter = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
+  await expect(page.getByText("Coverage LIMITED", { exact: true })).toBeVisible();
+  await expect(gapFooter.getByText("Warning · History has an Evidence gap", { exact: true })).toHaveCount(1);
+  await expect(page.locator('[data-evidence-id="history-after-gap-event"]')).toBeVisible();
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  notifications = page.getByRole("region", { name: "Notifications", exact: true });
+  await expect(notifications).toContainText("history-oversized-event");
+  await expect(notifications).toContainText("Later Capture continues");
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "history-evidence-gap-shallow-forced-dark");
+  await expectShellFits(page);
 });
 
 test("Workbench explains server errors and keepalives in Notifications without a health verdict", async ({ page }, testInfo) => {
@@ -1760,7 +1884,7 @@ test("Workbench preserves footer focus while lower-capacity history remains acti
 
   await diagnostics.focus();
   await expect(diagnostics).toBeFocused();
-  await expect(page.getByText("Warning · Lower History Capacity", { exact: true })).toBeVisible();
+  await expect(page.getByText("Warning · History using memory", { exact: true })).toBeVisible();
   await expect(diagnostics).toContainText("Observation Coverage is unchanged");
   await expect(diagnostics).toBeFocused();
   await expect(diagnostics).toHaveAttribute("tabindex", "0");
@@ -1781,7 +1905,7 @@ test("Workbench renders one typed history condition across geometry, theme, and 
   for (const scene of scenes) {
     await openScenario(page, "memory-fallback", scene, scene.theme);
     const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
-    await expect(diagnostics.getByText("Warning · Lower History Capacity", { exact: true })).toHaveCount(1);
+    await expect(diagnostics.getByText("Warning · History using memory", { exact: true })).toHaveCount(1);
     await expect(diagnostics.locator("[data-history-condition='true']")).toHaveCount(1);
     await expect(page.locator(".workbench-react__history-live-region")).toHaveCount(1);
     await expect(page.locator(".workbench-react__history-live-region")).toHaveAttribute("aria-live", "polite");
@@ -1792,7 +1916,7 @@ test("Workbench renders one typed history condition across geometry, theme, and 
 
   await page.emulateMedia({ forcedColors: "active" });
   const forcedColorsDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
-  await expect(forcedColorsDiagnostics.getByText("Warning · Lower History Capacity", { exact: true })).toHaveCount(1);
+  await expect(forcedColorsDiagnostics.getByText("Warning · History using memory", { exact: true })).toHaveCount(1);
   await expect(forcedColorsDiagnostics).toContainText("Observation Coverage is unchanged");
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -1812,11 +1936,11 @@ test("Workbench keeps mixed-size footer diagnostics readable and bounded across 
     await openScenario(page, "diagnostics-stress", scene, scene.theme);
     const footer = page.getByRole("region", { name: "Workbench diagnostics" });
     const entries = footer.locator(".workbench-react__status-diagnostic");
-    await expect(entries).toHaveCount(3);
-    await expect(footer.getByText("Warning · History near capacity", { exact: true })).toBeVisible();
+    await expect(entries).toHaveCount(2);
+    await expect(footer.getByText("Warning · History catching up", { exact: true })).toHaveCount(0);
     await expect(footer.getByText("Error · Capture disconnected", { exact: true })).toHaveCount(1);
     await expect(footer.getByText("Information · Retired Scope", { exact: true })).toHaveCount(1);
-    await expect(footer.getByText("3 diagnostics · Scroll to review all", { exact: true })).toBeVisible();
+    await expect(footer.getByText("2 diagnostics · Scroll to review all", { exact: true })).toBeVisible();
 
     const layout = await entries.evaluateAll((diagnostics) => diagnostics.map((diagnostic) => {
       const affected = diagnostic.querySelector(".workbench-react__status-affected");
@@ -1897,8 +2021,8 @@ test("Workbench keeps mixed-size footer diagnostics readable and bounded across 
       await expect.poll(() => diagnosticList.evaluate((element) => element.scrollTop)).toBe(0);
     }
     const dismissActions = footer.getByRole("button", { name: /^Dismiss / });
-    await expect(dismissActions).toHaveCount(3);
-    for (let index = 0; index < 3; index += 1) {
+    await expect(dismissActions).toHaveCount(2);
+    for (let index = 0; index < 2; index += 1) {
       const action = dismissActions.nth(index);
       await action.focus();
       await expect(action).toBeFocused();
@@ -1919,13 +2043,13 @@ test("Workbench keeps mixed-size footer diagnostics readable and bounded across 
   const footer = page.getByRole("region", { name: "Workbench diagnostics" });
   await page.getByRole("button", { name: /^Notifications/ }).click();
   const notifications = page.getByRole("region", { name: "Notifications", exact: true });
-  await expect(notifications).toContainText("History near capacity");
+  await expect(notifications).not.toContainText("History near capacity");
   await expect(notifications).toContainText("Capture disconnected");
   await expect(notifications).toContainText("Retired Scope");
-  await footer.getByRole("button", { name: "Dismiss History near capacity", exact: true }).click();
-  await expect(footer.getByText("Warning · History near capacity", { exact: true })).toHaveCount(0);
-  await expect(notifications).toContainText("History near capacity");
-  await expect(footer.getByRole("button", { name: "Dismiss Capture disconnected", exact: true })).toBeFocused();
+  await footer.getByRole("button", { name: "Dismiss Capture disconnected", exact: true }).click();
+  await expect(footer.getByText("Error · Capture disconnected", { exact: true })).toHaveCount(0);
+  await expect(notifications).toContainText("Capture disconnected");
+  await expect(footer.getByRole("button", { name: "Dismiss Retired Scope", exact: true })).toBeFocused();
 });
 
 test("Workbench keeps a retired Session readable, scoped, and explicitly read-only", async ({
@@ -2058,9 +2182,9 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
 
   await openScenario(page, "memory-fallback", { width: 563, height: 700 }, "dark");
   const fallbackDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
-  const fallbackDetail = "PRIMARY_JOURNAL_UNAVAILABLE · the primary session journal is unavailable. Memory is limited to 5,000 Evidence records or 32 MiB.";
+  const fallbackDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Capture continues with a rolling memory Retained Range of 5,000 Evidence records or 32 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
   await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
-  await expect(fallbackDiagnostics.getByText("Warning · Lower History Capacity", { exact: true })).toBeVisible();
+  await expect(fallbackDiagnostics.getByText("Warning · History using memory", { exact: true })).toBeVisible();
   await expect(fallbackDiagnostics).toContainText(fallbackDetail);
   await expect(page.getByText(fallbackDetail, { exact: false })).toHaveCount(1);
   await expect.poll(() => page.getByLabel("Ordered Evidence").evaluate((evidence) => {

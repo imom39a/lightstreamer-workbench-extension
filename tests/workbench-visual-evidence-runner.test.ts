@@ -20,7 +20,7 @@ describe("Workbench visual-evidence runner", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(result.stdout).toContain("--print-review-scope");
-    expect(matrix).toHaveLength(82);
+    expect(matrix).toHaveLength(86);
   });
 
   it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
@@ -53,6 +53,48 @@ describe("Workbench visual-evidence runner", () => {
     expect(runnerSource).toContain("snapshot, COMMAND, and lost-update anomalies");
   });
 
+  it("classifies every accepted continuous-history visual scenario by review category", () => {
+    const continuousHistoryScenarios = matrix
+      .filter((scenario: { production?: { scenario?: string } }) =>
+        scenario.production?.scenario?.startsWith("history-")
+      )
+      .map((scenario: { id: string; production: { scenario: string; setup: string } }) => ({
+        id: scenario.id,
+        category: scenario.production.setup.startsWith("notifications-history-")
+          ? "integrated-notification"
+          : "history-footer",
+        productionScenario: scenario.production.scenario,
+        setup: scenario.production.setup
+      }));
+
+    expect(continuousHistoryScenarios).toEqual([
+      {
+        id: "wide-history-rollover-notifications-light",
+        category: "integrated-notification",
+        productionScenario: "history-rolling-high-volume",
+        setup: "notifications-history-rollover"
+      },
+      {
+        id: "normal-history-recovered-notifications-dark",
+        category: "integrated-notification",
+        productionScenario: "history-journal-recovered",
+        setup: "notifications-history-recovered"
+      },
+      {
+        id: "compact-history-journal-memory-light",
+        category: "history-footer",
+        productionScenario: "history-journal-memory-fallback",
+        setup: "history-memory"
+      },
+      {
+        id: "shallow-history-gap-forced-dark",
+        category: "history-footer",
+        productionScenario: "history-evidence-gap",
+        setup: "history-gap"
+      }
+    ]);
+  });
+
   it("includes diagnostic and Notifications states in contact sheets, axe, and focus proof", () => {
     const result = spawnSync(process.execPath, [runner, "--print-review-scope"], {
       cwd: rootDir,
@@ -72,6 +114,14 @@ describe("Workbench visual-evidence runner", () => {
     const notificationIds = matrix
       .filter((scenario: { production?: { setup?: string } }) => scenario.production?.setup?.startsWith("notifications-"))
       .map((scenario: { id: string }) => scenario.id);
+    const historyNotificationIds = matrix
+      .filter((scenario: { production?: { setup?: string } }) => scenario.production?.setup?.startsWith("notifications-history-"))
+      .map((scenario: { id: string }) => scenario.id);
+    const historyFooterIds = matrix
+      .filter((scenario: { production?: { setup?: string } }) =>
+        scenario.production?.setup === "history-memory" || scenario.production?.setup === "history-gap"
+      )
+      .map((scenario: { id: string }) => scenario.id);
     const activityIds = matrix
       .filter((scenario: { production?: { setup?: string } }) => scenario.production?.setup?.startsWith("activity"))
       .map((scenario: { id: string }) => scenario.id);
@@ -85,16 +135,29 @@ describe("Workbench visual-evidence runner", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(diagnosticIds).toHaveLength(12);
-    expect(notificationIds).toHaveLength(5);
+    expect(notificationIds).toHaveLength(7);
+    expect(historyNotificationIds).toEqual([
+      "wide-history-rollover-notifications-light",
+      "normal-history-recovered-notifications-dark"
+    ]);
+    expect(historyFooterIds).toEqual([
+      "compact-history-journal-memory-light",
+      "shallow-history-gap-forced-dark"
+    ]);
     expect(storageIds).toHaveLength(5);
     expect(activityIds).toHaveLength(9);
     expect(footerDiagnosticIds).toHaveLength(4);
     expect(readabilityIds).toHaveLength(2);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]),
+    const reviewScope = JSON.parse(result.stdout);
+    expect(reviewScope).toMatchObject({
+      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...historyFooterIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]),
       accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds]),
       focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds])
     });
+    for (const id of historyFooterIds) {
+      expect(reviewScope.accessibilityScenarioIds).not.toContain(id);
+      expect(reviewScope.focusScenarioIds).not.toContain(id);
+    }
   });
 
   it("keeps reviewed D screenshots as static design references for the production Activity states", () => {

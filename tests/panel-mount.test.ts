@@ -535,7 +535,7 @@ describe("production panel mount wiring", () => {
     expect(root.textContent).toContain("Coverage USEFUL");
     expect(root.textContent).not.toContain("Coverage LIMITED");
     expect(root.textContent).not.toContain("Capture STOPPED");
-    expect(root.textContent).toContain("Warning · Lower History Capacity");
+    expect(root.textContent).toContain("Warning · History using memory");
     expect(root.textContent).toContain("Observation Coverage is unchanged");
 
     await disposePanel(dispose);
@@ -616,14 +616,14 @@ describe("production panel mount wiring", () => {
     await flushPanel();
 
     const footerDiagnostics = root.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
-    const storageDetail = "PRIMARY_JOURNAL_UNAVAILABLE · the primary session journal is unavailable. Memory is limited to 5,000 Evidence records or 32 MiB.";
+    const storageDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Capture continues with a rolling memory Retained Range of 5,000 Evidence records or 32 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
 
     expect(root.textContent).toContain("Coverage USEFUL");
     expect(root.textContent).not.toContain("Coverage LIMITED");
-    expect(footerDiagnostics?.textContent).toContain("Warning · Lower History Capacity");
-    expect(footerDiagnostics?.textContent).toContain("Affected: Current Panel Session");
+    expect(footerDiagnostics?.textContent).toContain("Warning · History using memory");
+    expect(footerDiagnostics?.textContent).toContain("Affected: History Interval panel-fallback-error:interval-1");
     expect(footerDiagnostics?.textContent).toContain(storageDetail);
-    expect(footerDiagnostics?.textContent).toContain("Recovery: Restore primary session storage");
+    expect(footerDiagnostics?.textContent).toContain("Recovery: Keep investigating; reopen DevTools later if durable session storage is required");
     expect(root.textContent?.split(storageDetail)).toHaveLength(2);
     await clickButton(root, "More actions");
     expect(root.textContent).toContain(

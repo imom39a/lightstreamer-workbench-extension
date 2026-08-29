@@ -789,7 +789,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
-  it("rolls back a failed batch and stops the queued tail at the prior boundary", async () => {
+  it("rolls back a failed durable batch and continues its queued tail in memory", async () => {
     const history = await freshHistory("indexed-abort-tail");
     await history.offer(candidate("already-committed")).settled;
     const failedBatch = [history.offer(candidate("already-committed")), history.offer(candidate("same-batch-new"))];
@@ -797,19 +797,31 @@ describe("IndexedDB authoritative EventHistory", () => {
 
     const failedResults = await Promise.all(failedBatch.map((receipt) => receipt.settled));
     expect(failedResults).toHaveLength(2);
-    for (const result of failedResults) {
-      expect(result).toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" }, committedEvidenceBoundary: { sequence: 1 } });
-    }
+    expect(failedResults).toMatchObject([
+      { outcome: "BECAME_EVIDENCE", evidence: { sequence: 2, eventId: "already-committed" } },
+      { outcome: "BECAME_EVIDENCE", evidence: { sequence: 3, eventId: "same-batch-new" } }
+    ]);
     await expect(tail.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" },
-      committedEvidenceBoundary: { sequence: 1, eventId: "already-committed" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 4, eventId: "tail-after-abort" }
     });
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
-      value: { total: 1, evidence: [expect.objectContaining({ eventId: "already-committed" })] }
+      value: {
+        total: 4,
+        evidence: [
+          expect.objectContaining({ sequence: 1, eventId: "already-committed" }),
+          expect.objectContaining({ sequence: 2, eventId: "already-committed" }),
+          expect.objectContaining({ sequence: 3, eventId: "same-batch-new" }),
+          expect.objectContaining({ sequence: 4, eventId: "tail-after-abort" })
+        ]
+      }
     });
-    expect(history.offer(candidate("after-stop")).intake).toBe("REFUSED");
+    expect(history.status()).toMatchObject({ phase: "RUNNING", persistence: { mode: "MEMORY_ONLY", health: "DEGRADED" } });
+    await expect(history.offer(candidate("after-stop")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 5, eventId: "after-stop" }
+    });
     await history.close();
   });
 
@@ -1395,7 +1407,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
-  it("keeps the panel-lifetime boundary across Clear and rejects an atomic identity collision", async () => {
+  it("keeps the panel-lifetime boundary across Clear and survives an atomic identity collision", async () => {
     const history = await freshHistory("indexed-boundary");
     await history.offer(candidate("before-clear")).settled;
     await expect(history.clear()).resolves.toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
@@ -1410,15 +1422,20 @@ describe("IndexedDB authoritative EventHistory", () => {
 
     const duplicate = history.offer(candidate("after-clear"));
     await expect(duplicate.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" },
-      committedEvidenceBoundary: { sequence: 2 }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 3, eventId: "after-clear" }
     });
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
-      value: { evidence: [expect.objectContaining({ eventId: "after-clear", sequence: 2 })] }
+      value: { evidence: [
+        expect.objectContaining({ eventId: "after-clear", sequence: 2 }),
+        expect.objectContaining({ eventId: "after-clear", sequence: 3 })
+      ] }
     });
-    expect(history.offer(candidate("after-abort")).intake).toBe("REFUSED");
+    await expect(history.offer(candidate("after-abort")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 4, eventId: "after-abort" }
+    });
     await history.close();
   });
 
@@ -1770,7 +1787,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
-  it("terminalizes a clear failure and rejects clear-window capture", async () => {
+  it("keeps Capture running and rejoins clear-window candidates after a clear failure", async () => {
     const panelSessionId = "indexed-clear-terminal";
     let release!: () => void;
     let clearStarted!: () => void;
@@ -1822,35 +1839,40 @@ describe("IndexedDB authoritative EventHistory", () => {
       ok: false,
       problem: { code: "CLEAR_FAILED" }
     });
-    expect(phases).toContain("DRAINING_TO_STOP");
+    expect(phases).not.toContain("DRAINING_TO_STOP");
     await expect(duringClear.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "during-clear" }
     });
     await expect(afterWindow.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 3, eventId: "after-window" }
     });
     expect(duringClearSettlementCount).toBe(1);
     expect(afterWindowSettlementCount).toBe(1);
-    const postTerminal = history.offer(candidate("post-terminal"));
-    expect(postTerminal.intake).toBe("REFUSED");
-    await expect(postTerminal.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+    const postFailure = history.offer(candidate("post-terminal"));
+    expect(postFailure.intake).toBe("QUEUED");
+    await expect(postFailure.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 4, eventId: "post-terminal" }
     });
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
       value: {
         interval: { id: `${panelSessionId}:interval-1` },
-        evidence: [{ eventId: "pre-clear", sequence: 1 }],
-        committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+        evidence: [
+          { eventId: "pre-clear", sequence: 1 },
+          { eventId: "during-clear", sequence: 2 },
+          { eventId: "after-window", sequence: 3 },
+          { eventId: "post-terminal", sequence: 4 }
+        ],
+        committedEvidenceBoundary: { sequence: 4, eventId: "post-terminal" }
       }
     });
     await history.close();
   });
 
-  it("settles clear-window captures as terminal when commit fails while clear waits", async () => {
+  it("completes Clear after an in-flight commit falls back to memory", async () => {
     const panelSessionId = "indexed-clear-waiting-commit-fails";
     let release!: () => void;
     let commitStarted!: () => void;
@@ -1894,33 +1916,34 @@ describe("IndexedDB authoritative EventHistory", () => {
 
     release();
     await expect(clear).resolves.toMatchObject({
-      ok: false,
-      problem: { code: "HISTORY_STOPPED" }
+      ok: true,
+      value: { interval: { id: `${panelSessionId}:interval-2`, ordinal: 2 } }
     });
     await expect(inFlight.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" },
-      committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "in-flight" }
     });
     await expect(duringClear.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" },
-      committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 3, eventId: "during-clear" }
     });
     expect(inFlightSettledCount).toBe(1);
     expect(duringClearSettledCount).toBe(1);
-    const postTerminal = history.offer(candidate("post-terminal"));
-    expect(postTerminal.intake).toBe("REFUSED");
-    await expect(postTerminal.settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "JOURNAL_COMMIT_FAILED" }
+    const postFallback = history.offer(candidate("post-terminal"));
+    expect(postFallback.intake).toBe("QUEUED");
+    await expect(postFallback.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 4, eventId: "post-terminal" }
     });
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
       value: {
-        interval: { id: `${panelSessionId}:interval-1` },
-        evidence: [{ eventId: "pre-clear", sequence: 1 }],
-        committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+        interval: { id: `${panelSessionId}:interval-2` },
+        evidence: [
+          { eventId: "during-clear", sequence: 3 },
+          { eventId: "post-terminal", sequence: 4 }
+        ],
+        committedEvidenceBoundary: { sequence: 4, eventId: "post-terminal" }
       }
     });
     await history.close();

@@ -223,14 +223,16 @@ describe("filter-impl-06 memory selection planner", () => {
     expect(revealed.criteria.kind?.include).toHaveLength(0);
   });
 
-  it("keeps optional sections available in the terminal final snapshot", async () => {
-    const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-06-terminal", capacityTier: "LOWER", capacity: { maxRetainedCount: 1, retainedWarningCount: 1 } });
-    await history.offer(event("one", 1, 1_000, "terminal-needle")).settled;
-    await history.offer(event("two", 2, 2_000, "rejected")).settled;
-    const result = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), find: { text: "terminal-needle" } });
+  it("keeps optional sections available after a one-record Retained Range advances", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-06-rolling", capacityTier: "LOWER", capacity: { maxRetainedCount: 1, retainedWarningCount: 1 } });
+    await history.offer(event("one", 1, 1_000, "old-needle")).settled;
+    await history.offer(event("two", 2, 2_000, "retained-needle")).settled;
+    const result = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), find: { text: "retained-needle" } });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.coverage).toBe("LIMITED");
+    expect(result.value.page.evidence[0]?.identity).toMatchObject({ eventId: "two", sequence: 2 });
     expect(result.value.find).toMatchObject({ total: 1, current: null, previous: null, next: null });
+    expect(history.status()).toMatchObject({ phase: "RUNNING", accepted: 2, retained: 1 });
   });
 });

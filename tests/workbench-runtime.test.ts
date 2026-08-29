@@ -91,7 +91,7 @@ function applyTextFilter(runtime: WorkbenchRuntime, text: string): void {
 let evidenceOperationModuleSettled = false;
 
 async function flushStoreNotifications(): Promise<void> {
-  // Complete History operations cross the panel's dynamically loaded,
+  // Retained Evidence operations cross the panel's dynamically loaded,
   // bounded operation boundary before publishing their artifact.
   if (!evidenceOperationModuleSettled) {
     await import("../src/extension/panel/evidence-history-operation");
@@ -349,7 +349,7 @@ describe("WorkbenchRuntime", () => {
 
     expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({ title: "Capture disconnected" }));
     for (const code of [
-      "workbench.history.lower-capacity-fallback",
+      "workbench.history.memory-fallback",
       "workbench.storage.headroom-limited",
       "workbench.capture.disconnected",
       "ls.session.recovering"
@@ -381,7 +381,7 @@ describe("WorkbenchRuntime", () => {
       "ls.client.server-keepalive",
       "ls.command.unknown-key-update",
       "ls.command.unsupported-command",
-      "workbench.history.lower-capacity-fallback",
+      "workbench.history.memory-fallback",
       "workbench.storage.headroom-limited",
       "workbench.capture.disconnected",
       "ls.session.recovering"
@@ -2351,7 +2351,7 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "set-storage-state", storage: { mode: "indexeddb" } });
     expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain(
-      "Lower History Capacity"
+      "History using memory"
     );
     runtime.dispose();
   });
@@ -2767,7 +2767,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("prepares canonical complete scoped Evidence copy and invalidates stale async results", async () => {
+  it("prepares canonical retained scoped Evidence copy and invalidates stale async results", async () => {
     let deferCompleteCopy = false;
     let resolveDeferred: () => void = () => {
       throw new Error("Complete Evidence copy was not deferred.");

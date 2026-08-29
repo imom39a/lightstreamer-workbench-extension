@@ -295,10 +295,10 @@ describe("committed-evidence pipeline", () => {
     await pipeline.close();
   });
 
-  it("forwards one truthful terminal publication at the first refused boundary", async () => {
+  it("forwards one exact gap publication and keeps the later pipeline eligible", async () => {
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "pipeline-terminal-boundary",
-      byteEstimator: () => 60,
+      byteEstimator: (candidate) => candidate.id === "refused" ? 101 : 60,
       capacity: { maxRetainedBytes: 100, maxRetainedCount: 10 }
     });
     const publications: HistoryPublication[] = [];
@@ -319,22 +319,26 @@ describe("committed-evidence pipeline", () => {
     expect(refused.intake).toBe("REFUSED");
     await expect(refused.settled).resolves.toMatchObject({
       outcome: "NOT_EVIDENCE",
-      problem: { code: "RETAINED_BYTE_LIMIT", dimension: "RETAINED_BYTES" },
+      problem: { code: "CANDIDATE_UNRETAINABLE", dimension: "RETAINED_BYTES" },
       committedEvidenceBoundary: { sequence: 1, eventId: "accepted" }
     });
 
-    const terminalPublications = publications.filter((publication) => publication.type === "terminal");
-    expect(terminalPublications).toHaveLength(1);
-    expect(terminalPublications[0]).toMatchObject({
-      type: "terminal",
-      terminal: {
-        reason: "RETAINED_BYTE_LIMIT",
-        firstMissingEventId: "refused",
-        committedEvidenceBoundary: { sequence: 1, eventId: "accepted" },
-        rejected: { count: 1 }
+    const gaps = publications.filter((publication) => publication.type === "acceptance-gap");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]).toMatchObject({
+      type: "acceptance-gap",
+      gap: {
+        eventId: "refused",
+        dimension: "RETAINED_BYTES",
+        afterEvidence: { sequence: 1, eventId: "accepted" }
       },
-      status: { phase: "STOPPED", captureOperation: "STOPPED" }
+      status: { phase: "RUNNING", captureOperation: "RUNNING", continuity: { state: "GAPPED" } }
     });
+    await expect(pipeline.offer(lightstreamerCandidate("later")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "later" }
+    });
+    expect(publications.some((publication) => publication.type === "terminal")).toBe(false);
 
     await pipeline.close();
   });

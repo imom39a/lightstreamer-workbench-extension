@@ -90,15 +90,17 @@ Workbench may show uncertainty when coverage cannot support a stronger claim. Ab
 - No Lightstreamer client or relevant activity has been detected.
 - Capture connected after the relevant lifecycle began or otherwise has limited coverage.
 - The DevTools bridge or inspected page is disconnected, navigating, or reloading.
-- The current Panel Session uses the lower-capacity memory fallback or has a material retention limitation; this limits History Capacity without changing Observation Coverage.
+- The current Panel Session uses memory-backed History or has advanced its Retained Range; this limits retained replay without changing Observation Coverage.
+- Event History has an exact Evidence Gap; later Capture continues, while conclusions that require an unbroken COMMAND or Topology sequence remain explicitly limited.
 - High event volume obscures the relevant interval; the developer must be able to Freeze, filter, and preserve selection without stopping Capture.
 - The selected runtime object retired while evidence was being inspected; historical evidence remains read-only and clearly distinguished from a live target.
 
-One Panel Session owns one temporary Event History. Normal IndexedDB capacity is
-100,000 Evidence records or 256 MiB; startup memory fallback is 5,000 records or
-32 MiB, with the adapter fixed before the first offer. Controlled Close attempts
-erasure and reports its outcome; abnormal cleanup may leave residual data until
-an ownership-safe guarded sweep, and a new Panel Session never replays it.
+One Panel Session owns one temporary rolling Event History. Normal retention is
+100,000 Evidence records or 256 MiB; memory-backed retention is 5,000 records or
+32 MiB. The oldest accepted prefix rolls away at the budget, and a failed durable
+commit can fall back to memory without stopping Capture. Notifications keeps the
+bounded incident and recovery history. Controlled Close attempts erasure and a
+new Panel Session never replays abandoned data.
 
 ## Journey 2: reproduce or vary behavior with Local Injection
 
@@ -210,7 +212,7 @@ The developer understands the confidence boundary of the available evidence and 
 - **Question:** what happened in this historical interval while Capture continued?
 - **Evidence and actions:** Freeze the view, query ordered session history, filter or find, pin selected detail, and monitor the count of newer matching evidence without changing Capture.
 - **Completion:** the historical window, selection, filter, and detail remain stable, and the developer can deliberately return to Live when finished.
-- **Degraded path:** IndexedDB is unavailable or history is bounded by fallback behavior; visible counts and retained-range limitations remain accurate.
+- **Degraded path:** IndexedDB is unavailable, the Retained Range has advanced, or an Evidence Gap exists; recent Evidence stays navigable and the exact retention or continuity limitation remains visible in Notifications.
 
 ### Export a diagnostic snapshot
 

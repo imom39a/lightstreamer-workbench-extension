@@ -140,7 +140,7 @@ import {
   type EvidenceFilterActionDescriptor
 } from "../../core/evidence-filter-actions";
 import {
-  historyConditionFor,
+  historyConditionsFor,
   type WorkbenchHistoryCondition
 } from "./history-condition";
 import {
@@ -1124,6 +1124,7 @@ class Runtime implements WorkbenchRuntime {
     topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null;
   } | null = null;
   private historyCondition: WorkbenchHistoryCondition | null = null;
+  private historyConditions: readonly WorkbenchHistoryCondition[] = Object.freeze([]);
   private historyAnnouncement = "";
   private storage: WorkbenchStorageSnapshot;
   private storageEstimate: StorageEstimateObservation | null;
@@ -2689,6 +2690,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private resetCoherentStateAfterClear(): void {
+    this.captureBoundary = null;
     this.activeRuntimeDiagnosticConditions.clear();
     this.diagnosticEvidenceSequences.clear();
     this.committedDiagnosticPresentations.clear();
@@ -2814,12 +2816,12 @@ class Runtime implements WorkbenchRuntime {
           return;
         }
         if (controller.signal.aborted) {
-          this.finishExportProblem(generation, { code: "QUERY_CANCELLED", message: "The Complete History operation was cancelled before its artifact was published." }, controller.signal);
+          this.finishExportProblem(generation, { code: "QUERY_CANCELLED", message: "The retained Evidence operation was cancelled before its artifact was published." }, controller.signal);
           return;
         }
         try {
           if (!topologyAtLatch || !topologyStatusAtLatch) {
-            throw new Error("The Complete History export could not latch its topology state.");
+            throw new Error("The retained Evidence export could not latch its topology state.");
           }
           const scopedTopology = topologyStateForScope(topologyAtLatch, this.scopeId);
           const document = createTopologyStructuredSnapshot(
@@ -3107,7 +3109,9 @@ class Runtime implements WorkbenchRuntime {
       intervalId: status.interval.id,
       retainedRange: status.retainedRange,
       history: status.phase === "RUNNING" ? "accepting" as const : status.phase === "CLOSED" ? "closed" as const : "unavailable" as const,
-      projection: this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null
+      projection: status.continuity?.state === "GAPPED"
+        ? "failed" as const
+        : this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null
         ? "live" as const
         : this.scenarioFollowerPhase === "FAILED" ? "failed" as const : "recovering" as const
     });
@@ -3157,8 +3161,54 @@ class Runtime implements WorkbenchRuntime {
       this.scheduleScenarioBoundaryPublication();
       shouldPublish = this.updateHistoryCondition(publication.status);
       this.maybeSampleStorageEstimate(publication.status);
+    } else if (publication.type === "retention-advanced") {
+      this.historyStatus = publication.status;
+      this.scheduleScenarioBoundaryPublication();
+      this.applyHistoryRetentionAdvance(publication);
+      this.recordHistoryRetentionNotification(publication);
+      this.updateHistoryCondition(publication.status);
+      this.maybeSampleStorageEstimate(publication.status);
+      shouldPublish = true;
+    } else if (publication.type === "persistence-state") {
+      this.historyStatus = publication.status;
+      this.storage = publication.persistence.mode === "MEMORY_ONLY"
+        ? { mode: "memory", reason: publication.problem?.message ?? "IndexedDB journal unavailable" }
+        : { mode: "indexeddb" };
+      this.scheduleScenarioBoundaryPublication();
+      if (publication.transition === "RECOVERED") {
+        this.recordHistoryRecoveryNotification(publication);
+      }
+      this.updateHistoryCondition(publication.status, publication.problem);
+      this.maybeSampleStorageEstimate(publication.status);
+      shouldPublish = true;
+    } else if (publication.type === "acceptance-gap") {
+      this.historyStatus = publication.status;
+      const firstGap = publication.status.continuity?.firstGap ?? publication.gap;
+      this.captureBoundary = Object.freeze({
+        operation: "RUNNING",
+        coverage: "LIMITED",
+        firstMissingEventId: firstGap.eventId,
+        committedEvidenceBoundary: firstGap.afterEvidence,
+        detail: `Capture continues after an Evidence gap at captured activity #${firstGap.captureOrdinal} (${firstGap.eventId}).`,
+        recovery: "Inspect the gap in Notifications and use a later trustworthy snapshot or checkpoint for continuity-dependent conclusions"
+      });
+      this.scheduleScenarioBoundaryPublication();
+      this.updateHistoryCondition(publication.status, publication.problem);
+      this.maybeSampleStorageEstimate(publication.status);
+      shouldPublish = true;
     }
     if (shouldPublish) this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot(), true);
+    if (
+      publication.type === "retention-advanced" ||
+      publication.type === "persistence-state" ||
+      publication.type === "acceptance-gap"
+    ) {
+      if (shouldPublish) this.publish();
+      if (publication.type === "retention-advanced" || publication.type === "acceptance-gap") {
+        this.refreshEvidence("passive");
+      }
+      return;
+    }
     let reason: string | undefined;
     const terminal = publication.type === "terminal"
       ? publication.terminal
@@ -3206,15 +3256,132 @@ class Runtime implements WorkbenchRuntime {
     if (publication.type === "terminal") this.refreshEvidence("command");
   }
 
+  private applyHistoryRetentionAdvance(
+    publication: Extract<HistoryPublication, Readonly<{ type: "retention-advanced" }>>
+  ): void {
+    const firstRetainedSequence = publication.retainedRange?.first.sequence ?? Number.POSITIVE_INFINITY;
+    const removed = this.activityEvidence.filter((entry) =>
+      entry.intervalId === publication.interval.id && entry.sequence < firstRetainedSequence
+    );
+    if (removed.length === 0) return;
+    const removedKeys = new Set(removed.map((entry) => `${entry.intervalId}\u0000${entry.sequence}`));
+    const retained = this.activityEvidence.filter((entry) => !removedKeys.has(`${entry.intervalId}\u0000${entry.sequence}`));
+    this.activityEvidence.splice(0, this.activityEvidence.length, ...retained);
+    for (const entry of removed) {
+      this.activityEvidenceKeys.delete(`${entry.intervalId}\u0000${entry.sequence}`);
+      this.retainedLocalEvidenceIds.delete(entry.event.id);
+      if (this.selectedEventEnvelope?.id !== entry.event.id) {
+        this.evidenceEventCache.delete(entry.event.id);
+      }
+    }
+    this.activityEvidenceRevision += 1;
+    this.activityProjectionCache = null;
+    this.activityEvidenceReadPointCache = null;
+    this.timelineEvidenceOffset = null;
+    this.evidencePageCursors.clear();
+    this.invalidateEvidenceCopy();
+    this.invalidatePreparedExport(false);
+  }
+
+  private recordHistoryRetentionNotification(
+    publication: Extract<HistoryPublication, Readonly<{ type: "retention-advanced" }>>
+  ): void {
+    const cumulative = publication.status.retention?.evicted ?? publication.evicted;
+    const retainedRange = publication.retainedRange
+      ? `${publication.retainedRange.first.sequence.toLocaleString()}–${publication.retainedRange.last.sequence.toLocaleString()}`
+      : "empty";
+    this.recordHistoryNotification({
+      localCode: "retention-advanced",
+      conditionId: `retention:${publication.interval.id}`,
+      severity: "information",
+      title: "Older Evidence removed",
+      observedAt: publication.status.retention?.lastAdvance?.occurredAt ?? Date.now(),
+      detail: `${cumulative.count.toLocaleString()} older Evidence records (${cumulative.bytes.toLocaleString()} accounted bytes) have rolled out of this History Interval. Current Retained Range ${retainedRange}.`,
+      limitation: "Removed Evidence is no longer available to replay, Frozen reads, copy, or export.",
+      consequence: "Capture continues with recent ordered Evidence. This Retention Advance is not an Evidence Gap.",
+      recovery: "Keep investigating recent Evidence; export sooner when an older interval must be preserved",
+      category: "retention"
+    });
+  }
+
+  private recordHistoryRecoveryNotification(
+    publication: Extract<HistoryPublication, Readonly<{ type: "persistence-state" }>>
+  ): void {
+    const technicalCode = publication.problem?.code ?? publication.persistence.lastProblem?.code ?? "JOURNAL_COMMIT_FAILED";
+    this.recordHistoryNotification({
+      localCode: "journal-recovered",
+      conditionId: `journal-recovered:${publication.interval.id}`,
+      severity: "information",
+      title: "History storage recovered",
+      observedAt: Date.now(),
+      detail: `${technicalCode}. Event History recovered after ${publication.persistence.retryCount.toLocaleString()} retries; accepted Evidence stayed ordered and Capture continued.`,
+      limitation: "This confirms Workbench journal recovery, not browser storage health outside this Panel Session.",
+      consequence: "No Evidence Gap or Observation Coverage change was created by this recovered commit failure.",
+      recovery: "No action is required",
+      category: "history"
+    });
+  }
+
+  private recordHistoryNotification(input: Readonly<{
+    localCode: string;
+    conditionId: string;
+    severity: "information" | "warning" | "error";
+    title: string;
+    observedAt: number;
+    detail: string;
+    limitation: string;
+    consequence: string;
+    recovery: string;
+    category: "history" | "retention" | "storage";
+  }>): void {
+    const affected: DiagnosticAffectedIdentity = Object.freeze({
+      kind: "unavailable" as const,
+      reason: "page-identity-unavailable" as const
+    });
+    const adapted = adaptWorkbenchConditionFinding({
+      family: input.category,
+      localCode: input.localCode,
+      severity: input.severity,
+      lifecycle: { kind: "condition", conditionId: input.conditionId },
+      affected,
+      observedAt: input.observedAt,
+      observed: boundedDiagnosticText(input.detail),
+      limitation: boundedDiagnosticText(input.limitation),
+      consequence: boundedDiagnosticText(input.consequence),
+      route: { kind: "recover", action: "inspect-retained-evidence" }
+    });
+    const key = diagnosticObservationIdentity(adapted.observation);
+    const presentation = presentDiagnosticObservation(adapted.observation);
+    this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
+    this.rememberCommittedDiagnosticPresentation(key, {
+      id: presentation.id,
+      code: presentation.code,
+      category: input.category,
+      severity: presentation.severity,
+      title: input.title,
+      affected: `History Interval ${this.historyStatus.interval.id}`,
+      affectedIdentity: affected,
+      detail: input.detail,
+      limitation: input.limitation,
+      consequence: input.consequence,
+      recovery: input.recovery
+    }, adapted.observation);
+  }
+
   private updateHistoryCondition(
     status: HistoryStatus,
     problem?: HistoryProblem
   ): boolean {
-    const next = historyConditionFor({ status, problem });
-    const changed = this.historyCondition?.announcementKey !== next?.announcementKey;
-    this.historyCondition = next;
+    const previousKeys = this.historyConditions.map(({ announcementKey }) => announcementKey).join("\u0000");
+    const next = historyConditionsFor({ status, problem });
+    const nextKeys = next.map(({ announcementKey }) => announcementKey).join("\u0000");
+    const changed = previousKeys !== nextKeys;
+    this.historyConditions = next;
+    this.historyCondition = next[0] ?? null;
     if (changed) {
-      this.historyAnnouncement = next?.announcement ?? "";
+      const previous = new Set(previousKeys === "" ? [] : previousKeys.split("\u0000"));
+      this.historyAnnouncement = next.find(({ announcementKey }) => !previous.has(announcementKey))?.announcement ??
+        next[0]?.announcement ?? "";
     }
     return changed;
   }
@@ -3487,9 +3654,9 @@ class Runtime implements WorkbenchRuntime {
         state: "cancelled",
         eventCount: progress.completed,
         text: null,
-        error: "The Complete History copy was cancelled before its artifact was published.",
+        error: "The retained Evidence copy was cancelled before its artifact was published.",
         outcome: "CANCELLED",
-        recovery: "Run Copy complete scoped Evidence again when you are ready.",
+        recovery: "Run Copy retained scoped Evidence again when you are ready.",
         progress: operationProgress("CANCELLED", progress.completed, progress.total, progress.outputBytes, readPointFromProgress(progress), this.outputByteLimit, progress.excludedAfterLatch)
       });
       this.publish();
@@ -3503,7 +3670,7 @@ class Runtime implements WorkbenchRuntime {
       this.preparedExport = null;
       this.exportOperation = {
         state: "cancelled",
-        error: "The Complete History export was cancelled before its artifact was published.",
+        error: "The retained Evidence export was cancelled before its artifact was published.",
         outcome: "CANCELLED",
         recovery: "Run Export Scope again when you are ready.",
         progress: { ...progress, phase: "CANCELLED" }
@@ -5927,15 +6094,15 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Retry Activity aggregation; Capture, History, and Evidence remain available"
       });
     }
-    if (this.historyCondition) {
+    for (const condition of this.historyConditions) {
       diagnostics.push({
-        dismissalId: `history:${this.historyCondition.kind}:${this.historyCondition.severity.toLowerCase()}`,
+        dismissalId: `history:${condition.kind}:${condition.severity.toLowerCase()}`,
         category: "history",
-        severity: this.historyCondition.severity,
-        title: this.historyCondition.title,
-        affected: this.historyCondition.affected,
-        detail: this.historyCondition.detail,
-        recovery: this.historyCondition.recovery
+        severity: condition.severity,
+        title: condition.title,
+        affected: condition.affected,
+        detail: condition.detail,
+        recovery: condition.recovery
       });
     }
     const storageDiagnostic = storageHeadroomDiagnostic(this.storageEstimate);
@@ -6391,20 +6558,20 @@ class Runtime implements WorkbenchRuntime {
         route: "retry-activity-aggregation"
       });
     }
-    if (this.historyCondition) {
+    for (const condition of this.historyConditions) {
       record({
         family: "history",
-        localCode: this.historyCondition.kind,
-        conditionId: this.historyCondition.kind,
-        severity: this.historyCondition.severity === "Error" ? "error" : "warning",
+        localCode: condition.kind,
+        conditionId: condition.kind,
+        severity: condition.severity === "Error" ? "error" : "warning",
         affected: page,
-        title: this.historyCondition.title,
-        affectedLabel: this.historyCondition.affected,
-        detail: this.historyCondition.detail,
-        recovery: this.historyCondition.recovery,
-        dismissalId: `history:${this.historyCondition.kind}:${this.historyCondition.severity.toLowerCase()}`,
+        title: condition.title,
+        affectedLabel: condition.affected,
+        detail: condition.detail,
+        recovery: condition.recovery,
+        dismissalId: `history:${condition.kind}:${condition.severity.toLowerCase()}`,
         limitation: "The condition describes the current History Interval and its committed boundary only.",
-        consequence: this.historyCondition.announcement,
+        consequence: condition.announcement,
         route: "inspect-retained-evidence"
       });
     }
@@ -8219,7 +8386,7 @@ function operationFailure(
   if (signal.aborted || code === "QUERY_CANCELLED") {
     return {
       outcome: "CANCELLED",
-      message: "The Complete History operation was cancelled before its artifact was published.",
+      message: "The retained Evidence operation was cancelled before its artifact was published.",
       recovery: "Run the operation again when you are ready."
     };
   }

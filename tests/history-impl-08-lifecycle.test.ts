@@ -238,7 +238,7 @@ describe.each(adapters)("history-impl-08 lifecycle (%s)", (_name, fakeIndexedDb,
     await failHistory.close();
   });
 
-  it("handles commit failure and retained-capacity refusal distinctly", async () => {
+  it("keeps commit degradation and an oversized-candidate gap local while later Capture continues", async () => {
     const commitSession = nextSessionId("impl-08-commit");
     const commit = await create(commitSession, {
       commitBatch: async (batch: readonly EvidenceCandidate[]) => {
@@ -255,9 +255,21 @@ describe.each(adapters)("history-impl-08 lifecycle (%s)", (_name, fakeIndexedDb,
     });
     const failed = commitHistory.offer(topologyCheckpointFixture(`commit-fail-${commitSession}`, REPRESENTATIVE_PAYLOAD_BYTES));
     const tail = commitHistory.offer(topologyCheckpointFixture(`commit-tail-${commitSession}`, REPRESENTATIVE_PAYLOAD_BYTES));
-    await expect(failed.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
-    await expect(tail.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
-    await expect(commitHistory.read({})).resolves.toMatchObject({ ok: true, value: { total: 1 } });
+    await expect(failed.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: `commit-fail-${commitSession}` }
+    });
+    await expect(tail.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 3, eventId: `commit-tail-${commitSession}` }
+    });
+    expect(commitHistory.status()).toMatchObject({
+      phase: "RUNNING",
+      captureOperation: "RUNNING",
+      persistence: { mode: "MEMORY_ONLY", health: "DEGRADED", failureCount: 3 },
+      continuity: { state: "CONTIGUOUS", gapCount: 0 }
+    });
+    await expect(commitHistory.read({})).resolves.toMatchObject({ ok: true, value: { total: 3 } });
 
     const capacitySession = nextSessionId("impl-08-capacity");
     const capacity = await create(capacitySession, {
@@ -272,12 +284,19 @@ describe.each(adapters)("history-impl-08 lifecycle (%s)", (_name, fakeIndexedDb,
     expect(refuses.intake).toBe("REFUSED");
     await expect(refuses.settled).resolves.toMatchObject({
       outcome: "NOT_EVIDENCE",
-      problem: { code: "RETAINED_BYTE_LIMIT", dimension: "RETAINED_BYTES" },
+      problem: { code: "CANDIDATE_UNRETAINABLE", dimension: "RETAINED_BYTES" },
       committedEvidenceBoundary: { sequence: 1 }
     });
     await expect(capacityHistory.offer(topologyCheckpointFixture(`capacity-${capacitySession}-after`, REPRESENTATIVE_PAYLOAD_BYTES)).settled).resolves.toMatchObject({
-      outcome: "NOT_EVIDENCE",
-      problem: { code: "RETAINED_BYTE_LIMIT" }
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: `capacity-${capacitySession}-after` }
+    });
+    expect(capacityHistory.status()).toMatchObject({
+      phase: "RUNNING",
+      captureOperation: "RUNNING",
+      accepted: 2,
+      notAccepted: 1,
+      continuity: { state: "GAPPED", gapCount: 1 }
     });
     await expect(commitHistory.close()).resolves.toMatchObject({ ok: true });
     await expect(capacityHistory.close()).resolves.toMatchObject({ ok: true });

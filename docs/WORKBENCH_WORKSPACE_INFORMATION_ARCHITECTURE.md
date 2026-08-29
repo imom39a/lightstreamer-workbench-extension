@@ -87,17 +87,18 @@ Live Capture never steals focus, selection, scroll position, or detail context. 
 ### History and operating boundaries
 
 One Panel Session owns one temporary Event History. The normal IndexedDB journal
-supports 100,000 Evidence records or 256 MiB of retained serialized journal bytes;
-the startup in-memory fallback supports 5,000 records or 32 MiB. The selected
-adapter is fixed before the first offer and never changes during the session.
-Fallback changes History Capacity only; Capture Operation, Observation Coverage,
-and Live/Frozen position remain independent.
+uses a rolling budget of 100,000 Evidence records or 256 MiB of canonical bytes;
+memory-backed History uses 5,000 records or 32 MiB. The Event History coordinator
+may move from IndexedDB to memory after bounded retry while preserving one
+interval and Evidence sequence. Storage mode, Capture Operation, Observation
+Coverage, continuity, and Live/Frozen position remain independent.
 
 Clear is a deliberate exact History Interval cut: accepted work settles before
 the old interval is removed and post-cut Evidence belongs only to the new
-interval. Capacity pressure or journal failure stops acceptance fail-closed at
-the final Committed Evidence Boundary; Clear cannot restart it. Controlled Close
-attempts erasure and reports its outcome. Abnormal termination can leave
+interval. Capacity rollover quietly removes the oldest retained prefix. Journal
+failure is coalesced in Notifications and does not stop later ingestion; only a
+candidate that cannot enter any canonical segment creates an explicit Evidence
+Gap. Controlled Close attempts erasure and reports its outcome. Abnormal termination can leave
 residual data until an ownership-safe guarded sweep, which never replays
 abandoned Evidence. A new Panel Session starts empty.
 

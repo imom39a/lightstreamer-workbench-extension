@@ -25,7 +25,7 @@ type WorkbenchConditionFamily = "activity" | "history" | "storage" | "capture" |
 export type WorkbenchConditionFinding = DiagnosticSemantics & Readonly<{
   family: WorkbenchConditionFamily;
   localCode: string;
-  lifecycle: Readonly<{ kind: "condition"; conditionId: string }>;
+  lifecycle: DiagnosticObservationInput["lifecycle"];
   evidenceBoundary?: DiagnosticEvidenceBoundary;
 }>;
 

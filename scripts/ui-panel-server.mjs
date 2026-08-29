@@ -74,9 +74,26 @@ const diagnosticObservations = scenario.diagnosticJournal === "unsupported"
   ? createUnavailableDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostics-" + scenario.id, status: "unsupported" })
   : createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostics-" + scenario.id });
 let failSyntheticEvidenceRetention = false;
+let configuredHistoryCommitFailures = 0;
 const history = createInMemoryEventHistory({
   panelSessionId: "scenario-" + scenario.id,
   ...(scenario.historyCapacity ? { capacity: scenario.historyCapacity } : {}),
+  ...(scenario.historyOversizedEventId
+    ? { byteEstimator: (event) => event.id === scenario.historyOversizedEventId ? 101 : 10 }
+    : {}),
+  ...(scenario.historyCommitFailure
+    ? {
+        commitBatch(batch) {
+          if (
+            batch.some((event) => event.id === scenario.historyCommitFailure.eventId) &&
+            configuredHistoryCommitFailures < scenario.historyCommitFailure.failures
+          ) {
+            configuredHistoryCommitFailures += 1;
+            throw new Error("Deterministic browser journal failure " + configuredHistoryCommitFailures + ".");
+          }
+        }
+      }
+    : {}),
   ...(scenario.storage?.mode === "memory"
     ? {
         capacityTier: "LOWER",
