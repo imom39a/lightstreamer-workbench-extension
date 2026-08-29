@@ -20,7 +20,7 @@ describe("Workbench visual-evidence runner", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(result.stdout).toContain("--print-review-scope");
-    expect(matrix).toHaveLength(75);
+    expect(matrix).toHaveLength(80);
   });
 
   it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
@@ -45,15 +45,15 @@ describe("Workbench visual-evidence runner", () => {
   });
 
   it("prepares every integrated diagnostic matrix setup and records its review scope", () => {
-    for (const setup of ["diagnostic-server", "diagnostic-subscription", "diagnostic-anomaly"]) {
+    for (const setup of ["diagnostic-server", "diagnostic-subscription", "diagnostic-anomaly", "notifications-volume", "notifications-empty"]) {
       expect(runnerSource).toContain(`setup === "${setup}"`);
     }
-    expect(runnerSource).toContain("server errors and bounded keepalive aggregation");
-    expect(runnerSource).toContain("duplicate, overlap, listener churn, and subscription lint");
+    expect(runnerSource).toContain("Notifications owns active Workbench conditions and recent Lightstreamer diagnostics");
+    expect(runnerSource).toContain("filters remain independent of Evidence");
     expect(runnerSource).toContain("snapshot, COMMAND, and lost-update anomalies");
   });
 
-  it("includes all twelve integrated diagnostic states in contact sheets, axe, and focus proof", () => {
+  it("includes diagnostic and Notifications states in contact sheets, axe, and focus proof", () => {
     const result = spawnSync(process.execPath, [runner, "--print-review-scope"], {
       cwd: rootDir,
       encoding: "utf8",
@@ -69,19 +69,27 @@ describe("Workbench visual-evidence runner", () => {
         scenario.production?.setup === "storage-headroom"
       )
       .map((scenario: { id: string }) => scenario.id);
+    const notificationIds = matrix
+      .filter((scenario: { production?: { setup?: string } }) => scenario.production?.setup?.startsWith("notifications-"))
+      .map((scenario: { id: string }) => scenario.id);
     const activityIds = matrix
       .filter((scenario: { production?: { setup?: string } }) => scenario.production?.setup?.startsWith("activity"))
+      .map((scenario: { id: string }) => scenario.id);
+    const footerDiagnosticIds = matrix
+      .filter((scenario: { production?: { setup?: string } }) => scenario.production?.setup === "diagnostics")
       .map((scenario: { id: string }) => scenario.id);
 
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(diagnosticIds).toHaveLength(12);
+    expect(notificationIds).toHaveLength(5);
     expect(storageIds).toHaveLength(5);
     expect(activityIds).toHaveLength(9);
+    expect(footerDiagnosticIds).toHaveLength(4);
     expect(JSON.parse(result.stdout)).toMatchObject({
-      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...storageIds, ...activityIds]),
-      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...storageIds, ...activityIds]),
-      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...storageIds, ...activityIds])
+      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds]),
+      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds]),
+      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds])
     });
   });
 

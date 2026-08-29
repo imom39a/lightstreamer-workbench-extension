@@ -106,6 +106,7 @@ Visible labels may shorten in compact geometry, but their complete value remains
 The following always or conditionally promote into one full-canvas document surface:
 
 - Local Injection editing and Source comparison: always promote.
+- Notifications: always promote, with one content scroll and a visible Back to Evidence action. Recurring Lightstreamer notices never expand Context or the footer; active footer conditions remain available here after their footer copy is dismissed.
 - Complete raw evidence: promote when Context cannot retain useful document dimensions.
 - Deep Capture diagnostics and complete lifecycle analysis: promote when their evidence exceeds concise Context treatment.
 - Export preview and review: promote when meaningful preview or configuration cannot retain the minimum action boundary.
@@ -114,7 +115,7 @@ The following normally remain in Context:
 
 - runtime-object dossier;
 - selected-event Summary, Fields, Deliveries, and COMMAND projections;
-- concise diagnostics and recovery guidance;
+- workflow-local validation and recovery guidance;
 - initial export controls and scoped manifest summary.
 
 Only one promoted surface may exist. Supporting Problems or evidence peek may appear as one bounded transient surface within it, but cannot create another promotion. A different promoted operation must first close, park, or explicitly replace the current one.
@@ -196,7 +197,8 @@ Focused Compact and shallow surfaces keep Back, current state, and the consequen
 ### Diagnostics and export
 
 - Material degraded state remains concise in the operating/status region with direct recovery guidance.
-- The global footer owns each session- or runtime-level diagnostic once across every geometry; Ordered Evidence and Context do not repeat it. Complete diagnostic evidence may still promote when a dedicated investigation needs more than the footer grammar.
+- The global footer owns active operational and runtime-Scope conditions once across every geometry, with a labelled Dismiss action on each. Notifications retains those active conditions and recent Lightstreamer notices; Ordered Evidence and Context do not repeat their diagnostic text. The footer keeps a labelled Notifications entry reachable at every geometry, including after its last condition is dismissed.
+- At shallow geometry, each footer condition keeps its complete severity, title, affected identity, and Dismiss action visible. Longer observation, consequence, recovery, and inspection copy moves into a native **Diagnostic details** disclosure inside the same bounded diagnostic scroll owner; opening it keeps the recovery route keyboard reachable and does not cover the status/action line.
 - Initial export choices may stay in Context; substantial preview/review promotes.
 - Scope, version, privacy boundary, unconditional credential exclusion, and the final download action remain fixed and reachable.
 - Failure preserves the originating investigation and current configuration.

@@ -32,6 +32,16 @@ The compact top-level strip communicates operating state, not product chrome or 
 
 Ordinary counts belong in an evidence summary rather than a permanent dashboard of metric cards. Labels such as “bridge connected” do not qualify as operator-facing status.
 
+### Notifications
+
+The labelled **Notifications** entry in the global footer opens a temporary promoted document for active Workbench conditions and recent Lightstreamer diagnostics, including History and storage pressure, Capture and Coverage limits, Activity aggregation failure, canonical current-runtime recovery, runtime-Scope conditions, snapshot boundaries, keepalive callbacks, Subscription conditions, and COMMAND anomalies. It shows the unfiltered recent count and the highest Warning/Error severity, when present. Repeated notice text does not occupy selected Evidence Context or the operating footer.
+
+Notifications spans the current Panel Session, independently of Evidence Scope and Filter. It preserves the existing bound of up to 100 active-or-recent diagnostic presentations, reports shown/total counts, and provides independent Code, Severity, and Affected filters with a visible reset. This is not a complete or persistent log; supporting Evidence follows Event History retention.
+
+Each entry identifies severity, affected Evidence or object, observation, limitations and consequences, and its available inspection or recovery route. A recovery-only active condition keeps that recovery instruction visible before optional Details. **Back to Evidence** restores the originating investigation and focus. Deliberate inspection may reveal supporting Evidence or the affected Scope through the existing investigation navigation. Active footer conditions have a labelled Dismiss action; dismissal suppresses only that footer copy, retains the notification until the condition ends, and does not alter Evidence or its Diagnostic Observation. Stable condition identity updates one entry instead of piling up duplicates. Resolution clears the dismissal even while the footer is hidden, so a later recurrence surfaces again. Workflow-local validation stays at its decision boundary.
+
+This responsibility uses the existing promoted-document boundary and adds no permanent peer workspace pane. The maintainer requested this separation on 2026-08-28 after recurring informational notices obscured selected Evidence.
+
 ### Runtime scope
 
 The scope breadcrumb is the authoritative statement of the investigation boundary. It can contain the inspected Page, client, Session, Subscription, item, and a selected COMMAND key where applicable.

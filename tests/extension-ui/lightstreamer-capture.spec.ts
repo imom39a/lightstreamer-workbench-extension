@@ -210,13 +210,29 @@ async function runOfficialClientPanelJourney(
     }
 
     if (scenario === "diagnostics") {
+      await clickVisiblePanelElement(
+        panelCdp,
+        `[...document.querySelectorAll('footer button')].find((button) => button.textContent?.startsWith('Notifications ('))`,
+        "Notifications"
+      );
       await waitForCondition(
         panelCdp,
-        `document.querySelector('[aria-label="Workbench diagnostic entries"]')?.textContent?.includes("Server error") &&
-          document.querySelector('[aria-label="Workbench diagnostic entries"]')?.textContent?.includes("Server keepalive observed") &&
-          [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [role="gridcell"]')]
-            .some((cell) => cell.textContent?.includes("Server Error"))`,
-        "the loaded extension to render official-client server diagnostics"
+        `document.querySelector('[aria-label="Notifications"]')?.textContent?.includes("Server error") &&
+          document.querySelector('[aria-label="Notifications"]')?.textContent?.includes("Server keepalive observed") &&
+          !document.querySelector('[aria-label="Workbench diagnostic entries"]')?.textContent?.includes("Server error")`,
+        "Notifications to own the official-client server diagnostics"
+      );
+      await clickVisiblePanelElement(
+        panelCdp,
+        `[...document.querySelectorAll('[aria-label="Notifications"] article')]
+          .find((entry) => entry.textContent?.includes('Server error'))?.querySelector('button')`,
+        "the server error supporting Evidence"
+      );
+      await waitForCondition(
+        panelCdp,
+        `!document.querySelector('[aria-label="Notifications"]') &&
+          document.querySelector('[aria-label="Context"] [role="heading"]')?.textContent?.includes('Server Error')`,
+        "the server error inspection route to open Evidence Context"
       );
       expect(await evaluateByValue(pageCdp, `window.LSEW_DIAGNOSTIC_CALLBACKS`)).toEqual(expect.arrayContaining([
         "keepalive",

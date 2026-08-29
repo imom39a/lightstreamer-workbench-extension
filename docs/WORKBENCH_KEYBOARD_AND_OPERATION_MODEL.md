@@ -83,6 +83,8 @@ Keyboard-operable separators use arrows in their visual orientation, Shift+arrow
 
 ### Promoted documents and the raw JSON editor
 
+Notifications uses ordinary Tab traversal and native disclosure controls. Its content scroll supports Page Up/Down and Home/End without introducing a composite widget or global shortcut. Opening focuses its heading; Back to Evidence restores the Notifications trigger and the prior investigation scroll. Supporting Evidence inspection deliberately focuses Context and investigation Back returns to the notification document. Each active footer condition has an ordinary labelled Dismiss button. After deliberate dismissal, focus moves to the next Dismiss button or the previous one when the dismissed condition was last. If a focused condition resolves passively, the same ordinal recovery applies without treating the lifecycle change as user intent. When no footer condition remains, focus moves to the enabled Notifications trigger or, when Notifications is empty, the Evidence mode control. Evidence Find and Filter are unavailable while Notifications is open; Control/Command+F remains document-local. Unowned Escape remains available to DevTools. Passive notices do not focus, select, or announce individual entries.
+
 The Local Injection editor is a promoted document, not a special keyboard mode.
 
 - Tab moves focus out of raw JSON by default.

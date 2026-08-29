@@ -538,5 +538,41 @@
     "forcedColors": true,
     "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-unavailable", "setup": "scenario-diagnostic-checkpoint" }
+  },
+  {
+    "id": "notifications-volume-compact-dark",
+    "viewport": {"width": 563, "height": 700},
+    "theme": "dark",
+    "prototype": {"variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer"},
+    "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
+  },
+  {
+    "id": "notifications-volume-normal-light",
+    "viewport": {"width": 900, "height": 700},
+    "theme": "light",
+    "prototype": {"variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer"},
+    "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
+  },
+  {
+    "id": "notifications-volume-shallow-forced-dark",
+    "viewport": {"width": 900, "height": 320},
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": {"variant": "A", "state": "diagnostic", "frame": "shallow", "setup": "diagnostic-footer"},
+    "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
+  },
+  {
+    "id": "notifications-volume-wide-light",
+    "viewport": {"width": 1440, "height": 900},
+    "theme": "light",
+    "prototype": {"variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer"},
+    "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
+  },
+  {
+    "id": "notifications-empty-compact-light",
+    "viewport": {"width": 563, "height": 700},
+    "theme": "light",
+    "prototype": {"variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer"},
+    "production": {"scenario": "notifications-empty", "setup": "notifications-empty"}
   }
 ]

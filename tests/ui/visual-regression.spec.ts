@@ -10,7 +10,7 @@ type VisualCase = Readonly<{
   forcedColors?: boolean;
   visualEvidenceOnly?: boolean;
   prototype?: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" };
+  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
 }>;
 const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
 
@@ -264,39 +264,31 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       }
       return;
     }
-    case "diagnostic-server": {
-      const diagnostics = page.getByLabel("Workbench diagnostic entries");
-      await expect(diagnostics).toContainText("Warning · Server error -7");
-      await expect(diagnostics).toContainText("Information · Server keepalive observed");
-      await expect(diagnostics).toContainText("does not prove that the connection");
-      await diagnostics.focus();
+    case "diagnostic-server":
+    case "diagnostic-subscription":
+    case "diagnostic-anomaly":
+    case "notifications-volume":
+    case "notifications-empty": {
+      await page.getByRole("button", { name: /^Notifications/ }).click();
+      const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+      const markers = visual.production.setup === "diagnostic-server"
+        ? ["Warning · Server error -7", "Information · Server keepalive observed"]
+        : visual.production.setup === "diagnostic-subscription"
+          ? ["Information · Exact duplicate Subscriptions", "Information · Semantic Subscription overlap", "Information · Listener registration churn"]
+          : visual.production.setup === "diagnostic-anomaly"
+            ? ["Warning · Snapshot phase incomplete", "Warning · Unknown COMMAND key update", "Warning · Subscription updates lost"]
+            : visual.production.setup === "notifications-volume"
+              ? ["100 of 100 notifications", "Information · Snapshot completed"]
+              : ["No notifications in this Panel Session."];
+      for (const marker of markers) await expect(notifications).toContainText(marker);
+      const entries = notifications.getByLabel("Notification entries");
+      if (visual.production.setup === "diagnostic-server") {
+        for (const details of await notifications.locator("article summary").all()) await details.click();
+      }
+      await entries.focus();
       await page.keyboard.press("Home");
-      await expect(diagnostics).toBeFocused();
-      await expect.poll(() => diagnostics.evaluate((element) => element.scrollTop)).toBe(0);
-      return;
-    }
-    case "diagnostic-subscription": {
-      await page.getByRole("button", { name: "Open Scope Context" }).click();
-      const diagnostics = page.getByLabel("Context diagnostics");
-      await expect(diagnostics).toContainText("Information · Exact duplicate Subscriptions");
-      await expect(diagnostics).toContainText("Information · Semantic Subscription overlap");
-      await expect(diagnostics).toContainText("Information · Listener registration churn");
-      const action = diagnostics.getByRole("button").first();
-      await action.scrollIntoViewIfNeeded();
-      await action.focus();
-      await expect(action).toBeFocused();
-      return;
-    }
-    case "diagnostic-anomaly": {
-      await page.getByRole("button", { name: "Open Scope Context" }).click();
-      const diagnostics = page.getByLabel("Context diagnostics");
-      await expect(diagnostics).toContainText("Warning · Snapshot phase incomplete");
-      await expect(diagnostics).toContainText("Warning · Unknown COMMAND key update");
-      await expect(diagnostics).toContainText("Warning · Subscription updates lost");
-      const action = diagnostics.getByRole("button").first();
-      await action.scrollIntoViewIfNeeded();
-      await action.focus();
-      await expect(action).toBeFocused();
+      await expect(entries).toBeFocused();
+      await expect.poll(() => entries.evaluate((element) => element.scrollTop)).toBe(0);
       return;
     }
     case "captured-draft": {

@@ -43,6 +43,9 @@ export const WORKBENCH_SCENARIO_IDS = [
   "diagnostic-server-callbacks",
   "diagnostic-anomalies",
   "diagnostic-subscription-context",
+  "notifications-volume",
+  "notifications-empty",
+  "notifications-operational",
   "raw-evidence",
   "filter-find",
   "filter-hidden-selection",
@@ -439,6 +442,10 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       };
     case "empty-scope":
       return { id, initialEvents: [], captureStatus: "idle" };
+    case "notifications-empty":
+      return { id, initialEvents: [], captureStatus: "idle" };
+    case "notifications-operational":
+      return { id, initialEvents: [], captureStatus: "idle", storage: { mode: "memory", reason: "IndexedDB is unavailable" } };
     case "disconnected":
       return {
         id,
@@ -502,6 +509,16 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
           label: "duplicate-a"
         }
       };
+    case "notifications-volume": {
+      const notices = notificationSnapshotEvents(canonical);
+      return {
+        id,
+        initialEvents: notices.slice(0, 152),
+        deferredEvents: notices.slice(152),
+        selectedEventId: "notification-snapshot-100",
+        captureStatus: "capturing"
+      };
+    }
     case "raw-evidence":
       return { id, initialEvents: canonical, selectedEventId: "scenario-event-3", captureStatus: "capturing", openRawEvidence: true };
     case "filter-find":
@@ -1108,6 +1125,37 @@ function semanticSessionStatus(
       client
     }
   );
+}
+
+function notificationSnapshotEvents(canonical: readonly LightstreamerEventEnvelope[]): readonly LightstreamerEventEnvelope[] {
+  const source = canonical[0]!;
+  const client = { id: "notifications-client", status: "CONNECTED:WS-STREAMING", sessionId: "notifications-session" };
+  const subscription = { id: "notifications-subscription", mode: "MERGE", items: ["prices"], fields: ["value"], active: true, subscribed: true };
+  const make = (id: string, kind: LightstreamerEventEnvelope["kind"], sequence: number): LightstreamerEventEnvelope => ({
+    ...source,
+    id,
+    kind,
+    timestamp: source.timestamp + sequence,
+    client,
+    subscription,
+    item: { name: "prices", position: 1 },
+    update: undefined,
+    listener: undefined,
+    raw: { callback: "onEndOfSnapshot", args: ["prices", 1] },
+    topology: {
+      version: TOPOLOGY_OBSERVATION_VERSION,
+      kind,
+      pageEpoch: "notifications-page",
+      captureSequence: sequence,
+      provenance: { instrumentationSource: "official-public-api" },
+      coverage: { status: "complete", getters: {} }
+    }
+  });
+  return [
+    { ...make("notifications-client-created", "client-created", 1), subscription: undefined, item: undefined, raw: {} },
+    { ...make("notifications-subscription-started", "subscription-started", 2), item: undefined, raw: {} },
+    ...Array.from({ length: 190 }, (_, index) => make(`notification-snapshot-${index + 1}`, "end-of-snapshot", index + 3))
+  ];
 }
 
 function diagnosticServerEvents(canonical: readonly LightstreamerEventEnvelope[]): readonly LightstreamerEventEnvelope[] {

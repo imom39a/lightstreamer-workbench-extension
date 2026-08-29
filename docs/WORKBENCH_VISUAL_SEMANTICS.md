@@ -109,7 +109,7 @@ Use an em dash only for not applicable. Use the literal word `unknown` when Work
 
 ## Context and diagnostics
 
-Context expands concise ledger values into explicit property names. It answers Source, Phase, COMMAND operation, runtime lifecycle, object identity, changed fields, observation path, and evidence limitations without requiring the developer to decode row styling. Session- and runtime-level diagnostics remain outside Context in the global footer so selection changes cannot hide them or cause duplicate cards.
+Context expands concise ledger values into explicit property names. It answers Source, Phase, COMMAND operation, runtime lifecycle, object identity, changed fields, observation path, and evidence limitations without requiring the developer to decode row styling. Active operational and runtime-Scope conditions appear in the global footer until they end or their footer copy is dismissed. Notifications retains those active conditions alongside recurring Lightstreamer notices, keeping selected Evidence free of unrelated diagnostic text.
 
 Diagnostics follow a stable grammar:
 
@@ -120,7 +120,7 @@ Diagnostics follow a stable grammar:
 - Error identifies an invalid or failed condition that prevents the current action or proves an operation failure.
 - Blocking is a consequence, not a replacement severity. Name both, such as `ERROR · Invalid JSON` and `Review blocked`.
 
-Render each session- or runtime-level diagnostic once in the global footer. Do not promote the same cause into additional Ordered Evidence or Context banners. Workflow-local validation, stale-target conditions, and Injection Outcomes remain at their own decision boundary.
+Render each active operational or runtime-Scope condition once in the global footer with a labelled Dismiss action. This includes History and storage pressure, Capture and Coverage limits, canonical current-runtime recovery, retired or cleared Scope, failed History clear, and Activity aggregation failure. Dismiss only that active lifecycle's footer copy; keep its notification available until the condition ends, clear the dismissal when the condition resolves even while the footer is hidden, and surface a later recurrence again. At shallow geometry, keep the complete heading, affected identity, Dismiss action, and a **Diagnostic details** cue visible; place longer observation, consequence, recovery, and inspection copy inside that disclosure instead of clipping it. Render active Workbench conditions and recurring Lightstreamer diagnostics in Notifications as neutral separated entries, with severity text and the available inspection action or recovery instruction visible before optional Details. Information does not need a filled callout. Do not duplicate the same cause in Ordered Evidence or Context banners. Workflow-local validation, stale-target conditions, and Injection Outcomes remain at their own decision boundary.
 
 ## Raw evidence
 

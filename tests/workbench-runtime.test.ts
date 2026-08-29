@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { type EventHistory, type HistoryPublication } from "../src/core/event-history-authoritative";
+import { createInMemoryEventHistory, type EventHistory, type HistoryPublication } from "../src/core/event-history-authoritative";
 import { createTypedFilterValue } from "../src/core/filter-algebra";
+import { createActivityProjection } from "../src/core/activity-projection";
 import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 import { diagnosticCodeFacetValue, diagnosticSeverityFacetValue } from "../src/core/diagnostic-observation-index";
 import { createCaptureMessage } from "../src/bridge/messages";
 import { createWorkbenchRuntime, type WorkbenchRuntime, type WorkbenchRuntimeScheduler, type WorkbenchSnapshot } from "../src/extension/panel/workbench-runtime";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { getPanelScenario } from "./support/panel-scenarios";
+import { getWorkbenchScenario } from "./support/workbench-scenarios";
 
 type ScheduledCallback = () => void;
 
@@ -346,7 +348,18 @@ describe("WorkbenchRuntime", () => {
     const observations = (await diagnosticObservations.query()).observations;
 
     expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({ title: "Capture disconnected" }));
-    expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
+    for (const code of [
+      "workbench.history.lower-capacity-fallback",
+      "workbench.storage.headroom-limited",
+      "workbench.capture.disconnected",
+      "ls.session.recovering"
+    ]) {
+      expect(snapshot.notifications.entries, code).toContainEqual(expect.objectContaining({
+        code,
+        dismissalId: expect.any(String)
+      }));
+    }
+    expect(snapshot.notifications.entries).toContainEqual(expect.objectContaining({
       code: "ls.client.server-error",
       title: "Server error -7",
       affected: "Session S-1",
@@ -356,7 +369,7 @@ describe("WorkbenchRuntime", () => {
         label: "Inspect supporting Evidence"
       }
     }));
-    expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
+    expect(snapshot.notifications.entries).toContainEqual(expect.objectContaining({
       code: "ls.client.server-keepalive",
       severity: "Information",
       consequence: expect.stringContaining("does not prove")
@@ -405,7 +418,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("matches contextual diagnostic ownership by exact runtime identity", async () => {
+  it("keeps Notifications across Evidence Scopes with exact affected runtime identities", async () => {
     const history = createAuthoritativeHistory({
       precommitted: [
         topologyEvent("client-one", "client-created", {
@@ -445,14 +458,107 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().diagnostics).not.toContainEqual(
       expect.objectContaining({ code: "ls.client.server-error", affected: "Session S-1" })
     );
+    expect(runtime.getSnapshot().notifications.entries).toContainEqual(
+      expect.objectContaining({ code: "ls.client.server-error", affected: "Session S-1" })
+    );
     const sessionOne = runtime.getSnapshot().scope.nodes.find((node) =>
       node.kind === "session" && node.label.includes("S-1") && !node.label.includes("S-10")
     );
     expect(sessionOne).toBeDefined();
-    runtime.dispatch({ type: "set-scope", scopeId: sessionOne!.id });
-    expect(runtime.getSnapshot().diagnostics).toContainEqual(
+    runtime.dispatch({ type: "open-notifications" });
+    runtime.dispatch({ type: "inspect-diagnostic-affected", affected: { kind: "session", pageId: "page-exact", clientId: "client-1", sessionId: "S-1" } });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot()).toMatchObject({ scopeId: sessionOne!.id, contextId: "context:scope-dossier" });
+    expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).not.toContain("client-ten");
+    expect(runtime.getSnapshot().notifications.entries).toContainEqual(
       expect.objectContaining({ code: "ls.client.server-error", affected: "Session S-1" })
     );
+    runtime.dispose();
+  });
+
+  it("bounds recent Notifications and preserves the investigation across filters and return", async () => {
+    const scenario = getWorkbenchScenario("notifications-volume");
+    const history = createInMemoryEventHistory({ panelSessionId: "notifications-restoration" });
+    await Promise.all(scenario.initialEvents.map((event) => history.offer(event).settled));
+    const runtime = createWorkbenchRuntime({ history, capture: { coverage: "USEFUL" } });
+    await flushStoreNotifications();
+    const notifications = runtime.getSnapshot().notifications;
+    expect(notifications.total).toBe(100);
+    expect(notifications.entries).toHaveLength(100);
+    expect(notifications.entries[0]?.route).toMatchObject({ kind: "inspect-evidence", evidence: { eventId: "notification-snapshot-51" } });
+    expect(runtime.getSnapshot().diagnostics.some(({ title }) => title === "Snapshot completed")).toBe(false);
+    runtime.dispatch({ type: "select-evidence", eventId: "notification-snapshot-100" });
+    runtime.dispatch({ type: "open-context" });
+    applyTextFilter(runtime, "notification-snapshot-100");
+    await flushStoreNotifications();
+    runtime.dispatch({ type: "set-find", value: "snapshot" });
+    runtime.dispatch({ type: "freeze-evidence" });
+    runtime.dispatch({ type: "set-evidence-scroll", scrollTop: 90 });
+    const before = runtime.getSnapshot();
+
+    runtime.dispatch({ type: "open-notifications" });
+    runtime.dispatch({ type: "open-notifications" });
+    runtime.dispatch({ type: "apply-diagnostic-filter", facet: "diagnosticSeverity", value: diagnosticSeverityFacetValue("information"), polarity: "exclude" });
+    expect(runtime.getSnapshot().notifications.entries).toEqual([]);
+    expect(runtime.getSnapshot().notifications.total).toBe(100);
+    expect(runtime.getSnapshot().evidence).toEqual(before.evidence);
+    runtime.dispatch({ type: "close-notifications" });
+    expect(runtime.getSnapshot()).toMatchObject({ contextId: before.contextId, scopeId: before.scopeId, selectionEventId: before.selectionEventId });
+    expect(runtime.getSnapshot().evidence).toEqual(before.evidence);
+
+    runtime.dispatch({ type: "open-notifications" });
+    runtime.dispatch({ type: "reset-diagnostic-filter" });
+    await Promise.all(scenario.deferredEvents!.map((event) => history.offer(event).settled));
+    await flushStoreNotifications();
+    const route = notifications.entries[0]!.route!;
+    if (route.kind !== "inspect-evidence") throw new Error("Snapshot completion requires supporting Evidence.");
+    runtime.dispatch({ type: "inspect-diagnostic-evidence", evidence: route.evidence });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().selectionEventId).toBe("notification-snapshot-51");
+    expect(runtime.getSnapshot().evidence.investigation.filter).toEqual(before.evidence.investigation.filter);
+    // Reopening from the inspected record must not replace an older page's return target.
+    runtime.dispatch({ type: "open-notifications" });
+    runtime.dispatch({ type: "back-investigation" });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot()).toMatchObject({ contextId: "notifications", selectionEventId: before.selectionEventId });
+    runtime.dispatch({ type: "close-notifications" });
+    expect(runtime.getSnapshot().contextId).toBe(before.contextId);
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().notifications).toMatchObject({ entries: [], total: 0 });
+    runtime.dispose();
+  });
+
+  it("retains one active condition when more than 100 occurrence notices arrive", async () => {
+    const scenario = getWorkbenchScenario("notifications-volume");
+    const history = createInMemoryEventHistory({ panelSessionId: "notifications-active-condition-cap" });
+    await Promise.all(scenario.initialEvents.map((candidate) => history.offer(candidate).settled));
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "notifications-active-condition-cap" });
+    const runtime = createWorkbenchRuntime({
+      history,
+      diagnosticObservations,
+      captureStatus: "bridge disconnected",
+      capture: { coverage: "USEFUL" }
+    });
+    await flushStoreNotifications();
+
+    const disconnected = runtime.getSnapshot().diagnostics.find(({ title }) => title === "Capture disconnected");
+    expect(disconnected?.dismissalId).toBe("capture:bridge-disconnected:error");
+    runtime.dispatch({ type: "dismiss-diagnostic", dismissalId: disconnected!.dismissalId! });
+    await Promise.all((scenario.deferredEvents ?? []).map((candidate) => history.offer(candidate).settled));
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+
+    expect(runtime.getSnapshot().notifications).toMatchObject({ total: 100, limit: 100 });
+    expect(runtime.getSnapshot().notifications.entries.filter(({ code }) => code === "workbench.capture.disconnected"))
+      .toEqual([expect.objectContaining({ dismissalId: "capture:bridge-disconnected:error" })]);
+    expect(runtime.getSnapshot().diagnostics).not.toContainEqual(expect.objectContaining({ code: "workbench.capture.disconnected" }));
+    const disconnectedObservations = (await diagnosticObservations.query({ codes: ["workbench.capture.disconnected"] })).observations;
+    expect(disconnectedObservations).toHaveLength(3);
+    expect(disconnectedObservations.filter(({ affected, lifecycle }) =>
+      affected.kind === "page" && lifecycle.kind === "condition" && lifecycle.state === "active"
+    )).toHaveLength(1);
     runtime.dispose();
   });
 
@@ -474,7 +580,7 @@ describe("WorkbenchRuntime", () => {
     });
     await flushStoreNotifications();
     await runtime.settleDiagnosticObservations?.();
-    const diagnostic = runtime.getSnapshot().diagnostics.find(({ code }) => code === "ls.client.server-error");
+    const diagnostic = runtime.getSnapshot().notifications.entries.find(({ code }) => code === "ls.client.server-error");
     expect(diagnostic?.route).toMatchObject({
       kind: "inspect-evidence",
       evidence: expect.objectContaining({ eventId: "deep-server-error", sequence: 1 })
@@ -508,6 +614,33 @@ describe("WorkbenchRuntime", () => {
         expect.objectContaining({ affected: { kind: "unavailable", reason: "page-identity-unavailable" }, lifecycle: expect.objectContaining({ state: "active" }) }),
         expect.objectContaining({ affected: { kind: "unavailable", reason: "page-identity-unavailable" }, lifecycle: expect.objectContaining({ state: "resolved" }) })
       ]);
+    runtime.dispose();
+  });
+
+  it("keeps a footer dismissal while the same active condition gains an exact page identity", async () => {
+    const history = createAuthoritativeHistory();
+    const runtime = createWorkbenchRuntime({
+      history,
+      capture: {
+        coverage: "LIMITED",
+        detail: "Capture attached after the Subscription began."
+      }
+    });
+    await flushStoreNotifications();
+
+    const coverage = runtime.getSnapshot().diagnostics.find(({ title }) => title === "Coverage LIMITED");
+    expect(coverage?.dismissalId).toBe("capture:coverage:limited");
+    runtime.dispatch({ type: "dismiss-diagnostic", dismissalId: coverage!.dismissalId! });
+    expect(runtime.getSnapshot().diagnostics).not.toContainEqual(expect.objectContaining({ title: "Coverage LIMITED" }));
+
+    const identityFrame = getPanelScenario("topology-large").topologySyncFrames?.[0];
+    if (!identityFrame) throw new Error("Topology identity-refinement frame is unavailable.");
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: identityFrame });
+    await runtime.settleDiagnosticObservations?.();
+
+    expect(runtime.getSnapshot().diagnostics).not.toContainEqual(expect.objectContaining({ title: "Coverage LIMITED" }));
+    expect(runtime.getSnapshot().notifications.entries.filter(({ code }) => code === "workbench.capture.coverage-limited"))
+      .toEqual([expect.objectContaining({ affectedIdentity: { kind: "page", pageId: identityFrame.pageEpoch } })]);
     runtime.dispose();
   });
 
@@ -546,7 +679,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("does not advance the diagnostic boundary when projection recovery replays completed conditions", async () => {
+  it("does not advance the diagnostic boundary for replayed conditions or transient Activity availability", async () => {
     const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "replayed-session-diagnostics" });
     const baseHistory = createAuthoritativeHistory();
     const committed: Extract<HistoryPublication, { type: "committed-evidence" }>[] = [];
@@ -561,7 +694,15 @@ describe("WorkbenchRuntime", () => {
         });
       }
     };
-    const runtime = createWorkbenchRuntime({ history, capture: { coverage: "USEFUL" }, diagnosticObservations });
+    const runtime = createWorkbenchRuntime({
+      history,
+      capture: { coverage: "USEFUL" },
+      diagnosticObservations,
+      activityProjectionFactory: (input) => {
+        if (input.coherent) throw new Error("aggregation unavailable");
+        return createActivityProjection(input);
+      }
+    });
     await flushStoreNotifications();
     await history.offer(topologyEvent("replay-recovery-1", "client-status", {
       client: { id: "client-main", status: "DISCONNECTED:TRYING-RECOVERY", sessionId: "S-1" },
@@ -651,7 +792,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("reconciles configuration and topology Context diagnostics from committed immutable latches", async () => {
+  it("reconciles configuration and topology Notifications from committed immutable latches", async () => {
     const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "topology-latch-diagnostics" });
     const client = { id: "lint-client", status: "CONNECTED:WS-STREAMING", sessionId: "lint-session", adapterSet: "LINT_ADAPTERS" };
     const topology = (kind: LightstreamerEventEnvelope["kind"], captureSequence: number) => ({
@@ -739,7 +880,7 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().diagnostics).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "ls.subscription.exact-duplicate" })
     ]));
-    const initialDiagnosticFilter: WorkbenchSnapshot["context"]["diagnosticFilter"] = runtime.getSnapshot().context.diagnosticFilter;
+    const initialDiagnosticFilter: WorkbenchSnapshot["notifications"]["filter"] = runtime.getSnapshot().notifications.filter;
     const initialSeverityOptionIds = initialDiagnosticFilter.options.diagnosticSeverity.map(({ value }) => value.identity);
     const initialAffectedOptionIds = initialDiagnosticFilter.options.diagnosticAffected.map(({ value }) => value.identity);
     expect(initialDiagnosticFilter.options.diagnosticCode.map(({ value }) => value.label)).toEqual(expect.arrayContaining([
@@ -752,11 +893,11 @@ describe("WorkbenchRuntime", () => {
       value: diagnosticCodeFacetValue("ls.subscription.exact-duplicate"),
       polarity: "include"
     } as never);
-    expect(runtime.getSnapshot().context.diagnosticFilter.options.diagnosticCode.map(({ value }) => value.label))
+    expect(runtime.getSnapshot().notifications.filter.options.diagnosticCode.map(({ value }) => value.label))
       .toEqual(expect.arrayContaining(["ls.subscription.exact-duplicate", "ls.sub.raw-snapshot-unavailable"]));
-    expect(runtime.getSnapshot().context.diagnosticFilter.options.diagnosticSeverity.map(({ value }) => value.identity))
+    expect(runtime.getSnapshot().notifications.filter.options.diagnosticSeverity.map(({ value }) => value.identity))
       .toEqual(initialSeverityOptionIds);
-    expect(runtime.getSnapshot().context.diagnosticFilter.options.diagnosticAffected.map(({ value }) => value.identity))
+    expect(runtime.getSnapshot().notifications.filter.options.diagnosticAffected.map(({ value }) => value.identity))
       .toEqual(initialAffectedOptionIds);
     runtime.dispatch({
       type: "apply-diagnostic-filter",
@@ -764,7 +905,7 @@ describe("WorkbenchRuntime", () => {
       value: diagnosticCodeFacetValue("ls.sub.raw-snapshot-unavailable"),
       polarity: "include"
     } as never);
-    expect(runtime.getSnapshot().context.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining([
+    expect(runtime.getSnapshot().notifications.entries.map(({ code }) => code)).toEqual(expect.arrayContaining([
       "ls.subscription.exact-duplicate",
       "ls.sub.raw-snapshot-unavailable"
     ]));
@@ -774,14 +915,14 @@ describe("WorkbenchRuntime", () => {
       value: diagnosticSeverityFacetValue("error"),
       polarity: "include"
     } as never);
-    expect(runtime.getSnapshot().context.diagnostics).toEqual([]);
+    expect(runtime.getSnapshot().notifications.entries).toEqual([]);
     runtime.dispatch({
       type: "remove-diagnostic-filter",
       facet: "diagnosticSeverity",
       value: diagnosticSeverityFacetValue("error"),
       polarity: "include"
     } as never);
-    expect(runtime.getSnapshot().context.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining([
+    expect(runtime.getSnapshot().notifications.entries.map(({ code }) => code)).toEqual(expect.arrayContaining([
       "ls.subscription.exact-duplicate",
       "ls.sub.raw-snapshot-unavailable"
     ]));
@@ -791,7 +932,7 @@ describe("WorkbenchRuntime", () => {
       value: diagnosticCodeFacetValue("ls.subscription.exact-duplicate"),
       polarity: "include"
     } as never);
-    expect(runtime.getSnapshot().context.diagnostics.map(({ code }) => code)).not.toContain("ls.subscription.exact-duplicate");
+    expect(runtime.getSnapshot().notifications.entries.map(({ code }) => code)).not.toContain("ls.subscription.exact-duplicate");
     runtime.dispatch({ type: "reset-diagnostic-filter" } as never);
     const rawScope = runtime.getSnapshot().scope.nodes.find(({ kind, label }) => kind === "subscription" && label.includes("raw-subscription"));
     expect(rawScope).toBeDefined();
@@ -799,7 +940,7 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().diagnostics).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
     ]));
-    expect(runtime.getSnapshot().context.diagnostics).toEqual(expect.arrayContaining([
+    expect(runtime.getSnapshot().notifications.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
     ]));
     runtime.dispatch({
@@ -808,9 +949,9 @@ describe("WorkbenchRuntime", () => {
       value: diagnosticCodeFacetValue("ls.sub.raw-snapshot-unavailable"),
       polarity: "exclude"
     } as never);
-    expect(runtime.getSnapshot().context.diagnostics).toEqual([]);
+    expect(runtime.getSnapshot().notifications.entries).not.toContainEqual(expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" }));
     runtime.dispatch({ type: "reset-diagnostic-filter" } as never);
-    expect(runtime.getSnapshot().context.diagnostics).toEqual(expect.arrayContaining([
+    expect(runtime.getSnapshot().notifications.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
     ]));
 
@@ -823,7 +964,7 @@ describe("WorkbenchRuntime", () => {
       expect.objectContaining({ code: "ls.subscription.exact-duplicate" }),
       expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
     ]));
-    expect(runtime.getSnapshot().context.diagnostics).toEqual([]);
+    expect(runtime.getSnapshot().notifications.entries).toEqual([]);
     runtime.dispose();
   });
 
@@ -1174,6 +1315,9 @@ describe("WorkbenchRuntime", () => {
     scheduler.flushFrame();
     await flushStoreNotifications();
     expect(pending).toHaveLength(1);
+    runtime.dispatch({ type: "set-theme", theme: "dark" });
+    expect(runtime.getSnapshot().evidence.loading).toBe(false);
+    expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(resolvedEventIds);
     pending.shift()?.resolve();
     await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toContain("streaming-client-106");
@@ -2198,6 +2342,10 @@ describe("WorkbenchRuntime", () => {
       ])
     );
     expect(runtime.getSnapshot().capture.coverage).toBe("LIMITED");
+    expect(runtime.getSnapshot().notifications.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "workbench.capture.disconnected" }),
+      expect.objectContaining({ code: "workbench.capture.coverage-limited" })
+    ]));
     expect(runtime.getSnapshot().diagnostics.find(({ title }) => title === "Session recovering"))
       .toMatchObject({ affected: "Session S-1" });
 
@@ -2205,6 +2353,36 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain(
       "Lower History Capacity"
     );
+    runtime.dispose();
+  });
+
+  it("does not revive a finalized recovering Session as a footer-only condition", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer(topologyEvent("recovering-old", "client-status", {
+      client: {
+        id: "client-main",
+        status: "DISCONNECTED:TRYING-RECOVERY",
+        sessionId: "S-old"
+      }
+    }));
+    history.offer(topologyEvent("connected-replacement", "client-status", {
+      client: {
+        id: "client-main",
+        status: "CONNECTED:WS-STREAMING",
+        sessionId: "S-new",
+        transport: "WS-STREAMING"
+      }
+    }));
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
+
+    expect(runtime.getSnapshot().scope.nodes).toContainEqual(expect.objectContaining({
+      kind: "session",
+      retired: true,
+      label: "Historical session S-old"
+    }));
+    expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain("Session recovering");
+    expect(runtime.getSnapshot().notifications.entries.map(({ code }) => code)).not.toContain("ls.session.recovering");
     runtime.dispose();
   });
 

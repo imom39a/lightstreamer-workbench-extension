@@ -20,7 +20,7 @@ type DiagnosticSemantics = Readonly<{
   originalCode?: number;
 }>;
 
-type WorkbenchConditionFamily = "history" | "storage" | "capture" | "session";
+type WorkbenchConditionFamily = "activity" | "history" | "storage" | "capture" | "session" | "scope" | "retention";
 
 export type WorkbenchConditionFinding = DiagnosticSemantics & Readonly<{
   family: WorkbenchConditionFamily;

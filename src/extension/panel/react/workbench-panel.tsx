@@ -2,6 +2,7 @@ import { lazy, memo, Suspense, useLayoutEffect, useMemo, useRef, useState, useSy
 
 import {
   type WorkbenchCommand,
+  type WorkbenchDiagnostic,
   type WorkbenchRuntime,
   type WorkbenchSnapshot
 } from "../workbench-runtime";
@@ -30,6 +31,7 @@ import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
 import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
+import { NotificationsDocument } from "./notifications-document";
 import { activityRangeLabel } from "./activity-timeline-format";
 import type { TimelineEvidenceAnchor } from "./activity-timeline-events";
 
@@ -519,6 +521,14 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const facetReturnKey = useRef<EvidenceFacetKey | null>(null);
   const facetSearchInput = useRef<HTMLInputElement | null>(null);
   const moreActionsTrigger = useRef<HTMLButtonElement | null>(null);
+  const notificationsTrigger = useRef<HTMLButtonElement | null>(null);
+  const evidenceModeTrigger = useRef<HTMLButtonElement | null>(null);
+  const diagnosticDismissButtons = useRef(new Map<string, HTMLButtonElement>());
+  const focusedDiagnosticDismiss = useRef<Readonly<{ dismissalId: string; index: number }> | null>(null);
+  const pendingDiagnosticDismissFocus = useRef<number | null>(null);
+  const notificationsOrigin = useRef({ evidenceScrollTop: 0, contextScrollTop: 0, scopeScrollTop: 0 });
+  const previousNotificationsOpen = useRef(false);
+  const inspectingNotification = useRef(false);
   const scopeTrigger = useRef<HTMLButtonElement | null>(null);
   const contextLens = useRef<HTMLElement | null>(null);
   const commandProjectionTrigger = useRef<HTMLButtonElement | null>(null);
@@ -566,16 +576,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const findState = evidence.findState;
   const hiddenSelection = evidence.hiddenSelection;
   const contextFields = snapshot.context.fields;
-  const activeDiagnosticCriteria = (["diagnosticCode", "diagnosticSeverity", "diagnosticAffected"] as const).flatMap((facet) => {
-    const criterion = snapshot.context.diagnosticFilter.criteria[facet];
-    if (!criterion) return [];
-    const include = "include" in criterion ? criterion.include : criterion;
-    const exclude = "exclude" in criterion ? criterion.exclude : [];
-    return [
-      ...include.map((value) => ({ facet, value, polarity: "include" as const })),
-      ...exclude.map((value) => ({ facet, value, polarity: "exclude" as const }))
-    ];
-  });
   const scopeNodes = snapshot.scope.structure;
   const {
     scopeNodeById,
@@ -706,16 +706,23 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const compactSurface = snapshot.contextId === "context:scope" ? "scope" : snapshot.contextId ? "context" : undefined;
   const rawEvidence = snapshot.contextId?.startsWith("raw:") ? selected : null;
   const commandProjectionComparison = snapshot.contextId === "command-projections";
+  const notificationsOpen = snapshot.contextId === "notifications";
+  const notificationSeverity = snapshot.notifications.filter.options.diagnosticSeverity.some(({ value, count }) => value.value === "error" && count > 0)
+    ? "Error"
+    : snapshot.notifications.filter.options.diagnosticSeverity.some(({ value, count }) => value.value === "warning" && count > 0)
+      ? "Warning"
+      : null;
   const supportingProjectionEvidenceId =
     snapshot.commandProjections.localEffective.supportingLocalEvidenceId ?? null;
   const localInjection = snapshot.localInjection;
   const localInjectionDraft = localInjection.draft;
+  const notificationsPresented = notificationsOpen && !localInjectionDraft?.open && !snapshot.scenario;
   const contextMode = snapshot.contextId === "context:actions"
     ? "actions"
     : snapshot.contextId === "context:export"
       ? "export"
       : "inspect";
-  const workspaceAvailable = !localInjectionDraft?.open && !snapshot.scenario && !commandProjectionComparison && !rawEvidence;
+  const workspaceAvailable = !localInjectionDraft?.open && !snapshot.scenario && !commandProjectionComparison && !rawEvidence && !notificationsOpen;
   const scopeIsPresented = geometry === "wide"
     ? !scopeCollapsed
     : geometry === "compact"
@@ -1330,6 +1337,75 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     dispatch(runtime, { type: "close-actions" });
   };
 
+  const openNotifications = () => {
+    notificationsOrigin.current = {
+      evidenceScrollTop: evidenceLedger.current?.scrollTop ?? 0,
+      contextScrollTop: contextBody.current?.scrollTop ?? 0,
+      scopeScrollTop: scopeTree.current?.scrollTop ?? 0
+    };
+    dispatch(runtime, { type: "open-notifications" });
+  };
+
+  const inspectNotification = (route: NonNullable<WorkbenchDiagnostic["route"]>): boolean => {
+    inspectingNotification.current = true;
+    pendingContextFocus.current = true;
+    setContextCollapsed(false);
+    if (route.kind === "inspect-evidence") {
+      pendingTimelineReveal.current = route.evidence.eventId;
+      dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: route.evidence });
+    } else dispatch(runtime, { type: "inspect-diagnostic-affected", affected: route.affected });
+    if (runtime.getSnapshot().contextId === "notifications") {
+      inspectingNotification.current = false;
+      pendingContextFocus.current = false;
+      pendingTimelineReveal.current = null;
+      return false;
+    }
+    return true;
+  };
+
+  useLayoutEffect(() => {
+    if (previousNotificationsOpen.current && !notificationsOpen) {
+      if (!inspectingNotification.current) {
+        const restore = () => {
+          notificationsTrigger.current?.focus({ preventScroll: true });
+          if (evidenceLedger.current) evidenceLedger.current.scrollTop = notificationsOrigin.current.evidenceScrollTop;
+          if (contextBody.current) contextBody.current.scrollTop = notificationsOrigin.current.contextScrollTop;
+          if (scopeTree.current) scopeTree.current.scrollTop = notificationsOrigin.current.scopeScrollTop;
+        };
+        restore();
+        window.requestAnimationFrame(restore);
+      }
+      inspectingNotification.current = false;
+    }
+    previousNotificationsOpen.current = notificationsOpen;
+  }, [notificationsOpen]);
+
+  useLayoutEffect(() => {
+    const focused = focusedDiagnosticDismiss.current;
+    if (
+      pendingDiagnosticDismissFocus.current === null &&
+      focused &&
+      !snapshot.diagnostics.some(({ dismissalId }) => dismissalId === focused.dismissalId)
+    ) {
+      pendingDiagnosticDismissFocus.current = focused.index;
+    }
+    const dismissedIndex = pendingDiagnosticDismissFocus.current;
+    if (dismissedIndex !== null) {
+      const dismissible = snapshot.diagnostics.filter(({ dismissalId }) => dismissalId !== undefined);
+      const next = dismissible[dismissedIndex] ?? dismissible[dismissedIndex - 1];
+      if (next?.dismissalId) {
+        diagnosticDismissButtons.current.get(next.dismissalId)?.focus({ preventScroll: true });
+      } else if (notificationsTrigger.current && !notificationsTrigger.current.disabled) {
+        focusedDiagnosticDismiss.current = null;
+        notificationsTrigger.current.focus({ preventScroll: true });
+      } else {
+        focusedDiagnosticDismiss.current = null;
+        evidenceModeTrigger.current?.focus({ preventScroll: true });
+      }
+      pendingDiagnosticDismissFocus.current = null;
+    }
+  }, [snapshot.diagnostics]);
+
   useLayoutEffect(() => {
     const tree = scopeTree.current;
     if (!tree) return;
@@ -1611,7 +1687,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       style={{ "--wb-scope-width": `${renderedScopeWidth}px`, "--wb-context-size": `${contextSize}px` } as CSSProperties}
       aria-label="Lightstreamer Workbench"
       onKeyDown={(keyEvent) => {
-        if (rawEvidence || keyEvent.defaultPrevented) return;
+        if (rawEvidence || notificationsOpen || keyEvent.defaultPrevented) return;
         if ((keyEvent.metaKey || keyEvent.ctrlKey) && keyEvent.key.toLowerCase() === "f") {
           const target = keyEvent.target;
           if (target instanceof Element && target.closest('[aria-label="Local Injection Draft"]')) return;
@@ -1646,8 +1722,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <div className="workbench-react__operating-actions">
           <button type="button" aria-label="Back investigation" disabled={!snapshot.evidence.restoration.canBack} onClick={() => dispatch(runtime, { type: "back-investigation" })}>Back</button>
           <button type="button" aria-label="Forward investigation" disabled={!snapshot.evidence.restoration.canForward} onClick={() => dispatch(runtime, { type: "forward-investigation" })}>Forward</button>
-          <button className="workbench-react__evidence-operation" type="button" ref={findTrigger} aria-expanded={findOpen} onClick={(event) => findOpen ? closeFind() : openFind(event.currentTarget)}>Find</button>
-          <button className="workbench-react__evidence-operation" type="button" ref={filterTrigger} aria-expanded={filterOpen} aria-controls="workbench-filter" onClick={(event) => filterOpen ? closeFilter() : openFilter(event.currentTarget)}>Filter</button>
+          <button className="workbench-react__evidence-operation" type="button" ref={findTrigger} disabled={notificationsOpen} aria-expanded={findOpen && !notificationsOpen} onClick={(event) => findOpen ? closeFind() : openFind(event.currentTarget)}>Find</button>
+          <button className="workbench-react__evidence-operation" type="button" ref={filterTrigger} disabled={notificationsOpen} aria-expanded={filterOpen && !notificationsOpen} aria-controls="workbench-filter" onClick={(event) => filterOpen ? closeFilter() : openFilter(event.currentTarget)}>Filter</button>
           <label className="workbench-react__eyebrow" htmlFor="workbench-theme">Theme</label>
           <select
             id="workbench-theme"
@@ -1658,7 +1734,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           <button ref={moreActionsTrigger} type="button" disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-context" : undefined} aria-expanded={workspaceAvailable && contextMode === "actions"} onClick={openActions}>More actions</button>
         </div>
       </header>
-      {findOpen ? <div className="workbench-react__find" role="search" aria-label="Find in ordered Evidence">
+      {findOpen && !notificationsOpen ? <div className="workbench-react__find" role="search" aria-label="Find in ordered Evidence">
             <label className="workbench-react__eyebrow" htmlFor="workbench-find">Find</label>
             <input
               id="workbench-find"
@@ -1697,7 +1773,10 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       {localInjectionDraft?.parked && !snapshot.scenario ? <section className="workbench-react__local-parked" aria-label="Parked Local Injection Draft">
         <div><span className="workbench-react__eyebrow">Parked Local Injection Draft</span><strong>{localInjectionDraft.anchor.subscriptionId} · {localInjectionDraft.anchor.itemName ?? `Item #${localInjectionDraft.anchor.itemPosition ?? "Unknown"}`}</strong></div>
         <span>{localInjectionDraft.ready ? "READY" : "BLOCKED"} · Session {localInjectionDraft.anchor.sessionId ?? "Unknown"} · {localInjectionDraft.compareStatus === "no-source" ? "newly authored" : `Source ${localInjectionDraft.anchor.sourceEventId ?? "Unknown"}`}</span>
-        <button type="button" ref={resumeLocalInjection} onClick={() => dispatch(runtime, { type: "resume-local-injection" })}>Resume Local Injection Draft</button>
+        <button type="button" ref={resumeLocalInjection} onClick={() => {
+          if (notificationsOpen) dispatch(runtime, { type: "close-notifications" });
+          dispatch(runtime, { type: "resume-local-injection" });
+        }}>Resume Local Injection Draft</button>
         <button type="button" ref={parkedDiscardTrigger} onClick={() => dispatch(runtime, { type: "request-discard-local-injection" })}>Discard draft</button>
       </section> : null}
       {localInjectionDraft?.parked && localInjection.discardConfirmation ? <section className="workbench-react__local-confirmation workbench-react__local-confirmation--parked" role="alertdialog" aria-label="Discard Local Injection Draft" tabIndex={-1} ref={parkedDiscardDialog} onKeyDown={(event) => {
@@ -1712,6 +1791,13 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           dispatch(runtime, { type: "cancel-discard-local-injection" });
         }}>Keep draft</button><button type="button" onClick={() => dispatch(runtime, { type: "confirm-discard-local-injection" })}>Confirm discard</button>
       </section> : null}
+      <NotificationsDocument
+        open={notificationsPresented}
+        notifications={snapshot.notifications}
+        onBack={() => dispatch(runtime, { type: "close-notifications" })}
+        onCommand={(command) => dispatch(runtime, command)}
+        onInspect={inspectNotification}
+      />
       {localInjectionDraft?.open || snapshot.scenario ? null : commandProjectionComparison ? <CommandProjectionComparison
         scope={scopeLabel}
         capture={snapshot.capture}
@@ -1724,7 +1810,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <div className="workbench-react__document-boundary"><span>Source <strong>{rawEvidence.source}</strong></span><span>Phase <strong>{rawEvidence.phase}</strong></span><span>Mutable <strong>NO</strong></span></div>
         <p className="workbench-react__document-status" role="status">{copyStatus}</p>
         <pre tabIndex={0}>{JSON.stringify(rawEvidence.raw, null, 2)}</pre>
-      </section> : <main ref={workspace} className="workbench-react__workspace">
+      </section> : <main ref={workspace} className="workbench-react__workspace" hidden={notificationsOpen}>
         <nav className="workbench-react__pane workbench-react__scope" id="workbench-runtime-scope" aria-label="Structural runtime scope">
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Runtime Scope</span><strong>Inspected page</strong></div><div><button ref={scopeCollapse} className="workbench-react__scope-collapse" type="button" onClick={() => collapsePane("scope", "collapse")}>Collapse Scope</button><button className="workbench-react__scope-picker-close" type="button" onClick={closeScope}>Close Scope</button><button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
           <ScopeTree
@@ -1829,25 +1915,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             </section> : <>
               {snapshot.activity ? <ActivityContextSummary projection={snapshot.activity.projection} scopeLabel={scopeLabel} filterSummary={appliedFilterSummary} hasActiveFilter={hasActiveFilter} frozen={evidence.mode === "frozen"} open={activitySummaryOpen} onOpenChange={setActivitySummaryOpen} onRankingFilter={(expectedRevision, rankingId) => dispatch(runtime, { type: "apply-activity-ranking-filter", expectedRevision, rankingId })} onResetFilter={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })} /> : null}
               <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
-              {snapshot.context.diagnostics.length || snapshot.context.diagnosticFilter.active ? <section className="workbench-react__context-diagnostics" role="region" aria-label="Context diagnostics">
-                <div className="workbench-react__context-diagnostics-heading"><strong>Diagnostics for this Scope</strong>{snapshot.context.diagnosticFilter.active ? <button type="button" onClick={() => dispatch(runtime, { type: "reset-diagnostic-filter" })}>Reset diagnostic filters</button> : null}</div>
-                {activeDiagnosticCriteria.length ? <div className="workbench-react__diagnostic-active-filters" aria-label="Active diagnostic filters">{activeDiagnosticCriteria.map(({ facet, value, polarity }) => <button type="button" key={`${facet}-${polarity}-${value.identity}`} onClick={() => dispatch(runtime, { type: "remove-diagnostic-filter", facet, value, polarity })}>Remove {polarity === "include" ? "Include" : "Exclude"} {value.label}</button>)}</div> : null}
-                <details className="workbench-react__diagnostic-filter-options">
-                  <summary>Filter diagnostics</summary>
-                  {(["diagnosticCode", "diagnosticSeverity", "diagnosticAffected"] as const).map((facet) => <fieldset key={facet}><legend>{facet === "diagnosticCode" ? "Code" : facet === "diagnosticSeverity" ? "Severity" : "Affected"}</legend>{snapshot.context.diagnosticFilter.options[facet].map(({ value, count }) => <span key={value.identity}><span>{value.label} ({count})</span><button type="button" onClick={() => dispatch(runtime, { type: "apply-diagnostic-filter", facet, value, polarity: "include" })}>Include {value.label}</button><button type="button" onClick={() => dispatch(runtime, { type: "apply-diagnostic-filter", facet, value, polarity: "exclude" })}>Exclude {value.label}</button></span>)}</fieldset>)}
-                </details>
-                {snapshot.context.diagnostics.map((diagnostic, index) => <article className="workbench-react__context-diagnostic" data-severity={diagnostic.severity.toLowerCase()} key={diagnostic.id ? `${diagnostic.code ?? diagnostic.title}:${diagnostic.id}` : `${diagnostic.title}-${index}`}>
-                  <strong>{diagnostic.severity} · {diagnostic.title}</strong>
-                  <span>Affected: {diagnostic.affected}</span>
-                  <span>{diagnostic.detail}</span>
-                  {diagnostic.limitation ? <span>Limit: {diagnostic.limitation}</span> : null}
-                  {diagnostic.consequence ? <span>Consequence: {diagnostic.consequence}</span> : null}
-                  {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
-                    ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
-                    : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
-                </article>)}
-                {!snapshot.context.diagnostics.length ? <p>No diagnostics match the active diagnostic filters.</p> : null}
-              </section> : null}
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
               {selected ? <SelectedFilterActions
                 actions={snapshot.context.filterActions ?? []}
@@ -1888,23 +1955,76 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           event.currentTarget.scrollTop = event.key === "Home" ? 0 : event.currentTarget.scrollHeight;
         }}>
           {snapshot.diagnostics.length > 1 ? <span className="workbench-react__status-diagnostics-summary">{snapshot.diagnostics.length} diagnostics · Scroll to review all</span> : null}
-          {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-category={diagnostic.category} data-history-condition={diagnostic.category === "history" ? "true" : undefined} data-severity={diagnostic.severity.toLowerCase()} key={diagnostic.id ? `${diagnostic.code ?? diagnostic.title}:${diagnostic.id}` : `${diagnostic.title}-${index}`}>
+          {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-category={diagnostic.category} data-history-condition={diagnostic.category === "history" ? "true" : undefined} data-severity={diagnostic.severity.toLowerCase()} key={diagnostic.dismissalId ?? (diagnostic.id ? `${diagnostic.code ?? diagnostic.title}:${diagnostic.id}` : `${diagnostic.title}-${index}`)}>
             <strong>{diagnostic.severity} · {diagnostic.title}</strong>
             <span className="workbench-react__status-affected">Affected: {diagnostic.affected}</span>
-            <span className="workbench-react__status-detail">{diagnostic.detail}</span>
-            {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
-            {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
-            {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
-            {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
-              ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
-              : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
+            {diagnostic.dismissalId ? <button
+              className="workbench-react__status-dismiss"
+              type="button"
+              aria-label={`Dismiss ${diagnostic.title}`}
+              data-diagnostic-dismissal-id={diagnostic.dismissalId}
+              onFocus={() => {
+                focusedDiagnosticDismiss.current = {
+                  dismissalId: diagnostic.dismissalId!,
+                  index: snapshot.diagnostics
+                    .slice(0, index)
+                    .filter(({ dismissalId }) => dismissalId !== undefined)
+                    .length
+                };
+              }}
+              onBlur={(event) => {
+                const clear = () => {
+                  if (focusedDiagnosticDismiss.current?.dismissalId === diagnostic.dismissalId) {
+                    focusedDiagnosticDismiss.current = null;
+                  }
+                };
+                if (event.relatedTarget) clear();
+                else queueMicrotask(clear);
+              }}
+              ref={(element) => {
+                if (element) diagnosticDismissButtons.current.set(diagnostic.dismissalId!, element);
+                else diagnosticDismissButtons.current.delete(diagnostic.dismissalId!);
+              }}
+              onClick={() => {
+                pendingDiagnosticDismissFocus.current = snapshot.diagnostics
+                  .slice(0, index)
+                  .filter(({ dismissalId }) => dismissalId !== undefined)
+                  .length;
+                dispatch(runtime, { type: "dismiss-diagnostic", dismissalId: diagnostic.dismissalId! });
+              }}
+            >Dismiss</button> : null}
+            {geometry === "shallow" ? <details className="workbench-react__status-disclosure">
+              <summary>Diagnostic details</summary>
+              <span className="workbench-react__status-detail">{diagnostic.detail}</span>
+              {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
+              {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
+              {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
+              {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
+                ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
+                : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
+            </details> : <>
+              <span className="workbench-react__status-detail">{diagnostic.detail}</span>
+              {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
+              {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
+              {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
+              {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
+                ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
+                : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
+            </>}
           </section>)}
         </div> : null}
         <div className="workbench-react__status-line"><span>{limited
           ? "Observation requires care; retained Evidence remains readable."
           : snapshot.evidence.total === 0
             ? "No Evidence is retained in the current History Interval."
-            : "Evidence is retained for this Panel Session."}</span><button type="button" onClick={() => dispatch(runtime, { type: evidenceMode === "FROZEN" ? "follow-live" : "freeze-evidence" })}>{evidenceMode === "FROZEN" ? "Follow Live" : "Freeze Evidence"}</button></div>
+            : "Evidence is retained for this Panel Session."}</span><button
+              ref={notificationsTrigger}
+              type="button"
+              disabled={Boolean(localInjectionDraft?.open || snapshot.scenario || commandProjectionComparison || rawEvidence)}
+              aria-expanded={notificationsPresented}
+              aria-controls={notificationsPresented ? "workbench-notifications" : undefined}
+              onClick={() => notificationsOpen ? dispatch(runtime, { type: "close-notifications" }) : openNotifications()}
+            >Notifications ({snapshot.notifications.total}){notificationSeverity ? ` · ${notificationSeverity}` : ""}</button><button ref={evidenceModeTrigger} type="button" onClick={() => dispatch(runtime, { type: evidenceMode === "FROZEN" ? "follow-live" : "freeze-evidence" })}>{evidenceMode === "FROZEN" ? "Follow Live" : "Freeze Evidence"}</button></div>
       </footer>
     </section>
   );

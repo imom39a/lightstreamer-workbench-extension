@@ -155,7 +155,7 @@ try {
         "One shared SERVER/LOCAL timeline belongs above Evidence, uses elapsed time since the first retained timestamped event, and preserves exact range and captured-event routes without a separate Activity page.",
         "One collapsed Activity summary in Context retains exact SERVER/LOCAL counts, bounded SERVER busiest identities and captured facts, including 10,000-record, limited and memory-fallback states.",
         "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
-        "Contextual diagnostics present server errors and bounded keepalive aggregation without a health verdict; duplicate, overlap, listener churn, and subscription lint remain scope-relevant and route to supporting Evidence.",
+        "Notifications owns active Workbench conditions and recent Lightstreamer diagnostics, including History pressure, Capture coverage, snapshot completion, server errors and bounded keepalives without a health verdict; filters remain independent of Evidence, dismissal hides only the active footer copy, and captured inspection routes remain available.",
         "Committed snapshot, COMMAND, and lost-update anomalies preserve exact epoch attribution, bounded limitations, and one normalized lifecycle without duplicate footer ownership.",
         "Advisory storage-headroom warnings remain global, uncertain, keyboard reachable, and separate from authoritative History Capacity and Observation Coverage.",
         "Global diagnostics and More actions remain readable, keyboard reachable, and unobscured without horizontal shell or document overflow in compact, normal, shallow, wide, Dark, Light, and forced-colors states.",
@@ -170,7 +170,7 @@ try {
         checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; help-resource and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
+      keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; every captured footer Dismiss action is checked individually, and help-resource, shallow diagnostic-disclosure, and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
       matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; Activity, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
       baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
     } : results.every(({ production }) => production.setup.startsWith("activity")) ? {
@@ -270,7 +270,7 @@ try {
         checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "The mixed diagnostic list is keyboard-focusable with a visible focus ring; End reveals the last complete diagnostic and Home returns to the explicit diagnostic-count cue. Existing footer focus and forced-colors checks remain green.",
+      keyboardAndFocus: "Every mixed-footer Dismiss action is keyboard-focusable, visible, and unobscured; shallow Diagnostic details expands to a keyboard-reachable recovery route, and Home restores the explicit diagnostic-count cue. Existing footer focus and forced-colors checks remain green.",
       baselineIntent: "Update tracked baselines that render diagnostics and add Darwin/Linux baselines for the four mixed-severity stress geometries. Five Darwin-only native-scrollbar snapshots are normalized to the current release-prep rendering; their semantic content is unchanged."
     },
     durationMs: Date.now() - startedAt,
@@ -295,7 +295,9 @@ function publicMatrix() {
 function isIntegratedDiagnosticSetup(setup) {
   return setup === "diagnostic-server"
     || setup === "diagnostic-subscription"
-    || setup === "diagnostic-anomaly";
+    || setup === "diagnostic-anomaly"
+    || setup === "notifications-volume"
+    || setup === "notifications-empty";
 }
 
 function isStorageHeadroomSetup(setup) {
@@ -304,7 +306,7 @@ function isStorageHeadroomSetup(setup) {
 
 function contactSheetScenarioIds(matrix) {
   return matrix
-    .filter(({ id, production }) => id.startsWith("scenario-") || production.setup.startsWith("activity") || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup))
+    .filter(({ id, production }) => id.startsWith("scenario-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup))
     .map(({ id }) => id);
 }
 
@@ -315,11 +317,14 @@ function publicReviewScope() {
   const storageIds = allScenarios
     .filter(({ production }) => isStorageHeadroomSetup(production.setup))
     .map(({ id }) => id);
+  const footerDiagnosticIds = allScenarios
+    .filter(({ production }) => production.setup === "diagnostics")
+    .map(({ id }) => id);
   const activityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
   return {
     contactSheetScenarioIds: contactSheetScenarioIds(allScenarios),
-    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds],
-    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds]
+    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds],
+    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds]
   };
 }
 
@@ -355,8 +360,8 @@ async function createContactSheets(runningBrowser, results) {
     const requiredActivityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
     const requiredFocusIds = [...requiredDiagnosticIds, ...requiredStorageIds, ...requiredActivityIds];
     const missingFocusIds = requiredFocusIds.filter((id) => !affectedIds.includes(id));
-    if (requiredDiagnosticIds.length !== 12 || requiredStorageIds.length !== 5 || missingFocusIds.length > 0) {
-      throw new Error(`Contact sheets require all integrated Activity, 12 diagnostic and 5 storage-headroom states; missing: ${missingFocusIds.join(", ") || "none"}.`);
+    if (requiredDiagnosticIds.length !== 17 || requiredStorageIds.length !== 5 || missingFocusIds.length > 0) {
+      throw new Error(`Contact sheets require all integrated Activity, 12 diagnostic, 5 Notifications and 5 storage-headroom states; missing: ${missingFocusIds.join(", ") || "none"}.`);
     }
   }
   const output = {};
@@ -635,12 +640,36 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
         throw new Error(`Activity focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
     }
-    if (isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) && scenario.production.storageMode !== "clean") {
-      const diagnosticFocus = scenario.production.setup === "diagnostic-server"
-        ? page.getByLabel("Workbench diagnostic entries")
-        : isStorageHeadroomSetup(scenario.production.setup)
-          ? page.getByLabel("Workbench diagnostic entries")
-          : page.getByLabel("Context diagnostics").getByRole("button").first();
+    if (scenario.production.setup === "diagnostics" || isStorageHeadroomSetup(scenario.production.setup) && scenario.production.storageMode !== "clean") {
+      const dismissActions = page.getByRole("button", { name: /^Dismiss / });
+      const actions = [];
+      for (let index = 0; index < await dismissActions.count(); index += 1) {
+        const action = dismissActions.nth(index);
+        await action.scrollIntoViewIfNeeded();
+        await action.focus();
+        const evidence = await action.evaluate((element) => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return {
+            action: element.getAttribute("aria-label") ?? element.textContent?.trim() ?? "",
+            focused: document.activeElement === element,
+            outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+            visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+            unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+          };
+        });
+        if (!evidence.focused || evidence.outline.startsWith("none ") || !evidence.visible || !evidence.unobscured) {
+          throw new Error(`Diagnostic Dismiss focus evidence is incomplete: ${JSON.stringify(evidence)}`);
+        }
+        actions.push(evidence);
+      }
+      if (!actions.length) throw new Error("A dismissible diagnostic setup exposed no Dismiss action.");
+      focusEvidence = { actions };
+      const diagnosticList = page.getByLabel("Workbench diagnostic entries");
+      await diagnosticList.focus();
+      await page.keyboard.press("Home");
+    } else if (isIntegratedDiagnosticSetup(scenario.production.setup)) {
+      const diagnosticFocus = page.getByLabel("Notification entries");
       await diagnosticFocus.scrollIntoViewIfNeeded();
       await diagnosticFocus.focus();
       focusEvidence = await diagnosticFocus.evaluate((element) => {
@@ -682,6 +711,17 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
           footerBottom: footerRect.bottom
         };
       });
+      const disclosure = diagnosticList.getByText("Diagnostic details", { exact: true });
+      if (await disclosure.count()) {
+        await disclosure.click();
+        const expanded = await diagnosticList.evaluate((owner) => ({
+          scrollTop: owner.scrollTop,
+          clientHeight: owner.clientHeight,
+          scrollHeight: owner.scrollHeight,
+          disclosureOpen: owner.querySelector(".workbench-react__status-disclosure")?.hasAttribute("open") ?? false
+        }));
+        storageEvidence = { ...storageEvidence, disclosureVisible: true, expanded };
+      }
       if (scenario.production.storageMode !== "clean" && storageEvidence.scrollHeight > storageEvidence.clientHeight) {
         await diagnosticList.focus();
         await page.keyboard.press("End");
@@ -701,6 +741,33 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
           };
         });
         storageEvidence = { ...storageEvidence, reachability };
+        await page.keyboard.press("Home");
+      }
+      if (await disclosure.count()) {
+        if (storageEvidence.expanded?.scrollHeight > storageEvidence.expanded?.clientHeight) {
+          await diagnosticList.focus();
+          await page.keyboard.press("End");
+          await page.waitForFunction(() => {
+            const owner = document.querySelector(".workbench-react__status-diagnostics");
+            return owner instanceof HTMLElement && owner.scrollTop > 0;
+          });
+        }
+        const recovery = await diagnosticList.evaluate((owner) => {
+          const recovery = owner.querySelector(".workbench-react__status-recovery");
+          const ownerRect = owner.getBoundingClientRect();
+          const recoveryRect = recovery?.getBoundingClientRect();
+          return {
+            visible: Boolean(recoveryRect && recoveryRect.top >= ownerRect.top && recoveryRect.bottom <= ownerRect.bottom),
+            bottom: recoveryRect?.bottom ?? 0,
+            ownerBottom: ownerRect.bottom
+          };
+        });
+        if (!recovery.visible) throw new Error(`Expanded diagnostic recovery is not reachable: ${JSON.stringify(recovery)}`);
+        storageEvidence = { ...storageEvidence, expandedRecovery: recovery };
+        await diagnosticList.focus();
+        await page.keyboard.press("Home");
+        await disclosure.click();
+        await diagnosticList.focus();
         await page.keyboard.press("Home");
       }
     }
@@ -937,45 +1004,29 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     }
     return;
   }
-  if (setup === "diagnostic-server") {
-    const diagnostics = page.getByLabel("Workbench diagnostic entries");
-    await diagnostics.waitFor();
-    const text = await diagnostics.innerText();
-    for (const marker of ["Warning · Server error -7", "Information · Server keepalive observed", "does not prove that the connection"]) {
-      if (!text.includes(marker)) throw new Error(`Server diagnostic visual state is missing ${JSON.stringify(marker)}.`);
+  if (isIntegratedDiagnosticSetup(setup)) {
+    await page.getByRole("button", { name: /^Notifications/ }).click();
+    const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+    await notifications.waitFor();
+    const markers = setup === "diagnostic-server"
+      ? ["Warning · Server error -7", "Information · Server keepalive observed"]
+      : setup === "diagnostic-subscription"
+        ? ["Information · Exact duplicate Subscriptions", "Information · Semantic Subscription overlap", "Information · Listener registration churn"]
+        : setup === "diagnostic-anomaly"
+          ? ["Warning · Snapshot phase incomplete", "Warning · Unknown COMMAND key update", "Warning · Subscription updates lost"]
+          : setup === "notifications-volume"
+            ? ["100 of 100 notifications", "Information · Snapshot completed"]
+            : ["No notifications in this Panel Session."];
+    const text = await notifications.textContent();
+    for (const marker of markers) {
+      if (!text.includes(marker)) throw new Error(`Notifications visual state is missing ${JSON.stringify(marker)}.`);
     }
-    await diagnostics.focus();
+    if (setup === "diagnostic-server") {
+      for (const details of await notifications.locator("article summary").all()) await details.click();
+    }
+    const entries = notifications.getByLabel("Notification entries");
+    await entries.focus();
     await page.keyboard.press("Home");
-    return;
-  }
-  if (setup === "diagnostic-subscription") {
-    await page.getByRole("button", { name: "Open Scope Context" }).click();
-    const diagnostics = page.getByLabel("Context diagnostics");
-    await diagnostics.waitFor();
-    const text = await diagnostics.innerText();
-    for (const marker of ["Information · Exact duplicate Subscriptions", "Information · Semantic Subscription overlap", "Information · Listener registration churn"]) {
-      if (!text.includes(marker)) throw new Error(`Subscription diagnostic visual state is missing ${JSON.stringify(marker)}.`);
-    }
-    const action = diagnostics.getByRole("button").first();
-    await action.scrollIntoViewIfNeeded();
-    await action.focus();
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Shift+Tab");
-    return;
-  }
-  if (setup === "diagnostic-anomaly") {
-    await page.getByRole("button", { name: "Open Scope Context" }).click();
-    const diagnostics = page.getByLabel("Context diagnostics");
-    await diagnostics.waitFor();
-    const text = await diagnostics.innerText();
-    for (const marker of ["Warning · Snapshot phase incomplete", "Warning · Unknown COMMAND key update", "Warning · Subscription updates lost"]) {
-      if (!text.includes(marker)) throw new Error(`Anomaly diagnostic visual state is missing ${JSON.stringify(marker)}.`);
-    }
-    const action = diagnostics.getByRole("button").first();
-    await action.scrollIntoViewIfNeeded();
-    await action.focus();
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Shift+Tab");
     return;
   }
   if (setup.startsWith("activity")) {

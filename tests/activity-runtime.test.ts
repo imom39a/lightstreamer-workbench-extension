@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { activityScopeFor, createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
 import { createActivityProjection } from "../src/core/activity-projection";
 import { createTypedFilterValue } from "../src/core/filter-algebra";
-import { type EventHistory } from "../src/core/event-history-authoritative";
+import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
+import { type EventHistory, type HistoryPublication } from "../src/core/event-history-authoritative";
 import { type TopologySelectionTarget } from "../src/extension/panel/topology-view-model";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
@@ -169,6 +170,25 @@ describe("Activity runtime seam", () => {
     expect(snapshot.activity?.projection.reason).toBe("projection exploded");
     expect(snapshot.evidence.investigation.readPoint?.committedEvidenceBoundary?.sequence).toBe(1);
     expect(snapshot.retention.historyStatus.retained).toBe(1);
+    runtime.dispose();
+  });
+
+  it("normalizes an empty Activity aggregation error into a usable condition", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
+    const runtime = createWorkbenchRuntime({
+      history,
+      activityProjectionFactory: () => { throw new Error(); }
+    });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    expect(runtime.getSnapshot().activity?.projection).toMatchObject({
+      state: "AGGREGATION_FAILED",
+      reason: "Activity aggregation failed."
+    });
+    expect(runtime.getSnapshot().notifications.entries).toContainEqual(expect.objectContaining({
+      code: "workbench.activity.aggregation-failed",
+      detail: "Activity aggregation failed."
+    }));
     runtime.dispose();
   });
 
@@ -354,12 +374,83 @@ describe("Activity runtime seam", () => {
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
     expect(runtime.getSnapshot().activity?.projection.state).toBe("AGGREGATION_FAILED");
-    expect(runtime.getSnapshot().diagnostics).toContainEqual(expect.objectContaining({ category: "activity", title: "Activity aggregation unavailable" }));
+    const activityDiagnostic = runtime.getSnapshot().diagnostics.find(({ category }) => category === "activity");
+    expect(activityDiagnostic).toMatchObject({
+      title: "Activity aggregation unavailable",
+      dismissalId: "activity:aggregation-failed:error"
+    });
+    expect(runtime.getSnapshot().notifications.entries).toContainEqual(expect.objectContaining({
+      code: "workbench.activity.aggregation-failed",
+      title: "Activity aggregation unavailable"
+    }));
+    runtime.dispatch({ type: "dismiss-diagnostic", dismissalId: activityDiagnostic!.dismissalId! });
+    expect(runtime.getSnapshot().diagnostics.some(({ category }) => category === "activity")).toBe(false);
+    expect(runtime.getSnapshot().notifications.entries).toContainEqual(expect.objectContaining({
+      code: "workbench.activity.aggregation-failed"
+    }));
+    runtime.dispatch({ type: "open-activity" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    expect(runtime.getSnapshot().diagnostics.some(({ category }) => category === "activity")).toBe(false);
+    expect(runtime.getSnapshot().notifications.entries.filter(({ code }) => code === "workbench.activity.aggregation-failed"))
+      .toHaveLength(1);
+    runtime.dispatch({ type: "close-activity" });
     failed = false;
     runtime.dispatch({ type: "refresh-evidence" });
     expect(runtime.getSnapshot().activity?.projection.state).toBe("AVAILABLE");
     expect(runtime.getSnapshot().diagnostics.some(({ category }) => category === "activity")).toBe(false);
+    expect(runtime.getSnapshot().notifications.entries.some(({ code }) => code === "workbench.activity.aggregation-failed")).toBe(false);
     expect(runtime.getSnapshot().retention.historyStatus.retained).toBe(1);
+    runtime.dispose();
+  });
+
+  it("expires a dismissed Activity failure across hidden recovery and recurrence", async () => {
+    let failed = true;
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "hidden-activity-diagnostics" });
+    const baseHistory = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
+    let follower: ((publication: HistoryPublication) => void) | null = null;
+    const history: EventHistory = {
+      ...baseHistory,
+      follow: (options, observer) => {
+        follower = observer;
+        return baseHistory.follow(options, observer);
+      }
+    };
+    const runtime = createWorkbenchRuntime({
+      history,
+      diagnosticObservations,
+      activityProjectionFactory: (input) => {
+        if (failed) throw new Error("aggregation unavailable");
+        return createActivityProjection(input);
+      }
+    });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    runtime.dispatch({ type: "dismiss-diagnostic", dismissalId: "activity:aggregation-failed:error" });
+    runtime.dispatch({ type: "set-visible", visible: false });
+    failed = false;
+    const status = history.status();
+    const publishReplay = (publication: HistoryPublication): void => {
+      if (!follower) throw new Error("History follower is unavailable.");
+      follower(publication);
+    };
+    publishReplay({ type: "replay-started", interval: status.interval, after: null, retainedRange: status.retainedRange });
+    publishReplay({ type: "replay-complete", interval: status.interval, committedEvidenceBoundary: status.committedEvidenceBoundary });
+    failed = true;
+    await history.offer(update("event-2", 2_000)).settled;
+    await runtime.settleDiagnosticObservations?.();
+    runtime.dispatch({ type: "set-visible", visible: true });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    expect(runtime.getSnapshot().diagnostics).toContainEqual(expect.objectContaining({
+      title: "Activity aggregation unavailable",
+      dismissalId: "activity:aggregation-failed:error"
+    }));
+    expect((await diagnosticObservations.query({ codes: ["workbench.activity.aggregation-failed"] })).observations)
+      .toEqual([
+        expect.objectContaining({ lifecycle: expect.objectContaining({ state: "active" }) }),
+        expect.objectContaining({ lifecycle: expect.objectContaining({ state: "resolved" }) }),
+        expect.objectContaining({ lifecycle: expect.objectContaining({ state: "active" }) })
+      ]);
     runtime.dispose();
   });
 });

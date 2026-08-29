@@ -311,4 +311,56 @@ describe("history-impl-10 footer condition", () => {
     expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain("Coverage LIMITED");
     runtime.dispose();
   });
+
+  it("keeps a dismissed History backlog notification reviewable and resurfaces a later recurrence", async () => {
+    const commitReleases: Array<() => void> = [];
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-10-backlog-notification",
+      byteEstimator: () => 10,
+      capacity: {
+        pendingWarningBytes: 1,
+        pendingStopBytes: 1_000,
+        pendingAgeWarningMs: 10_000,
+        pendingAgeStopMs: 30_000
+      },
+      commitBatch: () => new Promise<void>((resolve) => commitReleases.push(resolve))
+    });
+    const runtime = createWorkbenchRuntime({ history });
+    const first = history.offer(candidate("pending-first"));
+    await flushRuntime();
+
+    const backlog = runtime.getSnapshot().diagnostics.find(({ title }) => title === "History backlog near stop");
+    expect(backlog).toMatchObject({
+      severity: "Warning",
+      affected: "History Interval history-impl-10-backlog-notification:interval-1"
+    });
+    expect(backlog?.dismissalId).toBeTruthy();
+    expect(runtime.getSnapshot().notifications.entries).toContainEqual(expect.objectContaining({
+      title: "History backlog near stop"
+    }));
+    expect(runtime.getSnapshot().notifications.entries.filter(({ title }) => title === "History backlog near stop")).toHaveLength(1);
+
+    runtime.dispatch({ type: "dismiss-diagnostic", dismissalId: backlog!.dismissalId! });
+    expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain("History backlog near stop");
+    expect(runtime.getSnapshot().notifications.entries).toContainEqual(expect.objectContaining({
+      title: "History backlog near stop"
+    }));
+    expect(runtime.getSnapshot().notifications.entries.filter(({ title }) => title === "History backlog near stop")).toHaveLength(1);
+
+    runtime.dispatch({ type: "set-visible", visible: false });
+    commitReleases.shift()?.();
+    await first.settled;
+    await flushRuntime();
+
+    const second = history.offer(candidate("pending-second"));
+    await flushRuntime();
+    runtime.dispatch({ type: "set-visible", visible: true });
+    await flushRuntime();
+    expect(runtime.getSnapshot().diagnostics).toContainEqual(expect.objectContaining({
+      title: "History backlog near stop"
+    }));
+    commitReleases.shift()?.();
+    await second.settled;
+    runtime.dispose();
+  });
 });

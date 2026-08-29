@@ -1277,6 +1277,20 @@ test("Workbench makes limited Capture actionable without hiding retained Evidenc
   await expect(page.getByRole("complementary", { name: "Context" }).locator(".workbench-react__diagnostic")).toHaveCount(0);
   await expect(page.locator(".workbench-react__evidence-row")).not.toHaveCount(0);
 
+  const notificationsTrigger = page.getByRole("button", { name: /^Notifications \(\d+\) · Warning$/ });
+  const notificationCountLabel = await notificationsTrigger.textContent();
+  await notificationsTrigger.click();
+  const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+  await expect(notifications.getByText("Warning · Coverage LIMITED", { exact: true })).toHaveCount(1);
+  await expect(notifications).toContainText("Earlier Snapshot Evidence may be incomplete.");
+  await expect(notifications).toContainText("Reload the inspected page with DevTools open");
+  await notifications.getByRole("button", { name: "Back to Evidence", exact: true }).click();
+
+  await diagnostics.getByRole("button", { name: "Dismiss Coverage LIMITED", exact: true }).click();
+  await expect(diagnostics.getByText("Warning · Coverage LIMITED", { exact: true })).toHaveCount(0);
+  await expect(notificationsTrigger).toHaveText(notificationCountLabel ?? "");
+  await expect(notificationsTrigger).toBeFocused();
+
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
@@ -1308,6 +1322,10 @@ test("Workbench keeps low storage headroom advisory, global, and keyboard reacha
     await expectShellFits(page);
     await expectNoSeriousAxeViolations(page, testInfo);
     if (scene.height === 320) {
+      const disclosure = diagnosticList.getByText("Diagnostic details", { exact: true });
+      const detail = diagnosticList.locator(".workbench-react__status-detail");
+      await expect(disclosure).toBeVisible();
+      await expect(detail).toBeHidden();
       const geometry = await diagnosticList.evaluate((owner) => {
         const footer = owner.closest(".workbench-react__status");
         const statusLine = footer?.querySelector(".workbench-react__status-line");
@@ -1331,16 +1349,17 @@ test("Workbench keeps low storage headroom advisory, global, and keyboard reacha
           overflowOwners
         };
       });
-      expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
-      expect(geometry.overflowOwners).toBe(1);
+      expect(geometry.scrollHeight).toBeLessThanOrEqual(geometry.clientHeight);
+      expect(geometry.overflowOwners).toBe(0);
       expect(geometry.ownerTop).toBeGreaterThanOrEqual(0);
       expect(geometry.ownerBottom).toBeLessThanOrEqual(geometry.footerBottom + 1);
       expect(Math.abs(geometry.ownerBottom - geometry.statusLineTop)).toBeLessThanOrEqual(1);
 
-      // The top screenshot intentionally shows the scroll viewport, not the
-      // full diagnostic card. The separate scroll owner must expose trailing
-      // content without moving or covering the fixed footer status line.
+      // Shallow geometry starts with complete summary rows. Long diagnostic
+      // copy is deliberately disclosed instead of looking clipped mid-line.
       await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}`);
+      await disclosure.click();
+      await expect(detail).toBeVisible();
       await diagnosticList.focus();
       await expect(diagnosticList).toBeFocused();
       await page.keyboard.press("End");
@@ -1365,6 +1384,7 @@ test("Workbench keeps low storage headroom advisory, global, and keyboard reacha
       await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}-scrolled`);
       await page.keyboard.press("Home");
       await expect.poll(() => diagnosticList.evaluate((owner) => owner.scrollTop)).toBe(0);
+      await disclosure.click();
     } else {
       await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}`);
     }
@@ -1381,6 +1401,7 @@ test("Workbench keeps low storage headroom advisory, global, and keyboard reacha
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachNamedScenarioScreenshot(page, testInfo, "storage-headroom-forced-colors");
+  await forcedColorsDiagnosticList.getByText("Diagnostic details", { exact: true }).click();
   await forcedColorsDiagnosticList.focus();
   await page.keyboard.press("End");
   await expect.poll(() => forcedColorsDiagnosticList.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(0);
@@ -1388,7 +1409,135 @@ test("Workbench keeps low storage headroom advisory, global, and keyboard reacha
   await page.keyboard.press("Home");
 });
 
-test("Workbench explains server errors and keepalives contextually without a health verdict", async ({ page }, testInfo) => {
+test("Notifications removes repeated notices from Context and returns to the unchanged investigation", async ({ page }, testInfo) => {
+  for (const scene of [
+    { width: 563, height: 700, theme: "dark" as const },
+    { width: 900, height: 700, theme: "light" as const }
+  ]) {
+    await openScenario(page, "diagnostic-subscription-context", scene, scene.theme);
+    await page.getByRole("button", { name: "Open Scope Context" }).click();
+    await expect(page.getByRole("region", { name: "Context diagnostics" })).toHaveCount(0);
+    const context = page.getByRole("complementary", { name: "Context", exact: true });
+    await expect(context).not.toContainText("Exact duplicate Subscriptions");
+    const contextTitle = await context.getByRole("heading", { level: 2 }).textContent();
+    const trigger = page.getByRole("button", { name: /^Notifications/ });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+    await expect(notifications).toBeVisible();
+    await expect(notifications.getByRole("heading", { name: "Notifications", exact: true })).toBeFocused();
+    await expect(notifications).toContainText("Exact duplicate Subscriptions");
+    await expect(context).toBeHidden();
+    await expect(page.getByRole("button", { name: "Filter", exact: true })).toBeDisabled();
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `notifications-${scene.width}-${scene.theme}`);
+    await notifications.getByRole("button", { name: "Back to Evidence", exact: true }).click();
+    await expect(notifications).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await expect(context.getByRole("heading", { level: 2 })).toHaveText(contextTitle ?? "");
+  }
+});
+
+test("Notifications keeps snapshot volume bounded, keyboard reachable, and linked to exact Evidence", async ({ page }, testInfo) => {
+  for (const scene of [
+    { width: 563, height: 700, theme: "dark" as const, forcedColors: false },
+    { width: 900, height: 700, theme: "light" as const, forcedColors: false },
+    { width: 900, height: 320, theme: "dark" as const, forcedColors: true },
+    { width: 1440, height: 900, theme: "light" as const, forcedColors: false }
+  ]) {
+    await openScenario(page, "notifications-volume", scene, scene.theme);
+    await page.emulateMedia({ forcedColors: scene.forcedColors ? "active" : "none" });
+    await expect(page.getByText("Information · Snapshot completed", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Freeze Evidence", exact: true }).click();
+    await page.getByRole("button", { name: "Notifications (100)", exact: true }).click();
+    const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+    const entries = notifications.getByLabel("Notification entries");
+    await expect(notifications.getByRole("article")).toHaveCount(100);
+    await expect(notifications).toContainText("100 of 100 notifications");
+    await expect(notifications).toContainText("Up to 100 recent diagnostics");
+    await entries.focus();
+    await page.keyboard.press("End");
+    await expect.poll(() => entries.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await page.keyboard.press("Home");
+    await expect.poll(() => entries.evaluate((element) => element.scrollTop)).toBe(0);
+    await expect(entries).toBeFocused();
+    await expect(entries).toHaveCSS("outline-style", "solid");
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `notifications-volume-${scene.width}x${scene.height}-${scene.theme}`);
+
+    const notice = notifications.getByRole("article").filter({ hasText: "Affected: Evidence notification-snapshot-120" });
+    await notice.locator("summary").click();
+    await expect(notice.locator("details")).toHaveAttribute("open", "");
+    const route = notice.getByRole("button", { name: "Inspect supporting Evidence" });
+    await route.focus();
+    const beforeGrowthY = await route.evaluate((element) => element.getBoundingClientRect().top);
+    expect(await page.evaluate(() => (window as unknown as { __appendDeferredWorkbenchEvents(): number }).__appendDeferredWorkbenchEvents())).toBe(40);
+    await expect(notifications.getByRole("article").last()).toContainText("notification-snapshot-190");
+    await expect(notifications.getByRole("article")).toHaveCount(100);
+    await expect(route).toBeFocused();
+    // Native scroll anchoring rounds scrollTop to device pixels.
+    expect(Math.abs(await route.evaluate((element) => element.getBoundingClientRect().top) - beforeGrowthY)).toBeLessThanOrEqual(1);
+    const scroll = await entries.evaluate((element) => element.scrollTop);
+    await page.keyboard.press("Enter");
+    const selected = page.getByRole("heading", { name: "notification-snapshot-120 · End Of Snapshot" });
+    await expect(selected).toBeVisible();
+    await expect(selected).toBeFocused();
+    await page.getByRole("button", { name: "Back investigation" }).click();
+    await expect(notifications).toBeVisible();
+    await expect.poll(() => entries.evaluate((element) => element.scrollTop)).toBe(scroll);
+    await expect(notice.locator("details")).toHaveAttribute("open", "");
+    await notifications.getByRole("button", { name: "Back to Evidence" }).click();
+    await expect(page.locator('[data-evidence-id="notification-snapshot-100"]')).toHaveAttribute("aria-selected", "true");
+    await expectShellFits(page);
+  }
+});
+
+test("Notifications retains operational warnings after their footer copy is dismissed", async ({ page }, testInfo) => {
+  await openScenario(page, "notifications-operational", { width: 563, height: 700 }, "light");
+  const trigger = page.getByRole("button", { name: "Notifications (1) · Warning", exact: true });
+  await trigger.click();
+  const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+  await expect(notifications).toContainText("Lower History Capacity");
+  await expect(notifications).toContainText("1 of 1 notifications");
+  const activeCondition = notifications.getByRole("article").filter({ hasText: "Lower History Capacity" });
+  await expect(activeCondition.locator("details")).not.toHaveAttribute("open", "");
+  await expect(activeCondition.getByText(/^Recovery:/)).toBeVisible();
+  const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(diagnostics).toContainText("Lower History Capacity");
+  await diagnostics.getByRole("button", { name: "Dismiss Lower History Capacity", exact: true }).click();
+  await expect(diagnostics).not.toContainText("Lower History Capacity");
+  await expect(notifications).toContainText("Lower History Capacity");
+  await expect(trigger).toBeFocused();
+  await expect(notifications.getByRole("button", { name: "Back to Evidence" })).toBeInViewport();
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "notifications-operational-memory-compact-light");
+
+  await openScenario(page, "notifications-volume", { width: 900, height: 700 }, "dark");
+  await page.getByRole("button", { name: "Freeze Evidence" }).click();
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await page.getByRole("textbox", { name: "Filter Evidence", exact: true }).fill("notification-snapshot-100");
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await page.getByRole("button", { name: "Find", exact: true }).click();
+  await page.getByRole("textbox", { name: "Find in ordered Evidence", exact: true }).fill("snapshot");
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  await notifications.getByText("Filter notifications", { exact: true }).click();
+  await notifications.getByRole("button", { name: "Exclude Information", exact: true }).click();
+  await expect(notifications).toContainText("0 of 100 notifications");
+  await expect(notifications).toContainText("No notifications match the active notification filters.");
+  await expect(page.getByRole("button", { name: "Notifications (100)", exact: true })).toBeVisible();
+  await notifications.getByRole("button", { name: "Reset notification filters", exact: true }).click();
+  await expect(notifications.getByRole("article")).toHaveCount(100);
+  await notifications.getByRole("button", { name: "Back to Evidence" }).click();
+  await expect(page.getByRole("textbox", { name: "Find in ordered Evidence", exact: true })).toHaveValue("snapshot");
+  await expect(page.getByRole("button", { name: "Follow Live", exact: true })).toBeVisible();
+  await expect(page.locator('[data-evidence-id="notification-snapshot-100"]')).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator('.workbench-react__evidence-row')).toHaveCount(1);
+});
+
+test("Workbench explains server errors and keepalives in Notifications without a health verdict", async ({ page }, testInfo) => {
   const scenes = [
     { width: 563, height: 700, theme: "dark" as const },
     { width: 900, height: 700, theme: "light" as const },
@@ -1397,15 +1546,24 @@ test("Workbench explains server errors and keepalives contextually without a hea
   ];
   for (const scene of scenes) {
     await openScenario(page, "diagnostic-server-callbacks", scene, scene.theme);
-    const footer = page.getByRole("region", { name: "Workbench diagnostics" });
-    await expect(footer.getByText("Warning · Server error -7", { exact: true })).toHaveCount(1);
-    await expect(footer.getByText("Information · Server keepalive observed", { exact: true })).toHaveCount(1);
-    await expect(footer).toContainText("Affected: Session diagnostic-session");
-    await expect(footer).toContainText("Non-positive codes can be application-specific");
-    await expect(footer).toContainText("14 keepalive callbacks in bounded window diagnostic-session:1");
-    await expect(footer).toContainText("does not prove that the connection, application, or end-to-end data flow is healthy");
+    const trigger = page.getByRole("button", { name: "Notifications (2) · Warning", exact: true });
+    await trigger.click();
+    const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+    await notifications.getByText("Filter notifications", { exact: true }).click();
+    await notifications.getByRole("button", { name: "Exclude Warning", exact: true }).click();
+    await expect(notifications).toContainText("1 of 2 notifications");
+    await expect(trigger).toBeVisible();
+    await notifications.getByRole("button", { name: "Reset notification filters", exact: true }).click();
+    await notifications.getByText("Filter notifications", { exact: true }).click();
+    await expect(page.getByRole("region", { name: "Workbench diagnostics" })).not.toContainText("Server keepalive observed");
+    await expect(notifications.getByText("Warning · Server error -7", { exact: true })).toHaveCount(1);
+    await expect(notifications.getByText("Information · Server keepalive observed", { exact: true })).toHaveCount(1);
+    await expect(notifications).toContainText("Affected: Session diagnostic-session");
+    await expect(notifications).toContainText("Non-positive codes can be application-specific");
+    await expect(notifications).toContainText("14 keepalive callbacks in bounded window diagnostic-session:1");
+    await expect(notifications).toContainText("does not prove that the connection, application, or end-to-end data flow is healthy");
     await expect(page.getByText("Server error -7", { exact: false })).toHaveCount(1);
-    const routes = footer.getByRole("button", { name: "Inspect supporting Evidence" });
+    const routes = notifications.getByRole("button", { name: "Inspect supporting Evidence" });
     await expect(routes).toHaveCount(2);
     await routes.first().focus();
     await expect(routes.first()).toBeFocused();
@@ -1420,14 +1578,14 @@ test("Workbench explains server errors and keepalives contextually without a hea
     await attachNamedScenarioScreenshot(page, testInfo, `server-diagnostics-${scene.width}x${scene.height}-${scene.theme}`);
   }
   await page.emulateMedia({ forcedColors: "active" });
-  const forcedFooter = page.getByRole("region", { name: "Workbench diagnostics" });
+  const forcedFooter = page.getByRole("region", { name: "Notifications", exact: true });
   await expect(forcedFooter).toContainText("Warning · Server error -7");
   await expect(forcedFooter).toContainText("Information · Server keepalive observed");
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
-test("Workbench explains committed Subscription and topology diagnostics in Context", async ({ page }, testInfo) => {
+test("Workbench explains committed Subscription and topology diagnostics in Notifications", async ({ page }, testInfo) => {
   const scenes = [
     { width: 563, height: 700, theme: "dark" as const },
     { width: 900, height: 700, theme: "light" as const },
@@ -1436,9 +1594,9 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
   ];
   for (const [sceneIndex, scene] of scenes.entries()) {
     await openScenario(page, "diagnostic-subscription-context", scene, scene.theme);
-    await page.getByRole("button", { name: "Open Scope Context" }).click();
+    await page.getByRole("button", { name: /^Notifications/ }).click();
     const footer = page.getByRole("region", { name: "Workbench diagnostics" });
-    const contextDiagnostics = page.getByRole("region", { name: "Context diagnostics" });
+    const contextDiagnostics = page.getByRole("region", { name: "Notifications", exact: true });
     await expect(contextDiagnostics).toContainText("Information · Exact duplicate Subscriptions");
     await expect(contextDiagnostics).toContainText("Information · Semantic Subscription overlap");
     await expect(contextDiagnostics).toContainText("Information · Listener registration churn");
@@ -1447,7 +1605,7 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
     await expect(footer).not.toContainText("Exact duplicate Subscriptions");
 
     if (sceneIndex === 0) {
-      await contextDiagnostics.getByText("Filter diagnostics", { exact: true }).click();
+      await contextDiagnostics.getByText("Filter notifications", { exact: true }).click();
       const includeExact = contextDiagnostics.getByRole("button", { name: "Include ls.subscription.exact-duplicate", exact: true });
       const includeOverlap = contextDiagnostics.getByRole("button", { name: "Include ls.subscription.semantic-overlap", exact: true });
       await includeExact.click();
@@ -1466,42 +1624,44 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
       await expect(contextDiagnostics.getByRole("button", { name: "Remove Exclude ls.subscription.exact-duplicate", exact: true })).toBeVisible();
       await contextDiagnostics.getByRole("button", { name: "Remove Include ls.subscription.semantic-overlap", exact: true }).click();
       await expect(contextDiagnostics).not.toContainText("Exact duplicate Subscriptions");
-      await contextDiagnostics.getByRole("button", { name: "Reset diagnostic filters", exact: true }).click();
+      await contextDiagnostics.getByRole("button", { name: "Reset notification filters", exact: true }).click();
       await expect(contextDiagnostics).toContainText("Exact duplicate Subscriptions");
       await expect(contextDiagnostics).toContainText("Semantic Subscription overlap");
       await expect(contextDiagnostics).toContainText("Listener registration churn");
     }
 
-    const exactDuplicate = contextDiagnostics.locator(".workbench-react__context-diagnostic").filter({ hasText: "Exact duplicate Subscriptions" }).first();
+    const exactDuplicate = contextDiagnostics.locator(".workbench-react__notification").filter({ hasText: "Exact duplicate Subscriptions" }).first();
     const exactRoute = exactDuplicate.getByRole("button", { name: "Inspect supporting Evidence" });
     await exactRoute.focus();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("heading", { name: /duplicate-b · Subscription Started/ })).toBeVisible();
     await page.getByRole("button", { name: "Back investigation" }).click();
-
-    await page.getByRole("button", { name: "Scope", exact: true }).click();
-    await page.getByRole("treeitem").filter({ hasText: "raw-capability" }).click();
-    await page.getByRole("button", { name: "Open Scope Context" }).click();
-    const selectedContextDiagnostics = page.getByRole("region", { name: "Context diagnostics" });
+    const rawNotice = contextDiagnostics.getByRole("article").filter({ hasText: "RAW snapshot unavailable" });
+    await rawNotice.getByRole("button", { name: "Inspect affected Scope", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("heading", { name: /raw-capability/ })).toBeFocused();
+    await expect(page.getByRole("navigation", { name: "Current runtime scope" })).toContainText("raw-capability");
+    await page.getByRole("button", { name: /^Notifications/ }).click();
+    const selectedContextDiagnostics = page.getByRole("region", { name: "Notifications", exact: true });
     await expect(selectedContextDiagnostics).toContainText("RAW snapshot unavailable");
     await expect(selectedContextDiagnostics).toContainText("Buffer request not applicable");
-    await expect(selectedContextDiagnostics).not.toContainText("Exact duplicate Subscriptions");
+    await expect(selectedContextDiagnostics).toContainText("Exact duplicate Subscriptions");
     await expect(footer).not.toContainText("RAW snapshot unavailable");
     await expectShellFits(page);
     await expectNoSeriousAxeViolations(page, testInfo);
     await attachNamedScenarioScreenshot(page, testInfo, `subscription-diagnostics-${scene.width}x${scene.height}-${scene.theme}`);
   }
   await page.emulateMedia({ forcedColors: "active" });
-  await expect(page.getByRole("region", { name: "Context diagnostics" })).toContainText("RAW snapshot unavailable");
+  await expect(page.getByRole("region", { name: "Notifications", exact: true })).toContainText("RAW snapshot unavailable");
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
 test("Workbench presents lost-update, snapshot, and COMMAND anomalies without duplicate banners", async ({ page }, testInfo) => {
   await openScenario(page, "diagnostic-anomalies", { width: 900, height: 700 }, "dark");
-  await page.getByRole("button", { name: "Open Scope Context" }).click();
+  await page.getByRole("button", { name: /^Notifications/ }).click();
   const footer = page.getByRole("region", { name: "Workbench diagnostics" });
-  const contextDiagnostics = page.getByRole("region", { name: "Context diagnostics" });
+  const contextDiagnostics = page.getByRole("region", { name: "Notifications", exact: true });
   await expect(contextDiagnostics).toContainText("Warning · Snapshot phase incomplete");
   await expect(contextDiagnostics).toContainText("Warning · Unknown COMMAND key update");
   await expect(contextDiagnostics).toContainText("Warning · Subscription updates lost");
@@ -1624,8 +1784,10 @@ test("Workbench keeps mixed-size footer diagnostics readable and bounded across 
     }));
     for (const entry of layout) {
       expect(entry.affectedWidth).toBeGreaterThanOrEqual(Math.min(320, entry.diagnosticWidth * 0.35));
-      expect(entry.detailWidth).toBeGreaterThanOrEqual(entry.diagnosticWidth * 0.75);
-      expect(entry.recoveryWidth).toBeGreaterThanOrEqual(entry.diagnosticWidth * 0.75);
+      if (scene.height !== 320) {
+        expect(entry.detailWidth).toBeGreaterThanOrEqual(entry.diagnosticWidth * 0.75);
+        expect(entry.recoveryWidth).toBeGreaterThanOrEqual(entry.diagnosticWidth * 0.75);
+      }
     }
 
     const workspace = page.locator(".workbench-react__workspace");
@@ -1675,10 +1837,36 @@ test("Workbench keeps mixed-size footer diagnostics readable and bounded across 
       await page.keyboard.press("Home");
       await expect.poll(() => diagnosticList.evaluate((element) => element.scrollTop)).toBe(0);
     }
+    const dismissActions = footer.getByRole("button", { name: /^Dismiss / });
+    await expect(dismissActions).toHaveCount(3);
+    for (let index = 0; index < 3; index += 1) {
+      const action = dismissActions.nth(index);
+      await action.focus();
+      await expect(action).toBeFocused();
+      await expect(action).toBeInViewport();
+      expect(await action.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
+      })).toBe(true);
+    }
+    await page.getByLabel("Workbench diagnostic entries").focus();
+    await page.keyboard.press("Home");
     await expectShellFits(page);
     await expectNoSeriousAxeViolations(page, testInfo);
     await attachNamedScenarioScreenshot(page, testInfo, `diagnostics-${scene.width}x${scene.height}-${scene.theme}`);
   }
+
+  await openScenario(page, "diagnostics-stress", { width: 900, height: 700 }, "dark");
+  const footer = page.getByRole("region", { name: "Workbench diagnostics" });
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+  await expect(notifications).toContainText("History near capacity");
+  await expect(notifications).toContainText("Capture disconnected");
+  await expect(notifications).toContainText("Retired Scope");
+  await footer.getByRole("button", { name: "Dismiss History near capacity", exact: true }).click();
+  await expect(footer.getByText("Warning · History near capacity", { exact: true })).toHaveCount(0);
+  await expect(notifications).toContainText("History near capacity");
+  await expect(footer.getByRole("button", { name: "Dismiss Capture disconnected", exact: true })).toBeFocused();
 });
 
 test("Workbench keeps a retired Session readable, scoped, and explicitly read-only", async ({
@@ -1778,6 +1966,10 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
   await expect(page.getByText("Capture STOPPED", { exact: true })).toBeVisible();
   await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
   const disconnectedDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(disconnectedDiagnostics.getByText("Error · Capture disconnected", { exact: true })).toBeVisible();
+  const disconnectedDetails = disconnectedDiagnostics.getByText("Diagnostic details", { exact: true });
+  await expect(disconnectedDetails).toBeVisible();
+  await disconnectedDetails.click();
   await expect(disconnectedDiagnostics.getByText(/cannot observe new inspected-page activity/)).toBeVisible();
   await expect(disconnectedDiagnostics.getByText("Warning · Coverage LIMITED", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Open complete raw" }).focus();
@@ -2170,6 +2362,9 @@ test("Workbench keeps a 500-field Draft editor model across compare, geometry, m
   await draft.getByRole("button", { name: "Collapse Draft event" }).click();
   await draft.getByRole("button", { name: "Expand Draft event" }).click();
   await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  await expect(page.getByRole("region", { name: "Notifications", exact: true })).toBeVisible();
+  await page.getByRole("region", { name: "Notifications", exact: true }).getByRole("button", { name: "Back to Evidence" }).click();
   await page.getByRole("region", { name: "Parked Local Injection Draft" }).getByRole("button", { name: "Resume Local Injection Draft" }).click();
   await expect(page.locator(".cm-foldPlaceholder")).toBeVisible();
   await page.locator(".cm-foldPlaceholder").click();
@@ -2186,7 +2381,10 @@ test("Workbench keeps a 500-field Draft editor model across compare, geometry, m
   await draft.getByRole("button", { name: "Collapse Draft event" }).click();
   await draft.getByRole("button", { name: "Expand Draft event" }).click();
   await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
+  await page.getByRole("button", { name: /^Notifications/ }).click();
   await page.getByRole("region", { name: "Parked Local Injection Draft" }).getByRole("button", { name: "Resume Local Injection Draft" }).click();
+  await expect(page.getByRole("region", { name: "Notifications", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Notifications/ })).toHaveAttribute("aria-expanded", "false");
   expect(await scrollOwner.evaluate((owner) => owner.scrollTop)).toBe(420);
 
   const replacement = JSON.stringify({

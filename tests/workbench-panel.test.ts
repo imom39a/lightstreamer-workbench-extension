@@ -183,8 +183,6 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
         ["Phase", "LIVE"],
         ["COMMAND operation", "UPDATE"]
       ],
-      diagnostics: [],
-      diagnosticFilter: { criteria: {}, active: false, options: emptyDiagnosticOptions() },
       selectedUpdate: {
         fields: [],
         changedFields: [],
@@ -200,6 +198,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       },
       authoritativeLimit: "Neither projection is Authoritative COMMAND State."
     },
+    notifications: { entries: [], total: 0, limit: 100, filter: { criteria: {}, active: false, options: emptyDiagnosticOptions() } },
     diagnostics: [],
     historyCondition: null,
     historyAnnouncement: "",
@@ -547,7 +546,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("renders a degraded Capture diagnostic once in the global footer", async () => {
+  it("renders and dispatches dismissal for a degraded Capture diagnostic in the global footer", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const runtime = createTestRuntime(
@@ -563,7 +562,8 @@ describe("React Workbench Diagnose panel", () => {
           title: "Coverage LIMITED",
           affected: "Inspected page",
           detail: "Capture attached after this Subscription began. Earlier Snapshot evidence may be incomplete.",
-          recovery: "Reload the inspected page with DevTools open"
+          recovery: "Reload the inspected page with DevTools open",
+          dismissalId: "coverage:LIMITED"
         }]
       })
     );
@@ -582,15 +582,63 @@ describe("React Workbench Diagnose panel", () => {
     expect(rootElement.textContent?.split(diagnosticDetail)).toHaveLength(2);
     expect(document.querySelector(".workbench-react__evidence .workbench-react__condition--warning")).toBeNull();
     expect(document.querySelector(".workbench-react__context .workbench-react__diagnostic")).toBeNull();
+    const dismiss = Array.from(footerDiagnostics?.querySelectorAll("button") ?? []).find(
+      ({ textContent }) => textContent === "Dismiss"
+    );
+    await act(async () => dismiss?.click());
+    expect(runtime.commands).toContainEqual({ type: "dismiss-diagnostic", dismissalId: "coverage:LIMITED" });
 
     await act(async () => root.unmount());
   });
 
-  it("renders normalized server diagnostics once in the footer with a supporting Evidence route", async () => {
+  it("recovers footer focus when a focused diagnostic resolves without a Dismiss command", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const diagnostics = [
+      { severity: "Warning" as const, title: "First condition", affected: "Page", detail: "First detail", dismissalId: "first" },
+      { severity: "Error" as const, title: "Second condition", affected: "Page", detail: "Second detail", dismissalId: "second" }
+    ];
+    const runtime = createTestRuntime(snapshot({ diagnostics }));
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const first = rootElement.querySelector<HTMLButtonElement>('[aria-label="Dismiss First condition"]');
+    first?.focus();
+    expect(document.activeElement).toBe(first);
+    await act(async () => runtime.setSnapshot({ ...runtime.getSnapshot(), diagnostics: [diagnostics[1]!] }));
+
+    expect(document.activeElement).toBe(rootElement.querySelector('[aria-label="Dismiss Second condition"]'));
+    await act(async () => root.unmount());
+  });
+
+  it("uses the Evidence mode control when the Notifications focus fallback is disabled", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const diagnostic = {
+      severity: "Warning" as const,
+      title: "Only condition",
+      affected: "Page",
+      detail: "Only detail",
+      dismissalId: "only"
+    };
+    const runtime = createTestRuntime(snapshot({ contextId: "command-projections", diagnostics: [diagnostic] }));
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const dismiss = rootElement.querySelector<HTMLButtonElement>('[aria-label="Dismiss Only condition"]');
+    await act(async () => dismiss?.click());
+    await act(async () => runtime.setSnapshot({ ...runtime.getSnapshot(), diagnostics: [] }));
+
+    expect(rootElement.querySelector<HTMLButtonElement>('button[aria-controls="workbench-notifications"]')).toBeNull();
+    expect(document.activeElement?.textContent).toBe("Freeze Evidence");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps normalized server notices in Notifications with a supporting Evidence route", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const runtime = createTestRuntime(snapshot({
-      diagnostics: [{
+      notifications: { ...snapshot().notifications, total: 1, entries: [{
         id: "server-error-evt-2",
         code: "ls.client.server-error",
         category: "session",
@@ -601,19 +649,26 @@ describe("React Workbench Diagnose panel", () => {
         limitation: "Non-positive codes can be application-specific.",
         consequence: "The callback does not prove the complete server-side cause.",
         route: { kind: "inspect-evidence", evidence: { intervalId: "interval-1", sequence: 2, eventId: "evt-2" }, label: "Inspect supporting Evidence" }
-      }]
+      }] }
     }));
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
     const footer = document.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
-    expect(footer?.textContent).toContain("Warning · Server error -7");
-    expect(footer?.textContent).toContain("Affected: Session S-9");
-    expect(footer?.textContent).toContain("Limit: Non-positive codes can be application-specific.");
-    expect(footer?.textContent).toContain("Consequence: The callback does not prove the complete server-side cause.");
+    expect(footer?.textContent).not.toContain("Server error -7");
+    expect(rootElement.textContent).not.toContain("Server error -7");
+    const trigger = Array.from(footer?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Notifications (1)");
+    trigger?.click();
+    expect(runtime.commands).toContainEqual({ type: "open-notifications" });
+    await act(async () => runtime.setSnapshot({ ...runtime.getSnapshot(), contextId: "notifications" }));
+    const notifications = rootElement.querySelector('[aria-label="Notifications"]');
+    expect(notifications?.textContent).toContain("Warning · Server error -7");
+    expect(notifications?.textContent).toContain("Affected: Session S-9");
+    expect(notifications?.textContent).toContain("Limit: Non-positive codes can be application-specific.");
+    expect(notifications?.textContent).toContain("Consequence: The callback does not prove the complete server-side cause.");
     expect(rootElement.textContent?.split("Server error -7")).toHaveLength(2);
-    const route = Array.from(footer?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect supporting Evidence");
-    route?.click();
+    const route = Array.from(notifications?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect supporting Evidence");
+    await act(async () => route?.click());
     expect(runtime.commands).toContainEqual({
       type: "inspect-diagnostic-evidence",
       evidence: { intervalId: "interval-1", sequence: 2, eventId: "evt-2" }
@@ -621,7 +676,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("owns structural diagnostics in Context with stable filter and affected-Scope actions", async () => {
+  it("owns structural notices in Notifications with stable filters and affected-Scope actions", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const base = snapshot();
@@ -656,10 +711,12 @@ describe("React Workbench Diagnose panel", () => {
     const runtime = createTestRuntime({
       ...base,
       diagnostics: [],
-      context: {
-        ...base.context,
-        diagnostics: [diagnostic],
-        diagnosticFilter: {
+      contextId: "notifications",
+      notifications: {
+        ...base.notifications,
+        total: 1,
+        entries: [diagnostic],
+        filter: {
           criteria: {},
           active: false,
           options: { ...emptyDiagnosticOptions(), diagnosticCode: [{ value: codeValue, count: 1 }] }
@@ -669,20 +726,22 @@ describe("React Workbench Diagnose panel", () => {
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
-    const context = rootElement.querySelector<HTMLElement>('[aria-label="Context diagnostics"]');
+    const context = rootElement.querySelector<HTMLElement>('[aria-label="Notifications"]');
     expect(context?.textContent).toContain("RAW snapshot unavailable");
     expect(rootElement.querySelector('[aria-label="Workbench diagnostics"]')?.textContent).not.toContain("RAW snapshot unavailable");
     Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Include ls.sub.raw-snapshot-unavailable")?.click();
-    Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect affected Scope")?.click();
+    await act(async () => Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect affected Scope")?.click());
     expect(runtime.commands).toContainEqual({ type: "apply-diagnostic-filter", facet: "diagnosticCode", value: codeValue, polarity: "include" });
     expect(runtime.commands).toContainEqual({ type: "inspect-diagnostic-affected", affected: diagnostic.affectedIdentity });
+    // This renderer stub cannot resolve the affected Scope: do not pretend a route succeeded.
+    expect(context?.querySelector('[role="status"]')?.textContent).toContain("inspection target is no longer available");
 
     await act(async () => runtime.setSnapshot({
       ...runtime.getSnapshot(),
-      context: {
-        ...runtime.getSnapshot().context,
-        diagnosticFilter: {
-          ...runtime.getSnapshot().context.diagnosticFilter,
+      notifications: {
+        ...runtime.getSnapshot().notifications,
+        filter: {
+          ...runtime.getSnapshot().notifications.filter,
           criteria: { diagnosticCode: { include: [codeValue], exclude: [] } },
           active: true
         }
@@ -767,8 +826,6 @@ describe("React Workbench Diagnose panel", () => {
         kind: "runtime",
         title: "Inspected page",
         fields: [["Scope type", "Inspected page"]],
-        diagnostics: [],
-        diagnosticFilter: { criteria: {}, active: false, options: emptyDiagnosticOptions() },
         selectedUpdate: null
       }
     });
@@ -802,8 +859,6 @@ describe("React Workbench Diagnose panel", () => {
         kind: "evidence",
         title: "evt-2 · Session lifecycle",
         fields: [["Source", "RUNTIME"]],
-        diagnostics: [],
-        diagnosticFilter: { criteria: {}, active: false, options: emptyDiagnosticOptions() },
         selectedUpdate: null
       }
     });

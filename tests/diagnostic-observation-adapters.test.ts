@@ -32,20 +32,26 @@ describe("Diagnostic Observation adapters", () => {
       route: { kind: "inspect-affected" as const }
     };
     const adapters = [
+      adaptWorkbenchConditionFinding({ ...common, family: "activity", localCode: "aggregation-failed", affected: affectedPage }),
       adaptWorkbenchConditionFinding({ ...common, family: "history", localCode: "near-capacity", affected: affectedPage }),
       adaptWorkbenchConditionFinding({ ...common, family: "storage", localCode: "lower-capacity", affected: affectedPage }),
       adaptWorkbenchConditionFinding({ ...common, family: "capture", localCode: "coverage-limited", affected: affectedPage }),
       adaptWorkbenchConditionFinding({ ...common, family: "session", localCode: "recovering", affected: { kind: "session", pageId: "page", clientId: "client", sessionId: "session" } }),
+      adaptWorkbenchConditionFinding({ ...common, family: "scope", localCode: "retired", affected: affectedSubscription }),
+      adaptWorkbenchConditionFinding({ ...common, family: "retention", localCode: "selection-cleared", affected: affectedPage }),
       adaptProjectionFinding({ ...common, family: "command", localCode: "unknown-key-update", affected: affectedSubscription, resultRef: { kind: "projection", projection: "observed-server-command-state", key: "subscription:item:key" } }),
       adaptCommittedEvidenceFinding({ ...common, family: "subscription-error", lifecycle: { kind: "occurrence", occurrenceId: "event-9" }, affected: affectedSubscription, evidenceBoundary: { intervalId: "history-1", sequence: 9, eventId: "event-9" }, originalCode: 41 }),
       adaptCommittedEvidenceFinding({ ...common, family: "lost-updates", lifecycle: { kind: "occurrence", occurrenceId: "event-10" }, affected: affectedSubscription, evidenceBoundary: { intervalId: "history-1", sequence: 10, eventId: "event-10" } })
     ];
 
     expect(adapters.map(({ observation }) => observation.code)).toEqual([
+      "workbench.activity.aggregation-failed",
       "workbench.history.near-capacity",
       "workbench.storage.lower-capacity",
       "workbench.capture.coverage-limited",
       "ls.session.recovering",
+      "workbench.scope.retired",
+      "workbench.retention.selection-cleared",
       "ls.command.unknown-key-update",
       "ls.subscription.error",
       "ls.subscription.lost-updates"

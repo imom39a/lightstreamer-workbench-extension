@@ -352,8 +352,14 @@ export type WorkbenchContextSnapshot = Readonly<{
   selectedUpdate: SelectedUpdateSnapshot | null;
   /** Typed Include, Exclude, and Around actions for selected Evidence. */
   filterActions?: readonly EvidenceFilterActionDescriptor[];
-  diagnostics: readonly WorkbenchDiagnostic[];
-  diagnosticFilter: Readonly<{
+}>;
+
+/** Recent Lightstreamer notices, independent of Evidence Scope and Filter. */
+export type WorkbenchNotificationsSnapshot = Readonly<{
+  entries: readonly WorkbenchDiagnostic[];
+  total: number;
+  limit: number;
+  filter: Readonly<{
     criteria: DiagnosticFilterCriteria;
     active: boolean;
     options: Readonly<Record<DiagnosticFilterFacet, readonly Readonly<{ value: TypedFacetValue; count: number }>[]>>;
@@ -370,6 +376,8 @@ export type WorkbenchCommandProjection = Readonly<{
 export type WorkbenchDiagnostic = Readonly<{
   id?: string;
   code?: string;
+  /** Stable only while this footer condition remains active. */
+  dismissalId?: string;
   severity: "Information" | "Warning" | "Error";
   title: string;
   affected: string;
@@ -382,7 +390,7 @@ export type WorkbenchDiagnostic = Readonly<{
     | Readonly<{ kind: "inspect-affected"; affected: DiagnosticAffectedIdentity; label: string }>;
   affectedIdentity?: DiagnosticAffectedIdentity;
   filterFacets?: Readonly<Record<DiagnosticFilterFacet, readonly TypedFacetValue[]>>;
-  category?: "activity" | "history" | "capture" | "session" | "retention" | "storage";
+  category?: "activity" | "history" | "capture" | "session" | "scope" | "retention" | "storage";
 }>;
 
 export type WorkbenchEvidenceSnapshot = Readonly<{
@@ -594,6 +602,7 @@ export type WorkbenchSnapshot = Readonly<{
   selectedEvidence?: WorkbenchEvidence | null;
   contextId: string | null;
   context: WorkbenchContextSnapshot;
+  notifications: WorkbenchNotificationsSnapshot;
   commandProjections: Readonly<{
     observed: WorkbenchCommandProjection;
     localEffective: WorkbenchCommandProjection;
@@ -705,6 +714,9 @@ export type WorkbenchCommand =
   | { type: "open-raw-evidence"; eventId: string }
   | { type: "inspect-diagnostic-evidence"; evidence: EvidenceRef }
   | { type: "inspect-diagnostic-affected"; affected: DiagnosticAffectedIdentity }
+  | { type: "dismiss-diagnostic"; dismissalId: string }
+  | { type: "open-notifications" }
+  | { type: "close-notifications" }
   | { type: "apply-diagnostic-filter"; facet: DiagnosticFilterFacet; value: TypedFacetValue; polarity: "include" | "exclude" }
   | { type: "remove-diagnostic-filter"; facet: DiagnosticFilterFacet; value: TypedFacetValue; polarity: "include" | "exclude" }
   | { type: "reset-diagnostic-filter" }
@@ -902,8 +914,10 @@ type InvestigationCheckpoint = Readonly<{
   find: string;
   findCurrentEventId: string | null;
   selectionEventId: string | null;
+  selectedEvidenceIdentity: EvidenceIdentity | null;
   focusedEventId: string | null;
   contextId: string | null;
+  notificationsReturnContextId: string | null;
   mode: "live" | "frozen";
   offset: number;
   readPoint: EvidenceReadPoint | null;
@@ -957,11 +971,14 @@ class Runtime implements WorkbenchRuntime {
     code: string;
     conditionId: string;
     affected: DiagnosticAffectedIdentity;
+    dismissalId: string;
+    fingerprint: string;
   }>>();
   private diagnosticObservationSettlement: Promise<void> = Promise.resolve();
   private readonly diagnosticEvidenceSequences = new Map<string, number>();
   private readonly committedDiagnosticPresentations = new Map<string, WorkbenchDiagnostic>();
   private readonly committedDiagnosticObservations = new Map<string, DiagnosticObservationInput>();
+  private readonly dismissedDiagnosticIds = new Set<string>();
   private diagnosticFilterCriteria: DiagnosticFilterCriteria = Object.freeze({});
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
@@ -985,6 +1002,13 @@ class Runtime implements WorkbenchRuntime {
    */
   private activityEvidenceRevision = 0;
   private activityProjectionCache: Readonly<{ key: string; projection: ActivityProjection }> | null = null;
+  private activityAggregationFailureReason: string | null = null;
+  /**
+   * A dismissed Activity failure must still observe recovery and recurrence
+   * while the panel is hidden. Keep the eager path scoped to that rare
+   * lifecycle instead of rebuilding Activity for every ordinary commit.
+   */
+  private trackHiddenActivityConditionLifecycle = false;
   /** Matching-result offset for an exact compact-timeline selection. */
   private timelineEvidenceOffset: number | null = null;
   /** Only an explicit timeline reveal may keep its selected page ahead of Find. */
@@ -1015,6 +1039,7 @@ class Runtime implements WorkbenchRuntime {
   private selectionHiddenByFilter = false;
   private filterRecoveryFocused = false;
   private contextId: string | null = null;
+  private notificationsReturnContextId: string | null = null;
   private commandProjectionReturnContextId: string | null = null;
   private actionsReturnContextId: string | null = null;
   private canonicalFilter: Filter = createFilter(1);
@@ -1240,6 +1265,7 @@ class Runtime implements WorkbenchRuntime {
     this.recordInvestigationCheckpoint();
     this.refreshRuntimeDiagnosticObservations();
     this.snapshot = this.createSnapshot();
+    this.trackHiddenActivityConditionLifecycle = !this.visible && this.activityAggregationFailureReason !== null;
 
     this.evidencePipeline.start();
     this.refreshEvidence("initial");
@@ -1394,8 +1420,10 @@ class Runtime implements WorkbenchRuntime {
       find: this.find,
       findCurrentEventId: this.findCurrentEventId,
       selectionEventId: this.selectionEventId,
+      selectedEvidenceIdentity: this.selectedLookupIdentity(),
       focusedEventId: this.focusedEventId,
       contextId: this.contextId,
+      notificationsReturnContextId: this.notificationsReturnContextId,
       mode: this.mode,
       offset: this.displayedEvidence().offset,
       readPoint: this.mode === "frozen" ? this.frozenInvestigation?.readPoint ?? this.restorationReadPoint : null,
@@ -1418,8 +1446,12 @@ class Runtime implements WorkbenchRuntime {
     this.find = checkpoint.find;
     this.findCurrentEventId = checkpoint.findCurrentEventId;
     this.selectionEventId = checkpoint.selectionEventId;
+    this.selectedEvidenceIdentity = checkpoint.selectedEvidenceIdentity;
+    this.selectedEventEnvelope = null;
+    this.selectedPayloadLoadedForEventId = null;
     this.focusedEventId = checkpoint.focusedEventId;
     this.contextId = checkpoint.contextId;
+    this.notificationsReturnContextId = checkpoint.notificationsReturnContextId;
     this.mode = checkpoint.mode;
     this.restorationReadPoint = checkpoint.readPoint;
     if (checkpoint.activityDocument) {
@@ -2083,6 +2115,22 @@ class Runtime implements WorkbenchRuntime {
       case "inspect-diagnostic-affected":
         this.inspectDiagnosticAffected(command.affected);
         return;
+      case "dismiss-diagnostic":
+        if (!this.snapshot.diagnostics.some(({ dismissalId }) => dismissalId === command.dismissalId)) return;
+        this.dismissedDiagnosticIds.add(command.dismissalId);
+        this.publish();
+        return;
+      case "open-notifications":
+        if (this.contextId === "notifications") return;
+        this.notificationsReturnContextId = this.contextId;
+        this.contextId = "notifications";
+        this.publish();
+        return;
+      case "close-notifications":
+        if (this.contextId !== "notifications") return;
+        this.contextId = this.notificationsReturnContextId;
+        this.publish();
+        return;
       case "apply-diagnostic-filter":
         this.applyDiagnosticFilter(command.facet, command.value, command.polarity);
         return;
@@ -2119,6 +2167,7 @@ class Runtime implements WorkbenchRuntime {
             ? Object.freeze({
               ...checkpoint,
               selectionEventId: this.selectionEventId,
+              selectedEvidenceIdentity: this.selectedLookupIdentity(),
               focusedEventId: this.focusedEventId,
               mode: this.mode,
               offset: this.displayedEvidence().offset
@@ -2643,6 +2692,7 @@ class Runtime implements WorkbenchRuntime {
     this.diagnosticEvidenceSequences.clear();
     this.committedDiagnosticPresentations.clear();
     this.committedDiagnosticObservations.clear();
+    this.dismissedDiagnosticIds.clear();
     this.diagnosticFilterCriteria = Object.freeze({});
     this.subscriptionDiagnosticProducer.clear();
     this.committedTopologyDiagnostics.clear();
@@ -2651,6 +2701,8 @@ class Runtime implements WorkbenchRuntime {
     this.activityEvidenceKeys.clear();
     this.activityEvidenceRevision += 1;
     this.activityProjectionCache = null;
+    this.activityAggregationFailureReason = null;
+    this.trackHiddenActivityConditionLifecycle = false;
     this.activityEvidenceReadPointCache = null;
     this.timelineEvidenceOffset = null;
     this.timelineEvidenceRevealActive = false;
@@ -2839,9 +2891,12 @@ class Runtime implements WorkbenchRuntime {
       this.cancelPassivePublication();
       this.cancelActivityPublication();
       this.publish(true);
+      this.trackHiddenActivityConditionLifecycle = this.activityAggregationFailureReason !== null ||
+        this.dismissedDiagnosticIds.has("activity:aggregation-failed:error");
       return;
     }
 
+    this.trackHiddenActivityConditionLifecycle = false;
     this.hiddenDirty = false;
     this.refreshEvidence("visibility");
   }
@@ -2953,6 +3008,13 @@ class Runtime implements WorkbenchRuntime {
     ));
     commandStateProjections.apply(event);
     this.recordCommittedServerDiagnosticFindings(entry, event);
+    if (!this.visible && this.trackHiddenActivityConditionLifecycle) {
+      // A rendered snapshot is intentionally not required to end an active
+      // condition. Re-evaluate only after a previously observed Activity
+      // failure, so recovery clears its dismissal and a later hidden
+      // recurrence becomes visible again without restoring the O(n²) hot path.
+      this.activitySnapshot(this.scopeSnapshot());
+    }
     if (this.acceptDiagnosticEvidenceTransition(entry)) {
       this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot(), true);
     }
@@ -3010,7 +3072,13 @@ class Runtime implements WorkbenchRuntime {
       // later LIVE progress notifications remain on normal passive cadence.
       if (becameCoherent) {
         if (this.visible) this.publish();
-        else this.hiddenDirty = true;
+        else {
+          if (this.trackHiddenActivityConditionLifecycle) {
+            this.activitySnapshot(this.scopeSnapshot());
+            this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot(), true);
+          }
+          this.hiddenDirty = true;
+        }
       }
       return;
     }
@@ -4663,7 +4731,7 @@ class Runtime implements WorkbenchRuntime {
     this.evidenceQueryAbortController = queryController;
     const request = Object.freeze({ ...this.investigationRequest(effectiveOffset, source, preserveCommandOffset), signal: queryController.signal });
     this.evidenceQueryPending = true;
-    this.evidenceLoading = true;
+    this.evidenceLoading = source !== "passive";
     this.investigationState = "loading";
     this.investigationProblem = null;
     this.lastEvidenceQueryError = null;
@@ -4809,7 +4877,7 @@ class Runtime implements WorkbenchRuntime {
       : null;
     const pageSize = Math.min(100, this.windowSize);
     const currentFind = this.findIdentity(this.findCurrentEventId);
-    const selectedLookup = this.selectedEvidenceIdentity ?? this.identityForEventId(this.selectionEventId);
+    const selectedLookup = this.selectedLookupIdentity();
     const discoveryByFacet = new Map<string, FacetDiscoveryRequest>();
     for (const discovery of this.investigationDiscoveries) discoveryByFacet.set(discovery.facet, discovery);
     if (this.filterDiscovery) discoveryByFacet.set(this.filterDiscovery.facet, this.filterDiscovery);
@@ -5042,6 +5110,14 @@ class Runtime implements WorkbenchRuntime {
     }
   }
 
+  private selectedLookupIdentity(): EvidenceIdentity | null {
+    // An inspection route may have replaced the lookup before investigation
+    // Back restores another selection. Never hydrate a different event's payload.
+    return this.selectedEvidenceIdentity?.eventId === this.selectionEventId
+      ? this.selectedEvidenceIdentity
+      : this.identityForEventId(this.selectionEventId);
+  }
+
   private identityForEventId(eventId: string | null): EvidenceIdentity | null {
     if (!eventId) return null;
     const investigation = this.liveInvestigation ?? this.frozenInvestigation;
@@ -5156,6 +5232,11 @@ class Runtime implements WorkbenchRuntime {
       : this.findCurrentEventId ?? findResult?.current?.eventId ?? null;
     const revealAvailability = this.revealSelectionAvailability();
     const activity = this.activitySnapshot(scope);
+    // Activity aggregation is evaluated while creating the presented snapshot.
+    // Reconcile its condition here so Notifications and the footer describe
+    // that same projection without eagerly rebuilding Activity on every
+    // committed Evidence event.
+    this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot());
     return Object.freeze({
       version: this.version,
       renderedEvidenceBoundary: this.renderedEvidenceBoundary
@@ -5174,6 +5255,7 @@ class Runtime implements WorkbenchRuntime {
           : null,
       contextId: this.contextId,
       context: this.contextSnapshot(evidence.events, scope),
+      notifications: this.notificationsSnapshot(),
       commandProjections: this.commandProjectionSnapshot(),
       diagnostics: this.diagnosticSnapshot(scope, activity.projection),
       historyCondition: this.historyCondition,
@@ -5577,9 +5659,10 @@ class Runtime implements WorkbenchRuntime {
         projection = this.activityProjectionFactory(projectionInput);
         this.activityProjectionCache = Object.freeze({ key: projectionKey, projection });
       } catch (error) {
+        const message = error instanceof Error ? error.message.trim() : "";
         projection = failedActivityProjection(
           projectionInput,
-          error instanceof Error ? error.message : "Activity aggregation failed."
+          message || "Activity aggregation failed."
         );
       }
     }
@@ -5628,13 +5711,20 @@ class Runtime implements WorkbenchRuntime {
     }
     const document = this.activityDocumentState;
     const presentedReadPoint = document?.view === "FROZEN" ? document.readPoint : presentedProjection.readPoint;
+    const finalProjection = document?.view === "FROZEN" ? document.projection : presentedProjection;
+    if (this.projectionRecovery === null) {
+      const failureReason = finalProjection.reason?.trim();
+      this.activityAggregationFailureReason = finalProjection.state === "AGGREGATION_FAILED"
+        ? failureReason || "Activity aggregation failed."
+        : null;
+    }
     return Object.freeze({
       open: this.activityOpen,
       transition: this.activityTransition,
       scope: activityScope,
       filter: this.canonicalFilter,
       readPoint: presentedReadPoint,
-      projection: document?.view === "FROZEN" ? document.projection : presentedProjection,
+      projection: finalProjection,
       document
     });
   }
@@ -5726,16 +5816,6 @@ class Runtime implements WorkbenchRuntime {
     events: readonly LightstreamerEventEnvelope[],
     scope: WorkbenchSnapshot["scope"]
   ): WorkbenchContextSnapshot {
-    const diagnostics = this.contextDiagnosticSnapshot(scope);
-    const diagnosticFilter = Object.freeze({
-      criteria: this.diagnosticFilterCriteria,
-      active: Object.values(this.diagnosticFilterCriteria).some((criterion) =>
-        "include" in criterion
-          ? criterion.include.length > 0 || criterion.exclude.length > 0
-          : criterion.length > 0
-      ),
-      options: this.contextDiagnosticFilterOptions(scope)
-    });
     const selected =
       (this.selectedEventEnvelope?.id === this.selectionEventId
         ? this.selectedEventEnvelope
@@ -5750,7 +5830,7 @@ class Runtime implements WorkbenchRuntime {
         events.length,
         this.liveEvidence.total
       );
-      return Object.freeze({ ...dossier, diagnostics, diagnosticFilter });
+      return dossier;
     }
     return Object.freeze({
       kind: "evidence",
@@ -5769,9 +5849,7 @@ class Runtime implements WorkbenchRuntime {
         ["Observation path", evidenceObservationPath(selected)],
         ["Evidence limitations", evidenceLimitations(selected)]
       ] as const),
-      filterActions: this.selectedContextFilterActions(selected),
-      diagnostics,
-      diagnosticFilter
+      filterActions: this.selectedContextFilterActions(selected)
     });
   }
 
@@ -5834,6 +5912,7 @@ class Runtime implements WorkbenchRuntime {
     const diagnostics: WorkbenchDiagnostic[] = [];
     if (activityProjection?.state === "AGGREGATION_FAILED") {
       diagnostics.push({
+        dismissalId: "activity:aggregation-failed:error",
         category: "activity",
         severity: "Error",
         title: "Activity aggregation unavailable",
@@ -5844,6 +5923,7 @@ class Runtime implements WorkbenchRuntime {
     }
     if (this.historyCondition) {
       diagnostics.push({
+        dismissalId: `history:${this.historyCondition.kind}:${this.historyCondition.severity.toLowerCase()}`,
         category: "history",
         severity: this.historyCondition.severity,
         title: this.historyCondition.title,
@@ -5855,6 +5935,7 @@ class Runtime implements WorkbenchRuntime {
     const storageDiagnostic = storageHeadroomDiagnostic(this.storageEstimate);
     if (storageDiagnostic) {
       diagnostics.push({
+        dismissalId: `storage:${storageDiagnostic.title}:${storageDiagnostic.severity.toLowerCase()}`,
         category: "storage",
         severity: storageDiagnostic.severity,
         title: storageDiagnostic.title,
@@ -5865,6 +5946,7 @@ class Runtime implements WorkbenchRuntime {
     }
     if (this.captureStatus === "bridge disconnected") {
       diagnostics.push({
+        dismissalId: "capture:bridge-disconnected:error",
         category: "capture",
         severity: "Error",
         title: "Capture disconnected",
@@ -5874,27 +5956,20 @@ class Runtime implements WorkbenchRuntime {
       });
     }
     const topology = this.topologyProjection.snapshot();
-    const recoveringSessions = topology.clients.flatMap((client) =>
-      client.sessions
-        .filter((session) => session.normalizedStatus === "recovering")
-        .map((session) => `Session ${session.id ?? session.key}`)
-    );
-    const recoveringClients = topology.clients
-      .filter((client) => client.normalizedStatus === "recovering")
-      .map((client) => `Client ${client.id}`);
-    const recoveringObjects = recoveringSessions.length ? recoveringSessions : recoveringClients;
-    if (recoveringObjects.length) {
+    for (const recovering of recoveringRuntimeConditions(topology, this.currentPageEpoch)) {
       diagnostics.push({
+        dismissalId: recovering.dismissalId,
         category: "session",
         severity: "Warning",
         title: "Session recovering",
-        affected: [...new Set(recoveringObjects)].join(", "),
+        affected: recovering.affectedLabel,
         detail: "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change.",
         recovery: "Inspect the affected Session and wait for recovery or reconnect the inspected page"
       });
     }
     if (capture.coverage !== "USEFUL" && !this.captureBoundary) {
       diagnostics.push({
+        dismissalId: `capture:coverage:${capture.coverage.toLowerCase()}`,
         category: "capture",
         severity: capture.coverage === "UNAVAILABLE" ? "Error" : "Warning",
         title: `Coverage ${capture.coverage}`,
@@ -5912,6 +5987,7 @@ class Runtime implements WorkbenchRuntime {
     const scopeSelection = scope.selection;
     if (scopeSelection?.retired) {
       diagnostics.push({
+        dismissalId: `scope:retired:${scopeSelection.id}`,
         severity: "Information",
         title: "Retired Scope",
         affected: scope.label,
@@ -5921,6 +5997,7 @@ class Runtime implements WorkbenchRuntime {
     }
     if (this.clearedSelectionEventId) {
       diagnostics.push({
+        dismissalId: `evidence:cleared:${this.clearedSelectionEventId}`,
         severity: "Information",
         title: "Selected Evidence cleared",
         affected: `Evidence ${this.clearedSelectionEventId}`,
@@ -5930,6 +6007,7 @@ class Runtime implements WorkbenchRuntime {
     }
     if (this.clearState === "error" && this.clearError) {
       diagnostics.push({
+        dismissalId: "retention:clear-error",
         category: "retention",
         severity: "Error",
         title: "History could not be cleared",
@@ -5938,8 +6016,14 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Try clearing history again"
       });
     }
-    diagnostics.push(...this.relevantCommittedDiagnosticPresentations(scope).filter((diagnostic) => !isContextOwnedDiagnostic(diagnostic)));
-    return Object.freeze(diagnostics.map((diagnostic) => Object.freeze(diagnostic)));
+    diagnostics.push(...this.relevantCommittedDiagnosticPresentations(scope).filter((diagnostic) => !isNotificationDiagnostic(diagnostic)));
+    const activeDismissalIds = new Set(diagnostics.flatMap(({ dismissalId }) => dismissalId ? [dismissalId] : []));
+    for (const dismissedId of this.dismissedDiagnosticIds) {
+      if (!activeDismissalIds.has(dismissedId)) this.dismissedDiagnosticIds.delete(dismissedId);
+    }
+    return Object.freeze(diagnostics
+      .filter(({ dismissalId }) => !dismissalId || !this.dismissedDiagnosticIds.has(dismissalId))
+      .map((diagnostic) => Object.freeze(diagnostic)));
   }
 
   private relevantCommittedDiagnosticPresentations(scope: WorkbenchSnapshot["scope"]): WorkbenchDiagnostic[] {
@@ -5955,36 +6039,35 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  private contextDiagnosticSnapshot(scope: WorkbenchSnapshot["scope"]): readonly WorkbenchDiagnostic[] {
-    const relevant = this.relevantCommittedDiagnosticPresentations(scope).filter(isContextOwnedDiagnostic);
-    if (relevant.length === 0) return Object.freeze([]);
-    const relevantSet = new Set(relevant);
+  private notificationsSnapshot(): WorkbenchNotificationsSnapshot {
     const pairs = [...this.committedDiagnosticPresentations.entries()]
-      .filter(([, diagnostic]) => relevantSet.has(diagnostic))
+      .filter(([, diagnostic]) => isNotificationDiagnostic(diagnostic))
       .flatMap(([key, diagnostic]) => {
         const observation = this.committedDiagnosticObservations.get(key);
         return observation ? [{ diagnostic, observation }] : [];
       });
-    const accepted = new Set(createDiagnosticObservationIndex(pairs.map(({ observation }) => observation))
+    const index = createDiagnosticObservationIndex(pairs.map(({ observation }) => observation));
+    const accepted = new Set(index
       .query(this.diagnosticFilterCriteria)
       .map(({ observation }) => diagnosticObservationIdentity(observation)));
-    return Object.freeze(pairs
-      .filter(({ observation }) => accepted.has(diagnosticObservationIdentity(observation)))
-      .map(({ diagnostic }) => diagnostic));
-  }
-
-  private contextDiagnosticFilterOptions(
-    scope: WorkbenchSnapshot["scope"]
-  ): Readonly<Record<DiagnosticFilterFacet, readonly Readonly<{ value: TypedFacetValue; count: number }> []>> {
-    const relevant = new Set(this.relevantCommittedDiagnosticPresentations(scope).filter(isContextOwnedDiagnostic));
-    const observations = [...this.committedDiagnosticPresentations.entries()].flatMap(([key, diagnostic]) => {
-      const observation = relevant.has(diagnostic) ? this.committedDiagnosticObservations.get(key) : undefined;
-      return observation ? [observation] : [];
+    return Object.freeze({
+      entries: Object.freeze(pairs
+        .filter(({ observation }) => accepted.has(diagnosticObservationIdentity(observation)))
+        .map(({ diagnostic }) => diagnostic)),
+      total: pairs.length,
+      limit: DIAGNOSTIC_PRESENTATION_LIMIT,
+      filter: Object.freeze({
+        criteria: this.diagnosticFilterCriteria,
+        active: Object.values(this.diagnosticFilterCriteria).some((criterion) =>
+          "include" in criterion
+            ? criterion.include.length > 0 || criterion.exclude.length > 0
+            : criterion.length > 0
+        ),
+        options: Object.freeze(Object.fromEntries(
+          DIAGNOSTIC_FILTER_FACETS.map((facet) => [facet, index.discover(facet)])
+        ) as Record<DiagnosticFilterFacet, readonly Readonly<{ value: TypedFacetValue; count: number }>[]>)
+      })
     });
-    const index = createDiagnosticObservationIndex(observations);
-    return Object.freeze(Object.fromEntries(
-      DIAGNOSTIC_FILTER_FACETS.map((facet) => [facet, index.discover(facet)])
-    ) as Record<DiagnosticFilterFacet, readonly Readonly<{ value: TypedFacetValue; count: number }>[] >);
   }
 
   private applyDiagnosticFilter(
@@ -6027,6 +6110,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private inspectDiagnosticAffected(affected: DiagnosticAffectedIdentity): void {
+    const fromNotifications = this.contextId === "notifications";
     const state = this.topologyProjection.snapshot();
     const structure = this.currentScopeStructure(state);
     const descriptor = structure.descriptors.find((candidate) => {
@@ -6043,9 +6127,9 @@ class Runtime implements WorkbenchRuntime {
     this.selectionEventId = null;
     this.selectedEvidenceIdentity = null;
     this.selectedEventEnvelope = null;
-    this.contextId = "context:scope";
+    this.contextId = fromNotifications ? "context:scope-dossier" : "context:scope";
     this.recordInvestigationCheckpoint();
-    this.publish();
+    this.refreshEvidence("scope");
   }
 
   private recordCommittedServerDiagnosticFindings(
@@ -6173,7 +6257,7 @@ class Runtime implements WorkbenchRuntime {
     const facets = createDiagnosticObservationIndex([observation]).records[0]?.facets;
     this.committedDiagnosticPresentations.set(key, Object.freeze({ ...diagnostic, ...(facets ? { filterFacets: facets } : {}) }));
     this.committedDiagnosticObservations.set(key, observation);
-    while (this.committedDiagnosticPresentations.size > 100) {
+    while (this.committedDiagnosticPresentations.size > DIAGNOSTIC_PRESENTATION_LIMIT) {
       const oldest = this.committedDiagnosticPresentations.keys().next().value as string | undefined;
       if (!oldest) break;
       this.committedDiagnosticPresentations.delete(oldest);
@@ -6194,14 +6278,24 @@ class Runtime implements WorkbenchRuntime {
   ): void {
     if (!sourceTransition) return;
     const pageId = this.currentPageEpoch;
-    const desired = new Map<string, Readonly<{ code: string; conditionId: string; affected: DiagnosticAffectedIdentity }>>();
+    const desired = new Map<string, Readonly<{
+      code: string;
+      conditionId: string;
+      affected: DiagnosticAffectedIdentity;
+      dismissalId: string;
+      fingerprint: string;
+    }>>();
     const record = (input: Readonly<{
-      family: "history" | "storage" | "capture" | "session";
+      family: "activity" | "history" | "storage" | "capture" | "session" | "scope" | "retention";
       localCode: string;
       conditionId: string;
       severity: "information" | "warning" | "error";
       affected: DiagnosticAffectedIdentity;
-      observed: string;
+      title: string;
+      affectedLabel: string;
+      detail: string;
+      recovery: string;
+      dismissalId: string;
       limitation: string;
       consequence: string;
       route: string;
@@ -6213,17 +6307,84 @@ class Runtime implements WorkbenchRuntime {
         lifecycle: { kind: "condition", conditionId: input.conditionId },
         affected: input.affected,
         observedAt: Date.now(),
-        observed: boundedDiagnosticText(input.observed),
+        observed: boundedDiagnosticText(input.detail),
         limitation: boundedDiagnosticText(input.limitation),
         consequence: boundedDiagnosticText(input.consequence),
         route: { kind: "recover", action: input.route }
       });
-      desired.set(diagnosticObservationIdentity(adapted.observation), { code: adapted.observation.code, conditionId: input.conditionId, affected: input.affected });
+      const key = diagnosticObservationIdentity(adapted.observation);
+      const presentation = presentDiagnosticObservation(adapted.observation);
+      const fingerprint = JSON.stringify([
+        input.family,
+        input.localCode,
+        input.conditionId,
+        input.severity,
+        input.affected,
+        input.title,
+        input.affectedLabel,
+        input.detail,
+        input.recovery,
+        input.dismissalId,
+        input.limitation,
+        input.consequence,
+        input.route
+      ]);
+      desired.set(key, {
+        code: adapted.observation.code,
+        conditionId: input.conditionId,
+        affected: input.affected,
+        dismissalId: input.dismissalId,
+        fingerprint
+      });
+      const diagnostic: WorkbenchDiagnostic = {
+        id: presentation.id,
+        code: presentation.code,
+        dismissalId: input.dismissalId,
+        category: input.family,
+        severity: presentation.severity,
+        title: input.title,
+        affected: input.affectedLabel,
+        affectedIdentity: adapted.observation.affected,
+        detail: input.detail,
+        limitation: presentation.limitation,
+        consequence: presentation.consequence,
+        recovery: input.recovery
+      };
+      const unchanged = this.activeRuntimeDiagnosticConditions.get(key)?.fingerprint === fingerprint;
+      if (
+        unchanged &&
+        this.committedDiagnosticPresentations.has(key) &&
+        this.committedDiagnosticObservations.has(key)
+      ) return;
+      this.rememberCommittedDiagnosticPresentation(key, diagnostic, adapted.observation);
+      // The shared 100-entry presentation cap may evict a still-active
+      // condition. Restore its presentation without manufacturing another
+      // journal transition; only a new or changed condition is observed.
+      if (unchanged) return;
       this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
     };
     const page: DiagnosticAffectedIdentity = pageId
       ? Object.freeze({ kind: "page" as const, pageId })
       : Object.freeze({ kind: "unavailable" as const, reason: "page-identity-unavailable" as const });
+    const runtimeScope = this.scopeSnapshot();
+    if (this.activityAggregationFailureReason !== null) {
+      const detail = this.activityAggregationFailureReason;
+      record({
+        family: "activity",
+        localCode: "aggregation-failed",
+        conditionId: "aggregation",
+        severity: "error",
+        affected: page,
+        title: "Activity aggregation unavailable",
+        affectedLabel: "Activity",
+        detail,
+        recovery: "Retry Activity aggregation; Capture, History, and Evidence remain available",
+        dismissalId: "activity:aggregation-failed:error",
+        limitation: "The Activity projection is unavailable until retained Evidence can be aggregated successfully.",
+        consequence: "Capture, History, and Evidence remain available while Activity is unavailable.",
+        route: "retry-activity-aggregation"
+      });
+    }
     if (this.historyCondition) {
       record({
         family: "history",
@@ -6231,43 +6392,107 @@ class Runtime implements WorkbenchRuntime {
         conditionId: this.historyCondition.kind,
         severity: this.historyCondition.severity === "Error" ? "error" : "warning",
         affected: page,
-        observed: `Event History reported ${this.historyCondition.kind}.`,
+        title: this.historyCondition.title,
+        affectedLabel: this.historyCondition.affected,
+        detail: this.historyCondition.detail,
+        recovery: this.historyCondition.recovery,
+        dismissalId: `history:${this.historyCondition.kind}:${this.historyCondition.severity.toLowerCase()}`,
         limitation: "The condition describes the current History Interval and its committed boundary only.",
-        consequence: this.historyCondition.detail,
+        consequence: this.historyCondition.announcement,
         route: "inspect-retained-evidence"
       });
     }
     const storage = storageHeadroomDiagnostic(this.storageEstimate);
     if (storage) {
-      record({ family: "storage", localCode: "headroom-limited", conditionId: "storage-headroom", severity: "warning", affected: page, observed: "Browser storage telemetry reported limited headroom.", limitation: "Browser storage estimates are advisory and do not reserve capacity.", consequence: storage.detail, route: "inspect-storage-headroom" });
+      record({ family: "storage", localCode: "headroom-limited", conditionId: "storage-headroom", severity: "warning", affected: page, title: storage.title, affectedLabel: storage.affected, detail: storage.detail, recovery: storage.recovery, dismissalId: `storage:${storage.title}:${storage.severity.toLowerCase()}`, limitation: "Browser storage estimates are advisory and do not reserve capacity.", consequence: "A later History write can still fail even while the estimate reports headroom.", route: "inspect-storage-headroom" });
     }
     const capture = this.captureSnapshot();
     if (this.captureStatus === "bridge disconnected") {
-      record({ family: "capture", localCode: "disconnected", conditionId: "bridge", severity: "error", affected: page, observed: "The inspected-page Capture bridge is disconnected.", limitation: "Workbench cannot observe later inspected-page activity while the bridge is disconnected.", consequence: "Retained Evidence remains readable, but new inspected-page activity cannot become Evidence.", route: "inspect-capture-status" });
-    } else if (capture.coverage !== "USEFUL" && !this.captureBoundary) {
-      record({ family: "capture", localCode: "coverage-limited", conditionId: "coverage", severity: capture.coverage === "UNAVAILABLE" ? "error" : "warning", affected: page, observed: `Observation Coverage is ${capture.coverage}.`, limitation: capture.detail ?? "Some runtime properties are unavailable; Workbench does not infer values without Evidence.", consequence: "Current Workbench conclusions are limited to the activity Capture observed.", route: "inspect-capture-status" });
+      record({ family: "capture", localCode: "disconnected", conditionId: "bridge", severity: "error", affected: page, title: "Capture disconnected", affectedLabel: runtimeScope.label, detail: "Workbench cannot observe new inspected-page activity. Retained Evidence remains readable.", recovery: "Reconnect the inspected page and DevTools panel", dismissalId: "capture:bridge-disconnected:error", limitation: "Workbench cannot observe later inspected-page activity while the bridge is disconnected.", consequence: "Retained Evidence remains readable, but new inspected-page activity cannot become Evidence.", route: "inspect-capture-status" });
     }
-    for (const client of topology.clients) {
-      const sessions = client.sessions.filter((session) => !session.historical && session.normalizedStatus === "recovering");
-      if (sessions.length) {
-        for (const session of sessions) {
-          const affected: DiagnosticAffectedIdentity = !pageId
-            ? page
-            : session.id
-            ? Object.freeze({ kind: "session" as const, pageId, clientId: client.id, sessionId: session.id })
-            : Object.freeze({ kind: "client" as const, pageId, clientId: client.id });
-          record({ family: "session", localCode: "recovering", conditionId: session.id ?? session.key, severity: "warning", affected, observed: "The official client is attempting Session recovery.", limitation: "Recovery status does not prove whether the prior Session will resume.", consequence: "Current runtime availability may change while Evidence remains ordered.", route: "inspect-session" });
-        }
-      } else if (client.normalizedStatus === "recovering") {
-        const affected: DiagnosticAffectedIdentity = pageId
-          ? Object.freeze({ kind: "client" as const, pageId, clientId: client.id })
-          : page;
-        record({ family: "session", localCode: "recovering", conditionId: client.id, severity: "warning", affected, observed: "The official client is attempting Session recovery.", limitation: "The current Session identity is unavailable.", consequence: "Current runtime availability may change while Evidence remains ordered.", route: "inspect-session" });
-      }
+    if (capture.coverage !== "USEFUL" && !this.captureBoundary) {
+      record({ family: "capture", localCode: "coverage-limited", conditionId: "coverage", severity: capture.coverage === "UNAVAILABLE" ? "error" : "warning", affected: page, title: `Coverage ${capture.coverage}`, affectedLabel: runtimeScope.label, detail: capture.detail ?? "Some runtime properties are unavailable; Workbench will not infer values without evidence.", recovery: capture.recovery ?? (capture.coverage === "UNAVAILABLE" ? "Reconnect the inspected page, then reload it with DevTools open" : "Reload the inspected page with DevTools open"), dismissalId: `capture:coverage:${capture.coverage.toLowerCase()}`, limitation: capture.detail ?? "Some runtime properties are unavailable; Workbench does not infer values without Evidence.", consequence: "Current Workbench conclusions are limited to the activity Capture observed.", route: "inspect-capture-status" });
     }
+    for (const recovering of recoveringRuntimeConditions(topology, pageId)) {
+      record({
+        family: "session",
+        localCode: "recovering",
+        conditionId: recovering.conditionId,
+        severity: "warning",
+        affected: recovering.affected,
+        title: "Session recovering",
+        affectedLabel: recovering.affectedLabel,
+        detail: "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change.",
+        recovery: "Inspect the affected Session and wait for recovery or reconnect the inspected page",
+        dismissalId: recovering.dismissalId,
+        limitation: recovering.sessionKnown
+          ? "Recovery status does not prove whether the prior Session will resume."
+          : "The current Session identity is unavailable.",
+        consequence: "Current runtime availability may change while Evidence remains ordered.",
+        route: "inspect-session"
+      });
+    }
+    if (runtimeScope.selection?.retired) {
+      const target = findTopologySelection(topology, runtimeScope.selection.id);
+      record({
+        family: "scope",
+        localCode: "retired",
+        conditionId: runtimeScope.selection.id,
+        severity: "information",
+        affected: target ? diagnosticAffectedIdentityForTarget(target, pageId) : page,
+        title: "Retired Scope",
+        affectedLabel: runtimeScope.label,
+        detail: "This historical runtime object is read-only. Matching retained Evidence remains available.",
+        recovery: "Select a current runtime Scope before starting Local Injection",
+        dismissalId: `scope:retired:${runtimeScope.selection.id}`,
+        limitation: "The selected runtime object is historical and cannot receive a Local Injection.",
+        consequence: "Matching retained Evidence remains readable.",
+        route: "select-current-scope"
+      });
+    }
+    if (this.clearedSelectionEventId) {
+      record({
+        family: "retention",
+        localCode: "selected-evidence-cleared",
+        conditionId: this.clearedSelectionEventId,
+        severity: "information",
+        affected: page,
+        title: "Selected Evidence cleared",
+        affectedLabel: `Evidence ${this.clearedSelectionEventId}`,
+        detail: `Evidence ${this.clearedSelectionEventId} was deliberately removed from history; its selection identity is retained until you choose another Scope or Evidence row.`,
+        recovery: "Select another Scope or retained Evidence row",
+        dismissalId: `evidence:cleared:${this.clearedSelectionEventId}`,
+        limitation: "The removed Evidence payload is no longer available in this Panel Session.",
+        consequence: "Only the prior selection identity remains until another Scope or Evidence row is selected.",
+        route: "select-retained-evidence"
+      });
+    }
+    if (this.clearState === "error" && this.clearError) {
+      record({
+        family: "retention",
+        localCode: "clear-failed",
+        conditionId: "clear-failed",
+        severity: "error",
+        affected: page,
+        title: "History could not be cleared",
+        affectedLabel: "Current panel session",
+        detail: this.clearError,
+        recovery: "Try clearing history again",
+        dismissalId: "retention:clear-error",
+        limitation: "Workbench cannot prove that the requested erasure completed.",
+        consequence: "Retained Evidence may remain available in this Panel Session.",
+        route: "retry-clear-history"
+      });
+    }
+    const desiredDismissalIds = new Set([...desired.values()].map(({ dismissalId }) => dismissalId));
     for (const [id, prior] of this.activeRuntimeDiagnosticConditions) {
       if (desired.has(id)) continue;
       this.queueDiagnosticMutation(() => this.diagnosticObservations.resolveCondition({ ...prior, observedAt: Date.now() }));
+      if (!desiredDismissalIds.has(prior.dismissalId)) {
+        this.dismissedDiagnosticIds.delete(prior.dismissalId);
+      }
+      this.committedDiagnosticPresentations.delete(id);
+      this.committedDiagnosticObservations.delete(id);
     }
     this.activeRuntimeDiagnosticConditions.clear();
     for (const [id, condition] of desired) this.activeRuntimeDiagnosticConditions.set(id, condition);
@@ -6289,6 +6514,58 @@ class Runtime implements WorkbenchRuntime {
 
 function boundedDiagnosticText(value: string): string {
   return [...value].slice(0, DIAGNOSTIC_TEXT_MAX_LENGTH).join("");
+}
+
+type RecoveringRuntimeCondition = Readonly<{
+  conditionId: string;
+  dismissalId: string;
+  affected: DiagnosticAffectedIdentity;
+  affectedLabel: string;
+  sessionKnown: boolean;
+}>;
+
+function recoveringRuntimeConditions(
+  topology: TopologyState,
+  pageId: string | null
+): readonly RecoveringRuntimeCondition[] {
+  const unavailable: DiagnosticAffectedIdentity = Object.freeze({
+    kind: "unavailable",
+    reason: "page-identity-unavailable"
+  });
+  const conditions: RecoveringRuntimeCondition[] = [];
+  for (const client of topology.clients) {
+    const sessions = client.sessions.filter(
+      (session) => !session.historical && session.normalizedStatus === "recovering"
+    );
+    if (sessions.length) {
+      for (const session of sessions) {
+        const sessionIdentity = session.id ?? session.key;
+        conditions.push(Object.freeze({
+          conditionId: `session:${client.id}:${sessionIdentity}`,
+          dismissalId: `session:recovering:session:${client.id}:${sessionIdentity}`,
+          affected: !pageId
+            ? unavailable
+            : session.id
+              ? Object.freeze({ kind: "session" as const, pageId, clientId: client.id, sessionId: session.id })
+              : Object.freeze({ kind: "client" as const, pageId, clientId: client.id }),
+          affectedLabel: session.id ? `Session ${session.id}` : `Client ${client.id}`,
+          sessionKnown: session.id !== null
+        }));
+      }
+      continue;
+    }
+    if (client.normalizedStatus !== "recovering") continue;
+    conditions.push(Object.freeze({
+      conditionId: `client:${client.id}`,
+      dismissalId: `session:recovering:client:${client.id}`,
+      affected: pageId
+        ? Object.freeze({ kind: "client" as const, pageId, clientId: client.id })
+        : unavailable,
+      affectedLabel: `Client ${client.id}`,
+      sessionKnown: false
+    }));
+  }
+  return Object.freeze(conditions);
 }
 
 function diagnosticAffectedIdentity(
@@ -6320,6 +6597,35 @@ function diagnosticAffectedIdentity(
   }
   if (event.client?.id) return Object.freeze({ kind: "client", pageId, clientId: event.client.id });
   return Object.freeze({ kind: "evidence", ...evidence });
+}
+
+function diagnosticAffectedIdentityForTarget(
+  target: TopologySelectionTarget,
+  pageId: string | null
+): DiagnosticAffectedIdentity {
+  if (!pageId) return Object.freeze({ kind: "unavailable", reason: "page-identity-unavailable" });
+  if (target.kind === "page") return Object.freeze({ kind: "page", pageId });
+  if (target.kind === "client") return Object.freeze({ kind: "client", pageId, clientId: target.client.id });
+  if (target.kind === "session") return target.session.id
+    ? Object.freeze({ kind: "session", pageId, clientId: target.client.id, sessionId: target.session.id })
+    : Object.freeze({ kind: "client", pageId, clientId: target.client.id });
+  if (!target.client) return Object.freeze({ kind: "page", pageId });
+  if ((target.kind === "item" || target.kind === "listener") && target.item) {
+    return Object.freeze({
+      kind: "item",
+      pageId,
+      clientId: target.client.id,
+      subscriptionId: target.subscription.id,
+      item: target.item.name ?? `#${target.item.position}`
+    });
+  }
+  return Object.freeze({
+    kind: "subscription",
+    pageId,
+    clientId: target.client.id,
+    ...(target.session?.id ? { sessionId: target.session.id } : {}),
+    subscriptionId: target.subscription.id
+  });
 }
 
 function diagnosticProposalPresentationKey(
@@ -6369,14 +6675,10 @@ function diagnosticAffectedIdentityAppliesToTarget(
   return false;
 }
 
-function isContextOwnedDiagnostic(diagnostic: WorkbenchDiagnostic): boolean {
-  const affected = diagnostic.affectedIdentity;
-  if (affected?.kind === "subscription" || affected?.kind === "item") return true;
-  const code = diagnostic.code ?? "";
-  return code.startsWith("ls.sub.") ||
-    code.startsWith("ls.subscription.") ||
-    code.startsWith("ls.command.") ||
-    code.startsWith("ls.listener.");
+const DIAGNOSTIC_PRESENTATION_LIMIT = 100;
+
+function isNotificationDiagnostic(diagnostic: WorkbenchDiagnostic): boolean {
+  return diagnostic.code !== undefined;
 }
 
 export function settleScenarioCoordinatorExecution(execution: LocalInjectionCoordinatorExecution, now: number) {
@@ -6506,13 +6808,7 @@ function runtimeObjectDossier(
     title,
     fields: Object.freeze(fields),
     selectedUpdate: null,
-    filterActions: Object.freeze([]),
-    diagnostics: Object.freeze([]),
-    diagnosticFilter: Object.freeze({
-      criteria: Object.freeze({}),
-      active: false,
-      options: Object.freeze({ diagnosticCode: Object.freeze([]), diagnosticSeverity: Object.freeze([]), diagnosticAffected: Object.freeze([]) })
-    })
+    filterActions: Object.freeze([])
   });
 }
 
