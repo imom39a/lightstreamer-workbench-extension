@@ -1,6 +1,6 @@
 # Prototype review — Scope and Ordered Evidence readability
 
-Status: visually reviewed; awaiting maintainer selection. No production implementation is approved.
+Status: visually reviewed; Variant C approved for production implementation on 2026-08-29.
 
 ## Compared directions
 
@@ -10,9 +10,11 @@ Status: visually reviewed; awaiting maintainer selection. No production implemen
 | B — Root summary + split order/time | Page identity and counts move into the fixed pane header; the tree begins at Client. | Sequence and timestamp become separate columns. | Dense children; more pane/header structure and horizontal columns. |
 | C — Priority blocks + order rail | Type, identity, status, and facts form explicit hierarchy blocks. | Sequence anchors a rail; event meaning leads and time becomes secondary. | Best semantic scanning; largest departure from today's ledger. |
 
-## Current recommendation
+## Review recommendation before selection
 
 Start with **A**. It directly repairs the two reported defects, preserves the accepted Plain Ledger and Elastic Triad structure, and creates the smallest verification and migration surface. Choose B if keeping the root fixed during Scope scrolling is more valuable than preserving root membership in the tree. Choose C only if the denser semantic reordering is an intentional broader redesign.
+
+The maintainer intentionally selected **C** after live review, superseding this conservative recommendation.
 
 ## Browser evidence
 

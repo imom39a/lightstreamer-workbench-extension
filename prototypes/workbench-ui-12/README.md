@@ -2,7 +2,7 @@
 
 Disposable comparison for the proposed Scope-tree and Ordered-Evidence row readability improvement. This is decision evidence only: it is not extension code and must not be promoted directly into production.
 
-Status: awaiting maintainer selection. The eventual product change is classified as **Material UI** and must pass the repository's explicit approval and visual-verification gates after a direction is chosen.
+Status: **Variant C approved on 2026-08-29**. The production change is classified as **Material UI** and must pass the repository's visual-verification gates during implementation.
 
 Run:
 
@@ -22,7 +22,7 @@ All content is deterministic synthetic data. Controls only change in-memory prot
 
 ## Decision question
 
-Choose one Scope treatment and one Evidence treatment. Mixing is allowed—for example, “Scope B + Evidence A.” No production Workbench files will be changed until the maintainer confirms a direction.
+Decision: Variant C for both Scope and Ordered Evidence. See [DECISION.md](./DECISION.md).
 
 ### A — Targeted two-line fix
 
