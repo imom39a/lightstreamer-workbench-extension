@@ -1,19 +1,23 @@
-COMMAND subscriptions represent keyed row lifecycles through `ADD`, `UPDATE`, and `DELETE` operations. Workbench follows these operations as Evidence and exposes two intentionally distinct projections.
+A COMMAND Subscription uses `ADD`, `UPDATE`, and `DELETE` operations for each key. Workbench shows these operations in retained Event order. Use this order to inspect the sequence that reached the client.
 
-## Observed Server COMMAND State
+## Investigate a keyed lifecycle
 
-**Observed Server COMMAND State** is reconstructed from captured Server Updates only. It describes what Workbench could observe through the current Capture boundary; it is not direct access to server-side authoritative state.
+1. Select the applicable COMMAND Subscription, item, or listener in **Scope**.
+2. Filter **Ordered Evidence** by item or key.
+3. Read `ADD`, `UPDATE`, and `DELETE` in retained Event order.
+4. Check whether each operation is in the snapshot or live phase.
+5. Select an update.
+6. Inspect its Fields, changed fields, Source, and observation path in **Context**.
+7. Review **Notifications** for missing keys, duplicate operations, lost updates, limited Coverage, or snapshot limits.
 
-## Local Effective COMMAND State
+Workbench does not show a reconstructed COMMAND table as current server state. Use the captured Evidence sequence and its Coverage limit for your conclusion.
 
-**Local Effective COMMAND State** begins with the same captured Server Updates and additionally applies successfully delivered Local Injected Updates for the Subscription.
+## Internal state services
 
-When the projections differ, that difference is comparison evidence. It is not an error by itself, and it does not change Observed Server COMMAND State.
+Workbench derives COMMAND state from committed Evidence. It uses this state to validate Local Injection Drafts, prepare Scenarios, evaluate COMMAND Checkpoints, and create diagnostics. Retained Local Injection Evidence can be part of these local workflows. It does not change captured Server Evidence.
 
-## Authority limit
-
-Neither projection is **Authoritative COMMAND State**. Incomplete observation, late attachment, filtering, lost-update signals, snapshot limitations, or failed Evidence retention can limit the conclusions Workbench supports. Read the coverage and diagnostic text before relying on a projection.
+Derived state is not direct access to server state. Late attachment, incomplete snapshots, lost updates, or Evidence retention failures can limit the result.
 
 ## Snapshot behavior
 
-COMMAND snapshots are formed from `ADD` operations for active keys. Snapshot completion at the first level does not prove that every second-level subscription has completed its own snapshot.
+A COMMAND snapshot contains `ADD` operations for active keys. First-level snapshot completion does not prove completion for each second-level Subscription.

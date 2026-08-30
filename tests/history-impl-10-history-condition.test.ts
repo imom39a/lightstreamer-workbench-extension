@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 import {
   createMemoryEventHistoryForTests,
   type HistoryStatus
@@ -280,6 +281,64 @@ describe("history-impl-10 continuity-first History condition", () => {
     expect(snapshot.evidence.total).toBe(1);
     expect(snapshot.historyCondition).toMatchObject({ kind: "evidence-gap" });
     expect(snapshot.notifications.entries.filter(({ title }) => title === "History has an Evidence gap")).toHaveLength(1);
+    runtime.dispose();
+  });
+
+  it("updates one gap episode only when another Evidence gap occurs", async () => {
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({
+      panelSessionId: "history-impl-10-gap-episode"
+    });
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-10-gap-episode",
+      byteEstimator: (event) => event.id.startsWith("too-large") ? 11 : 1,
+      capacity: { maxRetainedCount: 100, maxRetainedBytes: 10 }
+    });
+    const runtime = createWorkbenchRuntime({
+      history,
+      diagnosticObservations,
+      captureStatus: "capturing",
+      scheduler: immediateScheduler()
+    });
+
+    await history.offer(candidate("too-large-first")).settled;
+    for (let sequence = 1; sequence <= 10; sequence += 1) {
+      await history.offer(candidate(`later-${sequence}`)).settled;
+    }
+    await flushRuntime();
+    await runtime.settleDiagnosticObservations?.();
+
+    const afterContinuation = await diagnosticObservations.query({
+      codes: ["workbench.history.evidence-gap"]
+    });
+    expect(afterContinuation.observations).toHaveLength(1);
+    expect(runtime.getSnapshot().historyCondition?.detail).toContain("1 Evidence gap");
+
+    await history.offer(candidate("too-large-latest")).settled;
+    await flushRuntime();
+    await runtime.settleDiagnosticObservations?.();
+
+    const afterSecondGap = await diagnosticObservations.query({
+      codes: ["workbench.history.evidence-gap"]
+    });
+    expect(afterSecondGap.observations).toHaveLength(2);
+    expect(runtime.getSnapshot().historyCondition?.detail).toContain("2 Evidence gaps");
+    expect(runtime.getSnapshot().historyCondition?.detail).toContain("too-large-first");
+    expect(runtime.getSnapshot().historyCondition?.detail).toContain("too-large-latest");
+    expect(runtime.getSnapshot().notifications.entries.filter(
+      ({ title }) => title === "History has an Evidence gap"
+    )).toHaveLength(1);
+
+    await history.offer(candidate("too-large-consecutive")).settled;
+    await flushRuntime();
+    await runtime.settleDiagnosticObservations?.();
+
+    const afterConsecutiveGap = await diagnosticObservations.query({
+      codes: ["workbench.history.evidence-gap"]
+    });
+    expect(afterConsecutiveGap.observations).toHaveLength(3);
+    expect(runtime.getSnapshot().historyCondition?.detail).toContain("3 Evidence gaps");
+    expect(runtime.getSnapshot().historyCondition?.detail).toContain("too-large-consecutive");
+
     runtime.dispose();
   });
 

@@ -225,6 +225,39 @@ npm run docs:check
 npm test
 ```
 
+## COMMAND projection removal and direct Local Injection batch
+
+The `projection-ui-01` batch removes the general user-visible COMMAND
+projection summary and comparison. Ordered Evidence, selected Fields, and
+diagnostics remain the developer-facing COMMAND inspection path. Internal
+derived state remains available to Draft validation, Scenarios, Checkpoints,
+and diagnostics.
+
+The batch also removes the separate standalone Local Injection Review step.
+Captured Drafts open with Source comparison active. Source-free authored
+Drafts show only the editable Draft. The exact target, validation, expected
+delivery, and local-only boundary remain next to the direct **Inject locally**
+action. Scenario Review remains unchanged.
+
+The maintained packet contains 83 reference/current/diff captures. It reports
+zero browser diagnostics, zero shell or document overflows, zero serious or
+critical axe findings across 76 checked states, and visible unobscured controls
+across 67 focus-checked states. Darwin and pinned-Linux baselines remove the
+obsolete projection and standalone Review states and add captured and authored
+direct-Draft states at compact, normal, shallow, and wide geometry in Dark,
+Light, and forced colors.
+
+The first independent review failed the shallow authored Draft because the
+JSON looked blank and a source-free Draft showed an irrelevant **Compare
+Source** control. The corrected layout makes the JSON readable, omits that
+control for authored Drafts, and keeps the protected boundary in one compact
+row. The final independent review passed with no material findings. It also
+confirmed that captured comparison remains available, compact Scenario editing
+is bounded, and no COMMAND projection doorway remains.
+
+The detailed review record and exact verification results are in
+[`projection-ui-removal-evidence.md`](projection-ui-removal-evidence.md).
+
 ## Standalone Local Injection direct-delivery batch
 
 This Material UI batch simplifies only standalone Local Injection. A captured

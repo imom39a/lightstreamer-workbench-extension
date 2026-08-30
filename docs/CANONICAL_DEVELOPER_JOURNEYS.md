@@ -59,7 +59,7 @@ Where did behavior diverge: capture and coverage, client or Session lifecycle, S
 - Accepted ordered Evidence for the selected Subscription, item, or COMMAND key through the current History Interval's Committed Evidence Boundary.
 - The distinction between a Logical Update and its Update Deliveries, including listener identity where available.
 - Captured values and changed fields, with raw evidence available for verification.
-- For COMMAND, Observed Server COMMAND State and Local Effective COMMAND State presented as distinct projections.
+- For COMMAND, ordered `ADD`, `UPDATE`, and `DELETE` Evidence, Fields, snapshot/live phase, and relevant lifecycle diagnostics.
 - Current Live or Frozen investigation state, active filters, visible versus total evidence, and newer matching evidence.
 
 ### Canonical sequence
@@ -67,7 +67,7 @@ Where did behavior diverge: capture and coverage, client or Session lifecycle, S
 1. Open Workbench and orient on Capture health, client and Session activity, active Subscriptions, and material anomalies.
 2. Select the suspicious Subscription, item, COMMAND key, or event without losing the surrounding runtime scope.
 3. Follow its ordered update, delivery, snapshot, and lifecycle evidence.
-4. For COMMAND behavior, compare Observed Server COMMAND State with Local Effective COMMAND State and trace the operations that produced the selected row.
+4. For COMMAND behavior, trace the ordered operations, Fields, and diagnostics that produced the observed lifecycle.
 5. Inspect raw evidence only when the semantic evidence is insufficient or must be verified.
 6. Identify the exact boundary where the behavior diverged and retain enough scoped evidence to support the conclusion.
 
@@ -80,7 +80,7 @@ The developer can name one of the following boundaries and cite the relevant evi
 - The Subscription was absent, configured differently, or in an unexpected lifecycle or snapshot state.
 - The expected Server Update did not appear in captured evidence, or the captured fields differed from expectation.
 - A Logical Update was captured but the relevant listener did not receive the expected Update Delivery.
-- Ordered COMMAND operations produced the observed projection, including an identifiable warning or inconsistent lifecycle where present.
+- Ordered COMMAND operations explain the observed lifecycle, including an identifiable warning or inconsistent lifecycle where present.
 - The expected evidence reached the application's listener boundary, so the remaining divergence is downstream of Workbench's observable Lightstreamer behavior.
 
 Workbench may show uncertainty when coverage cannot support a stronger claim. Absence of captured evidence must not be presented as proof that an event did not occur when Capture was unavailable or limited.
@@ -124,28 +124,27 @@ These are entry paths into one journey, not three unrelated tools.
 
 - The immutable Injection Source, when a captured update is used.
 - The Injection Draft as a separate editable object, including every deliberate difference from its source.
-- For captured-source Drafts, a default Source/Draft comparison that also serves as the execution preview; source-free authoring never invents a Source.
 - The exact Local Injection Target: one selected Subscription, with its runtime identity, mode, items, fields, and current availability.
 - COMMAND key, command, field values, changed-field semantics, and snapshot flag where applicable.
 - Validation results before execution, attached to fields or target conditions that the developer can correct.
 - A persistent Injection Outcome that describes handling at the local delivery boundary.
 - An explicitly marked Injected Update and its Update Deliveries in ordered evidence after successful delivery.
-- For COMMAND, the resulting Local Effective COMMAND State kept distinct from Observed Server COMMAND State.
+- For COMMAND, committed Local Evidence kept visibly distinct from captured Server Evidence.
 
 ### Canonical sequence
 
 1. Enter from relevant captured evidence or start explicit COMMAND Item Update authoring.
-2. Keep the exact Local Injection Target and Local-only delivery boundary visible throughout authoring.
-3. Open captured-source Drafts in Source/Draft comparison by default. If no Source exists, make the source-free authored state explicit without inventing one.
-4. Make deliberate mutations or author the required command, key, field values, and snapshot semantics on the same surface that serves as the preview.
-5. Validate the Draft and target. Keep execution unavailable while a correctable validation error remains.
-6. Invoke the clearly labelled **Inject locally** action directly from that authoring surface; do not require a separate standalone Review transition. Immediately before dispatch, Workbench atomically freezes the payload and target fingerprint and revalidates both.
+2. Confirm the Local Injection Target before editing or execution.
+3. For a captured update, open with the immutable Injection Source and separate Injection Draft compared as the default preview. If no source exists, make the newly authored status explicit.
+4. Make deliberate mutations or author the required command, key, field values, and snapshot semantics.
+5. Validate the draft and target. Keep execution unavailable while a correctable validation error remains.
+6. Invoke the clearly labelled **Inject locally** action directly from that authoring and preview surface. Workbench atomically freezes and revalidates the Draft and target before attempting delivery.
 7. Report the Injection Outcome without claiming a downstream business effect.
-8. Trace a successful Injected Update in the ordered Timeline and, for COMMAND, verify its effect only in Local Effective COMMAND State.
+8. Trace a successful Injected Update as explicit `LOCAL` Evidence in the ordered Timeline.
 
 ### Completion condition
 
-The developer has verified the exact target, understood the source-to-draft relationship from the authoring preview, passed validation, injected without an extra standalone Review screen, received a clear outcome, and can trace the explicitly local result through the same evidence model used for captured activity. Nothing in the UI implies that the Item Update entered Lightstreamer Server's update flow or changed Authoritative COMMAND State. Scenario Review remains a separate multi-Step Run boundary.
+The developer has verified the exact target, understood the source-to-draft relationship, passed validation, received a clear outcome, and can trace the explicitly local result through the same evidence model used for captured activity. Nothing in the UI implies that the Item Update entered Lightstreamer Server's update flow or changed Authoritative COMMAND State.
 
 ### Important failure and degraded states
 
@@ -203,9 +202,9 @@ The developer understands the confidence boundary of the available evidence and 
 
 - **Trigger:** a key is unexpectedly absent, duplicated, updated, deleted, re-added, or inconsistent.
 - **Question:** which ordered COMMAND operations and snapshot boundaries produced this row state?
-- **Evidence and actions:** select the Subscription, item, and key; inspect generations and ordered ADD, UPDATE, and DELETE operations; compare projections; reveal related raw evidence as needed.
-- **Completion:** the developer can explain the selected key's state from its ordered lifecycle and distinguish a captured server behavior from a local effect.
-- **Degraded path:** Capture began mid-lifecycle or snapshot evidence is incomplete; the projection warning and its evidentiary limit remain visible.
+- **Evidence and actions:** select the Subscription, item, and key; inspect generations and ordered `ADD`, `UPDATE`, and `DELETE` operations, Fields, and related raw Evidence as needed.
+- **Completion:** the developer can explain the captured lifecycle and distinguish Server Evidence from a local effect without relying on a reconstructed-state UI.
+- **Degraded path:** Capture began mid-lifecycle or snapshot Evidence is incomplete; Coverage and lifecycle diagnostics state the evidentiary limit.
 
 ### Freeze and navigate high-volume history
 
@@ -246,7 +245,7 @@ No new Lightstreamer domain term was needed during this session, so [CONTEXT.md]
 - Use **Mutation** for deliberate draft changes.
 - Name the exact **Local Injection Target**.
 - Mark an **Injected Update** and retain its local provenance.
-- Keep **Observed Server COMMAND State** distinct from **Local Effective COMMAND State** and from **Authoritative COMMAND State**.
+- Keep captured Server Evidence distinct from committed Local Evidence and never imply Authoritative COMMAND State.
 
 Roles, journey names, fault boundaries, and UI placement categories are product-design language rather than additions to the Lightstreamer domain glossary.
 
@@ -260,7 +259,7 @@ The product owner explicitly confirmed, one decision at a time:
 4. The canonical orientation and investigation sequence.
 5. Local Injection as the second core journey.
 6. Captured reuse, mutation, and newly authored COMMAND updates as its three entry paths.
-7. Explicit target, validation, outcome, Timeline trace, and projection checks as its completion condition.
+7. Explicit target, validation, outcome, and Timeline trace as its completion condition.
 8. Degraded operation as a dedicated contextual journey.
 9. Raw capture, complete COMMAND lifecycle, high-volume history, and export as the advanced journey set.
 10. The resulting journey hierarchy as the shared direction for information-architecture work.

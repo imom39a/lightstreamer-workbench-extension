@@ -16,8 +16,8 @@ const magickPath = findExecutable(["magick", "convert"]);
 
 const screenshots = [
   {
-    file: "01-command-projections-context.png",
-    scene: "command-state"
+    file: "01-workspace-context.png",
+    scene: "workspace-context"
   },
   {
     file: "02-ordered-evidence-context.png",
@@ -94,9 +94,9 @@ import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-pan
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 import { getWorkbenchScenario } from ${source("tests/support/workbench-scenarios.ts")};
 
-const scene = new URLSearchParams(window.location.search).get("scene") ?? "command-state";
+const scene = new URLSearchParams(window.location.search).get("scene") ?? "workspace-context";
 const scenarioId = {
-  "command-state": "live-selected",
+  "workspace-context": "live-selected",
   "timeline-detail": "raw-evidence",
   "local-injection": "local-injection-large",
   "notifications": "diagnostics-stress"
@@ -311,8 +311,8 @@ async function generateRealAppPreviewAssets() {
   const docsAssetsDir = resolve(projectRoot, "docs/assets");
   const sourceScreenshots = [
     {
-      source: resolve(projectRoot, "store-listing/screenshots/01-command-projections-context.png"),
-      output: resolve(docsAssetsDir, "app-command-projections.png")
+      source: resolve(projectRoot, "store-listing/screenshots/01-workspace-context.png"),
+      output: resolve(docsAssetsDir, "app-workspace-context.png")
     },
     {
       source: resolve(projectRoot, "store-listing/screenshots/02-ordered-evidence-context.png"),
@@ -351,7 +351,7 @@ async function generateRealAppPreviewAssets() {
 
 async function generateRealAppGallery(options) {
   const canvasPath = join(tempDir, "real-app-gallery-canvas.png");
-  const screenshotFramePath = join(tempDir, "real-app-gallery-command-state.png");
+  const screenshotFramePath = join(tempDir, "real-app-gallery-workspace-context.png");
   const overlaySvgPath = join(tempDir, "real-app-gallery-overlay.svg");
   const overlayPngPath = join(tempDir, "real-app-gallery-overlay.png");
   const withScreenshotPath = join(tempDir, "real-app-gallery-with-screenshot.png");
@@ -395,10 +395,10 @@ function smallPromoOverlaySvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="440" height="280" viewBox="0 0 440 280">
   <text x="26" y="132" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="800">Lightstreamer</text>
   <text x="26" y="166" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="800">Workbench</text>
-  <text x="28" y="204" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="16">Inspect COMMAND streams</text>
-  <text x="28" y="229" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="16">inside Chrome DevTools.</text>
+  <text x="28" y="204" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="16">Debug Lightstreamer</text>
+  <text x="28" y="229" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="16">in Chrome DevTools.</text>
   <rect x="276" y="214" width="64" height="25" rx="7" fill="#2563eb"/>
-  <text x="290" y="232" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">ADD</text>
+  <text x="286" y="232" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">SCOPE</text>
   <rect x="350" y="214" width="74" height="25" rx="7" fill="#0f766e"/>
   <text x="361" y="232" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">LOCAL</text>
 </svg>`;
@@ -408,12 +408,12 @@ function marqueePromoOverlaySvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560">
   <text x="82" y="258" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Lightstreamer</text>
   <text x="82" y="330" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Workbench</text>
-  <text x="86" y="394" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">Inspect COMMAND streams, changed fields,</text>
-  <text x="86" y="436" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">snapshots, and backend-free Local Injection.</text>
+  <text x="86" y="394" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">Inspect clients, Subscriptions, Item Updates,</text>
+  <text x="86" y="436" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">snapshots, and COMMAND lifecycles.</text>
   <rect x="86" y="482" width="158" height="42" rx="8" fill="#2563eb"/>
-  <text x="121" y="510" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">ADD keys</text>
+  <text x="121" y="510" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Select Scope</text>
   <rect x="266" y="482" width="196" height="42" rx="8" fill="#0f766e"/>
-  <text x="301" y="510" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">UPDATE state</text>
+  <text x="301" y="510" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Read Evidence</text>
   <rect x="484" y="482" width="194" height="42" rx="8" fill="#334155"/>
   <text x="520" y="510" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Inject locally</text>
 </svg>`;
@@ -421,27 +421,27 @@ function marqueePromoOverlaySvg() {
 
 function realAppGalleryOverlaySvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="920" viewBox="0 0 1400 920">
-  <text x="72" y="112" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">COMMAND state walkthrough</text>
-  <text x="74" y="166" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="26">One release-current panel capture, annotated around the developer workflow.</text>
+  <text x="72" y="112" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">Inspect Lightstreamer activity</text>
+  <text x="74" y="166" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="26">Use Scope, Ordered Evidence, and Context in one workspace.</text>
   <rect x="72" y="210" width="208" height="42" rx="8" fill="#2563eb"/>
-  <text x="104" y="238" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Active keys</text>
+  <text x="104" y="238" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Select Scope</text>
   <rect x="302" y="210" width="222" height="42" rx="8" fill="#0f766e"/>
-  <text x="334" y="238" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Changed fields</text>
+  <text x="334" y="238" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Read Evidence</text>
   <rect x="546" y="210" width="188" height="42" rx="8" fill="#334155"/>
-  <text x="579" y="238" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Injection path</text>
-  <text x="72" y="854" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="22">Generated from the current extension screenshot harness before each release.</text>
+  <text x="579" y="238" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Inspect Fields</text>
+  <text x="72" y="854" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="22">Generated from the current extension before each release.</text>
   <rect x="966" y="286" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
-  <text x="996" y="334" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">1. Select a key</text>
-  <text x="996" y="374" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">See the active COMMAND keys</text>
-  <text x="996" y="402" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">for the selected subscription.</text>
+  <text x="996" y="334" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">1. Select a Scope</text>
+  <text x="996" y="374" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Select a client, Session,</text>
+  <text x="996" y="402" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Subscription, item, or listener.</text>
   <rect x="966" y="446" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
-  <text x="996" y="494" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">2. Inspect fields</text>
-  <text x="996" y="534" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Compare current values and</text>
-  <text x="996" y="562" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">recent changes at a glance.</text>
+  <text x="996" y="494" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">2. Read Evidence</text>
+  <text x="996" y="534" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Read events in retained order.</text>
+  <text x="996" y="562" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Check time, Source, and operation.</text>
   <rect x="966" y="606" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
-  <text x="996" y="654" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">3. Review and inject</text>
-  <text x="996" y="694" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Compare, review, and inject</text>
-  <text x="996" y="722" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">through the protected local target.</text>
+  <text x="996" y="654" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">3. Inspect Context</text>
+  <text x="996" y="694" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Select an event to inspect</text>
+  <text x="996" y="722" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">its Fields and metadata.</text>
 </svg>`;
 }
 
@@ -449,18 +449,18 @@ function githubSocialPreviewOverlaySvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
   <text x="210" y="148" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800">Lightstreamer Workbench</text>
   <text x="212" y="186" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="22">Chrome DevTools extension</text>
-  <text x="96" y="298" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">Inspect COMMAND</text>
-  <text x="96" y="365" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">streams in DevTools</text>
-  <text x="100" y="420" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">Track keys, changed fields, snapshots,</text>
-  <text x="100" y="456" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">and backend-free Local Injection.</text>
+  <text x="96" y="298" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">Debug Lightstreamer</text>
+  <text x="96" y="365" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">in Chrome DevTools</text>
+  <text x="100" y="420" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">Inspect clients, Subscriptions, Item Updates,</text>
+  <text x="100" y="456" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">snapshots, and COMMAND lifecycles.</text>
   <rect x="100" y="502" width="120" height="38" rx="8" fill="#2563eb"/>
-  <text x="127" y="527" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">ADD</text>
+  <text x="127" y="527" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">SCOPE</text>
   <rect x="238" y="502" width="150" height="38" rx="8" fill="#0f766e"/>
-  <text x="266" y="527" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">UPDATE</text>
+  <text x="266" y="527" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">EVIDENCE</text>
   <rect x="406" y="502" width="138" height="38" rx="8" fill="#334155"/>
   <text x="434" y="527" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">LOCAL</text>
   <rect x="706" y="502" width="474" height="38" rx="8" fill="rgba(15,23,42,0.74)" stroke="#334155" stroke-width="1"/>
-  <text x="728" y="527" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">Backend-free Lightstreamer debugging in the browser</text>
+  <text x="728" y="527" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">Test Item Updates with Local Injection</text>
 </svg>`;
 }
 

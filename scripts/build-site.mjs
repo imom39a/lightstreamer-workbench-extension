@@ -17,18 +17,18 @@ const projectRoot = resolve(import.meta.dirname, "..");
 const outputRoot = resolve(projectRoot, "site-dist");
 const contentRoot = resolve(projectRoot, "site/content");
 const pages = [
-  page("index.md", "index.html", "Lightstreamer Workbench for Chrome DevTools", "Capture, explain, and reproduce Lightstreamer Web Client behavior inside Chrome DevTools.", "home"),
-  page("docs/index.md", "docs/index.html", "Documentation", "Install Lightstreamer Workbench and learn the unified investigation workspace.", "docs"),
-  page("docs/developer-guide.md", "docs/developer-guide/index.html", "Developer guide", "A practical workflow for capturing, investigating, and reproducing Lightstreamer behavior with Workbench.", "docs"),
+  page("index.md", "index.html", "Lightstreamer Workbench for Chrome DevTools", "Inspect Lightstreamer Web Client activity and test local Item Updates in Chrome DevTools.", "home"),
+  page("docs/index.md", "docs/index.html", "Documentation", "Install Lightstreamer Workbench and learn how to inspect Lightstreamer activity.", "docs"),
+  page("docs/developer-guide.md", "docs/developer-guide/index.html", "Developer guide", "Use Workbench to capture, inspect, diagnose, and test Lightstreamer activity.", "docs"),
   page("docs/getting-started.md", "docs/getting-started/index.html", "Getting started", "Install Workbench, open its DevTools panel, and capture your first Lightstreamer session.", "docs"),
-  page("docs/workspace.md", "docs/workspace/index.html", "The unified workspace", "Use Runtime Scope, Ordered Evidence, and Context as one continuous investigation workspace.", "docs"),
+  page("docs/workspace.md", "docs/workspace/index.html", "The Workbench workspace", "Use Runtime Scope, Ordered Evidence, and Context in one workspace.", "docs"),
   page("docs/evidence.md", "docs/evidence/index.html", "Ordered Evidence", "Filter, find, select, freeze, and inspect retained Lightstreamer Evidence.", "docs"),
-  page("docs/command-state.md", "docs/command-state/index.html", "COMMAND projections", "Interpret Observed Server and Local Effective COMMAND State without overstating authority.", "docs"),
+  page("docs/command-state.md", "docs/command-state/index.html", "Debug COMMAND lifecycles", "Trace COMMAND operations, inspect Fields, and review lifecycle diagnostics.", "docs"),
   page("docs/local-injection.md", "docs/local-injection/index.html", "Local Injection", "Compare, edit, and inject one protected Local Injection Draft without contacting the server.", "docs"),
   page("docs/export-and-privacy.md", "docs/export-and-privacy/index.html", "Export and privacy", "Create credential-safe scoped exports and understand Workbench's local data boundary.", "docs"),
   page("docs/troubleshooting.md", "docs/troubleshooting/index.html", "Troubleshooting", "Resolve missing Capture, limited coverage, retired targets, and storage fallback.", "docs"),
   page("docs/faq.md", "docs/faq/index.html", "Frequently asked questions", "Answers about supported clients, Capture, COMMAND state, Local Injection, and storage.", "docs"),
-  page("roadmap.md", "roadmap/index.html", "Roadmap", "Near-term and exploratory opportunities for Lightstreamer Workbench.", "page"),
+  page("roadmap.md", "roadmap/index.html", "Roadmap", "Planned work for Lightstreamer Workbench.", "page"),
   page("releases.md", "releases/index.html", "Release notes", "What shipped in the current Lightstreamer Workbench 2.0 release.", "page"),
   page("support.md", "support/index.html", "Support", "Get help, report a bug, request a feature, or ask a question.", "page")
 ];
@@ -55,7 +55,7 @@ await Promise.all([
   copy("docs/assets/logo.svg", "assets/logo.svg"),
   copy("docs/assets/mascot.png", "assets/mascot.png"),
   copy("docs/assets/app-ordered-evidence-context.png", "assets/app-ordered-evidence-context.png"),
-  copy("docs/assets/app-command-projections.png", "assets/app-command-projections.png"),
+  copy("docs/assets/app-workspace-context.png", "assets/app-workspace-context.png"),
   copy("docs/assets/app-local-injection-editor.png", "assets/app-local-injection-editor.png"),
   copy("docs/assets/app-notifications.png", "assets/app-notifications.png"),
   copy("docs/assets/real-app-gallery.png", "assets/real-app-gallery.png"),
@@ -183,7 +183,7 @@ function renderFooter() {
     ["Release notes", sitePath("releases/")],
     ["Source", GITHUB_REPOSITORY_URL]
   ];
-  return `<footer class="site-footer"><div><a class="brand brand--footer" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="32" height="32"><span>Lightstreamer Workbench</span></a><p>Open-source developer infrastructure for applications using the official Lightstreamer Web Client.</p><p class="fine-print">Independent and not affiliated with Lightstreamer. Source is available under Apache-2.0.</p></div><nav aria-label="Footer">${links.map(([label, href]) => `<a href="${href}"${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav></footer>`;
+  return `<footer class="site-footer"><div><a class="brand brand--footer" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="32" height="32"><span>Lightstreamer Workbench</span></a><p>Open-source Chrome DevTools extension for the official Lightstreamer Web Client.</p><p class="fine-print">This project is independent and is not affiliated with Lightstreamer. The source uses the Apache-2.0 license.</p></div><nav aria-label="Footer">${links.map(([label, href]) => `<a href="${href}"${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav></footer>`;
 }
 
 function renderSitemap() {
@@ -193,7 +193,7 @@ function renderSitemap() {
 }
 
 function renderNotFound() {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page not found · Lightstreamer Workbench</title><link rel="stylesheet" href="${sitePath("assets/site.css")}"></head><body><main class="not-found"><img src="${sitePath("assets/logo.svg")}" alt="" width="48" height="48"><p class="eyebrow">404</p><h1>That page is not part of the Workbench.</h1><p>Return to the product site or open the documentation.</p><p><a class="button" href="${sitePath()}">Product home</a> <a class="button button--secondary" href="${sitePath("docs/")}">Documentation</a></p></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page not found · Lightstreamer Workbench</title><link rel="stylesheet" href="${sitePath("assets/site.css")}"></head><body><main class="not-found"><img src="${sitePath("assets/logo.svg")}" alt="" width="48" height="48"><p class="eyebrow">404</p><h1>This page does not exist.</h1><p>Open the home page or the documentation.</p><p><a class="button" href="${sitePath()}">Home</a> <a class="button button--secondary" href="${sitePath("docs/")}">Documentation</a></p></main></body></html>`;
 }
 
 function escapeHtml(value) {

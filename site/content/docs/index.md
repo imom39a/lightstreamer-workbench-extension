@@ -1,18 +1,18 @@
-Lightstreamer Workbench is a Chrome DevTools extension for inspecting applications that use the official Lightstreamer Web Client. These guides cover the complete release-current investigation and local reproduction workflow.
+Lightstreamer Workbench is a Chrome DevTools extension. Use it to inspect applications that use the official Lightstreamer Web Client. These guides describe the current product.
 
 ## Start here
 
-1. Follow the practical [Developer guide]({{site}}docs/developer-guide/) from first Capture through diagnosis and Local Injection.
-2. [Install and capture your first session]({{site}}docs/getting-started/).
-3. Learn how [Runtime Scope, Ordered Evidence, and Context]({{site}}docs/workspace/) work together.
-4. Use [Filter, Find, selection, Live/Frozen investigation, and Notifications]({{site}}docs/evidence/) without conflating their state.
-5. Follow a keyed lifecycle through [COMMAND projections]({{site}}docs/command-state/).
-6. Create one protected Draft or an ordered [Local Injection Scenario]({{site}}docs/local-injection/).
+1. Use the [Developer guide]({{site}}docs/developer-guide/) for the complete procedure.
+2. [Install Workbench and capture a Session]({{site}}docs/getting-started/).
+3. Learn how to use [Runtime Scope, Ordered Evidence, and Context]({{site}}docs/workspace/).
+4. Learn how to use [Filter, Find, selection, Live, Frozen, and Notifications]({{site}}docs/evidence/).
+5. [Debug a COMMAND lifecycle]({{site}}docs/command-state/) with ordered operations, Fields, and diagnostics.
+6. Create a Draft or a [Local Injection Scenario]({{site}}docs/local-injection/).
 
 ## Product boundary
 
-Workbench observes page-owned Lightstreamer clients. It does not create clients, establish Sessions, subscribe on the application's behalf, or interpret application-specific business objects. Local Injection delivers locally through the inspected page and never enters the Lightstreamer Server update stream.
+Workbench observes Lightstreamer clients that the page owns. It does not create clients or Sessions. It does not subscribe for the application. It does not interpret application-specific business objects. Local Injection delivers an Item Update in the inspected page. It does not add the update to the Lightstreamer Server stream.
 
 ## Need help?
 
-Use [Troubleshooting]({{site}}docs/troubleshooting/) for Capture and target problems, check the [FAQ]({{site}}docs/faq/) for product boundaries, or choose the right reporting path on [Support]({{site}}support/).
+Use [Troubleshooting]({{site}}docs/troubleshooting/) for Capture and target problems. Use the [FAQ]({{site}}docs/faq/) for product limits. Use [Support]({{site}}support/) to report a problem or ask a question.

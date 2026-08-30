@@ -89,6 +89,11 @@ function evidenceGapCondition(
   gap: HistoryAcceptanceGap,
   topologyBasisRestoredAt: EvidenceRef | null
 ): WorkbenchHistoryCondition {
+  const gapCount = status.continuity?.gapCount ?? 1;
+  const firstGap = status.continuity?.firstGap ?? gap;
+  const gapSummary = gapCount === 1
+    ? `1 Evidence gap in this History Interval: captured activity #${gap.captureOrdinal.toLocaleString()} (${gap.eventId}) could not become Evidence because of ${gap.dimension}.`
+    : `${gapCount.toLocaleString()} Evidence gaps in this History Interval. First gap: captured activity #${firstGap.captureOrdinal.toLocaleString()} (${firstGap.eventId}). Latest gap: captured activity #${gap.captureOrdinal.toLocaleString()} (${gap.eventId}) could not become Evidence because of ${gap.dimension}.`;
   const projectionDetail = topologyBasisRestoredAt
     ? `Topology basis was restored by a full checkpoint at ${boundaryLabel(topologyBasisRestoredAt)}. COMMAND and COMMAND-dependent Scenario conclusions remain LIMITED.`
     : "Continuity-dependent Topology and COMMAND conclusions are LIMITED.";
@@ -97,7 +102,7 @@ function evidenceGapCondition(
     severity: "Warning",
     title: "History has an Evidence gap",
     affected: intervalLabel(status),
-    detail: `Captured activity #${gap.captureOrdinal.toLocaleString()} (${gap.eventId}) could not become Evidence because of ${gap.dimension}. Later Capture continues. ${boundaryLabel(gap.afterEvidence)} before the gap; current ${boundaryLabel(status.committedEvidenceBoundary)}. ${projectionDetail}`,
+    detail: `${gapSummary} Later Capture continues. ${boundaryLabel(gap.afterEvidence)} immediately before the latest gap. ${projectionDetail}`,
     recovery: topologyBasisRestoredAt
       ? "Use a later trustworthy COMMAND Snapshot before relying on COMMAND-dependent conclusions; Complete History remains incomplete because the Evidence Gap is not restored"
       : "Inspect the gap in Notifications and use a later trustworthy snapshot or checkpoint before relying on continuity-dependent conclusions",

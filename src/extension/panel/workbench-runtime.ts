@@ -1,5 +1,5 @@
 import { type CaptureMessage, type CaptureStatus, type TopologySyncFrame } from "../../bridge/messages";
-import { createCommandStateProjections, type CommandState, type CommandStateProjections } from "../../core/command-state";
+import { createCommandStateProjections, type CommandStateProjections } from "../../core/command-state";
 import type {
   ScenarioAssertionObservation,
   ScenarioCommittedBoundaryFeed,
@@ -371,13 +371,6 @@ export type WorkbenchNotificationsSnapshot = Readonly<{
   }>;
 }>;
 
-export type WorkbenchCommandProjection = Readonly<{
-  name: string;
-  basis: string;
-  rows: readonly (readonly [string, string])[];
-  supportingLocalEvidenceId?: string;
-}>;
-
 export type WorkbenchDiagnostic = Readonly<{
   id?: string;
   code?: string;
@@ -608,11 +601,6 @@ export type WorkbenchSnapshot = Readonly<{
   contextId: string | null;
   context: WorkbenchContextSnapshot;
   notifications: WorkbenchNotificationsSnapshot;
-  commandProjections: Readonly<{
-    observed: WorkbenchCommandProjection;
-    localEffective: WorkbenchCommandProjection;
-    authoritativeLimit: string;
-  }>;
   diagnostics: readonly WorkbenchDiagnostic[];
   historyCondition: WorkbenchHistoryCondition | null;
   historyAnnouncement: string;
@@ -712,8 +700,6 @@ export type WorkbenchCommand =
   | { type: "focus-evidence"; eventId: string | null }
   | { type: "set-evidence-scroll"; scrollTop: number }
   | { type: "set-context"; contextId: string | null }
-  | { type: "open-command-projection-comparison" }
-  | { type: "close-command-projection-comparison" }
   | { type: "open-context" }
   | { type: "open-scope" }
   | { type: "open-raw-evidence"; eventId: string }
@@ -1046,7 +1032,6 @@ class Runtime implements WorkbenchRuntime {
   private filterRecoveryFocused = false;
   private contextId: string | null = null;
   private notificationsReturnContextId: string | null = null;
-  private commandProjectionReturnContextId: string | null = null;
   private actionsReturnContextId: string | null = null;
   private canonicalFilter: Filter = createFilter(1);
   private filterMutation: WorkbenchFilterMutationSnapshot = Object.freeze({
@@ -2079,16 +2064,6 @@ class Runtime implements WorkbenchRuntime {
         this.contextId = command.contextId;
         this.publish();
         return;
-      case "open-command-projection-comparison":
-        this.commandProjectionReturnContextId = this.contextId;
-        this.contextId = "command-projections";
-        this.publish();
-        return;
-      case "close-command-projection-comparison":
-        this.contextId = this.commandProjectionReturnContextId;
-        this.commandProjectionReturnContextId = null;
-        this.publish();
-        return;
       case "open-context":
         this.contextId = this.selectionEventId ? `context:${this.selectionEventId}` : "context:scope";
         this.publish();
@@ -2812,7 +2787,6 @@ class Runtime implements WorkbenchRuntime {
     this.evidenceScrollTop = 0;
     this.clearedSelectionEventId = null;
     this.contextId = "context:scope";
-    this.commandProjectionReturnContextId = null;
     this.actionsReturnContextId = null;
     this.clearFindResults();
     this.evidencePageCursors.clear();
@@ -5495,7 +5469,6 @@ class Runtime implements WorkbenchRuntime {
       contextId: this.contextId,
       context: this.contextSnapshot(evidence.events, scope),
       notifications: this.notificationsSnapshot(),
-      commandProjections: this.commandProjectionSnapshot(),
       diagnostics: this.diagnosticSnapshot(scope, activity.projection),
       historyCondition: this.historyCondition,
       historyAnnouncement: this.historyAnnouncement,
@@ -6116,37 +6089,6 @@ class Runtime implements WorkbenchRuntime {
       timestamp,
       retained,
       ...(retainedIntervalId === undefined ? {} : { retainedIntervalId })
-    });
-  }
-
-  private commandProjectionSnapshot(): WorkbenchSnapshot["commandProjections"] {
-    const topology = this.topologyProjection.snapshot();
-    const target = findTopologySelection(topology, this.scopeId ?? "page");
-    const observedState = this.commandStateProjections.snapshot("observed-server");
-    const localEffectiveState = this.commandStateProjections.snapshot("local-effective");
-    const supportingLocalEvidenceId = contributingLocalEvidenceId(
-      observedState,
-      localEffectiveState,
-      target,
-      this.retainedLocalEvidenceIds
-    );
-    const localEffective = commandProjection(
-      "Local Effective COMMAND State",
-      "Server Updates plus successfully delivered Local Injected Updates",
-      localEffectiveState,
-      target
-    );
-    return Object.freeze({
-      observed: commandProjection(
-        "Observed Server COMMAND State",
-        "Captured Server Updates only",
-        observedState,
-        target
-      ),
-      localEffective: supportingLocalEvidenceId
-        ? Object.freeze({ ...localEffective, supportingLocalEvidenceId })
-        : localEffective,
-      authoritativeLimit: "Neither projection is Authoritative COMMAND State."
     });
   }
 
@@ -8212,159 +8154,6 @@ function blockersToMutations(blockers: readonly RevealBlocker[]): readonly Filte
     }
   }
   return Object.freeze(operations);
-}
-
-function commandProjection(
-  name: string,
-  basis: string,
-  state: CommandState,
-  target: TopologySelectionTarget | null
-): WorkbenchCommandProjection {
-  const subscriptions = commandSubscriptionsForScope(state, target);
-  const rows = subscriptions.flatMap((subscription) =>
-    subscription.items.flatMap((item) =>
-      item.activeRows.map((row) =>
-        Object.freeze([
-          `${subscription.subscriptionId} / ${item.itemName ?? item.itemId} / ${row.key}`,
-          Object.entries(row.fields)
-            .map(([field, value]) => `${field}=${String(value)}`)
-            .join(", ")
-        ] as const)
-      )
-    )
-  );
-  return Object.freeze({ name, basis, rows: Object.freeze(rows) });
-}
-
-type ScopedCommandRow = CommandState["subscriptions"][number]["items"][number]["activeRows"][number];
-type ScopedDeletedCommandKey = CommandState["subscriptions"][number]["items"][number]["deletedKeys"][number];
-
-function contributingLocalEvidenceId(
-  observedState: CommandState,
-  localEffectiveState: CommandState,
-  target: TopologySelectionTarget | null,
-  retainedLocalEvidenceIds: ReadonlySet<string>
-): string | null {
-  const observedRows = new Map<string, ScopedCommandRow>();
-  const localRows = new Map<string, ScopedCommandRow>();
-  const localDeletedKeys = new Map<string, ScopedDeletedCommandKey>();
-  const collect = (
-    state: CommandState,
-    rows: Map<string, ScopedCommandRow>,
-    deletedKeys?: Map<string, ScopedDeletedCommandKey>
-  ) => {
-    for (const subscription of commandSubscriptionsForScope(state, target)) {
-      for (const item of subscription.items) {
-        for (const row of item.activeRows) {
-          rows.set(commandRowIdentity(subscription.subscriptionId, item.itemId, row.key), row);
-        }
-        if (deletedKeys) {
-          for (const deleted of item.deletedKeys) {
-            deletedKeys.set(
-              commandRowIdentity(subscription.subscriptionId, item.itemId, deleted.key),
-              deleted
-            );
-          }
-        }
-      }
-    }
-  };
-  collect(observedState, observedRows);
-  collect(localEffectiveState, localRows, localDeletedKeys);
-
-  let supporting: { eventId: string; timestamp: number } | null = null;
-  for (const identity of new Set([...observedRows.keys(), ...localRows.keys()])) {
-    const observed = observedRows.get(identity);
-    const local = localRows.get(identity);
-    if (observed && local && commandFieldsEqual(observed.fields, local.fields)) continue;
-    const provenance = local?.latest ?? localDeletedKeys.get(identity)?.deletedAt;
-    if (
-      !provenance?.synthetic ||
-      !retainedLocalEvidenceIds.has(provenance.eventId) ||
-      (supporting && provenance.timestamp < supporting.timestamp)
-    ) continue;
-    supporting = { eventId: provenance.eventId, timestamp: provenance.timestamp };
-  }
-  return supporting?.eventId ?? null;
-}
-
-function commandRowIdentity(subscriptionId: string, itemId: string, key: string): string {
-  return `${subscriptionId}\u0000${itemId}\u0000${key}`;
-}
-
-function commandFieldsEqual(
-  left: ScopedCommandRow["fields"],
-  right: ScopedCommandRow["fields"]
-): boolean {
-  const leftEntries = Object.entries(left);
-  return leftEntries.length === Object.keys(right).length && leftEntries.every(
-    ([field, value]) => Object.is(value, right[field])
-  );
-}
-
-function commandSubscriptionsForScope(
-  state: CommandState,
-  target: TopologySelectionTarget | null
-): CommandState["subscriptions"] {
-  if (!target) return [];
-  if (target.kind === "page") return state.subscriptions;
-
-  let subscriptionIds: Set<string>;
-  let itemTarget: Extract<TopologySelectionTarget, { kind: "item" }>['item'] | null = null;
-  switch (target.kind) {
-    case "client":
-      subscriptionIds = new Set([
-        ...target.client.waitingSubscriptions.map(({ id }) => id),
-        ...target.client.sessions.flatMap((session) =>
-          session.subscriptions.map(({ id }) => id)
-        )
-      ]);
-      break;
-    case "session":
-      subscriptionIds = new Set(target.session.subscriptions.map(({ id }) => id));
-      break;
-    case "subscription":
-      subscriptionIds = new Set([target.subscription.id]);
-      break;
-    case "item":
-      subscriptionIds = new Set([target.subscription.id]);
-      itemTarget = target.item;
-      break;
-    case "listener":
-      subscriptionIds = new Set([target.subscription.id]);
-      itemTarget = target.item;
-      break;
-    case "generation":
-    case "inferred-child":
-      return [];
-  }
-
-  return state.subscriptions
-    .filter(({ subscriptionId }) => subscriptionIds.has(subscriptionId))
-    .map((subscription) =>
-      itemTarget
-        ? {
-            ...subscription,
-            items: subscription.items.filter((item) =>
-              commandItemMatchesTopologyItem(item, itemTarget)
-            )
-          }
-        : subscription
-    );
-}
-
-function commandItemMatchesTopologyItem(
-  commandItem: CommandState["subscriptions"][number]["items"][number],
-  topologyItem: Extract<TopologySelectionTarget, { kind: "item" }>['item']
-): boolean {
-  if (topologyItem.name !== null && commandItem.itemName !== topologyItem.name) return false;
-  if (
-    topologyItem.position !== null &&
-    commandItem.itemPosition !== topologyItem.position
-  ) return false;
-  return topologyItem.name !== null || topologyItem.position !== null
-    ? true
-    : commandItem.itemId === topologyItem.id;
 }
 
 function normalizeWindowSize(value: number | undefined): number {

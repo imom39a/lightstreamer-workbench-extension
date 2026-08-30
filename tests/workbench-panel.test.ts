@@ -191,15 +191,6 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
         jsonPatches: []
       }
     },
-    commandProjections: {
-      observed: { name: "Observed Server COMMAND State", basis: "Captured Server Updates only", rows: [] },
-      localEffective: {
-        name: "Local Effective COMMAND State",
-        basis: "Server Updates plus successfully delivered Local Injected Updates",
-        rows: []
-      },
-      authoritativeLimit: "Neither projection is Authoritative COMMAND State."
-    },
     notifications: { entries: [], total: 0, limit: 100, filter: { criteria: {}, active: false, options: emptyDiagnosticOptions() } },
     diagnostics: [],
     historyCondition: null,
@@ -429,61 +420,10 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("renders a promoted COMMAND projection comparison with distinct complete bases", async () => {
+  it("does not offer unrelated Local Evidence from Selected Evidence", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
-    const runtime = createTestRuntime(snapshot({
-      contextId: "command-projections",
-      commandProjections: {
-        observed: {
-          name: "Observed Server COMMAND State",
-          basis: "Captured Server Updates only",
-          rows: [["orders / alpha", "command=ADD, qty=1"]]
-        },
-        localEffective: {
-          name: "Local Effective COMMAND State",
-          basis: "Server Updates plus successfully delivered Local Injected Updates",
-          rows: [["orders / alpha", "command=UPDATE, qty=9"]]
-        },
-        authoritativeLimit: "Neither projection is Authoritative COMMAND State."
-      }
-    }));
-    const root = createRoot(rootElement);
-    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
-
-    const comparison = document.querySelector<HTMLElement>(
-      '[aria-label="COMMAND projection comparison"]'
-    );
-    expect(comparison).not.toBeNull();
-    expect(comparison?.textContent).toContain("Observed Server COMMAND State");
-    expect(comparison?.textContent).toContain("Captured Server Updates only");
-    expect(comparison?.textContent).toContain("Local Effective COMMAND State");
-    expect(comparison?.textContent).toContain(
-      "Server Updates plus successfully delivered Local Injected Updates"
-    );
-    expect(comparison?.textContent).toContain("Neither projection is Authoritative COMMAND State.");
-
-    await act(async () => root.unmount());
-  });
-
-  it("does not offer unrelated Local Evidence from Selected Evidence or the promoted comparison", async () => {
-    const rootElement = document.querySelector<HTMLElement>("#app");
-    if (!rootElement) throw new Error("missing app root");
-    const base = snapshot({
-      commandProjections: {
-        observed: {
-          name: "Observed Server COMMAND State",
-          basis: "Captured Server Updates only",
-          rows: [["orders / alpha", "command=ADD, qty=1"]]
-        },
-        localEffective: {
-          name: "Local Effective COMMAND State",
-          basis: "Server Updates plus successfully delivered Local Injected Updates",
-          rows: [["orders / alpha", "command=UPDATE, qty=17"]]
-        },
-        authoritativeLimit: "Neither projection is Authoritative COMMAND State."
-      }
-    });
+    const base = snapshot();
     const runtime = createTestRuntime({
       ...base,
       evidence: {
@@ -500,17 +440,6 @@ describe("React Workbench Diagnose panel", () => {
     expect(
       Array.from(rootElement.querySelectorAll("button")).some(
         (button) => button.textContent === "Reveal supporting Evidence"
-      )
-    ).toBe(false);
-
-    await act(async () => runtime.setSnapshot({
-      ...runtime.getSnapshot(),
-      contextId: "command-projections"
-    }));
-    expect(rootElement.querySelector('[aria-label="COMMAND projection comparison"]')).not.toBeNull();
-    expect(
-      Array.from(rootElement.querySelectorAll("button")).some(
-        (button) => button.textContent === "Reveal Evidence"
       )
     ).toBe(false);
 
@@ -643,29 +572,6 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => runtime.setSnapshot({ ...runtime.getSnapshot(), diagnostics: [diagnostics[1]!] }));
 
     expect(document.activeElement).toBe(rootElement.querySelector('[aria-label="Dismiss Second condition"]'));
-    await act(async () => root.unmount());
-  });
-
-  it("uses the Evidence mode control when the Notifications focus fallback is disabled", async () => {
-    const rootElement = document.querySelector<HTMLElement>("#app");
-    if (!rootElement) throw new Error("missing app root");
-    const diagnostic = {
-      severity: "Warning" as const,
-      title: "Only condition",
-      affected: "Page",
-      detail: "Only detail",
-      dismissalId: "only"
-    };
-    const runtime = createTestRuntime(snapshot({ contextId: "command-projections", diagnostics: [diagnostic] }));
-    const root = createRoot(rootElement);
-    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
-
-    const dismiss = rootElement.querySelector<HTMLButtonElement>('[aria-label="Dismiss Only condition"]');
-    await act(async () => dismiss?.click());
-    await act(async () => runtime.setSnapshot({ ...runtime.getSnapshot(), diagnostics: [] }));
-
-    expect(rootElement.querySelector<HTMLButtonElement>('button[aria-controls="workbench-notifications"]')).toBeNull();
-    expect(document.activeElement?.textContent).toBe("Freeze Evidence");
     await act(async () => root.unmount());
   });
 
@@ -928,7 +834,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps the COMMAND projection summary in runtime-object Context", async () => {
+  it("keeps runtime-object Context free of COMMAND projection presentation", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const base = snapshot();
@@ -949,11 +855,11 @@ describe("React Workbench Diagnose panel", () => {
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
-    const projection = rootElement.querySelector<HTMLElement>('[aria-label="COMMAND projection summary"]');
-    expect(projection).not.toBeNull();
-    expect(projection?.textContent).toContain("Observed Server COMMAND State");
-    expect(projection?.textContent).toContain("Local Effective COMMAND State");
-    expect(projection?.textContent).toContain("Neither projection is Authoritative COMMAND State.");
+    expect(rootElement.querySelector('[aria-label="COMMAND projection summary"]')).toBeNull();
+    expect(rootElement.querySelector('[aria-label="COMMAND projection comparison"]')).toBeNull();
+    expect(rootElement.textContent).not.toContain("Observed Server COMMAND State");
+    expect(rootElement.textContent).not.toContain("Local Effective COMMAND State");
+    expect(rootElement.textContent).not.toContain("Compare COMMAND projections");
 
     await act(async () => root.unmount());
   });
@@ -1909,15 +1815,12 @@ describe("React Workbench Diagnose panel", () => {
     expect(region.textContent).toContain("Target");
     expect(region.textContent).toContain("sub-7");
     expect(region.textContent).toContain("Session S-9");
-    expect(region.textContent).toContain("Source evt-2 · immutable");
+    expect(region.querySelector('[data-protected-boundary="source"]')?.textContent).toContain("evt-2 · immutable");
     expect(region.textContent).toContain("LOCAL ONLY");
     expect(region.textContent).toContain("READY");
     expect(document.querySelector('[aria-label="Local Injection JSON"]')).toBeTruthy();
-    expect(document.querySelector('[aria-label="Immutable Injection Source JSON"]')).toBeTruthy();
-    const compare = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find(
-      (candidate) => candidate.textContent === "Compare Source"
-    );
-    expect(compare?.getAttribute("aria-pressed")).toBe("true");
+    expect(region.textContent).toContain("Immutable Source");
+    expect(region.textContent).toContain("Injection Draft");
     expect(region.textContent).not.toContain("Review Local Injection");
     const click = async (name: string) => {
       const button = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find(

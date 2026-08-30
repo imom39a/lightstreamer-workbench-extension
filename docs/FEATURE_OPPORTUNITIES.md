@@ -37,7 +37,7 @@ The accepted contracts now require:
 - Ordered Evidence to remain the dominant working surface.
 - Structural Topology to choose Scope rather than compete as a peer destination.
 - Runtime and selected-Evidence explanation to live in Context.
-- COMMAND projections, raw evidence, export, and Injection to open contextually while preserving the investigation.
+- Raw evidence, export, and Injection to open contextually while preserving the investigation; internal COMMAND state supports validation, Scenarios, Checkpoints, and diagnostics without a general-purpose state surface.
 - Scope, Filter, Find, selection, focus, Capture Operation, Observation Coverage, History Capacity, and Live/Frozen position to remain distinct.
 - One protected standalone target-anchored Local Injection Draft or one separate temporary Scenario. A Scenario is neither an inferred Draft Set nor a generic run-all queue.
 - New permanent surfaces and shared UI abstractions to pass the explicit evidence and maintainer-approval gates.
@@ -54,8 +54,8 @@ The redesigned production panel now provides:
 - A committed Evidence boundary, History Intervals, exact Clear cuts, retention advances, explicit Evidence Gaps, bounded commit recovery, and ownership-safe abnormal cleanup define the current history contract. New Panel Sessions start empty and never replay stale Evidence.
 - Independent Scope, text Filter, Find, Evidence selection, Context, and Live/Frozen state. Frozen Evidence continues Capture and reports newer matching Evidence.
 - Full committed-Evidence copy for the current interval plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in interval-bounded evidence, category redaction, and unconditional credential exclusion.
-- Named **Observed Server COMMAND State** and **Local Effective COMMAND State** projections.
-- One protected standalone Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, default Source/Draft comparison for captured updates, inline validation, direct labelled local delivery after atomic preflight revalidation, persistent outcome, and marked Local Evidence.
+- Ordered COMMAND lifecycle Evidence plus internal observed-server and local-effective derivations for validation, Scenarios, Checkpoints, and diagnostics.
+- One protected standalone Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, default Source comparison for captured Drafts, validation, direct explicit local delivery from the authoring preview, a persistent outcome, and marked Local Evidence.
 - Deterministic Local Injection Scenarios with one to 100 explicit single-target Steps, optional zero-Injection Checkpoints, an 8 MiB accounted-state boundary, immutable reviewed Runs, serial controls, Workbench-owned assertions, per-Step outcomes, and complete Scenario/Run/Step/Injection/request/Evidence correlation.
 - Scenario Checkpoints now include normalized Diagnostic Observation existence assertions against the shipped journal contract; richer selected-update inspection and full contextual diagnostics remain parallel enhancements rather than Scenario execution gates.
 - Primary public-API instrumentation plus WebSocket/TLCP fallback, including documented connection and subscription metadata, `onPropertyChange`, real maximum frequency, and second-level COMMAND error/loss callbacks.
@@ -452,7 +452,7 @@ Guardrails:
 
 - Visible Evidence is never implicit Scenario membership.
 - A Scenario is not a Draft Set or automatic queue.
-- Source comparison, validation, undo, target, and outcome remain per Scenario Step, and Scenario Review still seals the exact Steps into an immutable Run. The standalone default-comparison/direct-execution amendment does not collapse or bypass that Scenario boundary.
+- Current Source comparison, validation, undo, Review, target, and outcome remain per Draft.
 - Every execution remains Local Injection and never implies that an Item Update entered the server stream.
 
 Accepted decision: [ADR 0012 — Run Local Injection Scenarios as immutable single-target plans](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md).
@@ -690,9 +690,9 @@ Product boundaries to preserve:
 - Current-session operational storage, not implicit cross-session persistence.
 - Observational Capture and immutable Evidence.
 - Observed Activity derived from accepted Evidence only, with Scope, Filter, History Interval, Retained Range, Committed Evidence Boundary, Observation Coverage, and provenance visible at the aggregate decision boundary.
-- Explicitly marked Local Evidence and separate COMMAND projections.
+- Explicitly marked Local Evidence, captured Server Evidence, and separate internal COMMAND derivations.
 - One protected standalone Local Injection Draft or one explicitly authored Scenario; Workbench never activates or replaces either silently.
-- Consequential client/server operations explicit, reviewed, and scoped.
+- Consequential client/server operations explicit and scoped. A standalone Local Injection uses its authoring surface as the preview and atomically revalidates on direct execution; a Scenario still requires Review to seal its immutable Run.
 - No permanent surface or navigation category without the accepted UI gate.
 - No silent event sampling or partial aggregate presented as complete; Activity failure remains isolated from Capture and Event History.
 

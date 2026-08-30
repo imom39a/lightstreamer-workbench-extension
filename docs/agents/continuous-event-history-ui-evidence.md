@@ -64,19 +64,19 @@ ledger scroll, focus, or an open detail.
 
 Verification results:
 
-- `npm test`: 129 files; 1,595 passed and 1 intentionally skipped (1,430
+- `npm test`: 129 files; 1,592 passed and 1 intentionally skipped (1,427
   ordinary plus 165 serialized IndexedDB tests).
 - `npm run typecheck`, `npm run docs:check`, `git diff --check`, and
-  `npm run build`: passed. The release build transformed 116 modules and passed
+  `npm run build`: passed. The release build transformed 115 modules and passed
   the MV3/CSP/self-contained-script verification.
-- `LSEW_UI_PORT=4414 CI=1 npm run test:ui`: 200/200 passed, including all 80
+- `LSEW_UI_PORT=4423 CI=1 npm run test:ui`: 196/196 passed, including all 78
   maintained Darwin visual baselines.
 - `npm run test:ui:extension`: passed the production panel, same-tab dual-panel,
   authentic panel-disposal, and session-journal cleanup proofs.
 - `CI=1 npm run fixture:test:browser`: 7/7 official-client browser tests passed.
-- `npm run release:package`: passed and produced the 444,461-byte deterministic
+- `npm run release:package`: passed and produced the 442,146-byte deterministic
   ZIP within the 1 MiB release budget.
-- `npm run test:ui:visual`: 89/89 captures; 0 browser diagnostics; 0 shell or
+- `npm run test:ui:visual`: 87/87 captures; 0 browser diagnostics; 0 shell or
   document horizontal overflows; 0 serious or critical findings across 80
   axe-checked states; 71/71 focus-checked states remained visible and unobscured.
 
@@ -94,6 +94,6 @@ the intended Notifications/footer ownership, legible retained/accepted/storage
 meter, clear hierarchy and focus cues, and no visible clipping, overlap,
 inaccessible action, misleading severity, or duplicate announcement.
 
-All 80 Darwin baselines changed intentionally because the compact History meter
-moved into the existing footer as `<retained>/<accepted> Evidence · <storage>`.
+All 78 maintained Darwin baselines changed intentionally because the compact
+History meter moved into the existing footer as `<retained>/<accepted> Evidence · <storage>`.
 The change does not add a surface or control. Maintainer disposition: accepted.

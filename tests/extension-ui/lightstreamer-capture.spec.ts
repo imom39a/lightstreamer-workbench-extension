@@ -524,38 +524,22 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       ).toBe(true);
       await waitForCondition(
         panelCdp,
-        `(() => {
-          const compare = [...document.querySelectorAll("button")]
-            .find((button) => button.textContent?.trim() === "Compare Source");
-          return compare?.getAttribute("aria-pressed") === "true" &&
-            Boolean(document.querySelector('[aria-label="Immutable Injection Source JSON"]'));
-        })()`,
-        "the captured Source comparison to be open by default"
+        `[...document.querySelectorAll("button")].some(
+          (button) => button.textContent?.trim() === "Compare Source" && button.getAttribute("aria-pressed") === "true"
+        )`,
+        "the captured Draft to open with Source comparison active"
       );
       await clickPanelButton(panelCdp, "Compare Source");
-      try {
-        await waitForCondition(
-          panelCdp,
-          `(() => {
-            const text = document.querySelector('[aria-label="Local Injection JSON"]')?.textContent ?? "";
-            return text.includes('"modelValues": {') &&
-              text.includes('"messageId": "fixture-1"') &&
-              !text.includes('\\\\"messageId\\\\"');
-          })()`,
-          "the captured JSON-string field to expand as structured editor JSON"
-        );
-      } catch (error) {
-        const editorProof = await evaluateByValue(panelCdp, `(() => {
-          const editor = document.querySelector('[aria-label="Local Injection JSON"]');
-          const compare = [...document.querySelectorAll("button")]
-            .find((button) => button.textContent?.trim() === "Compare Source");
-          return {
-            text: editor?.textContent ?? "",
-            comparePressed: compare?.getAttribute("aria-pressed") ?? null
-          };
-        })()`);
-        throw new Error(`${error instanceof Error ? error.message : String(error)}\nEditor proof: ${JSON.stringify(editorProof)}`);
-      }
+      await waitForCondition(
+        panelCdp,
+        `(() => {
+          const text = document.querySelector('[aria-label="Local Injection JSON"]')?.textContent ?? "";
+          return text.includes('"modelValues": {') &&
+            text.includes('"messageId": "fixture-1"') &&
+            !text.includes('\\\\"messageId\\\\"');
+        })()`,
+        "the captured JSON-string field to expand as structured editor JSON"
+      );
       await expect
         .poll(
           () =>
@@ -586,12 +570,21 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         `
           [...document.querySelectorAll("button")].some(
             (button) => button.textContent?.trim() === "Inject locally" && !button.disabled
-          ) &&
-          ![...document.querySelectorAll("button")].some(
-            (button) => button.textContent?.trim() === "Review Local Injection"
           )
         `,
         "the edited Local Injection document to become directly executable"
+      );
+      await waitForCondition(
+        panelCdp,
+        `
+          [...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.trim() === "Inject locally" && !button.disabled
+          ) &&
+          [...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.trim() === "Compare Source"
+          )
+        `,
+        "the directly executable Local Injection and its Source comparison"
       );
       await clickPanelButton(panelCdp, "Inject locally");
       await waitForCondition(
@@ -636,30 +629,15 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         await clearPanelEvidenceSelection(panelCdp);
         await waitForCondition(
           panelCdp,
-          `document.querySelector('[aria-label="COMMAND projection summary"]')?.textContent
-            ?.includes("Projections differ")`,
-          "runtime-object Context to expose the divergent COMMAND summary"
+          `!document.querySelector('[aria-label="COMMAND projection summary"]') &&
+            !document.querySelector('[aria-label="COMMAND projection comparison"]') &&
+            ![...document.querySelectorAll("button")].some(
+              (button) => button.textContent?.includes("COMMAND projections")
+            ) &&
+            !document.body.textContent?.includes("Observed Server COMMAND State") &&
+            !document.body.textContent?.includes("Local Effective COMMAND State")`,
+          "runtime-object Context to remain free of COMMAND projection presentation"
         );
-        await pressVisiblePanelButton(panelCdp, "Compare COMMAND projections");
-        await waitForCondition(
-          panelCdp,
-          `document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
-              ?.includes("Attention - real Lightstreamer client.") &&
-            document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent
-              ?.includes(${JSON.stringify(editedMessage)})`,
-          "the promoted comparison to expose the divergent COMMAND rows"
-        );
-        const projectionProof = await evaluateByValue<{
-          observed: string;
-          localEffective: string;
-        }>(panelCdp, `({
-          observed: document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent ?? "",
-          localEffective: document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent ?? ""
-        })`);
-        expect(projectionProof.observed).toContain("Attention - real Lightstreamer client.");
-        expect(projectionProof.observed).not.toContain(editedMessage);
-        expect(projectionProof.localEffective).toContain(editedMessage);
-        await clickPanelButton(panelCdp, "Back to Evidence");
       }
 
       if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
@@ -705,17 +683,10 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       await replaceLocalInjectionJson(panelCdp, JSON.stringify(authoredDocument, null, 2));
       await waitForCondition(
         panelCdp,
-        `(() => {
-          const inject = [...document.querySelectorAll("button")]
-            .find((button) => button.textContent?.trim() === "Inject locally");
-          const compare = [...document.querySelectorAll("button")]
-            .find((button) => button.textContent?.trim() === "Compare Source");
-          return Boolean(inject && !inject.disabled) && Boolean(compare?.disabled) &&
-            ![...document.querySelectorAll("button")].some(
-              (button) => button.textContent?.trim() === "Review Local Injection"
-            );
-        })()`,
-        "the authored Local Injection to become directly executable without a Source comparison"
+        `[...document.querySelectorAll("button")].some(
+          (button) => button.textContent?.trim() === "Inject locally" && !button.disabled
+        )`,
+        "the authored document to become directly executable"
       );
       await clickPanelButton(panelCdp, "Inject locally");
       await waitForCondition(
@@ -829,6 +800,14 @@ async function runOfficialClientScenarioJourney(
       document.querySelector('[aria-label="Step 1 Local Injection JSON"][contenteditable="true"]')`,
     "the temporary Scenario document"
   );
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll('[aria-label="Local Injection Scenario"] button')].some(
+      (button) => button.textContent?.trim() === "Compare Source" && button.getAttribute("aria-pressed") === "true"
+    )`,
+    "the captured Scenario Step to retain Source comparison"
+  );
+  await clickPanelButton(panelCdp, "Compare Source");
 
   const documents = [
     {
@@ -946,25 +925,15 @@ async function runOfficialClientScenarioJourney(
   await clearPanelEvidenceSelection(panelCdp);
   await waitForCondition(
     panelCdp,
-    `document.querySelector('[aria-label="COMMAND projection summary"]')`,
-    "the runtime Scope to restore after the Scenario"
+    `!document.querySelector('[aria-label="COMMAND projection summary"]') &&
+      !document.querySelector('[aria-label="COMMAND projection comparison"]') &&
+      ![...document.querySelectorAll("button")].some(
+        (button) => button.textContent?.includes("COMMAND projections")
+      ) &&
+      !document.body.textContent?.includes("Observed Server COMMAND State") &&
+      !document.body.textContent?.includes("Local Effective COMMAND State")`,
+    "the restored runtime Scope to remain free of COMMAND projection presentation"
   );
-  await pressVisiblePanelButton(panelCdp, "Compare COMMAND projections");
-  await waitForCondition(
-    panelCdp,
-    `document.querySelector('[aria-label="Observed Server COMMAND State"]') &&
-      document.querySelector('[aria-label="Local Effective COMMAND State"]')`,
-    "the final Observed Server and Local Effective projections"
-  );
-  const projections = await evaluateByValue<{ observed: string; localEffective: string }>(panelCdp, `({
-    observed: document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent ?? "",
-    localEffective: document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent ?? ""
-  })`);
-  expect(projections.observed).toContain("fixture-message.TICKER");
-  expect(projections.observed).toContain("Attention - real Lightstreamer client.");
-  expect(projections.observed).not.toContain(scenarioKey);
-  expect(projections.localEffective).toContain("fixture-message.TICKER");
-  expect(projections.localEffective).not.toContain(scenarioKey);
 }
 
 async function replaceScenarioStepJson(

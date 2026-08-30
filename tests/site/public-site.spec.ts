@@ -67,10 +67,10 @@ test("desktop home presents release-current capabilities without overflow", asyn
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("");
 
-  await expect(page.getByRole("heading", { name: "See the Lightstreamer runtime. Keep the evidence." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Debug Lightstreamer in Chrome DevTools." })).toBeVisible();
   await expect(page.getByRole("img", { name: /Runtime Scope, Ordered Evidence/ })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Everything you need to investigate a stream." })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Notifications without noise" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Inspect Lightstreamer activity." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review Notifications" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Open the developer guide" }).first()).toHaveAttribute(
     "href",
     "/lightstreamer-workbench-extension/docs/developer-guide/"
@@ -86,7 +86,7 @@ test("mobile home and documentation keep navigation and calls to action usable",
 
   await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Add to Chrome" }).first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "See the Lightstreamer runtime. Keep the evidence." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Debug Lightstreamer in Chrome DevTools." })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
   await page
@@ -101,11 +101,11 @@ test("mobile home and documentation keep navigation and calls to action usable",
   await attachScreenshot(page, testInfo, "mobile-docs");
 });
 
-test("developer guide covers the complete investigation and reproduction workflow", async ({ page }) => {
+test("developer guide covers the complete inspection and Local Injection workflow", async ({ page }) => {
   await page.goto("docs/developer-guide/");
-  await expect(page.getByRole("heading", { name: "A repeatable investigation workflow" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Triage Notifications without losing Evidence" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Reproduce behavior with Local Injection" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Inspect Lightstreamer activity" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review Notifications" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Test behavior with Local Injection" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Keyboard essentials" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });

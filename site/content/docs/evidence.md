@@ -5,34 +5,36 @@
 - **Find** navigates matches without changing the Evidence set.
 - **Selection** identifies the Evidence explained in Context.
 
-Workbench preserves these states independently. A filtered-out selected event remains recoverable through explicit Reveal or Clear selection actions.
+Workbench keeps these states independent. If a Filter hides the selected event, use **Reveal** or **Clear selection**.
 
 ## Read an Evidence row
 
-The left order rail shows authoritative retained Event sequence independently of the timestamp. The remaining row presents Evidence meaning first, then timestamp, Source, snapshot/live phase, COMMAND operation, runtime object, and key. This hierarchy remains readable when event identities reach five digits or runtime names are long.
+The left rail shows the retained Event order. The timestamp has a separate position. The rest of the row shows the Evidence meaning, Source, phase, COMMAND operation, runtime object, and key.
 
-## Canonical faceted filtering
+## Use Filter
 
-Filter state is one typed, revisioned descriptor for the whole Panel Session. The shared algebra owns evaluation and mutation; `evidence-facets.ts` owns facet extraction and canonical search text; the bounded Evidence query owns planning, discovery, Find, paging, and restoration. IndexedDB and memory implement that same query contract, so a session cannot mix an older scalar filter, renderer predicate, or full-history filtering read with the shipped semantics. Future facets extend the descriptor catalog and query contract at that seam rather than adding a presentation-specific filter path.
+Filter applies to the Panel Session. You can add criteria without changing unrelated criteria. Workbench uses the same filter rules for IndexedDB and memory history.
 
-## Live and Frozen investigation
+## Use Live and Frozen
 
-**Live** follows the newest matching Evidence. **Frozen** preserves the historical window, selection, and scroll anchor while Capture continues. Newer matching Evidence is counted rather than stealing focus.
+**Live** follows the newest matching Evidence. **Frozen** keeps the historical window, selection, and scroll position. Capture continues. Workbench counts new matching Evidence and does not move focus.
 
-Live/Frozen position does not start or stop Capture. Likewise, Capture state does not silently discard history or force the Evidence view to follow.
+Live or Frozen does not start or stop Capture. Capture does not delete history or change the Live or Frozen state.
 
 ## Retained history
 
-One Panel Session owns one temporary Event History. The normal IndexedDB tier supports 100,000 retained Evidence records or 256 MiB of canonical replay-complete journal bytes; the startup memory fallback supports 5,000 records or 32 MiB. The first independent limit reached controls admission, and the selected adapter does not switch during the session. The DOM stays bounded even when 100,000 events are retained. Use Oldest, Older, Newer, and Newest to move through retained regions.
+One Panel Session owns one temporary Event History. IndexedDB can keep up to 100,000 Evidence records or 256 MiB. The memory fallback can keep up to 5,000 records or 32 MiB. The first count or byte limit stops admission. Workbench does not change the storage type during the Panel Session. Use **Oldest**, **Older**, **Newer**, and **Newest** to move through retained Evidence.
 
-Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary. A journal failure or History Capacity breach stops acceptance fail-closed at that boundary; refused or failed candidates do not become Evidence or advance projections. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen position remain independent.
+Complete History ends at the current History Interval's Committed Evidence Boundary. A journal failure or History Capacity limit stops the admission of new Evidence at this boundary. A refused or failed event does not become Evidence. It also does not change derived COMMAND state. Capture, Coverage, History Capacity, and Live or Frozen remain independent.
 
-**Clear retained Evidence** makes an exact History Interval cut, regardless of active Scope or Filter. It is deliberately separated from routine controls and requires inline confirmation; it cannot restart Capture after a terminal stop. Controlled Close attempts erasure of the owned journal. Abnormal termination may defer cleanup to a later ownership-safe sweep, residual data may remain until Chrome next runs the extension, and a new Panel Session never replays stale Evidence.
+**Clear retained Evidence** ends the current History Interval. Scope and Filter do not change this boundary. Workbench requires confirmation before it clears the Evidence. Clear cannot restart Capture after a terminal stop.
+
+A controlled Close tries to erase the Event History. An abnormal stop can prevent this action. Residual data can remain until Chrome runs the extension again. A new Panel Session does not load Evidence from an earlier Panel Session.
 
 ## Evidence provenance
 
-`SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` remain textual. A Local Injected Update is not presented as a Server Update, and a COMMAND verb such as `ADD`, `UPDATE`, or `DELETE` is not treated as success or severity.
+Workbench shows `SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` as text. It does not show a Local Injected Update as a Server Update. `ADD`, `UPDATE`, and `DELETE` are COMMAND operations, not result or severity values.
 
 ## Diagnostics are not Evidence filters
 
-Notifications spans the Panel Session and has its own Code, Severity, and Affected filters. Opening or filtering Notifications does not change Evidence Scope, Filter, Find, selection, Live/Frozen state, or retained history. Dismissing an active footer condition changes only that footer presentation; it does not remove the notification or supporting Evidence.
+Notifications applies to the Panel Session. It has Code, Severity, and Affected filters. These filters do not change Evidence Scope, Filter, Find, selection, Live or Frozen state, or retained history. **Dismiss** hides the footer message. It does not remove the notification or supporting Evidence.

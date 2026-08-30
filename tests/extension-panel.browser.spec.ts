@@ -413,7 +413,8 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       })`);
       assert.match(proof.scope, /Inspected page/);
       assert.match(proof.evidence, /Ordered Evidence/);
-      assert.match(proof.context, /Observed Server COMMAND State/);
+      assert.match(proof.context, /Inspected page/);
+      assert.doesNotMatch(proof.context, /COMMAND State|COMMAND projections/);
       assert.equal(proof.activityTimelineCount, 1, "The shipped panel owns one integrated Activity timeline.");
       assert.match(proof.activitySources, /SERVER/);
       assert.match(proof.activitySources, /LOCAL/);

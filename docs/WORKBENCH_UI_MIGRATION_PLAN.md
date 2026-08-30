@@ -6,13 +6,16 @@ Historical note (2026-08-09): version 2 subsequently retired product analytics.
 References below to analytics describe the parity target during the original UI
 cutover, not current product behavior.
 
-Historical note (2026-08-29): the standalone Local Injection workflow later
-made captured Source/Draft comparison the default authoring preview and exposed
-**Inject locally** on that same surface. It no longer presents the separate
-standalone Review screen described in the completed Slice 2 record below. The
-runtime still atomically freezes, fingerprints, and revalidates the payload and
-target immediately before dispatch. This amendment does not change Scenario
-Review, which continues to seal an immutable multi-Step Run.
+Historical note (2026-08-29): the product later removed the general-purpose
+COMMAND projection summary and comparison. The internal observed-server and
+local-effective derivations remain in use for validation, Scenarios,
+Checkpoints, and diagnostics. Projection UI references below describe the
+original migration target rather than current presentation.
+
+Historical note (2026-08-29): captured standalone Local Injection Drafts now
+open with Source comparison active and execute directly from the authoring
+preview. References below to an optional comparison and separate standalone
+Review describe the original migration target. Scenario Review is unchanged.
 
 This document records the completed move from the feature-first DOM renderer to the accepted [integrated Workbench direction](../prototypes/workbench-ui-10/README.md). The original slice gates and fallback reasoning remain as implementation history; the current production state is authoritative wherever it differs from an earlier slice description.
 
@@ -108,7 +111,8 @@ React components do not subscribe directly to Capture, history, bridge, or analy
 - Load the editor and merge packages lazily when a Local Injection or comparison document opens. They are not part of the initial panel chunk.
 - Do not use Monaco. Its broader VS Code feature and worker surface is unnecessary for this focused raw-JSON workflow.
 - The default surface is an editable raw JSON Draft. It is not a generated field-by-field form.
-- Optional Source comparison uses CodeMirror's two-sided merge presentation with one shared outer scroll owner. The Source is immutable and matched to the Draft by Evidence identity.
+- Captured Source comparison is active by default and uses CodeMirror's two-sided merge presentation with one shared outer scroll owner. The Source is immutable and matched to the Draft by Evidence identity; the developer may close or reopen the comparison.
+- The authoring surface is also the standalone preview and exposes the labelled **Inject locally** action. Execution atomically freezes, fingerprints, and revalidates the Draft and target without a separate standalone Review document.
 - Long unchanged regions may collapse; each Draft event boundary may also be minimized without hiding its identity, target, validation problem, or outcome state.
 - Current production behavior contains exactly one Draft event. Visible Evidence never joins it automatically.
 

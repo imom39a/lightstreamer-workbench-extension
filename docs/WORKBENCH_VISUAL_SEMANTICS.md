@@ -132,16 +132,11 @@ Raw JSON syntax styling describes document structure only. Workbench semantics r
 
 Do not recolor raw keys or values to imply provenance, mutability, validity, or COMMAND meaning. Application-controlled field names and values never select semantic colors.
 
-## COMMAND projections
+## COMMAND lifecycles
 
-Always show the full projection names at the comparison boundary:
+Present COMMAND behavior through ordered `ADD`, `UPDATE`, and `DELETE` Evidence, explicit key identity, Fields, snapshot/live phase, and relevant diagnostics. Keep each operation neutral: a lifecycle verb is not a success state or diagnostic severity.
 
-- **Observed Server COMMAND State** — captured Server Updates only;
-- **Local Effective COMMAND State** — Server Updates plus successfully delivered Local Injected Updates for one Subscription.
-
-When the projection is incomplete, state the evidence limit beside its name. If the projections differ, name the contributing Local Injection where known and explain that Workbench's local projection advanced while the observed Server projection did not.
-
-Neither projection is **Authoritative COMMAND State**. That limitation remains visible before a developer relies on the comparison. Difference markers such as `changed` or `new` are projection comparisons, not COMMAND operations, and must not reuse `ADD`, `UPDATE`, or `DELETE` semantics.
+Do not add a general reconstructed-state summary, matching/different marker, comparison document, or neutral doorway. Internal COMMAND state supports validation, Scenarios, Checkpoints, and diagnostic production without becoming a permanent visual surface or implying Authoritative COMMAND State.
 
 ## Local Injection
 
@@ -189,10 +184,10 @@ Rejected as the earlier variable-row universal ledger grammar. The approved 2026
 
 ## Verification evidence
 
-The disposable [workbench-ui-08 prototype](../prototypes/workbench-ui-08/README.md) provides the selected Plain Ledger and the two rejected contrasts over one deterministic Lightstreamer scenario. The later [workbench-ui-12 prototype](../prototypes/workbench-ui-12/README.md) records the maintainer-approved Scope priority blocks and Order rail amendment. Browser review covered populated and long-identity Scope, ordered Evidence, mixed Server and Local Evidence, degraded Capture, Frozen high volume, projection comparison, immutable raw Server evidence, empty Scope, and ready, invalid, stale-target, delivered, and failed Local Injection states.
+The disposable [workbench-ui-08 prototype](../prototypes/workbench-ui-08/README.md) provides the selected Plain Ledger and the two rejected contrasts over one deterministic Lightstreamer scenario. The later [workbench-ui-12 prototype](../prototypes/workbench-ui-12/README.md) records the maintainer-approved Scope priority blocks and Order rail amendment. Browser review covered populated and long-identity Scope, ordered Evidence, mixed Server and Local Evidence, degraded Capture, Frozen high volume, immutable raw Server evidence, empty Scope, and ready, invalid, stale-target, delivered, and failed Local Injection states.
 
 The selected model and contrasts were exercised at compact `563×700`, normal `900×700`, shallow `900×320`, and wide `1440×900` geometries in representative Dark and Light themes. Checks covered shell and pane overflow, textual provenance, non-color meaning, persistent Injection outcomes, keyboard isolation, and browser console errors. Type checking, extension build, JavaScript syntax checking, and whitespace validation passed. No production panel behavior changed.
 
 ## Vocabulary resolution
 
-Plain Ledger is presentation language rather than a new Lightstreamer domain concept. This decision uses the existing Capture, Injection Source, Injection Draft, Injection Outcome, Local Injection Target, Server Update, Injected Update, Observed Server COMMAND State, Local Effective COMMAND State, and Authoritative COMMAND State vocabulary. No `CONTEXT.md` change is required.
+Plain Ledger is presentation language rather than a new Lightstreamer domain concept. This decision uses the existing Capture, Injection Source, Injection Draft, Injection Outcome, Local Injection Target, Server Update, Injected Update, and internal COMMAND-state vocabulary. No `CONTEXT.md` change is required.

@@ -28,7 +28,6 @@ import {
 import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filter-actions";
 import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
-import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
 import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
 import { NotificationsDocument } from "./notifications-document";
@@ -591,13 +590,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const inspectingNotification = useRef(false);
   const scopeTrigger = useRef<HTMLButtonElement | null>(null);
   const contextLens = useRef<HTMLElement | null>(null);
-  const commandProjectionTrigger = useRef<HTMLButtonElement | null>(null);
   const workbenchRoot = useRef<HTMLElement | null>(null);
-  const commandProjectionEvidenceScrollTop = useRef(0);
-  const previousCommandProjectionContext = useRef(false);
-  const pendingCommandProjectionReturnFocus = useRef<
-    { target: "trigger" } | { target: "evidence"; eventId: string } | null
-  >(null);
   const scopeSplitter = useRef<HTMLDivElement | null>(null);
   const contextSplitter = useRef<HTMLDivElement | null>(null);
   const scopeRestore = useRef<HTMLButtonElement | null>(null);
@@ -764,15 +757,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
 
   const compactSurface = snapshot.contextId === "context:scope" ? "scope" : snapshot.contextId ? "context" : undefined;
   const rawEvidence = snapshot.contextId?.startsWith("raw:") ? selected : null;
-  const commandProjectionComparison = snapshot.contextId === "command-projections";
   const notificationsOpen = snapshot.contextId === "notifications";
   const notificationSeverity = snapshot.notifications.filter.options.diagnosticSeverity.some(({ value, count }) => value.value === "error" && count > 0)
     ? "Error"
     : snapshot.notifications.filter.options.diagnosticSeverity.some(({ value, count }) => value.value === "warning" && count > 0)
       ? "Warning"
       : null;
-  const supportingProjectionEvidenceId =
-    snapshot.commandProjections.localEffective.supportingLocalEvidenceId ?? null;
   const localInjection = snapshot.localInjection;
   const localInjectionDraft = localInjection.draft;
   const notificationsPresented = notificationsOpen && !localInjectionDraft?.open && !snapshot.scenario;
@@ -781,7 +771,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     : snapshot.contextId === "context:export"
       ? "export"
       : "inspect";
-  const workspaceAvailable = !localInjectionDraft?.open && !snapshot.scenario && !commandProjectionComparison && !rawEvidence && !notificationsOpen;
+  const workspaceAvailable = !localInjectionDraft?.open && !snapshot.scenario && !rawEvidence && !notificationsOpen;
   const scopeIsPresented = geometry === "wide"
     ? !scopeCollapsed
     : geometry === "compact"
@@ -1580,62 +1570,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [contextMode, contextCollapsed, snapshot.contextId]);
 
   useLayoutEffect(() => {
-    const wasOpen = previousCommandProjectionContext.current;
-    if (wasOpen && !commandProjectionComparison) {
-      const returnFocus = pendingCommandProjectionReturnFocus.current;
-      pendingCommandProjectionReturnFocus.current = null;
-      window.requestAnimationFrame(() => {
-        if (returnFocus?.target === "evidence") {
-          const evidenceTarget = evidenceRows.current.get(returnFocus.eventId);
-          if (evidenceTarget) evidenceTarget.focus({ preventScroll: true });
-          else commandProjectionTrigger.current?.focus();
-        } else {
-          commandProjectionTrigger.current?.focus();
-        }
-        window.requestAnimationFrame(() => {
-          if (evidenceLedger.current) {
-            evidenceLedger.current.scrollTop = commandProjectionEvidenceScrollTop.current;
-          }
-        });
-      });
-    }
-    previousCommandProjectionContext.current = commandProjectionComparison;
-  }, [commandProjectionComparison, snapshot.evidence.focusedEventId, snapshot.selectionEventId]);
-
-  const closeCommandProjectionComparison = (action: "back" | "reveal") => {
-    const eventId = action === "reveal"
-      ? supportingProjectionEvidenceId
-      : snapshot.evidence.focusedEventId ?? snapshot.selectionEventId;
-    pendingCommandProjectionReturnFocus.current = eventId
-      ? { target: "evidence", eventId }
-      : { target: "trigger" };
-    dispatch(runtime, { type: "close-command-projection-comparison" });
-    if (action === "reveal" && eventId) {
-      dispatch(runtime, { type: "focus-evidence", eventId });
-    }
-    if (geometry === "compact") {
-      dispatch(runtime, { type: "set-context", contextId: null });
-    }
-  };
-
-  const openCommandProjectionComparison = () => {
-    commandProjectionEvidenceScrollTop.current = evidenceLedger.current?.scrollTop ?? 0;
-    dispatch(runtime, { type: "open-command-projection-comparison" });
-  };
-
-  const revealSupportingProjectionEvidence = () => {
-    const eventId = supportingProjectionEvidenceId;
-    if (!eventId) return;
-    dispatch(runtime, { type: "focus-evidence", eventId });
-    if (geometry === "compact") {
-      pendingEvidenceFocus.current = eventId;
-      dispatch(runtime, { type: "set-context", contextId: null });
-      return;
-    }
-    window.requestAnimationFrame(() => evidenceRows.current.get(eventId)?.focus());
-  };
-
-  useLayoutEffect(() => {
     if (findOpen) findInput.current?.focus();
   }, [findOpen]);
 
@@ -1858,14 +1792,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         onCommand={(command) => dispatch(runtime, command)}
         onInspect={inspectNotification}
       />
-      {localInjectionDraft?.open || snapshot.scenario ? null : commandProjectionComparison ? <CommandProjectionComparison
-        scope={scopeLabel}
-        capture={snapshot.capture}
-        projections={snapshot.commandProjections}
-        hasSupportingLocalEvidence={Boolean(supportingProjectionEvidenceId)}
-        onBack={() => closeCommandProjectionComparison("back")}
-        onRevealEvidence={() => closeCommandProjectionComparison("reveal")}
-      /> : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
+      {localInjectionDraft?.open || snapshot.scenario ? null : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
         <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Complete raw Evidence</span><strong>{rawEvidence.id} · immutable {rawEvidence.source} Evidence</strong></div><div className="workbench-react__document-actions"><button type="button" onClick={() => void copyRawEvidence()}>Copy raw Evidence</button><button type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
         <div className="workbench-react__document-boundary"><span>Source <strong>{rawEvidence.source}</strong></span><span>Phase <strong>{rawEvidence.phase}</strong></span><span>Mutable <strong>NO</strong></span></div>
         <p className="workbench-react__document-status" role="status">{copyStatus}</p>
@@ -1986,13 +1913,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
                 <dl className="workbench-react__context-fields">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               </details> : <dl className="workbench-react__context-fields" aria-label="Runtime metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>}
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
-              {!selected ? <CommandProjectionContextSummary
-                projections={snapshot.commandProjections}
-                hasSupportingLocalEvidence={Boolean(supportingProjectionEvidenceId)}
-                compareButtonRef={commandProjectionTrigger}
-                onCompare={openCommandProjectionComparison}
-                onRevealEvidence={revealSupportingProjectionEvidence}
-              /> : null}
               <div className="workbench-react__context-actions">
                 {selected ? <>
                   <button
@@ -2085,7 +2005,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         >{historyStatus.retained.toLocaleString()}/{historyStatus.accepted.toLocaleString()} Evidence · {snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}</span><button
               ref={notificationsTrigger}
               type="button"
-              disabled={Boolean(localInjectionDraft?.open || snapshot.scenario || commandProjectionComparison || rawEvidence)}
+              disabled={Boolean(localInjectionDraft?.open || snapshot.scenario || rawEvidence)}
               aria-expanded={notificationsPresented}
               aria-controls={notificationsPresented ? "workbench-notifications" : undefined}
               onClick={() => notificationsOpen ? dispatch(runtime, { type: "close-notifications" }) : openNotifications()}

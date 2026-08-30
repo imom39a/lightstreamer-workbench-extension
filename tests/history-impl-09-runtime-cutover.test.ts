@@ -41,7 +41,6 @@ describe("history-impl-09 runtime cutover", () => {
     });
 
     expect(runtime.getSnapshot().evidence.total).toBe(0);
-    expect(runtime.getSnapshot().commandProjections.observed.rows).toHaveLength(0);
 
     commit.resolve();
     await settle();
@@ -50,7 +49,6 @@ describe("history-impl-09 runtime cutover", () => {
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual([
       expect.any(String)
     ]);
-    expect(runtime.getSnapshot().commandProjections.observed.rows).toHaveLength(1);
 
     runtime.dispose();
     runtime.dispose();

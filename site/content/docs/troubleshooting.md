@@ -1,34 +1,36 @@
 ## No Lightstreamer activity appears
 
 1. Confirm the page uses the official Lightstreamer Web Client.
-2. Open DevTools before reloading the inspected page so instrumentation can attach before clients are created.
+2. Open DevTools before you reload the inspected page.
 3. Check Capture operation and Observation Coverage in the operating strip.
-4. Return to Page Scope and clear any active Filter before concluding that Evidence is absent.
+4. Return to Page Scope.
+5. Clear the active Filter.
+6. Reload the page.
 
 ## Coverage is limited
 
-Follow the specific recovery guidance shown by Workbench. Common causes include late attachment, an unsupported client shape, or fallback observation that cannot provide the same semantic detail as primary Web Client instrumentation.
+Do the recovery action that Workbench shows. Common causes are late attachment, an unsupported client, or a fallback observation method with less data.
 
-Limited Coverage means conclusions need qualification. It does not automatically invalidate Evidence that was captured.
+Limited Coverage does not make captured Evidence invalid. State the Coverage limit when you make a conclusion from missing data.
 
 ## History uses the in-memory fallback
 
-IndexedDB is unavailable in the panel context. Evidence remains usable for the current Panel Session, but the startup memory adapter has the lower 5,000-record/32 MiB History Capacity rather than the normal 100,000-record/256 MiB tier. The selected adapter is fixed for the session; Workbench does not migrate from memory to IndexedDB after Capture begins. This fallback changes History Capacity, not Observation Coverage by itself. Restore IndexedDB availability and open a new Panel Session when you need the normal tier; a new session starts empty and does not recover or replay a prior session.
+IndexedDB is not available in the panel. The memory fallback can keep 5,000 Evidence records or 32 MiB. IndexedDB can keep 100,000 records or 256 MiB. Workbench does not change the storage type after Capture starts. The memory fallback changes History Capacity. It does not reduce Coverage by itself. Restore IndexedDB and open a new Panel Session when you need the larger capacity. The new Panel Session starts empty.
 
 ## Capture stopped at a history boundary
 
-Event History stops accepting new Evidence fail-closed when a journal failure or History Capacity limit is reached. The final Committed Evidence Boundary identifies the last trustworthy Evidence; accepted queued work may drain in Capture order, but refused or failed candidates never become Evidence or advance projections. Clear cannot restart a terminally stopped Capture. Use the typed History condition in the global footer for the cause, boundary, retained range, and recovery route.
+Event History stops the admission of new Evidence after a journal failure or History Capacity limit. The final Committed Evidence Boundary identifies the last committed Evidence. Workbench can still commit accepted queued work in Capture order. A refused or failed event does not become Evidence or change derived COMMAND state. Clear cannot restart Capture after a terminal stop. Read the History condition in the footer for the cause, boundary, retained range, and recovery action.
 
 ## Closing or reopening the panel
 
-Controlled Close attempts to erase the Panel Session's owned temporary journal and reports whether erasure was confirmed. An abnormal browser, DevTools, renderer, or extension termination cannot guarantee an unload callback; a later ownership-safe sweep may remove an orphaned Workbench journal while preserving active owners and unknown generations. Residual data can therefore remain until Chrome next runs the extension, but it is never replayed into a new Panel Session.
+A controlled Close tries to erase the Panel Session's temporary Event History. Workbench reports whether it confirmed this action. An abnormal stop can prevent the action. A later cleanup can remove an unused Workbench journal without changing active journals. Residual data can remain until Chrome runs the extension again. A new Panel Session does not load this data.
 
 ## Local Injection is unavailable
 
-Check that the target Subscription is live, the selected Evidence is compatible, and no protected Draft already owns another target. Retired objects remain readable but cannot receive Local Injection.
+Confirm that the target Subscription is live. Confirm that the selected Evidence is compatible. Close a protected Draft or Scenario that owns a different target. You can inspect retired objects, but they cannot receive Local Injection.
 
 ## The panel still looks like the previous product
 
-Check the version on the [Release notes]({{site}}releases/) page and in Chrome's extension details. Version 2.0.0 is the first Store release of the unified workspace.
+Check the version on the [Release notes]({{site}}releases/) page. Then check the version in Chrome extension details. Version 2.0.0 is the first Store release with the current workspace.
 
-Still stuck? Choose the appropriate route on [Support]({{site}}support/) and sanitize all payloads before posting publicly.
+If the problem continues, use [Support]({{site}}support/). Remove private data from all payloads before you post them.

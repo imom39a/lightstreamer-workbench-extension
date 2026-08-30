@@ -45,8 +45,8 @@ function sourceLabel(localInjection: WorkbenchLocalInjectionSnapshot): string {
   const draft = localInjection.draft;
   if (!draft) return "No Injection Source";
   return draft.source.kind === "captured-event"
-    ? `Source ${draft.anchor.sourceEventId ?? "Unknown"} · immutable`
-    : "Source None · newly authored";
+    ? `${draft.anchor.sourceEventId ?? "Unknown"} · immutable`
+    : "Newly authored";
 }
 
 function phaseLabel(localInjection: WorkbenchLocalInjectionSnapshot): string {
@@ -67,7 +67,7 @@ function deliveryCounts(localInjection: WorkbenchLocalInjectionSnapshot): string
 function validationLabel(localInjection: WorkbenchLocalInjectionSnapshot): string {
   const draft = localInjection.draft;
   if (!draft) return "No Draft is available.";
-  if (draft.ready) return "READY · JSON, COMMAND semantics, and the protected target are valid";
+  if (draft.ready) return "READY";
   const firstProblem = draft.diagnostics[0]?.message;
   return firstProblem
     ? `BLOCKED · ${firstProblem}`
@@ -251,7 +251,7 @@ export function LocalInjectionDocument({
       <div data-protected-boundary="session"><dt>Session</dt><dd>Session {draft.anchor.sessionId ?? "Unknown"} · Client {draft.anchor.clientId ?? "Unknown"}</dd></div>
       <div data-protected-boundary="source"><dt>Source</dt><dd>{sourceLabel(localInjection)}</dd></div>
       <div data-protected-boundary="validation"><dt>Validation</dt><dd>{validationLabel(localInjection)}</dd></div>
-      <div data-protected-boundary="delivery"><dt>Delivery</dt><dd>One Logical Update → every current listener on this exact Subscription</dd></div>
+      <div data-protected-boundary="delivery"><dt>Delivery</dt><dd>One Logical Update to each current listener on this Subscription</dd></div>
       <div className="workbench-react__local-only" data-protected-boundary="local-only"><dt>Boundary</dt><dd>LOCAL ONLY · inspected-page runtime · Lightstreamer Server is not contacted</dd></div>
     </dl>
 
@@ -301,10 +301,10 @@ export function LocalInjectionDocument({
           <header className="workbench-react__local-editor-toolbar">
             <div><strong>Raw JSON</strong><span>{draft.compareStatus === "no-source" ? "Newly authored · no immutable Source" : `${draft.compareStatus === "unchanged" ? "Unchanged from" : "Changed from"} immutable Source`}</span></div>
             <div>
-              <button type="button" disabled={!compareAvailable} aria-pressed={draft.compareOpen} onClick={() => {
+              {compareAvailable ? <button type="button" aria-pressed={draft.compareOpen} onClick={() => {
                 carryScrollTo(`author-${draft.compareOpen ? "single" : "compare"}`);
                 dispatch(runtime, { type: "set-local-injection-compare", open: !draft.compareOpen });
-              }}>Compare Source</button>
+              }}>Compare Source</button> : null}
               <label><input type="checkbox" checked={tabIndents} onChange={(event) => setTabIndents(event.currentTarget.checked)} />Tab inserts indentation</label>
             </div>
           </header>
@@ -329,7 +329,7 @@ export function LocalInjectionDocument({
 
         {pending ? <section className="workbench-react__local-pending" role="status" aria-live="polite"><h2 ref={pendingHeadingRef} tabIndex={-1}>Local Injection pending</h2><p>Workbench is waiting for one trustworthy delivery acknowledgement. No repeat or automatic retry is available.</p><pre tabIndex={0}>{draft.rawText}</pre></section> : null}
 
-        {outcome ? <section className="workbench-react__local-outcome" role="status" aria-live="polite" data-disposition={outcome.disposition}><h2 ref={outcomeHeadingRef} tabIndex={-1}>{outcome.headline}</h2><p>{outcome.detail}</p>{deliveryCounts(localInjection) ? <p>{deliveryCounts(localInjection)}</p> : null}<p>Execution {outcome.executionId}{outcome.requestId ? ` · request ${outcome.requestId}` : ""}</p>{outcome.disposition === "delivered" ? <p>Local Evidence was appended when retention succeeded. Observed Server COMMAND State remains unchanged.</p> : <p>No successful Local Evidence or Local Effective COMMAND State advance is inferred from this outcome.</p>}</section> : null}
+        {outcome ? <section className="workbench-react__local-outcome" role="status" aria-live="polite" data-disposition={outcome.disposition}><h2 ref={outcomeHeadingRef} tabIndex={-1}>{outcome.headline}</h2><p>{outcome.detail}</p>{deliveryCounts(localInjection) ? <p>{deliveryCounts(localInjection)}</p> : null}<p>Execution {outcome.executionId}{outcome.requestId ? ` · request ${outcome.requestId}` : ""}</p>{outcome.disposition === "delivered" ? <p>Local Evidence was appended when retention succeeded.</p> : <p>No successful Local Evidence is inferred from this outcome.</p>}</section> : null}
       </div>
 
       <footer className="workbench-react__local-footer">

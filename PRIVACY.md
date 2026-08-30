@@ -6,45 +6,45 @@ Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extensio
 
 ## Current release
 
-The Chrome Web Store serves version `2.0.0`, the unified Scoped Evidence Workspace release.
+The Chrome Web Store serves version `2.0.0`.
 
-- **Current Chrome Web Store release:** no product analytics, tracking, advertising, account sign-in, or remote error logging. On startup, 2.0 removes retired analytics consent and random installation identifier records left by earlier versions.
-- **Public website:** static HTML and CSS with no analytics, cookies, executable JavaScript, advertising, account sign-in, or remote error logging.
+- **Current Chrome Web Store release:** no product analytics, tracking, advertising, account sign-in, or remote error logging. At startup, version 2 removes old analytics settings and installation identifier records.
+- **Public website:** static HTML and CSS. It has no analytics, cookies, JavaScript, advertising, account sign-in, or remote error logging.
 
 ## Inspected-page data
 
-Captured Lightstreamer clients, Sessions, Subscriptions, Item Updates, field values, COMMAND keys, diagnostics, Injection Sources, and Injection Drafts are processed locally in the browser extension context for the current inspected tab and DevTools session.
+Workbench processes captured Lightstreamer data in the browser extension context. This data includes clients, Sessions, Subscriptions, Item Updates, field values, COMMAND keys, diagnostics, Injection Sources, and Injection Drafts. The data applies to the current inspected tab and DevTools session.
 
-When the Lightstreamer Web Client exposes a client IP address, page-world instrumentation irreversibly masks it before constructing the Capture message. The exact address never crosses the inspected-page Capture boundary, is never available to Workbench, and cannot be restored with a UI toggle.
+If the Lightstreamer Web Client provides a client IP address, Workbench masks it before it creates the Capture message. Workbench cannot reverse the mask. The exact address does not cross the inspected-page Capture boundary. The UI cannot restore it.
 
-Workbench does not send inspected-page URLs, Lightstreamer Server addresses, adapter sets, client, Subscription, listener, item, field, or key identifiers, captured values, search text, Injection Sources, Injection Drafts, raw errors, stack traces, cookies, account details, or other captured Evidence to the maintainers or an analytics service.
+Workbench does not send captured Evidence to the maintainers or an analytics service. This Evidence includes inspected-page URLs, Lightstreamer Server addresses, adapter sets, runtime identifiers, captured values, search text, Injection Sources, Injection Drafts, errors, stack traces, cookies, and account details.
 
 ## Local storage and exports
 
-Version 2 stores current Panel Session Evidence in one temporary Event History owned by that Panel Session. The normal IndexedDB journal supports up to 100,000 Evidence records or 256 MiB of retained serialized journal bytes; if startup selects the in-memory fallback, the lower-capacity limits are 5,000 records or 32 MiB. The fallback changes History Capacity, not Observation Coverage, and the selected adapter does not change during a Panel Session. Count and canonical bytes are independent limits; arbitrary-size payloads are not promised.
+Version 2 stores current Panel Session Evidence in one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. The first count or byte limit stops admission. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. Workbench does not change the storage type during a Panel Session.
 
-Controlled Close makes a final intake cut, settles accepted work, attempts to erase the owned retained and pending data, and reports whether erasure and cleanup were confirmed. A crash, renderer termination, extension reload, or blocked cleanup can defer erasure and leave residual temporary data until a later ownership-safe guarded sweep. The sweep considers only recognized orphan generations, skips active owners, and never reads, exports, projects, or replays abandoned Evidence. A new Panel Session starts empty and has no cross-session recovery.
+A controlled Close stops intake and commits accepted work. It then tries to erase retained and pending data. Workbench reports whether it confirmed erasure and cleanup. A crash, renderer stop, extension reload, or blocked cleanup can prevent erasure. Residual data can remain until a later safe cleanup. Cleanup removes only recognized unused Workbench data. It does not read, export, derive state from, or load this Evidence. A new Panel Session starts empty.
 
-Versioned Topology JSON and offline HTML exports are deliberate user downloads. Workbench excludes connection credentials and masks client IP addresses before they enter Capture, but an export can still contain application data selected by the user. Review every export before sharing it.
+Workbench creates a versioned JSON or offline HTML export only when the user requests it. Workbench excludes connection credentials. It masks client IP addresses before Capture. An export can still contain selected application data. Review each export before you share it.
 
-The extension also uses local runtime state needed to connect the DevTools panel, background service worker, content script, and inspected page. It does not use cross-session capture as application state.
+The extension uses local runtime state to connect the DevTools panel, service worker, content script, and inspected page. It does not use captured data from an earlier Panel Session as application state.
 
 ## Network access
 
-Version 2 does not contact a maintainer-operated service or analytics provider. If the inspected page communicates with Lightstreamer servers or other application services, that traffic belongs to the inspected page, not to Workbench.
+Version 2 does not contact a maintainer service or analytics provider. The inspected page can communicate with Lightstreamer servers and application services. This traffic belongs to the inspected page, not to Workbench.
 
-Local Injection delivers a deliberate update only through captured listener callbacks or the inspected page's local delivery path. It does not contact the Lightstreamer Server. Planned Server Injection will send a reviewed Client Message through the inspected client's normal `sendMessage` path; it will not directly inject an inbound server update.
+Local Injection delivers an Item Update through a captured listener or the inspected page's local delivery path. It does not contact the Lightstreamer Server. Planned Server Injection will send a reviewed Client Message through the inspected client's normal `sendMessage` path. It will not create an inbound Server Update.
 
 ## Permissions
 
-Workbench requests page access so it can instrument the inspected page's official Lightstreamer Web Client runtime before application code creates clients or Subscriptions. This access is used for developer-controlled debugging in Chrome DevTools.
+Workbench requests page access to observe the official Lightstreamer Web Client before the application creates clients or Subscriptions. Workbench uses this access for developer-controlled inspection in Chrome DevTools.
 
-Permission changes must be documented in pull requests and release notes because expanded extension permissions affect user trust and Chrome Web Store review.
+Document each permission change in the pull request and release notes. Chrome Web Store review includes extension permissions.
 
 ## User responsibility
 
-Use Workbench only on pages you are authorized to debug. Do not attach raw production payloads, exports, screenshots with secrets, customer data, tokens, cookies, or private URLs to public issues or pull requests.
+Use Workbench only on pages that you have permission to inspect. Do not attach private data to a public issue or pull request. Private data includes production payloads, exports, screenshots with secrets, customer data, tokens, cookies, and private URLs.
 
 ## Changes
 
-Privacy-impacting changes require maintainer review before merge and must be reflected in this policy, Chrome Web Store privacy fields, and release notes before publication.
+A maintainer must review each privacy change before merge. Update this policy, the Chrome Web Store privacy fields, and the release notes before publication.

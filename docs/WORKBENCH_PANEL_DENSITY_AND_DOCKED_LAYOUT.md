@@ -118,7 +118,7 @@ Visible labels may shorten in compact geometry, but their complete value remains
 
 The following always or conditionally promote into one full-canvas document surface:
 
-- Local Injection authoring and its default captured Source/Draft preview: always promote.
+- Local Injection editing and Source comparison: always promote.
 - Notifications: always promote, with one content scroll and a visible Back to Evidence action. Recurring Lightstreamer notices never expand Context or the footer; active footer conditions remain available here after their footer copy is dismissed.
 - Complete raw evidence: promote when Context cannot retain useful document dimensions.
 - Deep Capture diagnostics and complete lifecycle analysis: promote when their evidence exceeds concise Context treatment.
@@ -127,7 +127,7 @@ The following always or conditionally promote into one full-canvas document surf
 The following normally remain in Context:
 
 - runtime-object dossier;
-- selected-event Fields, Deliveries, and COMMAND projections, with Activity summary, Filter selected Evidence, and Evidence metadata collapsed ahead of Fields;
+- selected-event Fields and Deliveries, with Activity summary, Filter selected Evidence, and Evidence metadata collapsed ahead of Fields;
 - workflow-local validation and recovery guidance;
 - initial export controls and scoped manifest summary.
 
@@ -202,12 +202,11 @@ Focused Compact and shallow surfaces keep Back, current state, and the consequen
 
 - Local Injection always promotes to the full canvas at every geometry.
 - Exact Subscription instance, Session, item, Source or newly-authored state, target availability, validation, and Local-only boundary remain fixed outside raw JSON.
-- A captured-source Draft opens comparison by default and uses it as the authoring preview. A source-free authored Draft uses the single raw editor without inventing a Source.
+- A captured Draft opens with Source comparison active as the default preview. The same authoring surface keeps the labelled **Inject locally** action reachable; standalone delivery does not introduce a second Review document.
 - Wide Source comparison becomes side by side only when both sides meet useful width; otherwise it is inline.
 - Side-by-side comparison uses one shared scroll surface.
-- The labelled **Inject locally** action remains reachable on the authoring surface; no separate standalone Review layout is introduced. Atomic preflight and target revalidation occur immediately before dispatch without changing the document geometry.
 - Minimize parks the draft and restores Evidence. Starting another current draft reveals the parked draft and requires resume/finish or explicit discard.
-- Target retirement blocks direct execution without moving the editor cursor or discarding edits.
+- Target retirement blocks execution without moving the editor cursor or discarding edits.
 
 ### Diagnostics and export
 
@@ -252,4 +251,4 @@ The 2026-08-29 readability amendment was evaluated in the disposable `workbench-
 
 ## Vocabulary resolution
 
-Elastic Triad, Normal Stack, Shallow Side, Focused Compact, and document promotion are product-layout language rather than new Lightstreamer domain concepts. No `CONTEXT.md` edit is required. Existing Scope, Evidence, Context, Injection Source, Injection Draft, Local Injection Target, Injected Update, and COMMAND projection vocabulary remains authoritative.
+Elastic Triad, Normal Stack, Shallow Side, Focused Compact, and document promotion are product-layout language rather than new Lightstreamer domain concepts. No `CONTEXT.md` edit is required. Existing Scope, Evidence, Context, Injection Source, Injection Draft, Local Injection Target, Injected Update, and internal COMMAND-state vocabulary remains authoritative.

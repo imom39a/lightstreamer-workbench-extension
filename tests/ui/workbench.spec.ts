@@ -233,43 +233,6 @@ test("Workbench keeps Capture, Coverage, and View explicit across docked geometr
     await attachNamedScenarioScreenshot(page, testInfo, `operating-status-${viewport.geometry}`);
   }
 });
-
-test("Workbench promotes distinct COMMAND projections and restores the investigation", async ({ page }, testInfo) => {
-  await openScenario(page, "command-projection-matching", { width: 900, height: 700 }, "dark");
-  const contextSummary = page.getByRole("region", { name: "COMMAND projection summary" });
-  await expect(contextSummary.getByLabel("Observed Server COMMAND State")).toContainText(
-    "Captured Server Updates only"
-  );
-  await expect(contextSummary.getByLabel("Local Effective COMMAND State")).toContainText(
-    "Server Updates plus successfully delivered Local Injected Updates"
-  );
-  await expect(contextSummary).toContainText("Matching projections");
-  await expect(contextSummary).toContainText("Neither projection is Authoritative COMMAND State.");
-  const compare = page.getByRole("button", { name: "Compare COMMAND projections" });
-  await compare.focus();
-  await page.keyboard.press("Enter");
-  const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
-  await expect(comparison).toBeVisible();
-  await expect(comparison.getByRole("heading", { name: "Observed Server COMMAND State" })).toBeVisible();
-  await expect(comparison.getByText("Captured Server Updates only", { exact: true })).toBeVisible();
-  await expect(comparison.getByRole("heading", { name: "Local Effective COMMAND State" })).toBeVisible();
-  await expect(comparison.getByText("Server Updates plus successfully delivered Local Injected Updates", { exact: true })).toBeVisible();
-  await expect(comparison.getByText("Why matching?", { exact: true })).toBeVisible();
-  const normalColumns = await comparison.locator(".workbench-react__projection-column").evaluateAll((columns) =>
-    columns.map((column) => ({ top: column.getBoundingClientRect().top, width: column.getBoundingClientRect().width }))
-  );
-  expect(normalColumns).toHaveLength(2);
-  expect(normalColumns[0]?.top).toBe(normalColumns[1]?.top);
-  expect(normalColumns.every(({ width }) => width > 300)).toBe(true);
-  await attachNamedScenarioScreenshot(page, testInfo, "command-projection-normal-dark");
-  await comparison.getByRole("button", { name: "Back to Evidence" }).click();
-  await expect(compare).toBeFocused();
-  await expect(contextSummary).toBeVisible();
-  await expectShellFits(page);
-  await expectNoSeriousAxeViolations(page, testInfo);
-  await attachScenarioScreenshot(page, testInfo);
-});
-
 test("Workbench keeps COMMAND projection UI out of selected high-volume Evidence", async ({ page }, testInfo) => {
   await openScenario(page, "frozen-high-volume", { width: 900, height: 700 }, "dark");
   await page.getByRole("button", { name: "Filter" }).click();
@@ -333,13 +296,14 @@ test("Activity summary ranking uses native buttons to apply a visible canonical 
   await expect(page.locator(".workbench-react__active-filter")).toHaveText(/Filter:.*subscription/i);
   await expectNoSeriousAxeViolations(page, testInfo);
   await page.setViewportSize({ width: 563, height: 700 });
+  await expect(page.locator(".workbench-react")).toHaveAttribute("data-geometry", "compact");
   await expect(summary).toHaveAttribute("open", "");
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
-test("Workbench explains Local-only COMMAND projection differences without changing the observed projection", async ({ page }, testInfo) => {
-  await openScenario(page, "command-projection-local-difference", { width: 1440, height: 900 }, "dark");
+test("Workbench keeps delivered Local Injection visible without COMMAND projection UI", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-delivered", { width: 1440, height: 900 }, "dark");
   const draft = page.getByRole("region", { name: "Local Injection Draft" });
   await expect(draft.getByRole("heading", { name: "DELIVERED LOCALLY" })).toBeVisible();
   await draft.getByRole("button", { name: "Finish Local Injection" }).click();
@@ -349,39 +313,19 @@ test("Workbench explains Local-only COMMAND projection differences without chang
   await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /COMMAND projections/ })).toHaveCount(0);
   await clearSelectedEvidence(page);
-  const divergentSummary = page.getByRole("region", { name: "COMMAND projection summary" });
-  await expect(divergentSummary).toContainText("Projections differ");
-  await expect(divergentSummary).toContainText("successful Local Injected Update");
-  await divergentSummary.getByRole("button", { name: "Compare COMMAND projections" }).click();
-
-  const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
-  await expect(comparison.getByText("Why different?", { exact: true })).toBeVisible();
-  await expect(comparison).toContainText("Successful Local Injected Updates advance Local Effective COMMAND State only");
-  const observed = comparison.getByLabel("Observed Server COMMAND State");
-  const localEffective = comparison.getByLabel("Local Effective COMMAND State");
-  await expect(observed).not.toContainText("value=9");
-  await expect(localEffective).toContainText("command=UPDATE, key=small-alpha, value=9");
-  await expect(comparison).toContainText("Neither projection is Authoritative COMMAND State.");
-  await attachNamedScenarioScreenshot(page, testInfo, "command-projection-wide-dark-local-difference");
-  const supportingLocalEvidence = page.locator(".workbench-react__evidence-row", { hasText: "LOCAL" }).last();
-  await comparison.getByRole("button", { name: "Back to Evidence" }).click();
-  await expect(originatingEvidence).toHaveAttribute("aria-selected", "false");
-  await expect(supportingLocalEvidence).toHaveAttribute("aria-selected", "false");
-
-  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
-  const reopenedComparison = page.getByRole("region", { name: "COMMAND projection comparison" });
-  await reopenedComparison.getByRole("button", { name: "Reveal Evidence" }).focus();
-  await page.keyboard.press("Enter");
-  await expect(supportingLocalEvidence).toHaveAttribute("aria-selected", "true");
-  await expect(supportingLocalEvidence).toBeFocused();
+  await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "COMMAND projection comparison" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /COMMAND projections/ })).toHaveCount(0);
+  await expect(page.getByText("Observed Server COMMAND State", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Local Effective COMMAND State", { exact: true })).toHaveCount(0);
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench omits false supporting Evidence routes when Local Evidence retention fails", async ({ page }, testInfo) => {
-  await openScenario(page, "command-projection-retention-failure", { width: 1440, height: 900 }, "dark");
+test("Workbench keeps retention failure noise-free after Local Injection", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-retention-failure", { width: 1440, height: 900 }, "dark");
   const draft = page.getByRole("region", { name: "Local Injection Draft" });
   await expect(draft.getByRole("heading", { name: "DELIVERED LOCALLY" })).toBeVisible();
   await draft.getByRole("button", { name: "Finish Local Injection" }).click();
@@ -391,32 +335,13 @@ test("Workbench omits false supporting Evidence routes when Local Evidence reten
   await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /COMMAND projections/ })).toHaveCount(0);
   await clearSelectedEvidence(page);
-  const summary = page.getByRole("region", { name: "COMMAND projection summary" });
-  await expect(summary).toContainText("Projections differ");
-  await expect(summary.getByRole("button", { name: "Reveal supporting Evidence" })).toHaveCount(0);
-  await summary.getByRole("button", { name: "Compare COMMAND projections" }).click();
-  const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
-  await expect(comparison.getByText("Why different?", { exact: true })).toBeVisible();
-  await expect(comparison.getByRole("button", { name: "Reveal Evidence" })).toHaveCount(0);
-  await comparison.getByRole("button", { name: "Back to Evidence" }).click();
+  await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "COMMAND projection comparison" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /COMMAND projections/ })).toHaveCount(0);
   await expect(unrelatedPriorLocal).toHaveAttribute("aria-selected", "false");
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
-});
-
-test("Workbench presents unavailable COMMAND projections truthfully", async ({ page }, testInfo) => {
-  await openScenario(page, "command-projection-unavailable", { width: 900, height: 700 }, "light");
-  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
-  const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
-  await expect(comparison).toContainText("Capture Coverage UNAVAILABLE");
-  await expect(comparison).toContainText("No captured Server Updates are available for this Scope.");
-  await expect(comparison.getByText("No reconstructed rows are available for the current Scope.")).toHaveCount(2);
-  await expect(comparison).toContainText("Neither projection is Authoritative COMMAND State.");
-
-  await expectShellFits(page);
-  await expectNoSeriousAxeViolations(page, testInfo);
-  await attachScenarioScreenshot(page, testInfo);
 });
 
 test("Workbench exposes structural Scope as a roving tree at wide geometry", async ({ page }, testInfo) => {
@@ -562,7 +487,7 @@ test("Workbench exposes selected captured Local Injection through the visible Co
     await expect(draft).toBeVisible();
     await expect(draft).toContainText("topology-small-subscription");
     await expect(draft).toContainText("Session topology-small-session");
-    await expect(draft).toContainText("Source event-5 · immutable");
+    await expect(draft.locator('[data-protected-boundary="source"]')).toContainText("event-5 · immutable");
     await expect(draft).toContainText("LOCAL ONLY");
     await expect(page.getByRole("textbox", { name: "Local Injection JSON", exact: true })).toBeFocused();
     await expectShellFits(page);
@@ -2317,6 +2242,7 @@ test("Workbench exposes selected Item Update Fields while Evidence metadata is c
   const compareSource = draft.getByRole("button", { name: "Compare Source" });
   await expect(compareSource).toHaveAttribute("aria-pressed", "true");
   await compareSource.click();
+  await expect(compareSource).toHaveAttribute("aria-pressed", "false");
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   const scrollOwner = draft.locator('[data-shared-scroll-owner="true"]');
   await expect(editor).toContainText('"modelValues": {');
@@ -2359,7 +2285,7 @@ test("Workbench edits one protected captured Local Injection Draft in lazy CodeM
   await expect(draft).toBeVisible();
   await expect(draft).toContainText("topology-small-subscription");
   await expect(draft).toContainText("Session topology-small-session");
-  await expect(draft).toContainText("Source event-5 · immutable");
+  await expect(draft.locator('[data-protected-boundary="source"]')).toContainText("event-5 · immutable");
   await expect(draft).toContainText("LOCAL ONLY");
   await expect(draft).toContainText("READY");
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
@@ -2401,7 +2327,6 @@ test("Workbench edits one protected captured Local Injection Draft in lazy CodeM
   );
   expect(compareTops[1]).toBeGreaterThan(compareTops[0]!);
   await compareSource.click();
-  await expect(compareSource).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByText("Immutable Source", { exact: true })).toHaveCount(0);
 
   await editor.focus();
@@ -2442,12 +2367,11 @@ test("Workbench authors a source-free COMMAND Item Update from a live single-ite
   await expect(draft).toContainText("topology-small-subscription");
   await expect(draft).toContainText("Session topology-small-session");
   await expect(draft).toContainText("LOCAL ONLY");
-  await expect(draft).toContainText("Source None · newly authored");
-  await expect(page.getByRole("button", { name: "Compare Source" })).toBeDisabled();
+  await expect(draft.locator('[data-protected-boundary="source"]')).toContainText("Newly authored");
+  await expect(page.getByRole("button", { name: "Compare Source" })).toHaveCount(0);
   const inject = draft.getByRole("button", { name: "Inject locally" });
   await expect(inject).toBeDisabled();
   await expect(draft.getByRole("button", { name: "Review Local Injection" })).toHaveCount(0);
-  await expect(draft.getByRole("region", { name: "Review Local Injection" })).toHaveCount(0);
 
   const authoredJson = JSON.stringify({
     command: "ADD",
@@ -2458,17 +2382,16 @@ test("Workbench authors a source-free COMMAND Item Update from a live single-ite
   await editor.fill(authoredJson);
   await expect(draft).toContainText("Ready to inject");
   await expect(inject).toBeEnabled();
+  await expect(draft.getByRole("region", { name: "Review Local Injection" })).toHaveCount(0);
   await expect(editor).toBeVisible();
-  await expect(editor).toBeFocused();
   await expect(editor).toContainText("authored-local-1");
-  await expect(page.getByLabel("Reviewed Local Injection JSON", { exact: true })).toHaveCount(0);
 
   await page.setViewportSize({ width: 563, height: 700 });
   await editor.focus();
   await draft.getByRole("button", { name: "Collapse Draft event" }).click();
   await expect(draft.getByRole("button", { name: "Expand Draft event" })).toBeFocused();
   await expect(draft).toContainText("topology-small-subscription");
-  await expect(draft).toContainText("Source None · newly authored");
+  await expect(draft.locator('[data-protected-boundary="source"]')).toContainText("Newly authored");
   await draft.getByRole("button", { name: "Expand Draft event" }).click();
   await expect(editor).toBeFocused();
   await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
@@ -2504,7 +2427,6 @@ test("Workbench blocks syntax, duplicate, and COMMAND semantic errors until corr
 
   await expect(draft).toContainText('Duplicate JSON key "command" is not allowed.');
   await expect(inject).toBeDisabled();
-  await expect(draft.getByRole("button", { name: "Review Local Injection" })).toHaveCount(0);
   await editor.fill("{");
   await expect(draft).toContainText("SYNTAX");
   await expect(page.locator(".cm-lintRange-error")).not.toHaveCount(0);
@@ -2600,12 +2522,11 @@ test("Workbench keeps a 500-field Draft editor model across compare, geometry, m
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench blocks a stale target during direct preflight without executing", async ({ page }, testInfo) => {
+test("Workbench blocks a stale target at the direct execution boundary", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-stale-edit", { width: 900, height: 700 }, "light");
   const staleAtReview = page.getByRole("region", { name: "Local Injection Draft" });
   await expect(staleAtReview).toContainText("The inspected-page Local Injection delivery target is disconnected");
   await expect(staleAtReview.getByRole("button", { name: "Inject locally" })).toBeDisabled();
-  await expect(staleAtReview.getByRole("button", { name: "Review Local Injection" })).toHaveCount(0);
   await expect(staleAtReview.getByRole("region", { name: "Review Local Injection" })).toHaveCount(0);
 
   await openScenario(page, "local-injection-stale-review", { width: 900, height: 700 }, "dark");
@@ -2613,10 +2534,9 @@ test("Workbench blocks a stale target during direct preflight without executing"
   await expect(draft).toContainText("BLOCKED");
   await expect(draft).toContainText("The inspected-page Local Injection delivery target is disconnected");
   await expect(page.getByRole("textbox", { name: "Local Injection JSON", exact: true })).toBeVisible();
-  await expect(draft.getByRole("button", { name: "Review Local Injection" })).toHaveCount(0);
+  await expect(draft.getByRole("button", { name: "Inject locally" })).toBeDisabled();
   await expect(draft.getByRole("region", { name: "Review Local Injection" })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(0);
-  await expect(draft.getByRole("button", { name: "Inject locally" })).toBeDisabled();
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -2654,7 +2574,7 @@ test("Workbench protects the current Draft when another entry conflicts and disc
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole("button", { name: "Confirm discard" }).click();
   await expect(draft).not.toContainText("Another draft entry is blocked");
-  await expect(draft).toContainText("Source event-5 · immutable");
+  await expect(draft.locator('[data-protected-boundary="source"]')).toContainText("event-5 · immutable");
   await expect(draft).toContainText("READY");
   await expect(page.getByRole("textbox", { name: "Local Injection JSON", exact: true })).toBeFocused();
   expect(await scrollOwner.evaluate((owner) => owner.scrollLeft)).toBe(0);
@@ -2682,7 +2602,6 @@ test("Workbench keeps delivered, failed, partial, and unknown Local Injection ou
 
     if (scenario === "local-injection-delivered") {
       await expect(draft).toContainText("Local Evidence was appended");
-      await expect(draft).toContainText("Observed Server COMMAND State remains unchanged");
       await draft.getByRole("button", { name: "Finish Local Injection" }).click();
       await expect(page.locator(".workbench-react__evidence-row").filter({ hasText: "LOCAL" })).not.toHaveCount(0);
       await expect(page.locator('[data-evidence-id="event-5"]')).toBeFocused();
@@ -2730,8 +2649,6 @@ test("Workbench keeps dense Evidence controls and protected Local Injection boun
   );
   expect(compactBoundaryRows).toHaveLength(3);
   expect(await compactDraft.locator('[data-shared-scroll-owner="true"]').evaluate((owner) => owner.getBoundingClientRect().height)).toBeGreaterThanOrEqual(300);
-  await expect(compactDraft.getByRole("button", { name: "Compare Source" })).toHaveAttribute("aria-pressed", "true");
-  await expect(compactDraft.getByLabel("Immutable Injection Source JSON")).toBeVisible();
   await expectCoreControlInViewport(page, compactDraft.getByRole("button", { name: "Inject locally" }));
   await expectShellFitsExactly(page);
   await expectShellFits(page);
@@ -2751,12 +2668,9 @@ test("Workbench keeps dense Evidence controls and protected Local Injection boun
     fields: { command: "ADD", key: "density-check", value: "42" }
   }, null, 2));
   const injectAuthored = authoredDraft.getByRole("button", { name: "Inject locally" });
-  await expect(injectAuthored).toBeEnabled();
   await expectCoreControlInViewport(page, injectAuthored);
-  await expect(editor).toBeVisible();
-  await expect(injectAuthored).toBeFocused();
-  await expect(authoredDraft.getByRole("button", { name: "Review Local Injection" })).toHaveCount(0);
   await expect(authoredDraft.getByRole("region", { name: "Review Local Injection" })).toHaveCount(0);
+  await expect(editor).toBeVisible();
   await expectShellFitsExactly(page);
   await expectShellFits(page);
   await attachMatrixScreenshot(page, testInfo, "shallow-dark-authored-direct");
@@ -3046,11 +2960,12 @@ test("Scenario fails closed for incompatible membership, invalid Review, and par
   await expect(picker).toBeHidden();
   await expect(add).toBeFocused();
 
-  const secondStep = scenario.getByRole("article").nth(1);
-  const secondCompareSource = secondStep.getByRole("button", { name: "Compare Source" });
-  await expect(secondCompareSource).toHaveAttribute("aria-pressed", "true");
-  await secondCompareSource.click();
-  const secondEditor = secondStep.getByRole("textbox", { name: "Step 2 Local Injection JSON" });
+  const secondDraft = scenario.getByRole("region", { name: "Step 2 Injection Draft" });
+  const compareSource = secondDraft.getByRole("button", { name: "Compare Source" });
+  await expect(compareSource).toHaveAttribute("aria-pressed", "true");
+  await compareSource.click();
+  await expect(compareSource).toHaveAttribute("aria-pressed", "false");
+  const secondEditor = scenario.getByRole("textbox", { name: "Step 2 Local Injection JSON" });
   await secondEditor.fill('{"command":"UPDATE"}');
   await scenario.getByRole("button", { name: "Review Scenario" }).click();
   await expect(scenario.getByRole("alert")).toContainText("step-2");
@@ -3138,6 +3053,10 @@ test("Draft conversion and Scenario Edit restore the exact editor selection and 
   if (await openContext.isVisible()) await openContext.click();
   const originScopeId = await page.locator('[role="treeitem"][aria-current="true"]').getAttribute("data-scope-id");
   await page.getByRole("button", { name: "Create Local Injection Draft" }).click();
+  const compareSource = page.getByRole("button", { name: "Compare Source" });
+  await expect(compareSource).toHaveAttribute("aria-pressed", "true");
+  await compareSource.click();
+  await expect(compareSource).toHaveAttribute("aria-pressed", "false");
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   await editor.focus();
   await page.keyboard.press("ControlOrMeta+Home");
@@ -3190,6 +3109,7 @@ test("Draft conversion preserves CodeMirror undo history", async ({ page }) => {
   const compareSource = page.getByRole("region", { name: "Local Injection Draft" }).getByRole("button", { name: "Compare Source" });
   await expect(compareSource).toHaveAttribute("aria-pressed", "true");
   await compareSource.click();
+  await expect(compareSource).toHaveAttribute("aria-pressed", "false");
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   const original = await editor.textContent();
   await editor.fill(`${original} `);
