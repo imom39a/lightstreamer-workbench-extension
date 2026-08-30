@@ -789,18 +789,26 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
-  it("rolls back a failed durable batch and continues its queued tail in memory", async () => {
-    const history = await freshHistory("indexed-abort-tail");
+  it("falls back after a failed durable batch and continues its queued tail in memory", async () => {
+    let commitAttempts = 0;
+    const history = await freshIndexedHistory("indexed-abort-tail", {
+      commitBatch: (batch) => {
+        if (!batch.some((entry) => entry.id === "failed-batch")) return;
+        commitAttempts += 1;
+        throw new Error("durable batch failed");
+      }
+    });
     await history.offer(candidate("already-committed")).settled;
-    const failedBatch = [history.offer(candidate("already-committed")), history.offer(candidate("same-batch-new"))];
+    const failedBatch = [history.offer(candidate("failed-batch")), history.offer(candidate("same-batch-new"))];
     const tail = history.offer(candidate("tail-after-abort"));
 
     const failedResults = await Promise.all(failedBatch.map((receipt) => receipt.settled));
     expect(failedResults).toHaveLength(2);
     expect(failedResults).toMatchObject([
-      { outcome: "BECAME_EVIDENCE", evidence: { sequence: 2, eventId: "already-committed" } },
+      { outcome: "BECAME_EVIDENCE", evidence: { sequence: 2, eventId: "failed-batch" } },
       { outcome: "BECAME_EVIDENCE", evidence: { sequence: 3, eventId: "same-batch-new" } }
     ]);
+    expect(commitAttempts).toBe(3);
     await expect(tail.settled).resolves.toMatchObject({
       outcome: "BECAME_EVIDENCE",
       evidence: { sequence: 4, eventId: "tail-after-abort" }
@@ -811,7 +819,7 @@ describe("IndexedDB authoritative EventHistory", () => {
         total: 4,
         evidence: [
           expect.objectContaining({ sequence: 1, eventId: "already-committed" }),
-          expect.objectContaining({ sequence: 2, eventId: "already-committed" }),
+          expect.objectContaining({ sequence: 2, eventId: "failed-batch" }),
           expect.objectContaining({ sequence: 3, eventId: "same-batch-new" }),
           expect.objectContaining({ sequence: 4, eventId: "tail-after-abort" })
         ]
@@ -1407,7 +1415,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
-  it("keeps the panel-lifetime boundary across Clear and survives an atomic identity collision", async () => {
+  it("keeps the panel-lifetime boundary across Clear and isolates an atomic identity collision", async () => {
     const history = await freshHistory("indexed-boundary");
     await history.offer(candidate("before-clear")).settled;
     await expect(history.clear()).resolves.toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
@@ -1422,19 +1430,17 @@ describe("IndexedDB authoritative EventHistory", () => {
 
     const duplicate = history.offer(candidate("after-clear"));
     await expect(duplicate.settled).resolves.toMatchObject({
-      outcome: "BECAME_EVIDENCE",
-      evidence: { sequence: 3, eventId: "after-clear" }
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "INVALID_CANDIDATE", dimension: "EVENT_IDENTITY" },
+      committedEvidenceBoundary: { sequence: 2, eventId: "after-clear" }
     });
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
-      value: { evidence: [
-        expect.objectContaining({ eventId: "after-clear", sequence: 2 }),
-        expect.objectContaining({ eventId: "after-clear", sequence: 3 })
-      ] }
+      value: { evidence: [expect.objectContaining({ eventId: "after-clear", sequence: 2 })] }
     });
     await expect(history.offer(candidate("after-abort")).settled).resolves.toMatchObject({
       outcome: "BECAME_EVIDENCE",
-      evidence: { sequence: 4, eventId: "after-abort" }
+      evidence: { sequence: 3, eventId: "after-abort" }
     });
     await history.close();
   });

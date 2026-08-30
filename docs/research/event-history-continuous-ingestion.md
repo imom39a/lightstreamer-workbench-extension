@@ -5,6 +5,15 @@ Status: decision-support research with maintainer-accepted direction,
 primary-source facts and clearly separated design implications; it does not
 change production behavior.
 
+Implementation note, 2026-08-29: [ADR 0014](../adr/0014-continue-event-history-with-rolling-retention.md)
+records the narrower shipped decision: rolling retained budgets, at most three
+journal commit attempts before a session-long bounded-memory circuit, exact
+candidate gaps, and low-attention Notifications. References below to the
+"current implementation" describe the pre-decision baseline. Memory-first
+canonical acceptance, an independently committed indexer, failure-class-specific
+retry policy, export retention leases, and automatic interval rollover remain
+research options and are not part of this implementation.
+
 ## Executive findings
 
 1. **The checked-in normal limit is already 100,000 Evidence records or 256

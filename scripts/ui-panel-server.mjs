@@ -78,8 +78,16 @@ let configuredHistoryCommitFailures = 0;
 const history = createInMemoryEventHistory({
   panelSessionId: "scenario-" + scenario.id,
   ...(scenario.historyCapacity ? { capacity: scenario.historyCapacity } : {}),
-  ...(scenario.historyOversizedEventId
-    ? { byteEstimator: (event) => event.id === scenario.historyOversizedEventId ? 101 : 10 }
+  ...(scenario.historyOversizedEventId || scenario.failLocalEvidenceRetention
+    ? {
+        byteEstimator: (event) => {
+          if (event.id === scenario.historyOversizedEventId) return 101;
+          if (scenario.failLocalEvidenceRetention && failSyntheticEvidenceRetention && event.synthetic) {
+            return 257 * 1024 * 1024;
+          }
+          return 10;
+        }
+      }
     : {}),
   ...(scenario.historyCommitFailure
     ? {
@@ -102,17 +110,6 @@ const history = createInMemoryEventHistory({
           : "PRIMARY_JOURNAL_UNAVAILABLE"
       }
     : {}),
-  ...(scenario.failLocalEvidenceRetention
-    ? {
-        failure: {
-          commitBatch(batch) {
-            if (failSyntheticEvidenceRetention && batch.some((event) => event.synthetic)) {
-              throw new Error("Synthetic Evidence retention failed in the browser scenario.");
-            }
-          }
-        }
-      }
-    : {})
 });
 await Promise.all(scenario.initialEvents.map((event) => history.offer(event).settled));
 let localInjectionExecutionCount = 0;

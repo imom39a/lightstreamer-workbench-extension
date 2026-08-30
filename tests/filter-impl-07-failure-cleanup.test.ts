@@ -37,16 +37,20 @@ async function countPostings(session: string): Promise<number> {
 }
 
 describe("filter-impl-07 posting failure safety", () => {
-  it("rolls back Evidence and postings together when the unique Evidence identity rejects a batch", async () => {
+  it("does not write Evidence or postings for a duplicate retained identity", async () => {
     const session = `filter-impl-07-failure-${Date.now()}-${Math.random()}`;
     const history = await createIndexedDbEventHistory({ panelSessionId: session });
     try {
       expect((await history.offer(candidate("same-id")).settled).outcome).toBe("BECAME_EVIDENCE");
       const duplicate = await history.offer(candidate("same-id")).settled;
-      expect(duplicate.outcome).toBe("NOT_EVIDENCE");
+      expect(duplicate).toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        problem: { code: "INVALID_CANDIDATE", dimension: "EVENT_IDENTITY" }
+      });
       expect(await countPostings(session)).toBe(postingCount);
       const read = await history.read({});
       expect(read).toMatchObject({ ok: true, value: { total: 1 } });
+      expect(history.status()).toMatchObject({ phase: "RUNNING", persistence: { mode: "JOURNAL", health: "HEALTHY" } });
     } finally {
       await history.close();
       await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(session));

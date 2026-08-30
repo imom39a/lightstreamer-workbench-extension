@@ -58,6 +58,58 @@ describe("history-impl-09 runtime cutover", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("limits Capture at the exact predecessor only after the preceding Evidence settles", async () => {
+    const commit = deferred<void>();
+    const commitStarted = deferred<void>();
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-09-pending-gap-boundary",
+      byteEstimator: (candidate) => candidate.id === "event-3" ? 4 : 6,
+      capacity: { maxRetainedCount: 10, maxRetainedBytes: 100, pendingStopBytes: 10 },
+      commitBatch: async (batch) => {
+        if (batch.some((candidate) => candidate.id === "event-1")) {
+          commitStarted.resolve();
+          await commit.promise;
+        }
+      }
+    });
+    const runtime = createWorkbenchRuntime({ history, scheduler: immediateScheduler() });
+
+    runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(1) });
+    await commitStarted.promise;
+    runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(2) });
+    runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(3) });
+    await settle();
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      capture: {
+        operation: "RUNNING",
+        coverage: "USEFUL",
+        firstMissingEventId: null,
+        committedEvidenceBoundary: null
+      },
+      historyCondition: null,
+      evidence: { total: 0 }
+    });
+
+    commit.resolve();
+    await settle();
+    await settle();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.capture).toMatchObject({
+      operation: "RUNNING",
+      coverage: "LIMITED",
+      firstMissingEventId: "event-2",
+      committedEvidenceBoundary: { sequence: 1, eventId: "event-1" }
+    });
+    expect(snapshot.evidence.total).toBe(2);
+    expect(snapshot.historyCondition).toMatchObject({ kind: "evidence-gap" });
+    expect(snapshot.notifications.entries.filter(({ title }) => title === "History has an Evidence gap")).toHaveLength(1);
+
+    runtime.dispose();
+    await settle();
+  });
+
   it("rolls old Evidence out of the runtime while Capture stays running", async () => {
     const commit = deferred<void>();
     const commitStarted = deferred<void>();

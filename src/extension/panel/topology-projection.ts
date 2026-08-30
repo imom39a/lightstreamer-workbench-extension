@@ -57,7 +57,16 @@ export type TopologyProjectionResult = {
   resetConsumerState: boolean;
   duplicate?: boolean;
   candidate?: TopologyCheckpointEvidenceCandidate;
+  checkpoint?: TopologyCheckpointBasisMetadata;
 };
+
+/** Validated metadata for a checkpoint that was applied from committed Evidence. */
+export type TopologyCheckpointBasisMetadata = Readonly<{
+  syncId: string;
+  pageEpoch: string;
+  cutoffCaptureSequence: number;
+  completeness: "COMPLETE" | "PARTIAL";
+}>;
 
 export type TopologyProjection = {
   replaceHistory(events: readonly LightstreamerEventEnvelope[]): void;
@@ -284,7 +293,20 @@ export function createTopologyProjection(): TopologyProjection {
         return { accepted: false, resetConsumerState: false };
       }
     }
-    return completeResult;
+    return {
+      ...completeResult,
+      checkpoint: Object.freeze({
+        syncId: reconstructed.metadata.syncId,
+        pageEpoch: reconstructed.metadata.pageEpoch,
+        cutoffCaptureSequence: reconstructed.cutoffCaptureSequence,
+        completeness:
+          reconstructed.metadata.coverage.status === "complete" &&
+          reconstructed.complete.reason === undefined &&
+          syncCoordinator.status().state === "complete"
+            ? "COMPLETE"
+            : "PARTIAL"
+      })
+    };
   }
 
   function dropCommittedEventsAtOrBelowCutoff(
@@ -314,6 +336,7 @@ export function createTopologyProjection(): TopologyProjection {
   ): TopologyProjectionResult {
     const entries = Array.isArray(evidence) ? evidence : [evidence];
     let resetConsumerState = false;
+    let checkpoint: TopologyCheckpointBasisMetadata | undefined;
 
     for (const entry of entries) {
       const result = ingestCommittedEvidenceEntry(entry);
@@ -324,9 +347,14 @@ export function createTopologyProjection(): TopologyProjection {
         };
       }
       resetConsumerState ||= result.resetConsumerState;
+      checkpoint = result.checkpoint ?? checkpoint;
     }
 
-    return { accepted: true, resetConsumerState };
+    return {
+      accepted: true,
+      resetConsumerState,
+      ...(checkpoint ? { checkpoint } : {})
+    };
   }
 
   function ingestCommittedEvidenceEntry(

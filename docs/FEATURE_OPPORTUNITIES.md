@@ -574,7 +574,7 @@ For applications using the optional MPN module, inspect device registration/susp
 | Faceted Timeline Filters and Clickable Filter Chips | Core filter support partially shipped; adapt it into **Contextual Faceted Evidence Filtering**. |
 | Subscription Semantics Inspector and Configuration Linter | Inspector facts shipped; merge the remaining explanation into **Contextual Lightstreamer Diagnostics and Subscription Linting**. |
 | Filtering, Frequency, Bandwidth, Buffer, and Loss Profiler | Move exact activity buckets and captured loss markers into **Scoped Observed Activity Dashboard**; retain richer measurement and correlation as **Deep Delivery QoS and Loss Profiler**. |
-| Capture Freeze, Pause/Resume, and Retention Controls | Freeze and complete session-local history shipped. Do not prioritize pause/rolling retention without measured capacity pressure and a new completeness decision. |
+| Capture Freeze, Pause/Resume, and Retention Controls | Freeze and rolling retained History shipped. Do not prioritize pause/resume controls without measured workflow need. |
 | Conditional Event Breakpoints and Watch Rules | Still valuable as **Watch Rules and Conditional Listener Breakpoints**. |
 | MERGE, DISTINCT, and RAW State Views With Time Travel | Keep reducers and point-in-time value as contextual state reconstruction; reject peer views. |
 | Two-Level COMMAND Dependency Graph and Merged-Row Inspector | Capture and summaries partially shipped; keep the remaining depth in **Two-Level COMMAND Dependency and Merged-Row Inspector**. |

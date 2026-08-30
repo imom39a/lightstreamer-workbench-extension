@@ -298,6 +298,35 @@ describe("continuous memory Event History", () => {
     await history.close();
   });
 
+  it("starts a fresh interval when Clear follows a new unretainable Capture", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "clear-after-new-gap",
+      byteEstimator: () => 11,
+      capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 }
+    });
+
+    const firstClear = await history.clear();
+    expect(firstClear).toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
+    await expect(history.offer(candidate("too-large-after-clear")).settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "CANDIDATE_UNRETAINABLE" }
+    });
+    expect(history.status()).toMatchObject({
+      interval: { ordinal: 2 },
+      continuity: { state: "GAPPED", gapCount: 1 }
+    });
+
+    await expect(history.clear()).resolves.toMatchObject({
+      ok: true,
+      value: { previousInterval: { ordinal: 2 }, interval: { ordinal: 3 } }
+    });
+    expect(history.status()).toMatchObject({
+      interval: { ordinal: 3 },
+      continuity: { state: "CONTIGUOUS", gapCount: 0 }
+    });
+    await history.close();
+  });
+
   it("refuses only the offer that would overflow pending bytes and resumes after the queue drains", async () => {
     let markCommitStarted!: () => void;
     const commitStarted = new Promise<void>((resolve) => { markCommitStarted = resolve; });
@@ -319,13 +348,13 @@ describe("continuous memory Event History", () => {
     await commitStarted;
     const overflow = history.offer(candidate("overflow"));
     expect(overflow.intake).toBe("REFUSED");
+    releaseCommit();
     await expect(overflow.settled).resolves.toMatchObject({
       outcome: "NOT_EVIDENCE",
       problem: { code: "PENDING_OVERFLOW", dimension: "PENDING_BYTES" },
-      committedEvidenceBoundary: null
+      committedEvidenceBoundary: { sequence: 1, eventId: "queued" }
     });
 
-    releaseCommit();
     await expect(queued.settled).resolves.toMatchObject({
       outcome: "BECAME_EVIDENCE",
       evidence: { sequence: 1, eventId: "queued" }
@@ -348,7 +377,8 @@ describe("continuous memory Event History", () => {
           captureOrdinal: 2,
           eventId: "overflow",
           candidateBytes: 6,
-          dimension: "PENDING_BYTES"
+          dimension: "PENDING_BYTES",
+          afterEvidence: { sequence: 1, eventId: "queued" }
         }
       }
     });

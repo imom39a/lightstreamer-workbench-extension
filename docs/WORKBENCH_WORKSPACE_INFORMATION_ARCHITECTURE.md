@@ -62,7 +62,7 @@ Each structural Scope row uses a stable priority block: object type and runtime 
 ### Ordered evidence ledger
 
 The evidence ledger is always the dominant working surface. It presents
-complete current-session Evidence only through the current History Interval's
+retained current-session Evidence only through the current History Interval's
 Committed Evidence Boundary, using bounded or virtualized rendering while
 preserving chronological order. A stopped or failed History Interval does not
 claim events beyond its final committed boundary.

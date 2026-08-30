@@ -363,11 +363,23 @@ describe("topology committed-evidence ingest", () => {
       ...sequenceCounter
     });
 
-    expect(oneByOne.ingestCommittedEvidence(checkpointCommitted).accepted).toBe(true);
+    expect(oneByOne.ingestCommittedEvidence(checkpointCommitted)).toMatchObject({
+      accepted: true,
+      checkpoint: {
+        syncId: "checkpoint-2",
+        pageEpoch: PAGE_EPOCH,
+        cutoffCaptureSequence: 2,
+        completeness: "PARTIAL"
+      }
+    });
     expect(oneByOne.ingestCommittedEvidence(ordinary).accepted).toBe(true);
 
     const replayBatchResult = replay.ingestCommittedEvidence([checkpointCommitted, ordinary]);
-    expect(replayBatchResult).toMatchObject({ accepted: true, resetConsumerState: false });
+    expect(replayBatchResult).toMatchObject({
+      accepted: true,
+      resetConsumerState: false,
+      checkpoint: { completeness: "PARTIAL" }
+    });
 
     const replayState = replay.snapshot();
     const liveState = oneByOne.snapshot();

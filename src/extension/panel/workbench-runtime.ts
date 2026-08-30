@@ -92,7 +92,11 @@ import {
   type ReinjectionDraft,
   type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
-import { createTopologyProjection, type TopologyProjection } from "./topology-projection";
+import {
+  createTopologyProjection,
+  type TopologyCheckpointBasisMetadata,
+  type TopologyProjection
+} from "./topology-projection";
 import {
   selectedUpdateSnapshot,
   type SelectedUpdateSnapshot
@@ -990,6 +994,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly investigationDiscoveries: readonly FacetDiscoveryRequest[];
   private filterDiscovery: FacetDiscoveryRequest | null = null;
   private readonly activeTopologyStagingSyncIds = new Set<string>();
+  private readonly topologySyncGapGenerations = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
   private commandStateProjections: CommandStateProjections = createCommandStateProjections();
   private readonly retainedLocalEvidenceIds = new Set<string>();
@@ -1093,6 +1098,11 @@ class Runtime implements WorkbenchRuntime {
   private fallbackHandle: unknown | null = null;
   private hiddenDirty = false;
   private captureBoundary: WorkbenchCaptureSnapshot | null = null;
+  private evidenceGapGeneration = 0;
+  private topologyBasisRecovery: Readonly<{
+    checkpoint: TopologyCheckpointBasisMetadata;
+    evidence: EvidenceRef;
+  }> | null = null;
   private committedEvidenceBoundary: EvidenceRef | null = null;
   private scenarioFollowerPhase: CommittedEvidencePipelineFollowerState["progress"]["phase"] = "IDLE";
   private readonly scenarioBoundaryListeners = new Set<(snapshot: ScenarioCommittedBoundarySnapshot) => void>();
@@ -1184,6 +1194,7 @@ class Runtime implements WorkbenchRuntime {
   constructor(options: WorkbenchRuntimeOptions) {
     this.history = options.history ?? createInMemoryEventHistory();
     this.historyStatus = this.history.status();
+    this.evidenceGapGeneration = this.historyStatus.continuity?.gapCount ?? 0;
     this.scheduler = options.scheduler ?? browserScheduler();
     this.scenarioClock = options.scenarioClock ?? {
       now: () => performance.now(),
@@ -2494,7 +2505,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private applyTopologySyncFrame(frame: TopologySyncFrame): void {
-    this.currentPageEpoch = frame.pageEpoch;
+    this.observeCurrentPageEpoch(frame.pageEpoch);
     const projectionRecovery = this.projectionRecovery;
     const topologyProjection = projectionRecovery?.topology ?? this.topologyProjection;
     const result = topologyProjection.applySyncFrame(frame);
@@ -2515,6 +2526,7 @@ class Runtime implements WorkbenchRuntime {
       !this.activeTopologyStagingSyncIds.has(stagingKey)
     ) {
       this.activeTopologyStagingSyncIds.add(stagingKey);
+      this.topologySyncGapGenerations.set(stagingKey, this.evidenceGapGeneration);
       this.performanceHooks?.onCheckpointStagingStart?.(frame.syncId, performance.now());
     }
     if (
@@ -2532,12 +2544,56 @@ class Runtime implements WorkbenchRuntime {
       void receipt.settled.then((settled) => {
         if (settled.outcome === "NOT_EVIDENCE") {
           this.offeredTopologyCheckpointSyncIds.delete(syncId);
+          this.topologySyncGapGenerations.delete(stagingKey);
         }
       }).catch(() => {
         this.offeredTopologyCheckpointSyncIds.delete(syncId);
+        this.topologySyncGapGenerations.delete(stagingKey);
       });
+    } else if (frame.type === "lsew:topology-sync-complete" && !candidate) {
+      this.topologySyncGapGenerations.delete(stagingKey);
     }
     this.publish();
+  }
+
+  private observeCurrentPageEpoch(pageEpoch: string | null): void {
+    if (pageEpoch === null) return;
+    if (
+      this.topologyBasisRecovery !== null &&
+      this.topologyBasisRecovery.checkpoint.pageEpoch !== pageEpoch
+    ) {
+      this.topologyBasisRecovery = null;
+      this.updateHistoryCondition(this.history.status());
+    }
+    this.currentPageEpoch = pageEpoch;
+  }
+
+  private acceptTopologyBasisRecovery(
+    entry: CommittedEvidence,
+    checkpoint: TopologyCheckpointBasisMetadata | undefined
+  ): void {
+    if (!checkpoint) return;
+    const stagingKey = `${checkpoint.pageEpoch}\u0000${checkpoint.syncId}`;
+    const beganInGapGeneration = this.topologySyncGapGenerations.get(stagingKey);
+    this.topologySyncGapGenerations.delete(stagingKey);
+    if (
+      checkpoint.completeness !== "COMPLETE" ||
+      beganInGapGeneration !== this.evidenceGapGeneration ||
+      this.currentPageEpoch !== checkpoint.pageEpoch ||
+      this.historyStatus.continuity?.state !== "GAPPED" ||
+      this.historyStatus.interval.id !== entry.intervalId
+    ) {
+      return;
+    }
+    this.topologyBasisRecovery = Object.freeze({
+      checkpoint,
+      evidence: Object.freeze({
+        intervalId: entry.intervalId,
+        sequence: entry.sequence,
+        eventId: entry.eventId
+      })
+    });
+    this.updateHistoryCondition(this.historyStatus);
   }
 
   private displayedEvidence(): EvidenceData {
@@ -2691,6 +2747,9 @@ class Runtime implements WorkbenchRuntime {
 
   private resetCoherentStateAfterClear(): void {
     this.captureBoundary = null;
+    this.evidenceGapGeneration = 0;
+    this.topologyBasisRecovery = null;
+    this.topologySyncGapGenerations.clear();
     this.activeRuntimeDiagnosticConditions.clear();
     this.diagnosticEvidenceSequences.clear();
     this.committedDiagnosticPresentations.clear();
@@ -2947,6 +3006,7 @@ class Runtime implements WorkbenchRuntime {
         if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
         else this.topologyCoverage = "LIMITED";
       }
+      this.acceptTopologyBasisRecovery(entry, topologyResult.checkpoint);
       this.recordSubscriptionDiagnosticProposals(topologyDiagnostics.apply(
         entry,
         topologyProjection.snapshot(),
@@ -2994,7 +3054,7 @@ class Runtime implements WorkbenchRuntime {
     // example an item before Session attribution) still honor the existing
     // renderer contract without issuing a second Evidence read.
     this.cacheEvidenceEvent(event);
-    this.currentPageEpoch = event.topology?.pageEpoch ?? this.currentPageEpoch;
+    this.observeCurrentPageEpoch(event.topology?.pageEpoch ?? null);
     if (this.captureStatus !== "bridge disconnected") {
       this.captureStatus = "capturing";
     }
@@ -3183,6 +3243,8 @@ class Runtime implements WorkbenchRuntime {
       shouldPublish = true;
     } else if (publication.type === "acceptance-gap") {
       this.historyStatus = publication.status;
+      this.evidenceGapGeneration += 1;
+      this.topologyBasisRecovery = null;
       const firstGap = publication.status.continuity?.firstGap ?? publication.gap;
       this.captureBoundary = Object.freeze({
         operation: "RUNNING",
@@ -3373,7 +3435,11 @@ class Runtime implements WorkbenchRuntime {
     problem?: HistoryProblem
   ): boolean {
     const previousKeys = this.historyConditions.map(({ announcementKey }) => announcementKey).join("\u0000");
-    const next = historyConditionsFor({ status, problem });
+    const next = historyConditionsFor({
+      status,
+      problem,
+      topologyBasisRestoredAt: this.topologyBasisRecovery?.evidence ?? null
+    });
     const nextKeys = next.map(({ announcementKey }) => announcementKey).join("\u0000");
     const changed = previousKeys !== nextKeys;
     this.historyConditions = next;
@@ -5550,7 +5616,9 @@ class Runtime implements WorkbenchRuntime {
           ? "STOPPED"
           : "IDLE";
     return Object.freeze({
-      operation: boundary?.operation ?? this.captureOverride.operation ?? operation,
+      operation: operation === "STOPPED"
+        ? "STOPPED"
+        : boundary?.operation ?? this.captureOverride.operation ?? operation,
       coverage: boundary?.coverage ?? this.captureOverride.coverage ?? this.topologyCoverage ?? "USEFUL",
       firstMissingEventId: boundary?.firstMissingEventId ?? null,
       committedEvidenceBoundary: boundary?.committedEvidenceBoundary ?? null,

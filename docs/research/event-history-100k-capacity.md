@@ -2,6 +2,11 @@
 
 Status: decision-ready research, 2026-08-13. Change class: **Non-UI**. This note proposes an implementation and verification boundary; it does not itself change runtime behavior.
 
+Implementation note, 2026-08-29: [ADR 0014](../adr/0014-continue-event-history-with-rolling-retention.md)
+supersedes the stop-at-capacity behavior described here. The 100,000-record /
+256 MiB normal and 5,000-record / 32 MiB memory values now bound rolling retained
+Evidence while Capture continues.
+
 ## Executive decision
 
 Support **up to 100,000 retained events in the normal IndexedDB tier**, initially bounded by **256 MiB of canonical accounted payload**, whichever limit is reached first. Keep IndexedDB as the only normal authority. This is a 10× count increase, not a count-only promise: arbitrary evidence payloads can exhaust the byte envelope before 100,000 events, and **256 MiB is a measured target, not guaranteed coverage for every possible payload mix**.

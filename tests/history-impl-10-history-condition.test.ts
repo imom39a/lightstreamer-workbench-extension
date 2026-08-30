@@ -283,6 +283,36 @@ describe("history-impl-10 continuity-first History condition", () => {
     runtime.dispose();
   });
 
+  it("reports stopped Capture independently from an existing Evidence gap", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-10-gap-disconnected",
+      byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
+      capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 }
+    });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scheduler: immediateScheduler() });
+
+    await history.offer(candidate("too-large")).settled;
+    await flushRuntime();
+    runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
+    await flushRuntime();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.capture).toMatchObject({
+      operation: "STOPPED",
+      coverage: "LIMITED",
+      firstMissingEventId: "too-large"
+    });
+    expect(snapshot.diagnostics.map(({ title }) => title)).toEqual(expect.arrayContaining([
+      "History has an Evidence gap",
+      "Capture disconnected"
+    ]));
+    expect(snapshot.notifications.entries.map(({ title }) => title)).toEqual(expect.arrayContaining([
+      "History has an Evidence gap",
+      "Capture disconnected"
+    ]));
+    runtime.dispose();
+  });
+
   it("restores useful Capture coverage when Clear starts a fresh interval after an Evidence gap", async () => {
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "history-impl-10-gap-clear",

@@ -320,11 +320,19 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       if (visual.production.setup === "captured-draft-changed") {
         const compare = draft.getByRole("button", { name: "Compare Source" });
         await compare.click();
+        await expect(compare).toHaveAttribute("aria-pressed", "false");
+        await expect(draft.getByText("Immutable Source", { exact: true })).toHaveCount(0);
         const editor = draft.getByRole("textbox", { name: "Local Injection JSON", exact: true });
         const rawText = await editor.textContent();
         expect(rawText).toContain('"value": "1"');
-        await editor.fill(rawText!.replace('"value": "1"', '"value": "2"'));
+        const changedText = rawText!.replace('"value": "1"', '"value": "2"');
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+A");
+        await page.keyboard.insertText(changedText);
+        await expect(editor).toHaveText(changedText);
+        await expect(draft).toContainText("Changed from immutable Source");
         await compare.click();
+        await expect(compare).toHaveAttribute("aria-pressed", "true");
         await expect(draft).toContainText("Changed from immutable Source");
       }
       await expectVisibleKeyboardTarget(page, draft.getByRole("button", { name: "Inject locally" }));

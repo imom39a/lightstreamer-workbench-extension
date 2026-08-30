@@ -211,8 +211,15 @@ test("Normal Context retains its preferred resize after available height clamps 
   const context = page.getByRole("complementary", { name: "Context" });
   expect(await context.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(210);
   await page.setViewportSize({ width: 900, height: 900 });
+  const find = page.getByRole("textbox", { name: "Find in ordered Evidence" });
+  await expect(find).toBeFocused();
+  await expect.poll(async () => {
+    const now = Number(await splitter.getAttribute("aria-valuenow"));
+    const maximum = Number(await splitter.getAttribute("aria-valuemax"));
+    return now === maximum && maximum > 311;
+  }).toBe(true);
+  await page.getByRole("button", { name: "Close Find", exact: true }).click();
   await expect(splitter).toHaveAttribute("aria-valuenow", "520");
-  await expect(page.getByRole("textbox", { name: "Find in ordered Evidence" })).toBeFocused();
 });
 
 

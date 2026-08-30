@@ -204,7 +204,7 @@ test("Workbench keeps Capture, Coverage, and View explicit across docked geometr
   await page.evaluate(() => window.__setWorkbenchStorageMode("indexeddb"));
   const shell = page.locator(".workbench-react");
   const operating = page.locator(".workbench-react__operating");
-  const historyStatus = operating.locator("[data-history-status]");
+  const historyStatus = page.locator("[data-history-status]");
 
   for (const viewport of [
     { width: 563, height: 700, geometry: "compact" },
@@ -217,9 +217,10 @@ test("Workbench keeps Capture, Coverage, and View explicit across docked geometr
     await expectOperatingStatusFullyVisible(page, [
       "Capture RUNNING",
       "Coverage USEFUL",
-      "10,000/10,000 Evidence · IndexedDB",
       "View FOLLOW LIVE"
     ]);
+    await expect(historyStatus).toHaveText("10,000/10,000 Evidence · IndexedDB");
+    await expect(historyStatus).toBeVisible();
     await expect(historyStatus).toHaveAttribute("aria-label", "10,000 retained Evidence of 10,000 accepted");
 
     for (const name of ["Find", "Filter", "More actions"] as const) {
@@ -582,7 +583,7 @@ test("Workbench keeps low-frequency session controls and scoped export deliberat
   const operations = page.getByRole("region", { name: "Session operations" });
   await expect(operationsHeading).toBeFocused();
   await expect(moreActions).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByText("Evidence is retained for this Panel Session.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-history-status]")).toBeVisible();
   await page.getByRole("button", { name: "Clear retained Evidence…" }).click();
   await expect(page.getByText(/Clear all \d+ retained Evidence events for this Panel Session\?/)).toBeVisible();
   await expect(operations.getByText(/Clear all \d+ retained Evidence events for this Panel Session\. Scope and Filter do not limit this destructive action\./)).toBeVisible();
@@ -2313,6 +2314,9 @@ test("Workbench exposes selected Item Update Fields while Evidence metadata is c
   await context.getByRole("button", { name: "Create Local Injection Draft" }).click();
 
   const draft = page.getByRole("region", { name: "Local Injection Draft" });
+  const compareSource = draft.getByRole("button", { name: "Compare Source" });
+  await expect(compareSource).toHaveAttribute("aria-pressed", "true");
+  await compareSource.click();
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   const scrollOwner = draft.locator('[data-shared-scroll-owner="true"]');
   await expect(editor).toContainText('"modelValues": {');
@@ -3042,7 +3046,11 @@ test("Scenario fails closed for incompatible membership, invalid Review, and par
   await expect(picker).toBeHidden();
   await expect(add).toBeFocused();
 
-  const secondEditor = scenario.getByRole("textbox", { name: "Step 2 Local Injection JSON" });
+  const secondStep = scenario.getByRole("article").nth(1);
+  const secondCompareSource = secondStep.getByRole("button", { name: "Compare Source" });
+  await expect(secondCompareSource).toHaveAttribute("aria-pressed", "true");
+  await secondCompareSource.click();
+  const secondEditor = secondStep.getByRole("textbox", { name: "Step 2 Local Injection JSON" });
   await secondEditor.fill('{"command":"UPDATE"}');
   await scenario.getByRole("button", { name: "Review Scenario" }).click();
   await expect(scenario.getByRole("alert")).toContainText("step-2");
@@ -3179,6 +3187,9 @@ test("Draft conversion preserves CodeMirror undo history", async ({ page }) => {
   const openContext = page.getByRole("button", { name: "Open selected Context" });
   if (await openContext.isVisible()) await openContext.click();
   await page.getByRole("button", { name: "Create Local Injection Draft" }).click();
+  const compareSource = page.getByRole("region", { name: "Local Injection Draft" }).getByRole("button", { name: "Compare Source" });
+  await expect(compareSource).toHaveAttribute("aria-pressed", "true");
+  await compareSource.click();
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   const original = await editor.textContent();
   await editor.fill(`${original} `);

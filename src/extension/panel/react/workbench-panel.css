@@ -152,8 +152,8 @@
   display: grid;
   min-height: 32px;
   align-items: center;
-  grid-template-areas: "capture coverage history view actions";
-  grid-template-columns: max-content max-content max-content max-content 1fr;
+  grid-template-areas: "capture coverage view actions";
+  grid-template-columns: max-content max-content max-content 1fr;
   border-bottom: 1px solid var(--wb-border);
   padding: 3px 9px;
   font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -162,7 +162,6 @@
 .workbench-react__operating > strong, .workbench-react__operating > span { min-width: max-content; margin-right: 12px; border-right: 1px solid var(--wb-border); padding-right: 12px; }
 .workbench-react__operating-capture { grid-area: capture; }
 .workbench-react__operating-coverage { grid-area: coverage; }
-.workbench-react__operating-history { grid-area: history; }
 .workbench-react__operating-view { grid-area: view; }
 .workbench-react__operating [data-condition="limited"], .workbench-react__operating [data-condition="unavailable"] { color: var(--wb-warning); }
 .workbench-react__operating-actions { display: flex; min-width: 0; grid-area: actions; align-items: center; gap: 5px; justify-self: end; font-family: inherit; }
@@ -652,11 +651,8 @@
 }
 
 .workbench-react[data-geometry="normal"] .workbench-react__operating {
-  grid-template-areas:
-    "capture coverage history view"
-    "actions actions actions actions";
-  grid-template-columns: max-content max-content 1fr max-content;
-  row-gap: 2px;
+  grid-template-areas: "capture coverage view actions";
+  grid-template-columns: max-content max-content max-content 1fr;
   overflow: hidden;
 }
 .workbench-react[data-geometry="normal"] .workbench-react__workspace { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) 6px var(--wb-context-size, 260px); }
@@ -707,11 +703,8 @@
 .workbench-react[data-geometry="shallow"] .workbench-react__operating,
 .workbench-react[data-geometry="shallow"] .workbench-react__scope-strip { min-height: 27px; padding-block: 1px; }
 .workbench-react[data-geometry="shallow"] .workbench-react__operating {
-  grid-template-areas:
-    "capture coverage history view"
-    "actions actions actions actions";
-  grid-template-columns: max-content max-content 1fr max-content;
-  row-gap: 2px;
+  grid-template-areas: "capture coverage view actions";
+  grid-template-columns: max-content max-content max-content 1fr;
   overflow: hidden;
 }
 .workbench-react[data-geometry="shallow"] .workbench-react__operating > strong,
@@ -739,10 +732,9 @@
 
 .workbench-react[data-geometry="compact"] .workbench-react__operating {
   grid-template-areas:
-    "capture coverage"
-    "history view"
-    "actions actions";
-  grid-template-columns: max-content 1fr;
+    "capture coverage view"
+    "actions actions actions";
+  grid-template-columns: max-content max-content 1fr;
   row-gap: 2px;
   overflow: hidden;
 }

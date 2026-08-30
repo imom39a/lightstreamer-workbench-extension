@@ -5,7 +5,8 @@ import {
   createMemoryEventHistoryForTests,
   openEventHistory,
   type EvidenceCandidate,
-  type EventHistory
+  type EventHistory,
+  type HistoryPublication
 } from "../src/core/event-history-authoritative";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
@@ -30,6 +31,12 @@ type HistoryLifecycleOptions = Readonly<{
   clearJournal?: () => Promise<void | boolean> | boolean;
   closeJournal?: () => Promise<void>;
   commitBatch?: (batch: readonly EvidenceCandidate[]) => Promise<void>;
+  byteEstimator?: (candidate: EvidenceCandidate) => number;
+  capacity?: Readonly<{
+    maxRetainedCount?: number;
+    maxRetainedBytes?: number;
+    pendingStopBytes?: number;
+  }>;
 }>;
 
 type HistoryFactory = (options?: HistoryLifecycleOptions) => Promise<EventHistory>;
@@ -180,6 +187,359 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
           ],
           committedEvidenceBoundary: { sequence: 4, eventId: "clear-failure-after" }
         }
+      });
+      await history.close();
+    });
+
+    it("orders an exact pending-overflow gap between its preceding and following Evidence", async () => {
+      let releaseCommit!: () => void;
+      let markCommitStarted!: () => void;
+      const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+      const commitStarted = new Promise<void>((resolve) => { markCommitStarted = resolve; });
+      const history = await createHistory({
+        byteEstimator: (entry) => entry.id === "after-gap" ? 4 : 6,
+        capacity: { maxRetainedCount: 10, maxRetainedBytes: 100, pendingStopBytes: 10 },
+        commitBatch: async (batch) => {
+          if (batch.some((entry) => entry.id === "before-gap")) {
+            markCommitStarted();
+            await commitGate;
+          }
+        }
+      });
+      const publications: Array<
+        | { type: "committed"; eventIds: string[] }
+        | { type: "gap"; eventId: string; afterEventId: string | null }
+      > = [];
+      history.follow({ from: "NOW" }, (publication) => {
+        if (publication.type === "committed-evidence") {
+          publications.push({ type: "committed", eventIds: publication.evidence.map(({ eventId }) => eventId) });
+        } else if (publication.type === "acceptance-gap") {
+          publications.push({ type: "gap", eventId: publication.gap.eventId, afterEventId: publication.gap.afterEvidence?.eventId ?? null });
+        }
+      });
+
+      const before = history.offer(candidate("before-gap"));
+      await commitStarted;
+      const gap = history.offer(candidate("pending-overflow"));
+      const after = history.offer(candidate("after-gap"));
+      expect(gap.intake).toBe("REFUSED");
+      expect(after.intake).toBe("QUEUED");
+      let gapSettled = false;
+      void gap.settled.then(() => { gapSettled = true; });
+      await Promise.resolve();
+      expect(gapSettled).toBe(false);
+      expect(publications).toEqual([]);
+
+      releaseCommit();
+      await expect(Promise.all([before.settled, gap.settled, after.settled])).resolves.toMatchObject([
+        { outcome: "BECAME_EVIDENCE", evidence: { sequence: 1, eventId: "before-gap" } },
+        { outcome: "NOT_EVIDENCE", problem: { code: "PENDING_OVERFLOW" }, committedEvidenceBoundary: { sequence: 1, eventId: "before-gap" } },
+        { outcome: "BECAME_EVIDENCE", evidence: { sequence: 2, eventId: "after-gap" } }
+      ]);
+      expect(publications).toEqual([
+        { type: "committed", eventIds: ["before-gap"] },
+        { type: "gap", eventId: "pending-overflow", afterEventId: "before-gap" },
+        { type: "committed", eventIds: ["after-gap"] }
+      ]);
+      expect(history.status()).toMatchObject({
+        continuity: {
+          state: "GAPPED",
+          gapCount: 1,
+          firstGap: { captureOrdinal: 2, eventId: "pending-overflow", afterEvidence: { eventId: "before-gap" } },
+          latestGap: { captureOrdinal: 2, eventId: "pending-overflow", afterEvidence: { eventId: "before-gap" } }
+        }
+      });
+      await history.close();
+    });
+
+    it("coalesces adjacent pending-overflow gaps behind one exact Evidence boundary", async () => {
+      let releaseCommit!: () => void;
+      let markCommitStarted!: () => void;
+      const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+      const commitStarted = new Promise<void>((resolve) => { markCommitStarted = resolve; });
+      const history = await createHistory({
+        byteEstimator: () => 6,
+        capacity: { maxRetainedCount: 10, maxRetainedBytes: 100, pendingStopBytes: 10 },
+        commitBatch: async (batch) => {
+          if (batch.some((entry) => entry.id === "coalesce-before")) {
+            markCommitStarted();
+            await commitGate;
+          }
+        }
+      });
+      const gapPublications: Array<Extract<HistoryPublication, { type: "acceptance-gap" }>> = [];
+      history.follow({ from: "NOW" }, (publication) => {
+        if (publication.type === "acceptance-gap") gapPublications.push(publication);
+      });
+
+      const before = history.offer(candidate("coalesce-before"));
+      await commitStarted;
+      const first = history.offer(candidate("coalesce-first"));
+      const middle = history.offer(candidate("coalesce-middle"));
+      const latest = history.offer(candidate("coalesce-latest"));
+      expect(first.intake).toBe("REFUSED");
+      expect(middle.settled).toBe(first.settled);
+      expect(latest.settled).toBe(first.settled);
+
+      releaseCommit();
+      await before.settled;
+      await expect(first.settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        committedEvidenceBoundary: { sequence: 1, eventId: "coalesce-before" }
+      });
+      expect(gapPublications).toHaveLength(1);
+      expect(gapPublications[0]).toMatchObject({
+        gap: { eventId: "coalesce-first", afterEvidence: { eventId: "coalesce-before" } },
+        status: {
+          continuity: {
+            gapCount: 3,
+            firstGap: { captureOrdinal: 2, eventId: "coalesce-first", afterEvidence: { eventId: "coalesce-before" } },
+            latestGap: { captureOrdinal: 4, eventId: "coalesce-latest", afterEvidence: { eventId: "coalesce-before" } }
+          }
+        }
+      });
+      await history.close();
+    });
+
+    it("assigns an overflow offered during successful Clear to the new interval without reordering it", async () => {
+      let releaseCommit!: () => void;
+      let markCommitStarted!: () => void;
+      const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+      const commitStarted = new Promise<void>((resolve) => { markCommitStarted = resolve; });
+      const history = await createHistory({
+        byteEstimator: () => 6,
+        capacity: { maxRetainedCount: 10, maxRetainedBytes: 100, pendingStopBytes: 10 },
+        commitBatch: async (batch) => {
+          if (batch.some((entry) => entry.id === "clear-gap-before")) {
+            markCommitStarted();
+            await commitGate;
+          }
+        }
+      });
+      const publications: Array<{ type: string; intervalOrdinal: number }> = [];
+      history.follow({ from: "NOW" }, (publication) => {
+        if (publication.type === "interval-cleared") {
+          publications.push({ type: publication.type, intervalOrdinal: publication.interval.ordinal });
+        } else if (publication.type === "acceptance-gap") {
+          publications.push({ type: publication.type, intervalOrdinal: publication.gap.interval.ordinal });
+        }
+      });
+
+      const before = history.offer(candidate("clear-gap-before"));
+      await commitStarted;
+      const clear = history.clear();
+      const gap = history.offer(candidate("clear-gap-during"));
+      expect(gap.intake).toBe("REFUSED");
+      releaseCommit();
+
+      await before.settled;
+      await expect(clear).resolves.toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
+      await expect(gap.settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        committedEvidenceBoundary: { sequence: 1, eventId: "clear-gap-before" }
+      });
+      expect(publications).toEqual([
+        { type: "interval-cleared", intervalOrdinal: 2 },
+        { type: "acceptance-gap", intervalOrdinal: 2 }
+      ]);
+      expect(history.status()).toMatchObject({
+        interval: { ordinal: 2 },
+        continuity: { state: "GAPPED", gapCount: 1, firstGap: { interval: { ordinal: 2 }, eventId: "clear-gap-during" } }
+      });
+      await history.close();
+    });
+
+    it("keeps an overflow offered during failed Clear in the existing interval", async () => {
+      let releaseCommit!: () => void;
+      let markCommitStarted!: () => void;
+      const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+      const commitStarted = new Promise<void>((resolve) => { markCommitStarted = resolve; });
+      const history = await createHistory({
+        byteEstimator: () => 6,
+        capacity: { maxRetainedCount: 10, maxRetainedBytes: 100, pendingStopBytes: 10 },
+        clearJournal: () => false,
+        commitBatch: async (batch) => {
+          if (batch.some((entry) => entry.id === "failed-clear-gap-before")) {
+            markCommitStarted();
+            await commitGate;
+          }
+        }
+      });
+
+      const before = history.offer(candidate("failed-clear-gap-before"));
+      await commitStarted;
+      const clear = history.clear();
+      const gap = history.offer(candidate("failed-clear-gap-during"));
+      releaseCommit();
+
+      await before.settled;
+      await expect(clear).resolves.toMatchObject({ ok: false, problem: { code: "CLEAR_FAILED" } });
+      await expect(gap.settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        committedEvidenceBoundary: { sequence: 1, eventId: "failed-clear-gap-before" }
+      });
+      expect(history.status()).toMatchObject({
+        interval: { ordinal: 1 },
+        phase: "RUNNING",
+        continuity: {
+          state: "GAPPED",
+          gapCount: 1,
+          firstGap: { interval: { ordinal: 1 }, eventId: "failed-clear-gap-during", afterEvidence: { eventId: "failed-clear-gap-before" } }
+        }
+      });
+      await history.close();
+    });
+
+    it("turns an in-batch duplicate event identity into one exact gap and continues", async () => {
+      const history = await createHistory();
+      const publications: Array<
+        | { type: "committed"; eventIds: string[] }
+        | { type: "gap"; eventId: string; dimension: string; afterEventId: string | null }
+        | { type: "fallback" }
+      > = [];
+      history.follow({ from: "NOW" }, (publication) => {
+        if (publication.type === "committed-evidence") {
+          publications.push({ type: "committed", eventIds: publication.evidence.map(({ eventId }) => eventId) });
+        } else if (publication.type === "acceptance-gap") {
+          publications.push({
+            type: "gap",
+            eventId: publication.gap.eventId,
+            dimension: publication.gap.dimension,
+            afterEventId: publication.gap.afterEvidence?.eventId ?? null
+          });
+        } else if (publication.type === "persistence-state" && publication.transition === "MEMORY_FALLBACK") {
+          publications.push({ type: "fallback" });
+        }
+      });
+
+      const first = history.offer(candidate("duplicate-x"));
+      const duplicate = history.offer(candidate("duplicate-x"));
+      const later = history.offer(candidate("identity-y"));
+      await expect(Promise.all([first.settled, duplicate.settled, later.settled])).resolves.toMatchObject([
+        { outcome: "BECAME_EVIDENCE", evidence: { sequence: 1, eventId: "duplicate-x" } },
+        {
+          outcome: "NOT_EVIDENCE",
+          problem: { code: "INVALID_CANDIDATE", dimension: "EVENT_IDENTITY" },
+          committedEvidenceBoundary: { sequence: 1, eventId: "duplicate-x" }
+        },
+        { outcome: "BECAME_EVIDENCE", evidence: { sequence: 2, eventId: "identity-y" } }
+      ]);
+
+      expect(publications).toEqual([
+        { type: "committed", eventIds: ["duplicate-x"] },
+        { type: "gap", eventId: "duplicate-x", dimension: "EVENT_IDENTITY", afterEventId: "duplicate-x" },
+        { type: "committed", eventIds: ["identity-y"] }
+      ]);
+      expect(history.status()).toMatchObject({
+        phase: "RUNNING",
+        captureOperation: "RUNNING",
+        accepted: 2,
+        notAccepted: 1,
+        persistence: { mode: "JOURNAL", health: "HEALTHY" },
+        continuity: {
+          state: "GAPPED",
+          gapCount: 1,
+          firstGap: {
+            captureOrdinal: 2,
+            eventId: "duplicate-x",
+            dimension: "EVENT_IDENTITY",
+            afterEvidence: { sequence: 1, eventId: "duplicate-x" }
+          }
+        }
+      });
+      await expect(history.read({ order: "asc" })).resolves.toMatchObject({
+        ok: true,
+        value: {
+          total: 2,
+          evidence: [
+            expect.objectContaining({ sequence: 1, eventId: "duplicate-x" }),
+            expect.objectContaining({ sequence: 2, eventId: "identity-y" })
+          ]
+        }
+      });
+      await history.close();
+    });
+
+    it("rejects a retained duplicate event identity and accepts the next candidate", async () => {
+      const history = await createHistory();
+      await expect(history.offer(candidate("retained-x")).settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 1, eventId: "retained-x" }
+      });
+
+      const duplicate = history.offer(candidate("retained-x"));
+      const later = history.offer(candidate("retained-y"));
+      await expect(Promise.all([duplicate.settled, later.settled])).resolves.toMatchObject([
+        {
+          outcome: "NOT_EVIDENCE",
+          problem: { code: "INVALID_CANDIDATE", dimension: "EVENT_IDENTITY" },
+          committedEvidenceBoundary: { sequence: 1, eventId: "retained-x" }
+        },
+        { outcome: "BECAME_EVIDENCE", evidence: { sequence: 2, eventId: "retained-y" } }
+      ]);
+      expect(history.status()).toMatchObject({
+        phase: "RUNNING",
+        accepted: 2,
+        notAccepted: 1,
+        persistence: { mode: "JOURNAL", health: "HEALTHY" },
+        continuity: {
+          state: "GAPPED",
+          gapCount: 1,
+          latestGap: {
+            captureOrdinal: 2,
+            eventId: "retained-x",
+            dimension: "EVENT_IDENTITY",
+            afterEvidence: { sequence: 1, eventId: "retained-x" }
+          }
+        }
+      });
+      await history.close();
+    });
+
+    it("releases event identities when rolling retention or successful Clear removes their Evidence", async () => {
+      let releaseClear!: () => void;
+      const clearGate = new Promise<void>((resolve) => { releaseClear = resolve; });
+      const history = await createHistory({
+        capacity: { maxRetainedCount: 2, maxRetainedBytes: 1_000_000 },
+        clearJournal: () => clearGate
+      });
+
+      await history.offer(candidate("identity-old")).settled;
+      await history.offer(candidate("identity-middle")).settled;
+      await history.offer(candidate("identity-new")).settled;
+      expect(history.status()).toMatchObject({ retained: 1, retention: { evicted: { count: 2 } } });
+      await expect(history.offer(candidate("identity-old")).settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 4, eventId: "identity-old" }
+      });
+
+      const clear = history.clear();
+      const reusedDuringClear = history.offer(candidate("identity-new"));
+      releaseClear();
+      await expect(clear).resolves.toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
+      await expect(reusedDuringClear.settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 5, eventId: "identity-new", intervalId: expect.stringContaining(":interval-2") }
+      });
+      await history.close();
+    });
+
+    it("keeps an event identity reserved when Clear fails", async () => {
+      const history = await createHistory({ clearJournal: () => false });
+      await history.offer(candidate("failed-clear-identity")).settled;
+
+      const clear = history.clear();
+      const duplicate = history.offer(candidate("failed-clear-identity"));
+      await expect(clear).resolves.toMatchObject({ ok: false, problem: { code: "CLEAR_FAILED" } });
+      await expect(duplicate.settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        problem: { code: "INVALID_CANDIDATE", dimension: "EVENT_IDENTITY" },
+        committedEvidenceBoundary: { sequence: 1, eventId: "failed-clear-identity" }
+      });
+      expect(history.status()).toMatchObject({
+        phase: "RUNNING",
+        persistence: { mode: "JOURNAL", health: "HEALTHY" },
+        continuity: { state: "GAPPED", gapCount: 1 }
       });
       await history.close();
     });
@@ -354,8 +714,9 @@ async function historyFactoryOfferAndReadCanonicalReplay(history: EventHistory):
 }
 
 sharedContract("memory", (options = {}) => createMemoryEventHistoryForTests(options));
+let sharedIndexedDbSessionOrdinal = 0;
 sharedContract("fake IndexedDB", async (options = {}) => {
-  const panelSessionId = "shared-contract-indexeddb";
+  const panelSessionId = `shared-contract-indexeddb-${++sharedIndexedDbSessionOrdinal}`;
   Reflect.set(globalThis, "indexedDB", new IDBFactory());
   await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
   return openEventHistory({ panelSessionId, ...options });

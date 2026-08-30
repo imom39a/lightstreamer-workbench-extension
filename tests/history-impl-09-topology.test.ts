@@ -8,6 +8,7 @@ import {
   TOPOLOGY_SYNC_COMPLETE,
   TOPOLOGY_SYNC_VERSION,
   type TopologyAbsoluteRecord,
+  type TopologyCoverage,
   type TopologyObservation,
   type TopologySyncBeginFrame,
   type TopologySyncChunkFrame,
@@ -189,7 +190,13 @@ describe("history-impl-09 topology cutover", () => {
     };
 
     expect(projection.ingestCommittedEvidence(committed)).toMatchObject({
-      accepted: true
+      accepted: true,
+      checkpoint: {
+        syncId: "follower-recovery-sync",
+        pageEpoch: PAGE_EPOCH,
+        cutoffCaptureSequence: 1,
+        completeness: "COMPLETE"
+      }
     });
     expect(projection.snapshot().subscriptionCount).toBe(2);
     expect(projection.snapshot().serverEstablishedSubscriptionCount).toBe(1);
@@ -365,12 +372,97 @@ describe("history-impl-09 topology cutover", () => {
 
     runtime.dispose();
   });
+
+  it("restores only the Topology basis from a full checkpoint begun after an Evidence Gap", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: PANEL_SESSION_ID,
+      byteEstimator: (candidate) => candidate.kind === "topology-checkpoint" ? 1 : 101,
+      capacity: { maxRetainedCount: 100, maxRetainedBytes: 100 }
+    });
+    const runtime = createWorkbenchRuntime({
+      history,
+      captureStatus: "capturing",
+      scheduler: immediateScheduler()
+    });
+    const beforeGap = checkpointFrames("basis-before-gap", "before-gap", 1);
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: beforeGap[0] });
+
+    const gapEvent = createEventNormalizer().normalize(
+      topologyCapture(observation("missing-after-begin", 2))
+    );
+    await expect(history.offer(gapEvent).settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE"
+    });
+    await settle();
+    expect(runtime.getSnapshot().retention.historyStatus.continuity).toMatchObject({
+      state: "GAPPED",
+      gapCount: 1
+    });
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: beforeGap[1] });
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: beforeGap[2] });
+    await settle();
+
+    expect(runtime.getSnapshot().historyCondition).toMatchObject({
+      kind: "evidence-gap",
+      detail: expect.not.stringContaining("Topology basis was restored")
+    });
+
+    const partialCoverage: TopologyCoverage = {
+      status: "partial",
+      getters: {},
+      reason: "limit-exceeded"
+    };
+    for (const frame of checkpointFrames("basis-partial-after-gap", "partial-after-gap", 3, partialCoverage)) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    await settle();
+
+    expect(runtime.getSnapshot().historyCondition?.detail).not.toContain(
+      "Topology basis was restored"
+    );
+
+    for (const frame of checkpointFrames("basis-full-after-gap", "full-after-gap", 4)) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    await settle();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.retention.historyStatus.continuity).toMatchObject({
+      state: "GAPPED",
+      gapCount: 1
+    });
+    expect(snapshot.capture).toMatchObject({
+      operation: "RUNNING",
+      coverage: "LIMITED",
+      firstMissingEventId: gapEvent.id
+    });
+    expect(snapshot.historyCondition).toMatchObject({
+      kind: "evidence-gap",
+      detail: expect.stringContaining("Topology basis was restored")
+    });
+    expect(snapshot.historyCondition?.detail).toContain(
+      "COMMAND-dependent Scenario conclusions remain LIMITED"
+    );
+    expect(snapshot.historyCondition?.recovery).toContain(
+      "Complete History remains incomplete"
+    );
+    expect(snapshot.notifications.entries).toContainEqual(expect.objectContaining({
+      title: "History has an Evidence gap",
+      detail: expect.stringContaining("Topology basis was restored")
+    }));
+    expect(snapshot.notifications.entries.filter(
+      ({ title }) => title === "History has an Evidence gap"
+    )).toHaveLength(1);
+
+    runtime.dispose();
+  });
 });
 
 function checkpointFrames(
   syncId = "complete-sync",
   subscriptionId = "ticket09-subscription",
-  cutoffCaptureSequence = 1
+  cutoffCaptureSequence = 1,
+  coverage: TopologyCoverage = { status: "complete", getters: {} }
 ): readonly [
   TopologySyncBeginFrame,
   TopologySyncChunkFrame,
@@ -410,12 +502,16 @@ function checkpointFrames(
     cutoffCaptureSequence,
     chunkCount: 1,
     recordCount: records.length,
-    coverage: { status: "complete" as const, getters: {} }
+    coverage
   };
   return [
     { type: TOPOLOGY_SYNC_BEGIN, ...metadata },
     { type: TOPOLOGY_SYNC_CHUNK, ...metadata, chunkIndex: 0, records },
-    { type: TOPOLOGY_SYNC_COMPLETE, ...metadata }
+    {
+      type: TOPOLOGY_SYNC_COMPLETE,
+      ...metadata,
+      ...(coverage.status === "partial" ? { reason: "limit-exceeded" as const } : {})
+    }
   ];
 }
 

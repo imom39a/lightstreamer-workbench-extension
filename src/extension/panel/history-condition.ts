@@ -5,6 +5,7 @@ import {
   type HistoryPressureMeasurements
 } from "../../core/event-history-capacity";
 import type {
+  EvidenceRef,
   HistoryAcceptanceGap,
   HistoryProblem,
   HistoryStatus
@@ -30,19 +31,24 @@ export type WorkbenchHistoryCondition = Readonly<{
 export type HistoryConditionInput = Readonly<{
   status: HistoryStatus;
   problem?: HistoryProblem;
+  topologyBasisRestoredAt?: EvidenceRef | null;
 }>;
 
 /** Maps Event History facts to each active low-attention footer condition. */
 export function historyConditionsFor(
   input: HistoryConditionInput
 ): readonly WorkbenchHistoryCondition[] {
-  const { status, problem } = input;
+  const { status, problem, topologyBasisRestoredAt = null } = input;
   const limits = status.capacity.limits ?? historyCapacityLimits(status.capacity.tier);
   const measurements = status.capacity.measurements;
   const conditions: WorkbenchHistoryCondition[] = [];
 
   if (status.continuity?.state === "GAPPED" && status.continuity.latestGap) {
-    conditions.push(evidenceGapCondition(status, status.continuity.latestGap));
+    conditions.push(evidenceGapCondition(
+      status,
+      status.continuity.latestGap,
+      topologyBasisRestoredAt
+    ));
   }
 
   if (status.phase === "RUNNING" && measurements && hasPendingPressure(limits, measurements)) {
@@ -80,15 +86,21 @@ export function historyConditionFor(
 
 function evidenceGapCondition(
   status: HistoryStatus,
-  gap: HistoryAcceptanceGap
+  gap: HistoryAcceptanceGap,
+  topologyBasisRestoredAt: EvidenceRef | null
 ): WorkbenchHistoryCondition {
+  const projectionDetail = topologyBasisRestoredAt
+    ? `Topology basis was restored by a full checkpoint at ${boundaryLabel(topologyBasisRestoredAt)}. COMMAND and COMMAND-dependent Scenario conclusions remain LIMITED.`
+    : "Continuity-dependent Topology and COMMAND conclusions are LIMITED.";
   return condition({
     kind: "evidence-gap",
     severity: "Warning",
     title: "History has an Evidence gap",
     affected: intervalLabel(status),
-    detail: `Captured activity #${gap.captureOrdinal.toLocaleString()} (${gap.eventId}) could not become Evidence because of ${gap.dimension}. Later Capture continues. ${boundaryLabel(gap.afterEvidence)} before the gap; current ${boundaryLabel(status.committedEvidenceBoundary)}. Continuity-dependent Topology and COMMAND conclusions are LIMITED.`,
-    recovery: "Inspect the gap in Notifications and use a later trustworthy snapshot or checkpoint before relying on continuity-dependent conclusions",
+    detail: `Captured activity #${gap.captureOrdinal.toLocaleString()} (${gap.eventId}) could not become Evidence because of ${gap.dimension}. Later Capture continues. ${boundaryLabel(gap.afterEvidence)} before the gap; current ${boundaryLabel(status.committedEvidenceBoundary)}. ${projectionDetail}`,
+    recovery: topologyBasisRestoredAt
+      ? "Use a later trustworthy COMMAND Snapshot before relying on COMMAND-dependent conclusions; Complete History remains incomplete because the Evidence Gap is not restored"
+      : "Inspect the gap in Notifications and use a later trustworthy snapshot or checkpoint before relying on continuity-dependent conclusions",
     announcement: "History has an Evidence gap; Capture continues with limited continuity."
   });
 }

@@ -31,7 +31,11 @@ live projections already applied. An **Evidence Gap** exists only when a valid
 captured candidate cannot enter any canonical segment. The gap records an exact
 capture-ordinal range and preceding Evidence boundary; later valid Capture remains
 eligible. Continuity-dependent Topology, COMMAND, and Scenario conclusions are
-limited until a trustworthy checkpoint or snapshot restores their basis.
+limited. A full Topology Checkpoint begun after the latest gap for the current
+page epoch restores only the Topology basis from that checkpoint forward; it
+does not erase the gap. COMMAND and COMMAND-dependent Scenario conclusions remain
+limited until a separately trustworthy, target-scoped COMMAND Snapshot recovery
+exists.
 
 The UI remains low-attention. Routine rollover is a quiet counter and one
 coalesced informational Notifications episode. A recovered transient commit is

@@ -65,13 +65,12 @@ The persistent operating strip presents independent noun/value pairs in a stable
 
 1. Capture operation;
 2. observation coverage;
-3. compact retained/accepted Evidence and storage tier status;
-4. Evidence view position;
-5. compact, labelled actions.
+3. Evidence view position;
+4. compact, labelled actions.
 
-For example: `Capture RUNNING · Coverage LIMITED · 90,000/100,000 Evidence · IndexedDB · View FROZEN · 2,418 newer`.
+For example: `Capture RUNNING · Coverage LIMITED · View FROZEN · 2,418 newer`.
 
-Coverage limitations name the affected observation and provide a nearby diagnostics route. Capture can continue while Coverage is limited and while the Evidence view is Frozen. The History status communicates rolling retention and the active tier without a health verdict; it never truncates or replaces Capture, Coverage, or View. Storage fallback or retained-history pressure also appears as a named condition when it affects a developer decision, without changing Observation Coverage.
+Coverage limitations name the affected observation and provide a nearby diagnostics route. Capture can continue while Coverage is limited and while the Evidence view is Frozen. The footer's compact History status communicates rolling retention and the active tier without a health verdict; it never truncates or replaces Capture, Coverage, or View. Storage fallback or retained-history pressure also appears as a named condition when it affects a developer decision, without changing Observation Coverage.
 
 ## Scope and runtime lifecycle
 

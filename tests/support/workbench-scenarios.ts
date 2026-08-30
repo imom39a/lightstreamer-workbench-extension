@@ -451,14 +451,16 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return { id, initialEvents: [], captureStatus: "idle" };
     case "notifications-operational":
       return { id, initialEvents: [], captureStatus: "idle", storage: { mode: "memory", reason: "IndexedDB is unavailable" } };
-    case "history-rolling-high-volume":
+    case "history-rolling-high-volume": {
+      const rolloverEvents = historyRetentionEvents(1, 6);
       return {
         id,
-        initialEvents: highVolumeEvents(1, 3),
-        laterEvents: highVolumeEvents(4, 3),
+        initialEvents: rolloverEvents.slice(0, 3),
+        laterEvents: rolloverEvents.slice(3),
         captureStatus: "capturing",
         historyCapacity: { maxRetainedCount: 4, maxRetainedBytes: 1_000_000 }
       };
+    }
     case "history-journal-recovered": {
       const source = serverOnlyCanonical[0];
       if (!source) throw new Error("The canonical scenario must include a Server event.");
@@ -1911,6 +1913,22 @@ function highVolumeEvents(first: number, count: number): readonly LightstreamerE
       };
     }
     return event;
+  });
+}
+
+/** Keeps the rolling-retention fixture free of unrelated unknown-key warnings. */
+function historyRetentionEvents(first: number, count: number): readonly LightstreamerEventEnvelope[] {
+  return highVolumeEvents(first, count).map((event) => {
+    if (!event.update) return event;
+    return {
+      ...event,
+      update: {
+        ...event.update,
+        command: "ADD",
+        fields: { ...event.update.fields, command: "ADD" },
+        changedFields: { ...event.update.changedFields, command: "ADD" }
+      }
+    };
   });
 }
 

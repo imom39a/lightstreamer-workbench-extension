@@ -732,7 +732,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const matching = filterCounts.matching;
   const inScope = filterCounts.inScope;
   const historyStatus = snapshot.retention.historyStatus;
-  const limited = coverage === "LIMITED" || coverage === "UNAVAILABLE";
   const appliedFilter = evidence.investigation.filter;
   const rangeOrigin = snapshot.activity?.projection.timeline?.originTimestamp;
   const activeTimelineRange = appliedFilter.around;
@@ -1779,12 +1778,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       <header className="workbench-react__operating">
         <strong className="workbench-react__operating-capture">Capture {captureOperation}</strong>
         <span className="workbench-react__operating-coverage" data-condition={coverage.toLowerCase()}>Coverage {coverage}</span>
-        <span
-          className="workbench-react__operating-history"
-          data-history-status
-          aria-label={`${historyStatus.retained.toLocaleString()} retained Evidence of ${historyStatus.accepted.toLocaleString()} accepted`}
-          title={`${historyStatus.retained.toLocaleString()} retained Evidence of ${historyStatus.accepted.toLocaleString()} accepted`}
-        >{historyStatus.retained.toLocaleString()}/{historyStatus.accepted.toLocaleString()} Evidence · {snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}</span>
         <span className="workbench-react__operating-view">View {evidenceMode}{newerCount ? ` · ${newerCount.toLocaleString()} newer` : ""}</span>
         <div className="workbench-react__operating-actions">
           <button type="button" aria-label="Back investigation" disabled={!snapshot.evidence.restoration.canBack} onClick={() => dispatch(runtime, { type: "back-investigation" })}>Back</button>
@@ -2085,11 +2078,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             </>}
           </section>)}
         </div> : null}
-        <div className="workbench-react__status-line"><span>{limited
-          ? "Observation requires care; retained Evidence remains readable."
-          : snapshot.evidence.total === 0
-            ? "No Evidence is retained in the current History Interval."
-            : "Evidence is retained for this Panel Session."}</span><button
+        <div className="workbench-react__status-line"><span
+          data-history-status
+          aria-label={`${historyStatus.retained.toLocaleString()} retained Evidence of ${historyStatus.accepted.toLocaleString()} accepted`}
+          title={`${historyStatus.retained.toLocaleString()} retained Evidence of ${historyStatus.accepted.toLocaleString()} accepted · ${snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}`}
+        >{historyStatus.retained.toLocaleString()}/{historyStatus.accepted.toLocaleString()} Evidence · {snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}</span><button
               ref={notificationsTrigger}
               type="button"
               disabled={Boolean(localInjectionDraft?.open || snapshot.scenario || commandProjectionComparison || rawEvidence)}

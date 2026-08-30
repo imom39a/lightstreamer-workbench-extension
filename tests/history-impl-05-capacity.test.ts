@@ -136,11 +136,13 @@ describe.each(factories)("history-impl-05 continuity-first capacity (%s)", (_nam
     try {
       const queued = history.offer(candidate("queued"));
       await Promise.resolve();
-      await expect(history.offer(candidate("overflow")).settled).resolves.toMatchObject({
-        outcome: "NOT_EVIDENCE",
-        problem: { code: "PENDING_OVERFLOW", dimension: "PENDING_BYTES" }
-      });
+      const overflow = history.offer(candidate("overflow"));
       release();
+      await expect(overflow.settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        problem: { code: "PENDING_OVERFLOW", dimension: "PENDING_BYTES" },
+        committedEvidenceBoundary: { eventId: "queued" }
+      });
       await expect(queued.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
       await expect(history.offer(candidate("after-pressure")).settled).resolves.toMatchObject({
         outcome: "BECAME_EVIDENCE",

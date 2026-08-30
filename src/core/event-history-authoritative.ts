@@ -118,7 +118,7 @@ export type HistoryProblem = Readonly<{
   code: HistoryProblemCode;
   message: string;
   reason?: HistoryTerminalReason;
-  dimension?: HistoryCapacityDimension | "JOURNAL";
+  dimension?: HistoryCapacityDimension | "JOURNAL" | "EVENT_IDENTITY";
   terminal?: HistoryTerminalDiagnostic;
 }>;
 
@@ -128,7 +128,7 @@ export type HistoryAcceptanceGap = Readonly<{
   eventId: string;
   candidateBytes: number;
   occurredAt: number;
-  dimension: "RETAINED_COUNT" | "RETAINED_BYTES" | "PENDING_BYTES";
+  dimension: "RETAINED_COUNT" | "RETAINED_BYTES" | "PENDING_BYTES" | "EVENT_IDENTITY";
   afterEvidence: EvidenceRef | null;
 }>;
 
@@ -374,12 +374,35 @@ type HistoryJournal = {
 };
 
 type PendingCandidate = Readonly<{
+  kind: "candidate";
   ordinal: number;
+  eventId: string;
   serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
   bytes: number;
   offeredAt: number;
+  settled: CaptureReceipt["settled"];
   resolve: (result: ReceiptResult) => void;
 }>;
+
+type PendingGapSeed = Readonly<{
+  captureOrdinal: number;
+  eventId: string;
+  candidateBytes: number;
+  occurredAt: number;
+  dimension: HistoryAcceptanceGap["dimension"];
+}>;
+
+type PendingGapBarrier = {
+  kind: "gap-barrier";
+  count: number;
+  first: PendingGapSeed;
+  latest: PendingGapSeed;
+  problem: HistoryProblem;
+  settled: CaptureReceipt["settled"];
+  resolve: (result: ReceiptResult) => void;
+};
+
+type PendingEntry = PendingCandidate | PendingGapBarrier;
 
 type ReceiptResult =
   | Readonly<{ outcome: "BECAME_EVIDENCE"; evidence: EvidenceRef }>
@@ -859,8 +882,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   });
   const subscribers = new Set<Subscriber>();
   const committed: CommittedEvidence[] = [];
-  const pending: PendingCandidate[] = [];
-  const postClearPending: PendingCandidate[] = [];
+  const pending: PendingEntry[] = [];
+  const postClearPending: PendingEntry[] = [];
   const inFlight: PendingCandidate[] = [];
   const terminalReceipts: PendingCandidate[] = [];
   const committedReceipts: Array<{ entry: PendingCandidate; evidence: EvidenceRef }> = [];
@@ -868,6 +891,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   const memoryQueryIndex = createMemoryQueryIndex();
   const committedBySequence = new Map<number, CommittedEvidence>();
   const committedBytesBySequence = new Map<number, number>();
+  const retainedEventIds = new Set<string>();
   const idleWaiters: Array<() => void> = [];
   let retentionLowWater = Object.freeze({
     count: rollingLowWater(limits.maxRetainedCount),
@@ -923,7 +947,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
 
   function oldestAwaiting(): PendingCandidate | undefined {
     let oldest: PendingCandidate | undefined;
-    for (const candidate of [inFlight[0], pending[0], postClearPending[0]]) {
+    const firstPending = pending.find((entry): entry is PendingCandidate => entry.kind === "candidate");
+    const firstPostClearPending = postClearPending.find((entry): entry is PendingCandidate => entry.kind === "candidate");
+    for (const candidate of [inFlight[0], firstPending, firstPostClearPending]) {
       if (candidate !== undefined && (oldest === undefined || candidate.ordinal < oldest.ordinal)) {
         oldest = candidate;
       }
@@ -1094,7 +1120,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: problem("HISTORY_CLOSED", "Event History is closed and cannot accept Capture."), committedEvidenceBoundary }) };
   }
 
-  function clearQueueForCandidate(): PendingCandidate[] {
+  function clearQueueForEntry(): PendingEntry[] {
     return clearInProgress ? postClearPending : pending;
   }
 
@@ -1127,12 +1153,15 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       return;
     }
     pending.length = 0;
-    awaitingCount -= rejected.length;
-    awaitingBytes -= rejected.reduce((total, entry) => total + entry.bytes, 0);
-    notAccepted += rejected.length;
-    discardedCount += rejected.length;
-    discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
-    terminalReceipts.push(...rejected);
+    const rejectedCandidates = rejected.filter((entry): entry is PendingCandidate => entry.kind === "candidate");
+    const rejectedBarriers = rejected.filter((entry): entry is PendingGapBarrier => entry.kind === "gap-barrier");
+    awaitingCount -= rejectedCandidates.length;
+    awaitingBytes -= rejectedCandidates.reduce((total, entry) => total + entry.bytes, 0);
+    notAccepted += rejectedCandidates.length;
+    discardedCount += rejectedCandidates.length;
+    discardedBytes += rejectedCandidates.reduce((sum, entry) => sum + entry.bytes, 0);
+    terminalReceipts.push(...rejectedCandidates);
+    for (const barrier of rejectedBarriers) settleGapBarrier(barrier);
     const completion = terminalFinalization ?? terminalSettled;
     if (settleNow || !completion) {
       resolveTerminalReceipts(issue);
@@ -1146,16 +1175,20 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   }
 
   function offerForClearInProgress(
+    eventId: string,
     serialized: ReturnType<typeof serializeJournalEvidenceCandidate>,
     bytes: number
   ): CaptureReceipt {
     let resolveReceipt!: (result: ReceiptResult) => void;
     const settled = new Promise<ReceiptResult>((resolve) => { resolveReceipt = resolve; });
-    clearQueueForCandidate().push({
+    clearQueueForEntry().push({
+      kind: "candidate",
       ordinal: nextCaptureOrdinal++,
+      eventId,
       serialized,
       bytes,
       offeredAt: clock(),
+      settled,
       resolve: resolveReceipt
     });
     awaitingCount += 1;
@@ -1294,32 +1327,128 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     notAccepted += 1;
     rejectedCount += 1;
     rejectedBytes += bytes;
-    const gap = deepFreeze({
-      interval,
+    const seed: PendingGapSeed = {
       captureOrdinal,
       eventId: candidateId(candidate),
       candidateBytes: bytes,
       occurredAt: clock(),
-      dimension,
-      afterEvidence: committedEvidenceBoundary
-    });
-    firstGap ??= gap;
-    latestGap = gap;
-    gapCount += 1;
+      dimension
+    };
+    const queue = clearQueueForEntry();
+    const tail = queue.at(-1);
+    // Keep refusal metadata bounded while preserving its place between
+    // accepted candidates. The barrier is finalized only after every earlier
+    // candidate has a committed Evidence identity.
+    if (tail?.kind === "gap-barrier" && tail.first.dimension === dimension) {
+      tail.count += 1;
+      tail.latest = seed;
+      return { intake: "REFUSED", settled: tail.settled };
+    }
     const issue = problem(
       dimension === "PENDING_BYTES" ? "PENDING_OVERFLOW" : "CANDIDATE_UNRETAINABLE",
       dimension === "RETAINED_COUNT"
         ? "The candidate cannot enter a History configured to retain zero records."
         : dimension === "RETAINED_BYTES"
-          ? `The candidate requires ${bytes} accounted bytes, above the ${limits.maxRetainedBytes}-byte retention budget.`
+          ? `The candidate is above the ${limits.maxRetainedBytes}-byte retention budget.`
           : `The candidate would cross the ${limits.pendingStopBytes}-byte pending admission budget.`,
       { dimension }
     );
-    publish(deepFreeze({ type: "acceptance-gap" as const, interval, gap, status: status(issue), problem: issue }));
-    return {
-      intake: "REFUSED",
-      settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary })
+    let resolve!: (result: ReceiptResult) => void;
+    const settled = new Promise<ReceiptResult>((finish) => { resolve = finish; });
+    queue.push({
+      kind: "gap-barrier",
+      count: 1,
+      first: seed,
+      latest: seed,
+      problem: issue,
+      settled,
+      resolve
+    });
+    if (!clearInProgress) scheduleProcessing();
+    return { intake: "REFUSED", settled };
+  }
+
+  function settleGapBarrier(barrier: PendingGapBarrier): void {
+    const afterEvidence = committedEvidenceBoundary;
+    const toGap = (seed: PendingGapSeed): HistoryAcceptanceGap => deepFreeze({
+      interval,
+      ...seed,
+      afterEvidence
+    });
+    const first = toGap(barrier.first);
+    const latest = barrier.count === 1 ? first : toGap(barrier.latest);
+    firstGap ??= first;
+    latestGap = latest;
+    gapCount += barrier.count;
+    publish(deepFreeze({
+      type: "acceptance-gap" as const,
+      interval,
+      gap: first,
+      status: status(barrier.problem),
+      problem: barrier.problem
+    }));
+    barrier.resolve({
+      outcome: "NOT_EVIDENCE",
+      problem: barrier.problem,
+      committedEvidenceBoundary: afterEvidence
+    });
+  }
+
+  function convertDuplicateIdentityToGap(index: number): void {
+    const entry = pending[index];
+    if (entry?.kind !== "candidate") return;
+    const issue = problem(
+      "INVALID_CANDIDATE",
+      "The candidate event identity is already retained in this History Interval.",
+      { dimension: "EVENT_IDENTITY" }
+    );
+    const seed: PendingGapSeed = {
+      captureOrdinal: entry.ordinal,
+      eventId: entry.eventId,
+      candidateBytes: entry.bytes,
+      occurredAt: clock(),
+      dimension: "EVENT_IDENTITY"
     };
+    pending[index] = {
+      kind: "gap-barrier",
+      count: 1,
+      first: seed,
+      latest: seed,
+      problem: issue,
+      settled: entry.settled,
+      resolve: entry.resolve
+    };
+    awaitingCount -= 1;
+    awaitingBytes -= entry.bytes;
+    notAccepted += 1;
+    rejectedCount += 1;
+    rejectedBytes += entry.bytes;
+    scheduleAgeCheck();
+    pressureChanged();
+  }
+
+  function takeCandidatePrefix(): PendingCandidate[] {
+    const batchEventIds = new Set<string>();
+    let count = 0;
+    while (count < pending.length) {
+      const entry = pending[count]!;
+      if (entry.kind === "gap-barrier") break;
+      if (retainedEventIds.has(entry.eventId) || batchEventIds.has(entry.eventId)) {
+        convertDuplicateIdentityToGap(count);
+        break;
+      }
+      batchEventIds.add(entry.eventId);
+      count += 1;
+    }
+    return pending.splice(0, count) as PendingCandidate[];
+  }
+
+  function settleLeadingGapBarrier(): boolean {
+    const head = pending[0];
+    if (head?.kind !== "gap-barrier") return false;
+    pending.shift();
+    settleGapBarrier(head);
+    return true;
   }
 
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
@@ -1336,10 +1465,14 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const issue = problem("INVALID_CANDIDATE", error instanceof Error ? error.message : "Candidate is not valid Evidence input.");
       return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
     }
+    // A successful Clear is idempotent only until the next valid Capture
+    // attempt. Even a candidate that cannot be retained creates a new
+    // continuity fact that a following Clear must erase in a fresh interval.
+    lastClearResult = null;
     if (limits.maxRetainedCount < 1) return refuseUnretainable(candidate, bytes, "RETAINED_COUNT");
     if (bytes > limits.maxRetainedBytes) return refuseUnretainable(candidate, bytes, "RETAINED_BYTES");
     if (awaitingBytes + bytes > limits.pendingStopBytes) return refuseUnretainable(candidate, bytes, "PENDING_BYTES");
-    return offerForClearInProgress(serialized, bytes);
+    return offerForClearInProgress(candidateId(candidate), serialized, bytes);
   }
 
   function scheduleProcessing(): void {
@@ -1418,6 +1551,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     let removedBytes = 0;
     for (const entry of removed) {
       removedBytes += committedBytesBySequence.get(entry.sequence) ?? 0;
+      retainedEventIds.delete(entry.eventId);
       committedBytesBySequence.delete(entry.sequence);
       committedBySequence.delete(entry.sequence);
     }
@@ -1459,7 +1593,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     processing = true;
     try {
       while (pending.length > 0 && (phase === "RUNNING" || phase === "DRAINING_TO_STOP")) {
-        const batch = pending.splice(0);
+        if (settleLeadingGapBarrier()) continue;
+        const batch = takeCandidatePrefix();
+        if (batch.length === 0) continue;
         inFlight.push(...batch);
         let candidates: EvidenceCandidate[] = [];
         candidates = batch.map((entry) => {
@@ -1478,6 +1614,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         awaitingBytes -= batch.reduce((total, entry) => total + entry.bytes, 0);
         committed.push(...evidence);
         for (const [index, committedEntry] of evidence.entries()) {
+          retainedEventIds.add(committedEntry.eventId);
           committedBySequence.set(committedEntry.sequence, committedEntry);
           committedBytesBySequence.set(committedEntry.sequence, batch[index]!.bytes);
           if (committedEntry.candidate.kind === "topology-checkpoint") continue;
@@ -1867,6 +2004,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         intervalOrdinal += 1;
         interval = nextInterval;
         committed.length = 0;
+        retainedEventIds.clear();
         committedBySequence.clear();
         committedBytesBySequence.clear();
         clearMemoryQueryIndex(memoryQueryIndex);
@@ -1961,6 +2099,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       }
         const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
         committed.length = 0;
+        retainedEventIds.clear();
         retainedBytes = 0;
         retainedCount = 0;
         phase = "CLOSED";

@@ -1,5 +1,5 @@
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createMemoryEventHistoryForTests,
@@ -94,17 +94,10 @@ describe.each(factories)("history-impl-09 continuity lifecycle (%s)", (_name, cr
       history.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
         if (publication.type === "committed-evidence") replayed.push(...publication.evidence.map(({ eventId }) => eventId));
       });
-      await settle();
-      expect(replayed).toEqual(["three", "four"]);
+      await vi.waitFor(() => expect(replayed).toEqual(["three", "four"]));
       expect(history.status()).toMatchObject({ phase: "RUNNING", captureOperation: "RUNNING" });
     } finally {
       await history.close();
     }
   });
 });
-
-async function settle(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}

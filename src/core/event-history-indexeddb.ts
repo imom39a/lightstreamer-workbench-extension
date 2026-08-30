@@ -161,13 +161,35 @@ type FacetPostingRecord = {
 };
 
 type Pending = {
+  kind: "candidate";
   ordinal: number;
   eventId: string;
   serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
   bytes: number;
   offeredAt: number;
+  settled: CaptureReceipt["settled"];
   resolve: (result: ReceiptResult) => void;
 };
+
+type PendingGapSeed = Readonly<{
+  captureOrdinal: number;
+  eventId: string;
+  candidateBytes: number;
+  occurredAt: number;
+  dimension: HistoryAcceptanceGap["dimension"];
+}>;
+
+type PendingGapBarrier = {
+  kind: "gap-barrier";
+  count: number;
+  first: PendingGapSeed;
+  latest: PendingGapSeed;
+  problem: HistoryProblem;
+  settled: CaptureReceipt["settled"];
+  resolve: (result: ReceiptResult) => void;
+};
+
+type PendingEntry = Pending | PendingGapBarrier;
 
 type PreparedEvidence = Readonly<{
   evidence: CommittedEvidence;
@@ -217,6 +239,7 @@ type Subscriber = {
   signalCleanup?: () => void;
   cooperativeReplay?: {
     interval: HistoryInterval;
+    generation: number;
     nextSequence: number;
     lastSequence: number;
     chunkSize: number;
@@ -507,9 +530,9 @@ type PendingReplayRange = Readonly<{
 
 function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJournal, options: IndexedDbEventHistoryOptions): EventHistory {
   const subscribers = new Set<Subscriber>();
-  const pending: Pending[] = [];
+  const pending: PendingEntry[] = [];
   const inFlight: Pending[] = [];
-  const postClearPending: Pending[] = [];
+  const postClearPending: PendingEntry[] = [];
   const terminalReceipts: Pending[] = [];
   const committedReceipts: Array<{ entry: Pending; evidence: EvidenceRef }> = [];
   const idleWaiters: Array<() => void> = [];
@@ -542,6 +565,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let gapCount = 0;
   const volatileEvidence: VolatileEvidence[] = [];
   const durableRetentionEntries = [...loaded.durableRetentionEntries];
+  const retainedEventIds = new Set(durableRetentionEntries.map((entry) => entry.evidence.eventId));
   const capacityBytesBySequence = new Map(
     durableRetentionEntries.map((entry) => [entry.evidence.sequence, entry.capacityBytes] as const)
   );
@@ -588,7 +612,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function currentRange(): { first: EvidenceRef; last: EvidenceRef } | null { return retainedRange; }
   function oldestAwaiting(): Pending | undefined {
     let oldest: Pending | undefined;
-    for (const candidate of [inFlight[0], pending[0], postClearPending[0]]) {
+    const firstPending = pending.find((entry): entry is Pending => entry.kind === "candidate");
+    const firstPostClearPending = postClearPending.find((entry): entry is Pending => entry.kind === "candidate");
+    for (const candidate of [inFlight[0], firstPending, firstPostClearPending]) {
       if (candidate !== undefined && (oldest === undefined || candidate.ordinal < oldest.ordinal)) oldest = candidate;
     }
     return oldest;
@@ -640,7 +666,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     });
   }
 
-  function clearQueueForCandidate(): Pending[] {
+  function clearQueueForEntry(): PendingEntry[] {
     return clearInProgress ? postClearPending : pending;
   }
 
@@ -670,12 +696,15 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       return;
     }
     pending.length = 0;
-    awaitingCount -= rejected.length;
-    awaitingBytes -= rejected.reduce((total, entry) => total + entry.bytes, 0);
-    notAccepted += rejected.length;
-    discardedCount += rejected.length;
-    discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
-    terminalReceipts.push(...rejected);
+    const rejectedCandidates = rejected.filter((entry): entry is Pending => entry.kind === "candidate");
+    const rejectedBarriers = rejected.filter((entry): entry is PendingGapBarrier => entry.kind === "gap-barrier");
+    awaitingCount -= rejectedCandidates.length;
+    awaitingBytes -= rejectedCandidates.reduce((total, entry) => total + entry.bytes, 0);
+    notAccepted += rejectedCandidates.length;
+    discardedCount += rejectedCandidates.length;
+    discardedBytes += rejectedCandidates.reduce((sum, entry) => sum + entry.bytes, 0);
+    terminalReceipts.push(...rejectedCandidates);
+    for (const barrier of rejectedBarriers) settleGapBarrier(barrier);
     const completion = terminalFinalization ?? terminalSettled;
     if (settleNow || !completion) {
       resolveTerminalReceipts(issue);
@@ -977,6 +1006,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         for (let sequence = durableRetainedRange.first.sequence; sequence <= trim.cutoffSequence; sequence += 1) {
           capacityBytesBySequence.delete(sequence);
         }
+        for (const entry of durableRetentionEntries.slice(0, trim.evictedCount)) {
+          retainedEventIds.delete(entry.evidence.eventId);
+        }
         durableRetentionEntries.splice(0, trim.evictedCount);
         durableRetainedCount = nextDurableCount;
         durableRetainedCapacityBytes = Math.max(0, durableRetainedCapacityBytes - trim.evictedCapacityBytes);
@@ -998,6 +1030,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       && (retainedCount > targetCount || retainedBytes > targetBytes)
     ) {
       const removed = volatileEvidence.shift()!;
+      retainedEventIds.delete(removed.evidence.eventId);
       retainedCount -= 1;
       retainedBytes = Math.max(0, retainedBytes - removed.capacityBytes);
       evictedCount += 1;
@@ -1025,6 +1058,87 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     }
   }
 
+  async function snapshotDurablePrefix(): Promise<readonly VolatileEvidence[] | null> {
+    const durableRange = durableRetainedRange;
+    if (durableRange === null) return [];
+    try {
+      const snapshot = await readJournal(database, deepFreeze({
+        interval,
+        generation,
+        committedEvidenceBoundary: durableRange.last,
+        retainedRange: durableRange,
+        retainedCount: durableRetainedCount
+      }), {});
+      if (
+        snapshot.evidence.length !== durableRetainedCount
+        || durableRetentionEntries.length !== durableRetainedCount
+      ) return null;
+      return snapshot.evidence.map((evidence, index) => {
+        const metadata = durableRetentionEntries[index];
+        const capacityBytes = capacityBytesBySequence.get(evidence.sequence);
+        if (
+          metadata === undefined
+          || capacityBytes === undefined
+          || metadata.capacityBytes !== capacityBytes
+          || metadata.evidence.intervalId !== evidence.intervalId
+          || metadata.evidence.sequence !== evidence.sequence
+          || metadata.evidence.eventId !== evidence.eventId
+        ) throw new Error("The durable Event History prefix changed during memory fallback.");
+        return { evidence, capacityBytes };
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  function detachDurablePrefix(snapshot: readonly VolatileEvidence[] | null): HistoryRetentionAdvance | null {
+    const previousRetainedRange = retainedRange;
+    const droppedRange = durableRetainedRange;
+    const droppedCount = durableRetainedCount;
+    const droppedBytes = durableRetainedCapacityBytes;
+    const droppedReplayPayloadBytes = durableRetentionEntries.reduce((total, entry) => total + entry.replayPayloadBytes, 0);
+
+    if (snapshot !== null) volatileEvidence.unshift(...snapshot);
+    else if (droppedCount > 0) {
+      for (const entry of durableRetentionEntries) {
+        retainedEventIds.delete(entry.evidence.eventId);
+      }
+      retainedCount = Math.max(0, retainedCount - droppedCount);
+      retainedBytes = Math.max(0, retainedBytes - droppedBytes);
+      replayPayloadBytes = Math.max(0, replayPayloadBytes - droppedReplayPayloadBytes);
+      evictedCount += droppedCount;
+      evictedBytes += droppedBytes;
+    }
+    durableRetainedCount = 0;
+    durableRetainedCapacityBytes = 0;
+    durableRetainedRange = null;
+    durableAccountedBytes = 0;
+    durableRetentionEntries.length = 0;
+    capacityBytesBySequence.clear();
+    facetAggregateCache.clear();
+    refreshRetainedRange();
+
+    if (
+      snapshot !== null
+      || droppedCount === 0
+      || droppedRange === null
+      || previousRetainedRange === null
+    ) return null;
+    lastRetentionAdvance = deepFreeze({
+      interval,
+      occurredAt: clock(),
+      previousRetainedRange,
+      retainedRange,
+      evicted: {
+        count: droppedCount,
+        bytes: droppedBytes,
+        first: droppedRange.first,
+        last: droppedRange.last
+      }
+    });
+    return lastRetentionAdvance;
+  }
+
   function refuseUnretainable(
     candidate: EvidenceCandidate,
     bytes: number,
@@ -1035,32 +1149,112 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     notAccepted += 1;
     rejectedCount += 1;
     rejectedBytes += bytes;
-    const gap = deepFreeze({
-      interval,
+    const seed: PendingGapSeed = {
       captureOrdinal,
       eventId: candidate.id,
       candidateBytes: bytes,
       occurredAt: clock(),
-      dimension,
-      afterEvidence: committedEvidenceBoundary
-    });
-    firstGap ??= gap;
-    latestGap = gap;
-    gapCount += 1;
+      dimension
+    };
+    const queue = clearQueueForEntry();
+    const tail = queue.at(-1);
+    // Keep refusal metadata bounded while preserving its place between
+    // accepted candidates. The barrier is finalized only after every earlier
+    // candidate has a committed Evidence identity.
+    if (tail?.kind === "gap-barrier" && tail.first.dimension === dimension) {
+      tail.count += 1;
+      tail.latest = seed;
+      return { intake: "REFUSED", settled: tail.settled };
+    }
     const issue = dimension === "PENDING_BYTES"
       ? problem("PENDING_OVERFLOW", `The candidate would exceed the ${limits.pendingStopBytes}-byte pending Capture budget; later Capture continues.`, { dimension })
       : problem(
           "CANDIDATE_UNRETAINABLE",
           dimension === "RETAINED_COUNT"
             ? "The candidate cannot enter a History configured to retain zero records."
-            : `The candidate requires ${bytes} accounted bytes, above the ${limits.maxRetainedBytes}-byte retention budget.`,
+            : `The candidate is above the ${limits.maxRetainedBytes}-byte retention budget.`,
           { dimension }
         );
-    publish(deepFreeze({ type: "acceptance-gap" as const, interval, gap, status: status(issue), problem: issue }));
-    return {
-      intake: "REFUSED",
-      settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary })
+    let resolve!: (result: ReceiptResult) => void;
+    const settled = new Promise<ReceiptResult>((finish) => { resolve = finish; });
+    queue.push({
+      kind: "gap-barrier",
+      count: 1,
+      first: seed,
+      latest: seed,
+      problem: issue,
+      settled,
+      resolve
+    });
+    if (!clearInProgress) schedule();
+    return { intake: "REFUSED", settled };
+  }
+
+  function settleGapBarrier(barrier: PendingGapBarrier): void {
+    const afterEvidence = currentBoundary();
+    const toGap = (seed: PendingGapSeed): HistoryAcceptanceGap => deepFreeze({
+      interval,
+      ...seed,
+      afterEvidence
+    });
+    const first = toGap(barrier.first);
+    const latest = barrier.count === 1 ? first : toGap(barrier.latest);
+    firstGap ??= first;
+    latestGap = latest;
+    gapCount += barrier.count;
+    publish(deepFreeze({
+      type: "acceptance-gap" as const,
+      interval,
+      gap: first,
+      status: status(barrier.problem),
+      problem: barrier.problem
+    }));
+    barrier.resolve({
+      outcome: "NOT_EVIDENCE",
+      problem: barrier.problem,
+      committedEvidenceBoundary: afterEvidence
+    });
+  }
+
+  function convertDuplicateIdentityToGap(index: number): void {
+    const entry = pending[index];
+    if (entry?.kind !== "candidate") return;
+    const issue = problem(
+      "INVALID_CANDIDATE",
+      "The candidate event identity is already retained in this History Interval.",
+      { dimension: "EVENT_IDENTITY" }
+    );
+    const seed: PendingGapSeed = {
+      captureOrdinal: entry.ordinal,
+      eventId: entry.eventId,
+      candidateBytes: entry.bytes,
+      occurredAt: clock(),
+      dimension: "EVENT_IDENTITY"
     };
+    pending[index] = {
+      kind: "gap-barrier",
+      count: 1,
+      first: seed,
+      latest: seed,
+      problem: issue,
+      settled: entry.settled,
+      resolve: entry.resolve
+    };
+    awaitingCount -= 1;
+    awaitingBytes -= entry.bytes;
+    notAccepted += 1;
+    rejectedCount += 1;
+    rejectedBytes += entry.bytes;
+    scheduleAgeCheck();
+    pressureChanged();
+  }
+
+  function settleLeadingGapBarrier(): boolean {
+    const head = pending[0];
+    if (head?.kind !== "gap-barrier") return false;
+    pending.shift();
+    settleGapBarrier(head);
+    return true;
   }
 
   function clearBlockedProblem(): HistoryProblem {
@@ -1100,6 +1294,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       const issue = problem("INVALID_CANDIDATE", error instanceof Error ? error.message : "Candidate is not valid Evidence input.");
       return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary: currentBoundary() }) };
     }
+    // A successful Clear is idempotent only until the next valid Capture
+    // attempt. Even a candidate that cannot be retained creates a new
+    // continuity fact that a following Clear must erase in a fresh interval.
+    lastClearResult = null;
     if (limits.maxRetainedCount < 1) return refuseUnretainable(candidate, bytes, "RETAINED_COUNT");
     if (bytes > limits.maxRetainedBytes) return refuseUnretainable(candidate, bytes, "RETAINED_BYTES");
     if (awaitingBytes + bytes > limits.pendingStopBytes) return refuseUnretainable(candidate, bytes, "PENDING_BYTES");
@@ -1107,7 +1305,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     const settled = new Promise<ReceiptResult>((finish) => { resolve = finish; });
     const ordinal = captured + 1;
     captured += 1;
-    clearQueueForCandidate().push({ ordinal, eventId: candidate.id, serialized, bytes, offeredAt: clock(), resolve });
+    clearQueueForEntry().push({ kind: "candidate", ordinal, eventId: candidate.id, serialized, bytes, offeredAt: clock(), settled, resolve });
     awaitingCount += 1;
     awaitingBytes += bytes;
     scheduleAgeCheck();
@@ -1130,18 +1328,27 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     processing = true;
     try {
       while (pending.length > 0 && (phase === "RUNNING" || phase === "DRAINING_TO_STOP")) {
+        if (settleLeadingGapBarrier()) continue;
         const batch: Pending[] = [];
+        const batchEventIds = new Set<string>();
         let batchSerializedBytes = 0;
         const retentionBatchLimit = Math.max(1, Math.min(
           AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT,
           retentionLowWater(limits.maxRetainedCount) || 1
         ));
         while (pending.length > 0 && batch.length < retentionBatchLimit) {
-          const next = pending[0];
+          const next = pending[0]!;
+          if (next.kind === "gap-barrier") break;
           if (batch.length > 0 && batchSerializedBytes + next.serialized.bytes > AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES) break;
-          batch.push(pending.shift()!);
+          if (retainedEventIds.has(next.eventId) || batchEventIds.has(next.eventId)) {
+            convertDuplicateIdentityToGap(0);
+            break;
+          }
+          batchEventIds.add(next.eventId);
+          batch.push(pending.shift() as Pending);
           batchSerializedBytes += next.serialized.bytes;
         }
+        if (batch.length === 0) continue;
         const batchAccountedBytes = batch.reduce((sum, entry) => sum + entry.bytes, 0);
         inFlight.push(...batch);
         let evidence: CommittedEvidence[] = [];
@@ -1158,6 +1365,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         let durableCommit = false;
         let commitFailure: unknown = null;
         let failuresThisBatch = 0;
+        let durableSnapshot: readonly VolatileEvidence[] | null | undefined;
         if (persistenceMode === "INDEXEDDB") {
           for (let attempt = 1; attempt <= JOURNAL_COMMIT_MAX_ATTEMPTS; attempt += 1) {
             journalCommitAttempts += 1;
@@ -1206,18 +1414,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           }
         }
         if (persistenceMode === "INDEXEDDB" && !durableCommit) {
-          persistenceMode = "MEMORY";
-          adoptMemoryCapacity();
-          persistenceFailure = describeJournalError(commitFailure);
-          terminalFailureDetail = persistenceFailure;
-          publish(deepFreeze({
-            type: "persistence-state" as const,
-            interval,
-            transition: "MEMORY_FALLBACK" as const,
-            persistence: persistenceStatus(),
-            status: status(journalLastProblem),
-            ...(journalLastProblem ? { problem: journalLastProblem } : {})
-          }));
+          durableSnapshot = await snapshotDurablePrefix();
         }
         if (!durableCommit) {
           acceptVolatileBatch(batch, prepared);
@@ -1248,11 +1445,29 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         awaitingCount -= batch.length;
         awaitingBytes -= batch.reduce((total, entry) => total + entry.bytes, 0);
         committedEvidenceBoundary = toRef(evidence.at(-1)!);
+        for (const entry of evidence) retainedEventIds.add(entry.eventId);
         retainedBytes += batchAccountedBytes;
         retainedCount += evidence.length;
         refreshRetainedRange();
         generation += 1;
         accepted += evidence.length;
+        const retentionAdvances: HistoryRetentionAdvance[] = [];
+        if (persistenceMode === "INDEXEDDB" && !durableCommit) {
+          const cutoverAdvance = detachDurablePrefix(durableSnapshot ?? null);
+          if (cutoverAdvance) retentionAdvances.push(cutoverAdvance);
+          persistenceMode = "MEMORY";
+          adoptMemoryCapacity();
+          persistenceFailure = describeJournalError(commitFailure);
+          terminalFailureDetail = persistenceFailure;
+          publish(deepFreeze({
+            type: "persistence-state" as const,
+            interval,
+            transition: "MEMORY_FALLBACK" as const,
+            persistence: persistenceStatus(),
+            status: status(journalLastProblem),
+            ...(journalLastProblem ? { problem: journalLastProblem } : {})
+          }));
+        }
         const boundary = currentBoundary()!;
         publish(deepFreeze({ type: "committed-evidence" as const, interval, evidence, committedEvidenceBoundary: boundary }));
         let retentionAdvance: HistoryRetentionAdvance | null = null;
@@ -1260,6 +1475,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           retentionAdvance = await advanceRetentionIfNeeded();
         } catch (error) {
           if (persistenceMode === "INDEXEDDB") {
+            const snapshot = await snapshotDurablePrefix();
+            const cutoverAdvance = detachDurablePrefix(snapshot);
+            if (cutoverAdvance) retentionAdvances.push(cutoverAdvance);
             persistenceMode = "MEMORY";
             adoptMemoryCapacity();
             persistenceFailure = describeJournalError(error);
@@ -1282,7 +1500,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             throw error;
           }
         }
-        if (retentionAdvance) {
+        if (retentionAdvance) retentionAdvances.push(retentionAdvance);
+        for (const advance of retentionAdvances) {
           for (const subscriber of [...subscribers]) {
             if (subscriber.replaying && subscriber.cooperativeReplay) {
               failCooperativeReplay(subscriber, replayFailure("Replay expired because retained History advanced."));
@@ -1291,9 +1510,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           publish(deepFreeze({
             type: "retention-advanced" as const,
             interval,
-            previousRetainedRange: retentionAdvance.previousRetainedRange,
-            retainedRange: retentionAdvance.retainedRange,
-            evicted: retentionAdvance.evicted,
+            previousRetainedRange: advance.previousRetainedRange,
+            retainedRange: advance.retainedRange,
+            evicted: advance.evicted,
             status: status()
           }));
         }
@@ -1340,8 +1559,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       });
     }
     const volatileSnapshot = volatileEvidence.map((entry) => entry.evidence);
-    const selectedRead = volatileSnapshot.length > 0
-      ? readHybridJournal(database, latch, query, volatileSnapshot)
+    const selectedRead = persistenceMode === "MEMORY"
+      ? readMemoryJournal(latch, query, volatileSnapshot)
       : readJournal(database, latch, query);
     return selectedRead.then((selected) => ({
       ok: true as const,
@@ -1405,6 +1624,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       durableRetainedRange = null;
       durableRetentionEntries.length = 0;
       volatileEvidence.length = 0;
+      retainedEventIds.clear();
       capacityBytesBySequence.clear();
       evictedCount = 0;
       evictedBytes = 0;
@@ -1472,6 +1692,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       retainedRange = null;
       replayPayloadBytes = 0;
       retainedBytes = 0;
+      retainedEventIds.clear();
       const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
       const outcome = { ok: true, value: result } as Outcome<CloseResult>;
       lastCloseOutcome = outcome;
@@ -1515,6 +1736,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         const first = immutablePublication.evidence[0];
         const last = immutablePublication.evidence.at(-1);
         if (first && last) {
+          if (subscriber.cooperativeReplay?.interval.id === immutablePublication.interval.id) {
+            subscriber.cooperativeReplay.generation = generation;
+          }
           appendPendingReplayRange(subscriber, {
             type: "committed-range",
             interval: immutablePublication.interval,
@@ -1543,10 +1767,31 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return problem("REPLAY_FAILED", message);
   }
 
+  function replayLatchIsAvailable(latch: ReadLatch): boolean {
+    if (interval.id !== latch.interval.id || interval.ordinal !== latch.interval.ordinal) return false;
+    if (latch.retainedRange === null) return retainedRange === null;
+    return retainedRange !== null
+      && retainedRange.first.sequence <= latch.retainedRange.first.sequence
+      && retainedRange.last.sequence >= latch.retainedRange.last.sequence;
+  }
+
+  function cooperativeReplayIsCurrent(subscriber: Subscriber): boolean {
+    const replay = subscriber.cooperativeReplay;
+    return replay !== undefined
+      && replay.interval.id === interval.id
+      && replay.interval.ordinal === interval.ordinal
+      && replay.generation === generation;
+  }
+
+  function expireChangedIntervalReplay(subscriber: Subscriber): void {
+    failCooperativeReplay(subscriber, replayFailure("Replay expired because the History Interval changed."));
+  }
+
   function startCooperativeReplay(subscriber: Subscriber, options: HistoryFollowOptions, latch: ReadLatch): void {
     const after = options.after ?? null;
     subscriber.cooperativeReplay = {
       interval: latch.interval,
+      generation: latch.generation,
       nextSequence: after === null ? latch.retainedRange?.first.sequence ?? 1 : after.sequence + 1,
       lastSequence: latch.retainedRange?.last.sequence ?? 0,
       chunkSize: replayChunkSize(options),
@@ -1574,6 +1819,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       subscriber.signalCleanup = () => options.signal?.removeEventListener("abort", onAbort);
     }
     void validateCooperativeBoundary(subscriber, latch).then((valid) => {
+      if (!cooperativeReplayIsCurrent(subscriber)) {
+        expireChangedIntervalReplay(subscriber);
+        return;
+      }
       if (!valid) {
         failCooperativeReplay(subscriber, replayFailure("Replay unavailable."));
         return;
@@ -1589,6 +1838,14 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     if (!replay || replay.after === null) return Promise.resolve(true);
     if (latch.retainedRange === null || replay.after.sequence > latch.retainedRange.last.sequence) return Promise.resolve(false);
     if (replay.after.sequence < latch.retainedRange.first.sequence) return Promise.resolve(false);
+    if (persistenceMode === "MEMORY") {
+      const volatileBoundary = volatileEvidence.find((entry) => entry.evidence.sequence === replay.after!.sequence)?.evidence;
+      return Promise.resolve(Boolean(
+        volatileBoundary
+        && volatileBoundary.intervalId === replay.interval.id
+        && volatileBoundary.eventId === replay.after.eventId
+      ));
+    }
     return new Promise<boolean>((resolve, reject) => {
       const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
       const request = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).get(replay.after!.sequence);
@@ -1604,6 +1861,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     if (!subscribers.has(subscriber) || !subscriber.replaying) return;
     const replay = subscriber.cooperativeReplay;
     if (!replay) return;
+    if (!cooperativeReplayIsCurrent(subscriber)) {
+      expireChangedIntervalReplay(subscriber);
+      return;
+    }
     if (replay.signal?.aborted) {
       cancelCooperativeReplay(subscriber);
       return;
@@ -1613,8 +1874,20 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       return;
     }
     try {
-      const entries = await readReplayChunk(database, replay.interval, replay.nextSequence, replay.lastSequence, replay.chunkSize);
+      const entries = persistenceMode === "MEMORY"
+        ? await readMemoryReplayChunk(
+            replay.interval,
+            replay.nextSequence,
+            replay.lastSequence,
+            replay.chunkSize,
+            volatileEvidence.map((entry) => entry.evidence)
+          )
+        : await readReplayChunk(database, replay.interval, replay.nextSequence, replay.lastSequence, replay.chunkSize);
       if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+      if (!cooperativeReplayIsCurrent(subscriber)) {
+        expireChangedIntervalReplay(subscriber);
+        return;
+      }
       if (entries.length === 0) {
         failCooperativeReplay(subscriber, replayFailure("Evidence interval ended before boundary."));
         return;
@@ -1647,6 +1920,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
   function finishCooperativeReplay(subscriber: Subscriber): void {
     if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+    if (!cooperativeReplayIsCurrent(subscriber)) {
+      expireChangedIntervalReplay(subscriber);
+      return;
+    }
     const replay = subscriber.cooperativeReplay;
     subscriber.replaying = false;
     replay?.signalCleanup?.();
@@ -1712,6 +1989,34 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       void finishReplay(subscriber);
       return;
     }
+    if (persistenceMode === "MEMORY") {
+      const memorySnapshot = volatileEvidence.map((entry) => entry.evidence);
+      globalThis.setTimeout(() => {
+        void readMemoryJournal(latch, {}, memorySnapshot).then((replay) => {
+          if (!subscribers.has(subscriber)) return;
+          if (!replayLatchIsAvailable(latch)) {
+            failCooperativeReplay(subscriber, replayFailure("Replay expired because retained History advanced."));
+            return;
+          }
+          if (replay.evidence.length !== latch.retainedCount) {
+            failCooperativeReplay(subscriber, replayFailure("Retained Evidence changed before replay completed."));
+            return;
+          }
+          if (replay.evidence.length > 0) {
+            invoke(subscriber, deepFreeze({
+              type: "committed-evidence" as const,
+              interval: latch.interval,
+              evidence: replay.evidence,
+              committedEvidenceBoundary: toRef(replay.evidence.at(-1)!)
+            }));
+          }
+          void finishReplay(subscriber);
+        }, (error) => {
+          failCooperativeReplay(subscriber, replayFailure(error instanceof Error ? error.message : "Evidence replay failed."));
+        });
+      }, 0);
+      return;
+    }
     const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
     const settled = transactionDone(transaction, "replaying Event History");
     const request = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).openCursor();
@@ -1736,27 +2041,49 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
   async function finishReplay(subscriber: Subscriber): Promise<void> {
     if (!subscribers.has(subscriber)) return;
-    while (subscriber.pending.length > 0 && subscribers.has(subscriber)) {
-      const publication = subscriber.pending.shift()!;
-      if (publication.type === "committed-range") {
-        if (publication.interval.id !== interval.id) continue;
-        const evidence = await readCommittedRange(database, publication.interval, publication.firstSequence, publication.lastSequence);
-        if (!subscribers.has(subscriber)) return;
-        if (evidence.length !== publication.lastSequence - publication.firstSequence + 1) {
-          failCooperativeReplay(subscriber, replayFailure("Live crossed range."));
-          return;
+    try {
+      while (subscriber.pending.length > 0 && subscribers.has(subscriber)) {
+        const publication = subscriber.pending.shift()!;
+        if (publication.type === "committed-range") {
+          if (publication.interval.id !== interval.id || publication.interval.ordinal !== interval.ordinal) {
+            expireChangedIntervalReplay(subscriber);
+            return;
+          }
+          const evidence = persistenceMode === "MEMORY"
+            ? await readMemoryReplayChunk(
+                publication.interval,
+                publication.firstSequence,
+                publication.lastSequence,
+                publication.lastSequence - publication.firstSequence + 1,
+                volatileEvidence.map((entry) => entry.evidence)
+              )
+            : await readCommittedRange(database, publication.interval, publication.firstSequence, publication.lastSequence);
+          if (!subscribers.has(subscriber)) return;
+          if (publication.interval.id !== interval.id || publication.interval.ordinal !== interval.ordinal) {
+            expireChangedIntervalReplay(subscriber);
+            return;
+          }
+          if (evidence.length !== publication.lastSequence - publication.firstSequence + 1) {
+            failCooperativeReplay(subscriber, replayFailure("Live crossed range."));
+            return;
+          }
+          invoke(subscriber, deepFreeze({
+            type: "committed-evidence" as const,
+            interval: publication.interval,
+            evidence,
+            committedEvidenceBoundary: publication.committedEvidenceBoundary
+          }));
+        } else {
+          invoke(subscriber, publication);
         }
-        invoke(subscriber, deepFreeze({
-          type: "committed-evidence" as const,
-          interval: publication.interval,
-          evidence,
-          committedEvidenceBoundary: publication.committedEvidenceBoundary
-        }));
-      } else {
-        invoke(subscriber, publication);
       }
+      if (subscribers.has(subscriber)) subscriber.replaying = false;
+    } catch (error) {
+      failCooperativeReplay(
+        subscriber,
+        replayFailure(error instanceof Error ? error.message : "Queued live Evidence replay failed.")
+      );
     }
-    if (subscribers.has(subscriber)) subscriber.replaying = false;
   }
 
   function waitForIdle(): Promise<void> {
@@ -1797,7 +2124,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   const query: EvidenceFilterQueryAdapter["query"] = (request) => {
     if (phase === "CLOSED") return Promise.resolve(queryFailure("HISTORY_TERMINAL", "Event History is closed."));
     const resultPromise = persistenceMode === "MEMORY"
-      ? queryHybridJournal(database, latchForCurrentInterval(), volatileEvidence.map((entry) => entry.evidence), request)
+      ? queryMemoryFallback(latchForCurrentInterval(), volatileEvidence.map((entry) => entry.evidence), request)
       : queryIndexedDb(database, loaded.panelSessionId, request, {
           tier: options.capacityTier ?? "NORMAL",
           fallback: null,
@@ -1979,10 +2306,9 @@ function hybridQueryTelemetry(pageSize: number): QueryTelemetryMutable {
   };
 }
 
-async function queryHybridJournal(
-  database: AuthoritativeEventDatabase,
+async function queryMemoryFallback(
   latch: ReadLatch,
-  volatileEvidence: readonly CommittedEvidence[],
+  memoryEvidence: readonly CommittedEvidence[],
   request: EvidenceQueryRequest
 ): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
   if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > MAX_EVIDENCE_PAGE_SIZE) {
@@ -2003,7 +2329,7 @@ async function queryHybridJournal(
   }
 
   try {
-    const read = await readHybridJournal(database, latch, {}, volatileEvidence);
+    const read = await readMemoryJournal(latch, {}, memoryEvidence);
     if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
     const boundary = readPoint.committedEvidenceBoundary?.sequence ?? 0;
     const retained = readPoint.retainedRange;
@@ -4494,33 +4820,24 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
   });
 }
 
-async function readHybridJournal(
-  database: AuthoritativeEventDatabase,
+function readMemoryJournal(
   latch: ReadLatch,
   query: EvidenceQuery,
-  volatileEvidence: readonly CommittedEvidence[]
+  memoryEvidence: readonly CommittedEvidence[]
 ): Promise<JournalRead> {
-  const unpagedQuery: EvidenceQuery = {
-    ...(query.candidateKind !== undefined ? { candidateKind: query.candidateKind } : {}),
-    ...(query.intervalId !== undefined ? { intervalId: query.intervalId } : {}),
-    ...(query.afterSequence !== undefined ? { afterSequence: query.afterSequence } : {}),
-    ...(query.eventId !== undefined ? { eventId: query.eventId } : {})
-  };
-  const durable = await readJournal(database, latch, unpagedQuery);
   const retainedRange = latch.retainedRange;
-  const volatile = retainedRange === null
+  const selected = retainedRange === null
     ? []
-    : volatileEvidence.filter((entry) => (
+    : memoryEvidence.filter((entry) => (
         entry.intervalId === latch.interval.id
         && entry.sequence >= retainedRange.first.sequence
         && entry.sequence <= retainedRange.last.sequence
-        && matchesEvidenceQuery(entry, unpagedQuery)
+        && matchesEvidenceQuery(entry, query)
       ));
-  const combined = [...durable.evidence, ...volatile].sort((left, right) => left.sequence - right.sequence);
-  return {
-    evidence: pageJournalSelection(combined, query, combined.length),
-    total: combined.length
-  };
+  return Promise.resolve({
+    evidence: pageJournalSelection(selected, query, selected.length),
+    total: selected.length
+  });
 }
 
 function recordMatchesCandidateKind(record: EvidenceRecord, candidateKind: NonNullable<EvidenceQuery["candidateKind"]>): boolean {
@@ -4569,6 +4886,20 @@ function readCommittedRange(database: AuthoritativeEventDatabase, interval: Hist
     },
     retainedCount: Math.max(0, lastSequence - firstSequence + 1)
   }, {}).then((result) => result.evidence);
+}
+
+function readMemoryReplayChunk(
+  interval: HistoryInterval,
+  firstSequence: number,
+  lastSequence: number,
+  chunkSize: number,
+  volatileEvidence: readonly CommittedEvidence[]
+): CommittedEvidence[] {
+  return volatileEvidence.filter((entry) =>
+    entry.intervalId === interval.id
+    && entry.sequence >= firstSequence
+    && entry.sequence <= lastSequence
+  ).slice(0, chunkSize);
 }
 
 function readReplayChunk(

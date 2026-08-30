@@ -417,10 +417,11 @@ describe("React Workbench Diagnose panel", () => {
     const operating = rootElement.querySelector<HTMLElement>(".workbench-react__operating");
     expect(operating?.querySelector(".workbench-react__operating-capture")?.textContent).toBe("Capture RUNNING");
     expect(operating?.querySelector(".workbench-react__operating-coverage")?.textContent).toBe("Coverage USEFUL");
-    expect(operating?.querySelector(".workbench-react__operating-history")?.textContent).toBe(
+    const historyStatus = rootElement.querySelector<HTMLElement>("[data-history-status]");
+    expect(historyStatus?.textContent).toBe(
       "10,000/10,000 Evidence · IndexedDB"
     );
-    expect(operating?.querySelector(".workbench-react__operating-history")?.getAttribute("aria-label")).toBe(
+    expect(historyStatus?.getAttribute("aria-label")).toBe(
       "10,000 retained Evidence of 10,000 accepted"
     );
     expect(operating?.querySelector(".workbench-react__operating-view")?.textContent).toBe("View FOLLOW LIVE");

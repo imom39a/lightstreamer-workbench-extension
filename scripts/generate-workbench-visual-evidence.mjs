@@ -405,8 +405,8 @@ async function createContactSheets(runningBrowser, results) {
     const requiredReadabilityIds = allScenarios.filter(({ production }) => isReadabilitySetup(production.setup)).map(({ id }) => id);
     const requiredFocusIds = [...requiredDiagnosticIds, ...requiredStorageIds, ...requiredActivityIds, ...requiredReadabilityIds];
     const missingFocusIds = requiredFocusIds.filter((id) => !affectedIds.includes(id));
-    if (requiredDiagnosticIds.length !== 17 || requiredStorageIds.length !== 5 || requiredReadabilityIds.length !== 2 || missingFocusIds.length > 0) {
-      throw new Error(`Contact sheets require all integrated Activity, 12 diagnostic, 5 Notifications, 5 storage-headroom and 2 Variant C readability states; missing: ${missingFocusIds.join(", ") || "none"}.`);
+    if (requiredActivityIds.length !== 9 || requiredDiagnosticIds.length !== 19 || requiredStorageIds.length !== 5 || requiredReadabilityIds.length !== 2 || missingFocusIds.length > 0) {
+      throw new Error(`Contact sheets require all 9 integrated Activity, 12 diagnostic, 7 Notifications, 5 storage-headroom and 2 Variant C readability states; missing: ${missingFocusIds.join(", ") || "none"}.`);
     }
   }
   const output = {};
@@ -1136,6 +1136,9 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
       : "Warning · History has an Evidence gap";
     const text = await diagnostics.innerText();
     if (!text.includes(marker)) throw new Error(`Continuous-History visual state is missing ${JSON.stringify(marker)}.`);
+    if (setup === "history-gap") {
+      await diagnostics.getByText("Diagnostic details", { exact: true }).click();
+    }
     await diagnostics.focus();
     await page.keyboard.press("Home");
     return;
@@ -1217,13 +1220,21 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     await draft.getByText("Injection Draft", { exact: true }).waitFor();
     if (setup === "captured-draft-changed") {
       await compare.click();
+      await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Compare Source" && button.getAttribute("aria-pressed") === "false"));
+      await draft.getByText("Immutable Source", { exact: true }).waitFor({ state: "detached" });
       const editor = draft.getByRole("textbox", { name: "Local Injection JSON", exact: true });
       const rawText = await editor.textContent();
       if (!rawText?.includes('"value": "1"')) {
         throw new Error("Captured Local Injection visual fixture is missing the editable value field.");
       }
-      await editor.fill(rawText.replace('"value": "1"', '"value": "2"'));
+      const changedText = rawText.replace('"value": "1"', '"value": "2"');
+      await editor.focus();
+      await page.keyboard.press("ControlOrMeta+A");
+      await page.keyboard.insertText(changedText);
+      await page.waitForFunction((expected) => document.querySelector('[aria-label="Local Injection JSON"]')?.textContent === expected, changedText);
+      await draft.getByText("Changed from immutable Source", { exact: true }).waitFor();
       await compare.click();
+      await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Compare Source" && button.getAttribute("aria-pressed") === "true"));
       await draft.getByText("Changed from immutable Source", { exact: true }).waitFor();
     }
     const inject = draft.getByRole("button", { name: "Inject locally" });

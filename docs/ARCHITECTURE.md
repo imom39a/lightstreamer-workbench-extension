@@ -550,8 +550,17 @@ candidate cannot enter any canonical segment, Event History records its exact
 capture ordinal as an Evidence Gap, settles that candidate explicitly, marks
 continuity-dependent projections limited, and continues accepting later valid
 activity. Failed candidates never receive Evidence sequence numbers or projection
-effects. Rebuildable query indexes may lag or rebuild independently of canonical
-acceptance.
+effects. In the normal tier, canonical Evidence, query projections, facet
+postings, aggregates, and control commit atomically in one IndexedDB transaction;
+an index-store failure aborts that attempt and enters the same bounded
+retry-or-memory-fallback path. Independent index rebuilding remains future work.
+
+A full accepted Topology Checkpoint whose synchronization began after the latest
+Evidence Gap and still matches the current page epoch restores the Topology basis
+from that checkpoint forward. It does not erase the Evidence Gap or restore
+Complete History. COMMAND and COMMAND-dependent Scenario conclusions remain
+limited until a separately trustworthy, target-scoped COMMAND Snapshot recovery
+is implemented.
 
 ## Diagnostic Observation Architecture
 
