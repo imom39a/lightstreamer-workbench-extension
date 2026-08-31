@@ -577,7 +577,7 @@ export function requestControlCdpWithDeadline(cdp, method, params, options = {})
       phase: error.phase,
       ...(operation ?? { operationId: null, state: "pending", heartbeat: 0, progress: null }),
       state: "rejected",
-      elapsedMs: Math.max(0, now() - startedAt),
+      elapsedMs: Math.max(error.timeoutMs, now() - startedAt, 0),
       lastRequestTimeout: { phase: error.phase, timeoutMs: error.timeoutMs, ceilingMs: error.ceilingMs },
       error: {
         name: error.name,

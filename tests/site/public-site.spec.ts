@@ -10,6 +10,7 @@ const routes = [
   "docs/evidence/",
   "docs/command-state/",
   "docs/local-injection/",
+  "docs/server-injection/",
   "docs/export-and-privacy/",
   "docs/troubleshooting/",
   "docs/faq/",

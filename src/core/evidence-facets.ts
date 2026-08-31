@@ -126,10 +126,15 @@ function extractPhase(event: LightstreamerEventEnvelope): TypedFacetValue | unde
 function extractProvenance(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
   if (event.synthetic || event.source === "synthetic") return value("provenance", "enum", "LOCAL");
   if (event.source === "server") return value("provenance", "enum", "SERVER");
+  if (event.source === "workbench") return value("provenance", "enum", "WORKBENCH");
+  if (event.source === "application") return value("provenance", "enum", "RUNTIME");
   return undefined;
 }
 
 function extractObservationPath(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
+  if (event.direction === "outbound" && event.clientMessage) {
+    return value("observationPath", "enum", "PUBLIC API");
+  }
   if (event.synthetic || event.source !== "server") return undefined;
   if (event.captureSource === "wire") return value("observationPath", "enum", "WIRE");
   if (event.captureSource === "listener") return value("observationPath", "enum", "LISTENER");
@@ -221,6 +226,15 @@ function canonicalEvidenceSearchTextFromExtraction(
     event.item?.position,
     event.update?.key,
     event.update?.command,
+    event.clientMessage?.id,
+    event.clientMessage?.message,
+    event.clientMessage?.sequence,
+    event.clientMessage?.outcome,
+    event.clientMessage?.outcomeAvailability,
+    event.clientMessage?.response,
+    event.clientMessage?.code,
+    event.clientMessage?.error,
+    event.clientMessage?.sentOnNetwork,
     event.update?.isSnapshot === true ? "SNAPSHOT" : event.update?.isSnapshot === false ? "LIVE" : undefined,
     ...facetText,
     ...stableFields(event.update?.fields),

@@ -2685,6 +2685,93 @@ test("Workbench keeps dense Evidence controls and protected Local Injection boun
   await attachMatrixScreenshot(page, testInfo, "wide-light-delivered-outcome");
 });
 
+test("Server Injection keeps exact sendMessage arguments protected across material UI states", async ({
+  page
+}, testInfo) => {
+  await openScenario(page, "server-injection-edit", { width: 563, height: 700 }, "light");
+  let document = page.getByRole("region", { name: "Server Injection Draft" });
+  await expect(document).toHaveAttribute("data-phase", "edit");
+  await expect(document.getByLabel("Protected Server Injection boundary")).toContainText("LightstreamerClient.sendMessage");
+  await expect(document.getByLabel("Protected Server Injection boundary")).toContainText("topology-small-session");
+  const message = document.getByLabel("Client Message body");
+  await expect(message).toHaveValue('publish/order/42 {"status":"ready"}');
+  await expect(message).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(document.getByLabel("Sequence")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(document.getByLabel("Delay timeout (ms)")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(document.getByLabel("Enqueue while disconnected")).toBeFocused();
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "server-injection-edit-compact-light");
+
+  await document.getByRole("button", { name: "Discard draft…" }).click();
+  const confirmation = page.getByRole("alertdialog", { name: "Discard Server Injection Draft" });
+  await expect(confirmation).toBeFocused();
+  await expect(confirmation).toContainText("cannot be recovered");
+  await page.keyboard.press("Escape");
+  await expect(document.getByRole("button", { name: "Discard draft…" })).toBeFocused();
+
+  await openScenario(page, "server-injection-review", { width: 900, height: 700 }, "dark");
+  document = page.getByRole("region", { name: "Server Injection Draft" });
+  await expect(document).toHaveAttribute("data-phase", "review");
+  const send = document.getByRole("button", { name: "Send Client Message once" });
+  await expect(send).toBeFocused();
+  await expect(document).toContainText("No automatic retry occurs");
+  await expect(document.getByRole("region", { name: "Reviewed Server Injection" })).toContainText('publish/order/42 {"status":"ready"}');
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __serverInjectionExecutionCount(): number }).__serverInjectionExecutionCount())).toBe(0);
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "server-injection-review-normal-dark");
+
+  await openScenario(page, "server-injection-degraded", { width: 900, height: 320 }, "light");
+  document = page.getByRole("region", { name: "Server Injection Draft" });
+  await expect(document).toHaveAttribute("data-phase", "edit");
+  await expect(document).toContainText("BLOCKED");
+  await expect(document.getByLabel("Server Injection validation")).toContainText("bridge is disconnected");
+  await expect(document.getByRole("button", { name: "Review Client Message" })).toBeDisabled();
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "server-injection-degraded-shallow-light");
+
+  await page.emulateMedia({ colorScheme: "dark", forcedColors: "active" });
+  await openScenario(page, "server-injection-unknown", { width: 900, height: 320 }, "dark");
+  document = page.getByRole("region", { name: "Server Injection Draft" });
+  await expect(document).toHaveAttribute("data-phase", "outcome");
+  await expect(document).toContainText("Outcome Unknown");
+  await expect(document).toContainText("may duplicate server-side effects");
+  await expect(document.getByRole("button", { name: "Finish" })).toBeFocused();
+  await expect(document.getByRole("button", { name: "Prepare separate Repeat…" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __serverInjectionExecutionCount(): number }).__serverInjectionExecutionCount())).toBe(1);
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "server-injection-unknown-shallow-forced-dark");
+
+  await page.emulateMedia({ colorScheme: "light", forcedColors: "none" });
+  await openScenario(page, "server-injection-high-volume", { width: 1440, height: 900 }, "light");
+  document = page.getByRole("region", { name: "Server Injection Draft" });
+  const highVolumeMessage = document.getByLabel("Client Message body");
+  expect((await highVolumeMessage.inputValue()).length).toBeGreaterThan(64 * 1024);
+  const editorBounds = await highVolumeMessage.evaluate((editor) => ({
+    scrollHeight: editor.scrollHeight,
+    clientHeight: editor.clientHeight,
+    right: editor.getBoundingClientRect().right,
+    viewportRight: window.innerWidth
+  }));
+  expect(editorBounds.scrollHeight).toBeGreaterThan(editorBounds.clientHeight);
+  expect(editorBounds.right).toBeLessThanOrEqual(editorBounds.viewportRight);
+  await expect(highVolumeMessage).toBeFocused();
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "server-injection-high-volume-wide-light");
+});
+
 test("reviewed same-target Scenario steps exactly one Injection and retains its trace", async ({ page }, testInfo) => {
   for (const scene of [
     { scenario: "local-injection-scenario-edit" as const, width: 563, height: 700, theme: "light" as const },

@@ -57,6 +57,19 @@ The preparation gate completed on 2026-08-12 from base revision `4022f4a130c2195
 
 The artifact was uploaded on 2026-08-12 to Chrome Web Store item `kfpgbhfphbhkebglopimjhfnnmbifocf` and saved as the version 2.0.1 draft. The dashboard continues to show version 2.0.0 as the published package. The draft Store listing was updated from the maintained `store-listing/` sources with the current description, first-party homepage and support URLs, icon, three screenshots in the prescribed order, small promo tile, and marquee promo tile. No review submission, rollout, publication, Git tag, commit, or push was performed.
 
+## Version 2.0.2 Preparation Record
+
+Version 2.0.2 packages the current Workbench workspace, including Local Injection Scenarios, the Notifications document, the retained Event-order rail, two-line Scope rows, and the selected-update Fields layout. It keeps the existing Manifest V3 permissions, local-only data handling, temporary Event History, and Local Injection server boundary.
+
+The preparation gate completed on 2026-08-30 from base revision `f3e1c0b3606b07bcd31b240a3a5b66e576e92ede` on Darwin arm64 with Node.js `v25.9.0` and npm `11.12.1`:
+
+- `npm run store:assets` regenerated the maintained Store and documentation images.
+- `npm run release:package` passed type checking, `1592` tests with `1` skipped, the production build, and the release extension audit.
+- `release/lightstreamer-workbench-v2.0.2.zip` is 442,514 bytes with SHA-256 `fead74c24c766d6eaeed985d90e2eb305d5c87dd225a40fd03fc0a4a008f5c5a`.
+- ZIP integrity passed with `manifest.json` at the archive root. The archive, `dist/`, and `public/` manifests are byte-identical, declare version `2.0.2` and Manifest V3, and declare neither `permissions` nor `host_permissions`.
+- The package was uploaded to Chrome Web Store item `kfpgbhfphbhkebglopimjhfnnmbifocf`; the dashboard showed draft version `2.0.2` and published version `2.0.1`.
+- The publisher manually submitted version 2.0.2 for Chrome Web Store review on 2026-08-30. Review and publication remain Chrome Web Store states; no Git tag, commit, or push was performed by this preparation task.
+
 ## No-analytics release invariant
 
 Version 2 official builds contain no product analytics, tracking transport, remote error logging, or persistent analytics identifier. `npm run build` audits the compiled extension for retired endpoints, configuration names, and identifier keys. The panel mount also clears legacy 0.1.x consent and identifier records without affecting investigation state when storage is unavailable.

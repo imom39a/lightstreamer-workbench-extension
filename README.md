@@ -1,6 +1,6 @@
 # Lightstreamer Workbench
 
-Lightstreamer Workbench is an open-source Chrome DevTools extension. Use it to inspect applications that use the official Lightstreamer Web Client. It captures clients, Sessions, Subscriptions, Item Updates, snapshots, and COMMAND key lifecycles. Use Local Injection to test an Item Update in the page without a server change.
+Lightstreamer Workbench is an open-source Chrome DevTools extension. Use it to inspect applications that use the official Lightstreamer Web Client. It captures clients, Sessions, Subscriptions, Item Updates, snapshots, COMMAND key lifecycles, and outbound Client Messages. Use Local Injection to test an Item Update in the page without a server change, or Server Injection to send one reviewed Client Message through the inspected client's current Session.
 
 [Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) | [Documentation](https://imom39a.github.io/lightstreamer-workbench-extension/docs/) | [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf) | [Source](https://github.com/imom39a/lightstreamer-workbench-extension/) | [Privacy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) | [Security](https://imom39a.github.io/lightstreamer-workbench-extension/security/) | [Support](https://imom39a.github.io/lightstreamer-workbench-extension/support/)
 
@@ -20,12 +20,13 @@ Version 2 inspects the current Panel Session for the selected tab. Scope, Ordere
 
 - Adds a `Lightstreamer Workbench` panel to Chrome DevTools.
 - Instruments the inspected page at `document_start` to observe official Lightstreamer Web Client constructors and listeners.
-- Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into temporary session-scoped Event History for the current Panel Session.
+- Captures client, subscription, listener, item update, snapshot, COMMAND lifecycle, `sendMessage`, and `ClientMessageListener` outcome events into temporary session-scoped Event History for the current Panel Session.
 - Shows Runtime Scope, Ordered Evidence, and Context in one React workspace.
 - Keeps Capture, Coverage, Scope, Filter, Find, selection, and Live or Frozen independent.
 - Keeps current-session Evidence through its Committed Evidence Boundary. The panel renders a limited set of rows at one time.
 - Traces COMMAND `ADD`, `UPDATE`, and `DELETE` Evidence while internal derived state powers Draft validation, Scenarios, Checkpoints, and lifecycle diagnostics.
 - Keeps one protected **Local Injection Draft** for one target. Create it from captured Evidence or from a live COMMAND Scope. Captured Drafts compare Source and Draft by default; edit, validate, and inject directly from that preview.
+- Keeps one protected **Server Injection Draft** for one exact live client, Session, and page. Clone an immutable Captured Client Message or author one, review the exact `sendMessage` arguments, and send it once through the inspected application's normal client-to-server path.
 - Provides a temporary **Local Injection Scenario** for ordered Steps and optional Checkpoints. Review creates an immutable Run. Each Step makes one Local Injection request and gets one result.
 - Delivers Drafts and Scenario Steps through a captured listener or Lightstreamer WebSocket path in the inspected page.
 - Provides WebSocket/TLCP fallback diagnostics when primary Web Client API instrumentation is unavailable.
@@ -52,7 +53,8 @@ only deliberate History Interval reset.
 
 - It does not send inspected URLs, Lightstreamer addresses, captured values, identifiers, search text, Injection Drafts, or error details to this project, the maintainers, analytics services, or any external backend.
 - It does not intentionally keep captured events after the current Panel Session. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
-- It does not inject data into the real Lightstreamer server stream.
+- It does not inject an arbitrary Item Update into the real Lightstreamer server stream. Server Injection sends a Client Message through `LightstreamerClient.sendMessage`; only the server-side application decides what that message does.
+- It does not automatically retry Server Injection. An Unknown outcome remains terminal until you deliberately prepare a separate Repeat, which may duplicate server-side effects.
 - It does not create a Lightstreamer client, call `connect()` or `subscribe()`, or establish a server session; capture only observes clients and WebSockets owned by the inspected page.
 - It does not provide app-specific interpretation rules in the core product.
 - It does not treat arbitrary WebSocket protocols as first-class Lightstreamer domain models.
@@ -66,6 +68,7 @@ Use this extension to:
 - Inspect COMMAND Subscriptions, keyed rows, ADD/UPDATE/DELETE behavior, snapshots, or deleted-key lifecycles.
 - Test a streaming sequence locally when you cannot easily reproduce the server event order.
 - Inspect captured Lightstreamer data without application-specific business objects.
+- Inspect application Client Messages and deliberately reproduce one through the exact current client and Session.
 - Test a Lightstreamer integration in Chrome DevTools.
 
 This is not a generic WebSocket inspector and is not a replacement for a Lightstreamer server, Data Adapter, or backend test harness.
@@ -83,7 +86,7 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - Pull request process and review expectations.
 - Contribution license rules.
 
-Keep the core model based on Lightstreamer terms. Do not add application-specific business objects to Capture, normalization, COMMAND state, or Local Injection core modules. Add them only as optional adapters.
+Keep the core model based on Lightstreamer terms. Do not add application-specific business objects to Capture, normalization, COMMAND state, Local Injection, or Server Injection core modules. Add them only as optional adapters.
 
 ## Documentation
 
@@ -101,13 +104,15 @@ Keep the core model based on Lightstreamer terms. Do not add application-specifi
 
 ## Privacy And Safety
 
-Lightstreamer Workbench keeps captured event data in one temporary Event History for the Panel Session. The extension does not send this data off the device. Complete History ends at the current History Interval's Committed Evidence Boundary. Workbench masks Lightstreamer client IP addresses before the panel receives them. The panel cannot show the exact address. You can inspect a retired Scope, but you cannot use it for Local Injection.
+Lightstreamer Workbench keeps captured event data, including Client Message bodies and Injection Drafts, in one temporary Event History for the Panel Session. The extension does not send this data to the maintainers or an analytics service. Complete History ends at the current History Interval's Committed Evidence Boundary. Workbench masks Lightstreamer client IP addresses before the panel receives them. The panel cannot show the exact address. Bulk retained-Evidence copies always redact Client Message bodies and outcome text; complete local raw Evidence remains a deliberate per-event action. You can inspect a retired Scope, but you cannot use it for Injection.
 
 Version 2 has no product analytics, remote error logging, or persistent installation identifier. At startup, it clears old analytics settings and identifier records from earlier versions. The public website uses static HTML and CSS. It has no analytics, cookies, or JavaScript. Read the [privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) for more information.
 
 The extension needs broad page access to observe the Lightstreamer Web Client before the application creates clients or Subscriptions. Use Workbench only on pages that you have permission to inspect. Do not share screenshots or logs that contain secrets, customer data, tokens, or proprietary payloads.
 
 Workbench marks each successful Local Injected Update in the UI and event envelope. Local Injection uses a captured listener callback or a synthetic TLCP update on the captured page WebSocket. Both paths deliver to the inspected page. Neither path contacts the Lightstreamer Server. A failed, stale, or uncertain delivery does not create successful Local Evidence.
+
+Server Injection is a real inspected-page network action. Workbench calls the selected page-owned client's public `sendMessage` API once after review and listens for the normal Lightstreamer outcome callbacks. A Processed result proves that Lightstreamer handled the Client Message, not that a downstream business effect or later Server Update occurred. Workbench never retries an Unknown outcome automatically.
 
 ## Official Distribution
 

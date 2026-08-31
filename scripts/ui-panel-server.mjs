@@ -113,6 +113,7 @@ const history = createInMemoryEventHistory({
 });
 await Promise.all(scenario.initialEvents.map((event) => history.offer(event).settled));
 let localInjectionExecutionCount = 0;
+let serverInjectionExecutionCount = 0;
 let scenarioClockNow = 0;
 const scenarioClock = {
   now: () => scenarioClockNow,
@@ -136,6 +137,19 @@ const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
     return Promise.resolve({ requestId: request.executionId, ok: false, status: "listener-error", timestamp: 1_780_872_100_004, error: "The protected local listener rejected the update.", attemptedCount: 1, deliveredCount: 0, failedCount: 1 });
   }
 } : undefined;
+const serverInjectionExecutor = scenario.serverInjection?.executorOutcome ? {
+  execute() {
+    serverInjectionExecutionCount += 1;
+    const requestId = "server-injection-browser-" + serverInjectionExecutionCount;
+    const outcome = scenario.serverInjection.executorOutcome;
+    if (outcome === "pending") return new Promise(() => undefined);
+    if (outcome === "processed") return Promise.resolve({ requestId, ok: true, status: "processed", timestamp: 1_780_872_100_101, response: "fixture accepted" });
+    if (outcome === "denied") return Promise.resolve({ requestId, ok: false, status: "denied", timestamp: 1_780_872_100_102, code: 41, error: "The deterministic Metadata Adapter denied the message." });
+    if (outcome === "discarded") return Promise.resolve({ requestId, ok: false, status: "discarded", timestamp: 1_780_872_100_103, error: "The message did not reach the Metadata Adapter." });
+    if (outcome === "aborted") return Promise.resolve({ requestId, ok: false, status: "aborted", timestamp: 1_780_872_100_104, sentOnNetwork: false, error: "The message was aborted before network transmission." });
+    return Promise.resolve({ requestId, ok: false, status: "unknown", timestamp: 1_780_872_100_105, error: "The outcome channel closed after submission. Do not repeat automatically." });
+  }
+} : undefined;
 const runtime = createWorkbenchRuntime({
   history,
   scenarioClock,
@@ -157,7 +171,8 @@ const runtime = createWorkbenchRuntime({
     activityProjectionFactory: () => { throw new Error(scenario.activityProjectionFailure); }
   } : {}),
   theme,
-  ...(localInjectionExecutor ? { localInjectionExecutor } : {})
+  ...(localInjectionExecutor ? { localInjectionExecutor } : {}),
+  ...(serverInjectionExecutor ? { serverInjectionExecutor } : {})
 });
 for (const frame of scenario.topologySyncFrames ?? []) {
   runtime.dispatch({ type: "apply-topology-sync-frame", frame });
@@ -261,10 +276,19 @@ if (scenario.localInjection) {
     }
   }
 }
+if (scenario.serverInjection) {
+  runtime.dispatch({ type: "begin-server-injection-from-selection" });
+  if (scenario.serverInjection.message !== undefined) {
+    runtime.dispatch({ type: "set-server-injection-message", message: scenario.serverInjection.message });
+  }
+  if (scenario.serverInjection.review) runtime.dispatch({ type: "review-server-injection" });
+  if (scenario.serverInjection.execute) runtime.dispatch({ type: "execute-server-injection" });
+}
 await new Promise((resolve) => setTimeout(resolve, 48));
 document.documentElement.dataset.reactScenario = scenarioId;
 document.documentElement.dataset.reactSceneReady = "true";
 window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
+window.__serverInjectionExecutionCount = () => serverInjectionExecutionCount;
 window.__setWorkbenchVisible = (visible) => runtime.dispatch({ type: "set-visible", visible });
 window.__setWorkbenchCaptureStatus = (status) => runtime.dispatch({ type: "set-capture-status", status });
 window.__setWorkbenchStorageMode = (mode) => runtime.dispatch({

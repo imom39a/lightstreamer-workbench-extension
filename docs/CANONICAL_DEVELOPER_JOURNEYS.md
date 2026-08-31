@@ -12,9 +12,7 @@ Workbench is a debugging instrument inside Chrome DevTools. Its core operating s
 
 A successful investigation does not require Workbench to fix the inspected application. It requires the developer to identify the boundary at which observed behavior diverged and cite the evidence supporting that conclusion.
 
-The UI must optimize diagnosis and Local Injection as its two core journeys. Recovery guidance appears when operation is degraded. Raw protocol inspection, complete lifecycle analysis, high-volume history work, and export remain close at hand without competing for permanent primary prominence.
-
-Planned Server Injection is outside this journey set. Local Injection is in scope and remains a first-class capability.
+The UI must optimize diagnosis, Local Injection, and deliberate Server Injection as its core journeys. Recovery guidance appears when operation is degraded. Raw protocol inspection, complete lifecycle analysis, high-volume history work, and export remain close at hand without competing for permanent primary prominence.
 
 ## Representative operators
 
@@ -36,6 +34,7 @@ This operator reproduces captured sequences and deliberate variations, especiall
 | --- | --- | --- |
 | Primary | Diagnose incorrect application state | Default operating path; orientation is its first phase. |
 | Primary | Reproduce or vary behavior with Local Injection | Deliberate action reached from relevant evidence or an explicit authoring entry point. |
+| Primary | Reproduce a Client Message with Server Injection | Protected reviewed action reached from outbound Evidence or one live public-API client. |
 | Contextual recovery | Understand degraded operation | Prominent when relevant; otherwise consumes little or no workspace. |
 | Advanced | Raw capture, complete COMMAND lifecycle, frozen high-volume history, and diagnostic export | One interaction away while preserving investigative scope. |
 
@@ -159,7 +158,48 @@ The developer has verified the exact target, understood the source-to-draft rela
 
 Recovery must preserve the draft when safe, identify what changed, and offer an explicit way to select a valid target or correct validation errors. Workbench must never silently retarget an Injection.
 
-## Journey 3: understand degraded operation
+## Journey 3: reproduce a Client Message with Server Injection
+
+### Trigger
+
+Diagnosis identifies a page-owned Client Message worth reproducing or varying, or the developer needs to send a new application-specific message through one current Lightstreamer Session.
+
+### Developer question
+
+What does the server boundary report when this exact Client Message is submitted once through this exact inspected client and Session?
+
+### Required evidence and state
+
+- An immutable Captured Client Message Source when the developer starts from Evidence.
+- A separate editable Server Injection Draft containing message, sequence, delay timeout, and enqueue choice.
+- One protected page epoch, official public-API client, and current Session target.
+- A Review phase showing the exact `LightstreamerClient.sendMessage` arguments.
+- A persistent processed, denied, discarded, aborted, unknown, stale-target, or bridge outcome.
+- Outbound `WORKBENCH` Evidence correlated to the request and any available listener outcome.
+
+### Canonical sequence
+
+1. Enter from a compatible Captured Client Message or explicitly author against one live client.
+2. Confirm the exact page, client, Session, and public `sendMessage` boundary.
+3. Edit the body and send arguments without mutating the Source or application's original call.
+4. Resolve validation errors and review the exact call.
+5. Invoke **Send Client Message once**.
+6. Read the terminal outcome without inferring a downstream business effect or causal relationship to later Server Updates.
+7. If the outcome is Unknown, stop. A deliberate Repeat is a new call with duplicate-effect risk, never an automatic retry.
+
+### Completion condition
+
+The developer can cite the reviewed call, exact target, outbound Evidence, and the strongest supported delivery-boundary outcome. Nothing implies that Workbench injected an inbound Item Update, contacted a Data Adapter directly, or proved an application result.
+
+### Important failure and degraded states
+
+- The selected client is fallback-only, retired, disconnected, reloaded, or in a different Session.
+- The message or sequence is empty, or the timeout is invalid.
+- The page bridge is missing before execution starts.
+- Page evaluation or a listener outcome becomes uncertain after the call may have started; the outcome is Unknown and Workbench does not retry.
+- The developer deliberately prepares a Repeat; the UI warns that server-side effects may be duplicated and creates a fresh execution identity.
+
+## Journey 4: understand degraded operation
 
 ### Trigger
 
@@ -182,7 +222,7 @@ What evidence is still trustworthy, what conclusion can I safely draw, and what 
 1. Notice one stable footer diagnostic that identifies the affected scope and severity without relying on color.
 2. Inspect a concise explanation of what Workbench knows, what it cannot establish, and which existing evidence remains usable.
 3. Take the appropriate recovery action: wait for a client, reload or reconnect the inspected context, re-establish Capture, return to Live evidence, select a current target, correct a draft, or open detailed diagnostics.
-4. Reorient on the current client, Session, and Subscription context before continuing diagnosis or Local Injection.
+4. Reorient on the current client, Session, and Subscription context before continuing diagnosis or Injection.
 
 ### Completion condition
 
@@ -230,6 +270,7 @@ Information-architecture prototypes must demonstrate that:
 - Selection of a client, Session, Subscription, item, key, or event carries into related evidence, detail, and action instead of forcing repeated context selection.
 - Evidence remains primary; actions appear in the scope where they are valid.
 - Local Injection is a deliberate transition from evidence or explicit authoring into a stable source/draft/target workflow.
+- Server Injection is a separate deliberate transition with exact send arguments, a protected live Session target, one attempt, and terminal Unknown handling.
 - Recovery guidance replaces implementation labels such as “bridge connected” with operator-relevant status and next actions.
 - Raw evidence and advanced tools are directly reachable without permanent multi-pane competition.
 - Compact DevTools layouts preserve the same journey order even when only one primary pane can be visible at a time.
@@ -244,10 +285,13 @@ No new Lightstreamer domain term was needed during this session, so [CONTEXT.md]
 - Keep **Injection Source** immutable and **Injection Draft** separately editable.
 - Use **Mutation** for deliberate draft changes.
 - Name the exact **Local Injection Target**.
+- Name the exact client and Session for **Server Injection** and preserve **Repeat Injection** as a separate execution.
 - Mark an **Injected Update** and retain its local provenance.
 - Keep captured Server Evidence distinct from committed Local Evidence and never imply Authoritative COMMAND State.
 
 Roles, journey names, fault boundaries, and UI placement categories are product-design language rather than additions to the Lightstreamer domain glossary.
+
+Implementation amendment, 2026-08-30: the repository candidate implements Journey 3 as a temporary promoted document and keeps it mutually exclusive with the protected Local Draft and Scenario boundaries. Independent Material UI review and release publication remain separate gates.
 
 ## Acceptance record
 

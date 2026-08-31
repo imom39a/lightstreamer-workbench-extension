@@ -112,6 +112,19 @@ Review creates an immutable Run. The Run contains the target, Step order, payloa
 
 Use Checkpoints for Workbench data. This data includes prior Injection outcomes, related Local Evidence, COMMAND keys, supported listener counts, and exact primitive field values. Checkpoints do not run page JavaScript. They do not test arbitrary DOM or server state.
 
+## Send a Client Message with Server Injection
+
+Server Injection uses the inspected application's normal Lightstreamer client-to-server path.
+
+1. Select a captured Client Message and choose **Create Server Injection Draft**, or select a live public-API client and choose **Author Client Message**.
+2. Confirm the exact page, client, Session, and `LightstreamerClient.sendMessage` boundary.
+3. Edit the message, sequence, optional delay timeout, and enqueue-while-disconnected choice.
+4. Resolve validation errors and select **Review Client Message**.
+5. Review every send argument, then select **Send Client Message once**.
+6. Read the Processed, Denied, Discarded, Aborted, or Unknown outcome and its **WORKBENCH** Evidence.
+
+Processed means Lightstreamer handled the Client Message. It does not prove a downstream business effect or that a later Server Update was caused by the message. Workbench never retries automatically. If the outcome is Unknown, **Prepare separate Repeat…** is a new call and may duplicate server-side effects.
+
 ## Freeze, retain, and export Evidence
 
 **Live** follows the newest matching Evidence. **Frozen** keeps the visible window, selection, and scroll position. Capture continues. Workbench counts new matching Evidence and does not move focus.
@@ -134,7 +147,7 @@ Select **More actions → Export current Scope** to create a versioned JSON snap
 - **Control/Command+F** opens Evidence Find when Workbench chrome or Evidence owns focus; inside raw documents and editors it remains document-local.
 - Escape clears or closes the active Workbench transient. It does not inject, clear history, change Scope, or change Capture.
 
-Clear, Review, Inject locally, Scenario, and export actions always have visible labels.
+Clear, Review, Inject locally, Send Client Message once, Scenario, and export actions always have visible labels.
 
 ## When the evidence is incomplete
 
@@ -146,5 +159,6 @@ Clear, Review, Inject locally, Scenario, and export actions always have visible 
 | History near capacity | Review the Committed Evidence Boundary. Preserve the retained range before Capture stops. |
 | In-memory fallback | Open a new Panel Session after restoring IndexedDB when you need normal History Capacity. |
 | Local Injection unavailable | Confirm the selected update is compatible, the target is live, and no other protected Draft or Scenario owns the target. |
+| Server Injection unavailable | Select a live official public-API client with a current Session, and close any protected Local Draft or Scenario first. Reload with DevTools open if the page bridge is stale. |
 
 For more recovery procedures, see [Troubleshooting]({{site}}docs/troubleshooting/). Remove private data before you post a report. This data includes production payloads, private URLs, tokens, customer data, and screenshots that contain secrets.

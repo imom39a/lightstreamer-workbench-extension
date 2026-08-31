@@ -111,7 +111,7 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.1
+2.0.2
 ```
 
 What's new:
@@ -167,17 +167,17 @@ For deterministic local verification from the repository:
 
 - [x] Confirm `public/manifest.json` version matches `package.json`.
 - [x] Run `npm run release:package`.
-- [x] Upload `release/lightstreamer-workbench-v2.0.1.zip`.
+- [x] Upload `release/lightstreamer-workbench-v2.0.2.zip`.
 - [x] Upload `public/icons/icon-128.png` as the store icon.
 - [x] Upload all four screenshots in the order listed above.
 - [x] Upload `store-listing/promo/small-promo-tile.png`.
 - [x] Optionally upload `store-listing/promo/marquee-promo-tile.png`.
 - [x] Confirm the package-derived summary and paste the detailed description from this file.
-- [ ] Review the privacy practices answer before submission.
-- [ ] Remove the retired product-usage analytics and identifier declarations from the dashboard privacy fields.
+- [x] Review the privacy practices answer before submission.
+- [x] Remove the retired product-usage analytics and identifier declarations from the dashboard privacy fields.
 - [x] Confirm the packaged build contains no analytics endpoint, configuration, event, or identifier residue.
 - [x] Confirm the packaged Manifest V3 has no new storage permission and no `unlimitedStorage` declaration.
 - [x] Confirm the final Event History real-Chrome report is `PASS`, or retain the explicit maintainer-accepted `REVIEW` disposition in the internal Project ticket; a `FAIL` blocks publication.
-- [ ] Confirm the privacy policy URL is `https://imom39a.github.io/lightstreamer-workbench-extension/privacy/`.
-- [ ] Confirm the support URL is `https://imom39a.github.io/lightstreamer-workbench-extension/support/`.
+- [x] Confirm the privacy policy URL is `https://imom39a.github.io/lightstreamer-workbench-extension/privacy/`.
+- [x] Confirm the support URL is `https://imom39a.github.io/lightstreamer-workbench-extension/support/`.
 - [ ] Confirm the homepage URL is `https://imom39a.github.io/lightstreamer-workbench-extension/` and staged publishing remains enabled.

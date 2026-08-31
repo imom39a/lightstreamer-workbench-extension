@@ -10,10 +10,15 @@ import {
   type CapturePayload,
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
+  PAGE_SERVER_INJECTION_BRIDGE_GLOBAL,
+  PAGE_SERVER_INJECTION_BRIDGE_VERSION,
   PAGE_REINJECT_REQUEST,
   RUNTIME_REINJECT_RESULT,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
+  CLIENT_MESSAGE_DEFAULT_SEQUENCE,
+  type ServerInjectionDraftPayload,
+  type ServerInjectionStartResult,
   type PanelSessionId,
   type TopologyEvidenceRecord,
   type TopologyCoverage,
@@ -26,6 +31,8 @@ import {
   isTopologySyncFrame,
   isPageCaptureSyncRequestMessage,
   isPageReinjectRequestMessage,
+  isInjectionCorrelation,
+  isServerInjectionDraftPayload,
   topologySyncUtf8Bytes
 } from "../bridge/messages";
 import { createStableIdAllocator, type StableIdAllocator } from "../core/ids";
@@ -39,6 +46,12 @@ import {
   createSubscriptionLocalInjectionRegistry,
   type SubscriptionLocalInjectionRegistry
 } from "./subscription-local-injection";
+import {
+  createClientMessageDeliveryRegistry,
+  readServerInjectionListenerContext,
+  type ClientMessageDeliveryRegistry,
+  type ServerInjectionListenerContext
+} from "./client-message-delivery";
 
 type InstrumentationState = {
   pageEpoch: string;
@@ -58,6 +71,7 @@ type InstrumentationState = {
   subscriptionIds: StableIdAllocator;
   listenerIds: StableIdAllocator;
   updateIds: StableIdAllocator;
+  nextClientMessageSequence: number;
   wrappedClients: WeakSet<object>;
   wrappedSubscriptions: WeakSet<object>;
   wrappedClientListeners: WeakSet<object>;
@@ -72,6 +86,7 @@ type InstrumentationState = {
   commandReplayRows: Map<string, Map<string, CapturePayload>>;
   retiredFallbackSubscriptionIds: Set<string>;
   localInjectionTargets: SubscriptionLocalInjectionRegistry<SyntheticItemUpdate>;
+  clientMessageDelivery: ClientMessageDeliveryRegistry;
   listenerRegistrations: Map<string, ListenerRegistrationState>;
   subscriptionListenerIds: Map<string, Set<string>>;
   wireTargets: Map<string, WireReinjectionTarget>;
@@ -185,8 +200,9 @@ export function installLightstreamerInstrumentation(
   const activeSubscriptions = new Map<string, CapturePayload>();
   const commandReplayRows = new Map<string, Map<string, CapturePayload>>();
   const retiredFallbackSubscriptionIds = new Set<string>();
+  const pageEpoch = createPageEpoch();
   const state: InstrumentationState = {
-    pageEpoch: createPageEpoch(),
+    pageEpoch,
     captureSequence: 0,
     currentCaptureTimestamp: 0,
     topologyRecords: new Map<string, TopologyAbsoluteRecord>(),
@@ -203,6 +219,7 @@ export function installLightstreamerInstrumentation(
     subscriptionIds: createStableIdAllocator("subscription"),
     listenerIds: createStableIdAllocator("listener"),
     updateIds: createStableIdAllocator("update"),
+    nextClientMessageSequence: 0,
     wrappedClients: new WeakSet<object>(),
     wrappedSubscriptions: new WeakSet<object>(),
     wrappedClientListeners: new WeakSet<object>(),
@@ -217,6 +234,18 @@ export function installLightstreamerInstrumentation(
     commandReplayRows,
     retiredFallbackSubscriptionIds,
     localInjectionTargets: createSubscriptionLocalInjectionRegistry<SyntheticItemUpdate>(),
+    clientMessageDelivery: createClientMessageDeliveryRegistry({
+      pageEpoch,
+      getSessionId(client) {
+        const details = readClientSurface(client, "connectionDetails").value;
+        const value = details ? readGetter(details, "getSessionId") : null;
+        return typeof value === "string" && value ? value : null;
+      },
+      getStatus(client) {
+        const value = readGetter(client, "getStatus");
+        return typeof value === "string" && value ? value : null;
+      }
+    }),
     listenerRegistrations: new Map<string, ListenerRegistrationState>(),
     subscriptionListenerIds: new Map<string, Set<string>>(),
     wireTargets: new Map<string, WireReinjectionTarget>(),
@@ -275,6 +304,7 @@ export function installLightstreamerInstrumentation(
     }
   };
   installReinjectionHandler(host, postMessage, state);
+  installServerInjectionHandler(host, state);
   installCaptureSyncHandler(host, state);
   installWebSocketFallback(host, state);
 
@@ -315,6 +345,7 @@ export function installLightstreamerInstrumentation(
         }), state);
 
         activatePrimaryInstrumentation(host);
+        state.clientMessageDelivery.register(clientId, instance);
         wrapClient(instance, state);
         state.clientMetadata.set(instance, clientMetadata);
         state.emit("client-created", {
@@ -2668,7 +2699,169 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
     });
   });
 
+  wrapClientSendMessage(client, state);
   wrapClientListenerMethods(client, state);
+}
+
+const CLIENT_MESSAGE_CALLBACK_KINDS = Object.freeze({
+  onProcessed: "client-message-processed",
+  onDeny: "client-message-denied",
+  onDiscarded: "client-message-discarded",
+  onError: "client-message-error",
+  onAbort: "client-message-aborted"
+} satisfies Record<string, CaptureKind>);
+
+const CLIENT_MESSAGE_CALLBACK_OUTCOMES = Object.freeze({
+  onProcessed: "processed",
+  onDeny: "denied",
+  onDiscarded: "discarded",
+  onError: "error",
+  onAbort: "aborted"
+} as const);
+
+function wrapClientSendMessage(
+  client: LightstreamerClientLike,
+  state: InstrumentationState
+): void {
+  const originalSendMessage = client.sendMessage;
+  if (typeof originalSendMessage !== "function") return;
+
+  client.sendMessage = function wrappedSendMessage(this: object, ...args: unknown[]) {
+    const actualClient = isObject(this) ? this : client;
+    const messageId = `client-message-${++state.nextClientMessageSequence}`;
+    const listener = args[3];
+    const injection = readServerInjectionListenerContext(listener);
+    const messagePayload = createClientMessagePayload(
+      messageId,
+      args,
+      injection,
+      state
+    );
+    const forwardedArgs = [...args];
+    if (isObject(listener)) {
+      forwardedArgs[3] = createClientMessageListenerProxy(
+        actualClient,
+        listener,
+        messagePayload,
+        state
+      );
+    }
+
+    const result = Reflect.apply(originalSendMessage, this, forwardedArgs);
+    try {
+      state.emit("client-message-sent", {
+        client: clientPayload(actualClient, state),
+        clientMessage: {
+          ...messagePayload,
+          outcome: "submitted",
+          outcomeAvailability: isObject(listener) ? "pending" : "unavailable"
+        },
+        raw: {
+          callback: "sendMessage",
+          captureSource: "official-public-api"
+        }
+      });
+    } catch (_error) {
+      // Capture cannot replace the page-owned return value.
+    }
+    return result;
+  };
+}
+
+function createClientMessagePayload(
+  id: string,
+  args: readonly unknown[],
+  injection: ServerInjectionListenerContext | null,
+  state: InstrumentationState
+): CapturePayload {
+  const message = typeof args[0] === "string" ? args[0] : null;
+  const sequence =
+    typeof args[1] === "string" && args[1].trim()
+      ? args[1]
+      : CLIENT_MESSAGE_DEFAULT_SEQUENCE;
+  const delayTimeout =
+    typeof args[2] === "number" && Number.isSafeInteger(args[2]) && args[2] >= 0
+      ? args[2]
+      : null;
+  return compactJsonObject({
+    id,
+    pageEpoch: state.pageEpoch,
+    message,
+    messageState: message === null ? "unavailable" : "available",
+    sequence,
+    delayTimeout,
+    enqueueWhileDisconnected: typeof args[4] === "boolean" ? args[4] : false,
+    listenerProvided: isObject(args[3]),
+    origin: injection ? "workbench" : "application",
+    injection: injection
+      ? {
+          panelSessionId: injection.panelSessionId,
+          requestId: injection.requestId,
+          sourceEventId: injection.sourceEventId
+        }
+      : undefined
+  });
+}
+
+function createClientMessageListenerProxy(
+  client: object,
+  listener: Record<string, unknown>,
+  messagePayload: CapturePayload,
+  state: InstrumentationState
+): Record<string, unknown> {
+  return new Proxy(listener, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (
+        typeof property !== "string" ||
+        !Object.prototype.hasOwnProperty.call(CLIENT_MESSAGE_CALLBACK_KINDS, property) ||
+        typeof value !== "function"
+      ) {
+        return value;
+      }
+      return function clientMessageListenerCallback(this: unknown, ...args: unknown[]) {
+        try {
+          captureClientMessageOutcome(
+            client,
+            property as keyof typeof CLIENT_MESSAGE_CALLBACK_KINDS,
+            args,
+            messagePayload,
+            state
+          );
+        } catch (_error) {
+          // Capture is observational and cannot suppress a page-owned callback.
+        }
+        return Reflect.apply(value as (...values: unknown[]) => unknown, listener, args);
+      };
+    }
+  });
+}
+
+function captureClientMessageOutcome(
+  client: object,
+  callback: keyof typeof CLIENT_MESSAGE_CALLBACK_KINDS,
+  args: readonly unknown[],
+  messagePayload: CapturePayload,
+  state: InstrumentationState
+): void {
+  const outcome = CLIENT_MESSAGE_CALLBACK_OUTCOMES[callback];
+  const details: CapturePayload = callback === "onProcessed"
+    ? { response: toJsonValue(args[1]) }
+    : callback === "onDeny"
+      ? { code: toJsonValue(args[1]), error: toJsonValue(args[2]) }
+      : callback === "onAbort"
+        ? { sentOnNetwork: toJsonValue(args[1]) }
+        : {};
+  state.emit(CLIENT_MESSAGE_CALLBACK_KINDS[callback], {
+    client: clientPayload(client, state),
+    clientMessage: {
+      ...messagePayload,
+      outcome,
+      outcomeAvailability: "available",
+      ...details
+    },
+    raw: { callback, captureSource: "official-public-api" }
+  });
 }
 
 function wrapSubscription(
@@ -3802,6 +3995,47 @@ function installReinjectionHandler(
     }
     postMessage(resultMessage);
   });
+}
+
+function installServerInjectionHandler(
+  host: LightstreamerHost,
+  state: InstrumentationState
+): void {
+  const bridge = {
+    version: PAGE_SERVER_INJECTION_BRIDGE_VERSION,
+    send(
+      requestId: unknown,
+      panelSessionId: unknown,
+      draft: unknown
+    ): ServerInjectionStartResult {
+      const correlation = { requestId, panelSessionId };
+      if (!isInjectionCorrelation(correlation) || !isServerInjectionDraftPayload(draft)) {
+        return {
+          requestId: typeof requestId === "string" && requestId ? requestId : "invalid-request",
+          panelSessionId: typeof panelSessionId === "string" ? panelSessionId : "invalid-panel",
+          ok: false,
+          status: "invalid-request",
+          timestamp: Date.now(),
+          error: "The inspected page rejected an invalid Server Injection request."
+        };
+      }
+      return state.clientMessageDelivery.submit(correlation, draft as ServerInjectionDraftPayload);
+    }
+  };
+
+  try {
+    Object.defineProperty(host, PAGE_SERVER_INJECTION_BRIDGE_GLOBAL, {
+      configurable: true,
+      enumerable: false,
+      value: bridge
+    });
+  } catch (_error) {
+    try {
+      (host as LightstreamerHost & Record<string, unknown>)[PAGE_SERVER_INJECTION_BRIDGE_GLOBAL] = bridge;
+    } catch (_assignmentError) {
+      // Frozen/non-extensible hosts do not expose the optional direct bridge.
+    }
+  }
 }
 
 function pageBridgeErrorResult(

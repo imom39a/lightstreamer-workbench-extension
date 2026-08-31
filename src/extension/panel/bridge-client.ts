@@ -5,9 +5,13 @@ import {
   type PageReinjectionExecutionTarget,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
+  type ServerInjectionDraftPayload,
+  type ServerInjectionStartResult,
   type TopologySyncFrame,
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
+  PAGE_SERVER_INJECTION_BRIDGE_GLOBAL,
+  PAGE_SERVER_INJECTION_BRIDGE_VERSION,
   PANEL_PORT_NAME,
   PANEL_REGISTER_MESSAGE,
   PANEL_REINJECT_REQUEST,
@@ -16,13 +20,19 @@ import {
   isPanelCaptureMessage,
   isPanelTopologySyncFrameMessage,
   isPanelReinjectResultMessage,
-  isPanelStatusMessage
+  isPanelStatusMessage,
+  isServerInjectionDraftPayload,
+  isServerInjectionStartResult
 } from "../../bridge/messages";
 import {
   type DraftFieldValue,
   type ReinjectionDraft,
   validateDraftForExecutionTarget
 } from "../../core/reinjection-draft";
+import {
+  type ServerInjectionDraft,
+  type ServerInjectionExecutionResult
+} from "../../core/server-injection";
 
 export type PanelBridgeHandlers = {
   onStatusChange(status: CaptureStatus): void;
@@ -35,12 +45,14 @@ export type PanelBridgeConnection = {
     draft: ReinjectionDraft,
     executionTarget?: PageReinjectionExecutionTarget
   ): Promise<ReinjectionResult>;
+  sendServerInjection?(draft: ServerInjectionDraft): Promise<ServerInjectionExecutionResult>;
   disconnect(): void;
 };
 
 const RECONNECT_DELAY_MS = 500;
 const REINJECT_TIMEOUT_MS = 8000;
 const INSPECTED_PAGE_EVAL_TIMEOUT_MS = 5000;
+const SERVER_INJECTION_OUTCOME_TIMEOUT_MS = 30_000;
 
 type PageReinjectionEvaluation =
   | { bridgeState: "unavailable" }
@@ -56,6 +68,12 @@ export function connectPanelBridge(
       reinjectDraft() {
         return Promise.resolve(createBridgeErrorResult(createRequestId(), "Bridge is disconnected.", panelSessionId));
       },
+      sendServerInjection() {
+        return Promise.resolve(createServerBridgeErrorResult(
+          createServerInjectionRequestId(),
+          "Bridge is disconnected."
+        ));
+      },
       disconnect() {}
     };
   }
@@ -68,6 +86,13 @@ export function connectPanelBridge(
     string,
     {
       resolve(result: ReinjectionResult): void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  const pendingServerInjections = new Map<
+    string,
+    {
+      resolve(result: ServerInjectionExecutionResult): void;
       timer: ReturnType<typeof setTimeout>;
     }
   >();
@@ -86,6 +111,7 @@ export function connectPanelBridge(
       }
 
       if (isPanelCaptureMessage(message) && message.panelSessionId === panelSessionId) {
+        resolveServerInjectionFromCapture(message.message);
         handlers.onCaptureMessage(message.message);
         return;
       }
@@ -115,6 +141,9 @@ export function connectPanelBridge(
       handlers.onStatusChange("bridge disconnected");
       resolvePendingWithAcknowledgementUnknown(
         "Bridge disconnected before reinjection completed."
+      );
+      resolvePendingServerInjectionsUnknown(
+        "Bridge disconnected before the Client Message outcome was observed."
       );
       reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
     });
@@ -149,6 +178,22 @@ export function connectPanelBridge(
 
       return reinjectThroughRuntime(requestId, payload);
     },
+    sendServerInjection(draft) {
+      const requestId = createServerInjectionRequestId();
+      if (!isServerInjectionDraftPayload(draft)) {
+        return Promise.resolve(createServerBridgeErrorResult(
+          requestId,
+          "Server Injection Draft is invalid."
+        ));
+      }
+      if (!port || typeof chrome.devtools.inspectedWindow.eval !== "function") {
+        return Promise.resolve(createServerBridgeErrorResult(
+          requestId,
+          "The inspected-page Server Injection bridge is unavailable. Reload the page with DevTools open."
+        ));
+      }
+      return sendServerInjectionThroughInspectedPage(requestId, draft);
+    },
     disconnect() {
       disposed = true;
       if (reconnectTimer) {
@@ -156,6 +201,9 @@ export function connectPanelBridge(
       }
       resolvePendingWithAcknowledgementUnknown(
         "Bridge disconnected before reinjection completed."
+      );
+      resolvePendingServerInjectionsUnknown(
+        "Bridge disconnected before the Client Message outcome was observed."
       );
       port?.disconnect();
     }
@@ -210,6 +258,245 @@ export function connectPanelBridge(
     }
     pendingReinjections.clear();
   }
+
+  function sendServerInjectionThroughInspectedPage(
+    requestId: string,
+    draft: ServerInjectionDraftPayload
+  ): Promise<ServerInjectionExecutionResult> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingServerInjections.delete(requestId);
+        resolve(createServerUnknownResult(
+          requestId,
+          "No terminal ClientMessageListener outcome was observed. Do not repeat automatically."
+        ));
+      }, Math.max(
+        SERVER_INJECTION_OUTCOME_TIMEOUT_MS,
+        (draft.delayTimeout ?? 0) + INSPECTED_PAGE_EVAL_TIMEOUT_MS
+      ));
+      pendingServerInjections.set(requestId, { resolve, timer });
+
+      try {
+        chrome.devtools.inspectedWindow.eval<unknown>(
+          pageServerInjectionExpression(requestId, panelSessionId, draft),
+          (value, exceptionInfo) => {
+            const pending = pendingServerInjections.get(requestId);
+            if (!pending) return;
+            if (exceptionInfo?.isError || exceptionInfo?.isException) {
+              finishServerInjection(createServerUnknownResult(
+                requestId,
+                exceptionInfo.description || exceptionInfo.value ||
+                  "The page evaluation ended without a trustworthy acknowledgement. Do not repeat automatically."
+              ));
+              return;
+            }
+            const evaluation = readPageServerInjectionEvaluation(value);
+            if (evaluation?.bridgeState === "unavailable") {
+              finishServerInjection(createServerBridgeErrorResult(
+                requestId,
+                "The inspected page has no compatible Server Injection bridge. Reload it with DevTools open."
+              ));
+              return;
+            }
+            if (
+              !evaluation ||
+              evaluation.bridgeState !== "result" ||
+              !isServerInjectionStartResult(evaluation.result) ||
+              evaluation.result.panelSessionId !== panelSessionId ||
+              evaluation.result.requestId !== requestId
+            ) {
+              finishServerInjection(createServerUnknownResult(
+                requestId,
+                "The inspected page returned an invalid acknowledgement. Do not repeat automatically."
+              ));
+              return;
+            }
+            if (!evaluation.result.ok) {
+              finishServerInjection(resultFromServerInjectionStart(evaluation.result));
+            }
+            // started/duplicate remain pending for the captured listener outcome.
+          }
+        );
+      } catch (error) {
+        finishServerInjection(createServerBridgeErrorResult(
+          requestId,
+          error instanceof Error ? error.message : "The Server Injection evaluation could not be started."
+        ));
+      }
+    });
+  }
+
+  function resolveServerInjectionFromCapture(message: CaptureMessage): void {
+    const payload = asRecord(message.payload.clientMessage);
+    const injection = asRecord(payload?.injection);
+    const requestId = typeof injection?.requestId === "string" ? injection.requestId : null;
+    if (
+      !requestId ||
+      injection?.panelSessionId !== panelSessionId ||
+      !pendingServerInjections.has(requestId)
+    ) return;
+    const timestamp = message.timestamp;
+    if (message.kind === "client-message-processed") {
+      finishServerInjection({
+        requestId,
+        ok: true,
+        status: "processed",
+        timestamp,
+        response: nullableString(payload?.response)
+      });
+    } else if (message.kind === "client-message-denied") {
+      finishServerInjection({
+        requestId,
+        ok: false,
+        status: "denied",
+        timestamp,
+        code: nullableNumber(payload?.code),
+        error: nullableString(payload?.error) ?? "The server denied the Client Message."
+      });
+    } else if (message.kind === "client-message-discarded") {
+      finishServerInjection({
+        requestId,
+        ok: false,
+        status: "discarded",
+        timestamp,
+        error: "The Client Message did not reach the Metadata Adapter."
+      });
+    } else if (message.kind === "client-message-error") {
+      finishServerInjection(createServerUnknownResult(
+        requestId,
+        "Lightstreamer reported an error with an unknown processing outcome.",
+        timestamp
+      ));
+    } else if (message.kind === "client-message-aborted") {
+      const sentOnNetwork = payload?.sentOnNetwork === true;
+      finishServerInjection(sentOnNetwork
+        ? {
+            ...createServerUnknownResult(
+              requestId,
+              "The Client Message was aborted after network transmission; server effects are unknown.",
+              timestamp
+            ),
+            sentOnNetwork: true
+          }
+        : {
+            requestId,
+            ok: false,
+            status: "aborted",
+            timestamp,
+            sentOnNetwork: false,
+            error: "The Client Message was aborted before network transmission."
+          });
+    }
+  }
+
+  function finishServerInjection(result: ServerInjectionExecutionResult): void {
+    const pending = pendingServerInjections.get(result.requestId);
+    if (!pending) return;
+    pendingServerInjections.delete(result.requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(Object.freeze(result));
+  }
+
+  function resolvePendingServerInjectionsUnknown(error: string): void {
+    for (const requestId of [...pendingServerInjections.keys()]) {
+      finishServerInjection(createServerUnknownResult(requestId, error));
+    }
+  }
+}
+
+type PageServerInjectionEvaluation =
+  | { bridgeState: "unavailable" }
+  | { bridgeState: "result"; result: unknown };
+
+export function pageServerInjectionExpression(
+  requestId: string,
+  panelSessionId: PanelSessionId,
+  draft: ServerInjectionDraftPayload
+): string {
+  const bridgeName = JSON.stringify(PAGE_SERVER_INJECTION_BRIDGE_GLOBAL);
+  return `(() => {
+    const bridge = globalThis[${bridgeName}];
+    if (!bridge || bridge.version !== ${PAGE_SERVER_INJECTION_BRIDGE_VERSION} || typeof bridge.send !== "function") {
+      return { bridgeState: "unavailable" };
+    }
+    return {
+      bridgeState: "result",
+      result: bridge.send(${JSON.stringify(requestId)}, ${JSON.stringify(panelSessionId)}, ${JSON.stringify(draft)})
+    };
+  })()`;
+}
+
+function readPageServerInjectionEvaluation(value: unknown): PageServerInjectionEvaluation | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  if (record.bridgeState === "unavailable") return { bridgeState: "unavailable" };
+  if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, "result")) {
+    return { bridgeState: "result", result: record.result };
+  }
+  return null;
+}
+
+function resultFromServerInjectionStart(
+  result: ServerInjectionStartResult
+): ServerInjectionExecutionResult {
+  if (result.status === "stale-target") {
+    return {
+      requestId: result.requestId,
+      ok: false,
+      status: "stale-target",
+      timestamp: result.timestamp,
+      error: result.error
+    };
+  }
+  if (result.status === "send-threw") {
+    return createServerUnknownResult(
+      result.requestId,
+      `${result.error ?? "LightstreamerClient.sendMessage threw."} The call may already have caused effects; do not repeat automatically.`,
+      result.timestamp
+    );
+  }
+  return createServerBridgeErrorResult(
+    result.requestId,
+    result.error ?? "Server Injection could not be started.",
+    result.timestamp
+  );
+}
+
+function createServerBridgeErrorResult(
+  requestId: string,
+  error: string,
+  timestamp = Date.now()
+): ServerInjectionExecutionResult {
+  return { requestId, ok: false, status: "bridge-error", timestamp, error };
+}
+
+function createServerUnknownResult(
+  requestId: string,
+  error: string,
+  timestamp = Date.now()
+): ServerInjectionExecutionResult {
+  return { requestId, ok: false, status: "unknown", timestamp, error };
+}
+
+function createServerInjectionRequestId(): string {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+  return `server-injection-${Date.now()}-${random}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function reinjectThroughInspectedPage(

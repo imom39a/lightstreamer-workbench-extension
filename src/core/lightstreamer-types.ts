@@ -12,6 +12,22 @@ export type LightstreamerClientLike = {
   getListeners?: (...args: unknown[]) => unknown;
   getStatus?: () => unknown;
   getSubscriptions?: () => unknown;
+  sendMessage?: (
+    message: string,
+    sequence?: string,
+    delayTimeout?: number,
+    listener?: LightstreamerClientMessageListenerLike,
+    enqueueWhileDisconnected?: boolean
+  ) => unknown;
+};
+
+export type LightstreamerClientMessageListenerLike = {
+  onProcessed?: (originalMessage: string, response: string) => unknown;
+  onDeny?: (originalMessage: string, code: number, error: string) => unknown;
+  onDiscarded?: (originalMessage: string) => unknown;
+  onError?: (originalMessage: string) => unknown;
+  onAbort?: (originalMessage: string, sentOnNetwork: boolean) => unknown;
+  [key: string]: unknown;
 };
 
 export type LightstreamerConnectionDetailsLike = {

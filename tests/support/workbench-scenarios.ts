@@ -68,7 +68,12 @@ export const WORKBENCH_SCENARIO_IDS = [
   "local-injection-delivered",
   "local-injection-failed",
   "local-injection-partial",
-  "local-injection-unknown"
+  "local-injection-unknown",
+  "server-injection-edit",
+  "server-injection-review",
+  "server-injection-degraded",
+  "server-injection-unknown",
+  "server-injection-high-volume"
   ,"local-injection-scenario-edit"
   ,"local-injection-scenario-review"
   ,"local-injection-scenario-complete"
@@ -162,6 +167,12 @@ export type WorkbenchScenario = Readonly<{
       driftFrames?: readonly TopologySyncFrame[];
       clearAfterRun?: boolean;
     }>;
+  }>;
+  serverInjection?: Readonly<{
+    message?: string;
+    review?: boolean;
+    execute?: boolean;
+    executorOutcome?: "pending" | "processed" | "denied" | "discarded" | "aborted" | "unknown";
   }>;
 }>;
 
@@ -686,6 +697,31 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         },
         captureStatus: "capturing"
       };
+    case "server-injection-edit":
+      return serverInjectionScenario(id, {
+        message: "publish/order/42 {\"status\":\"ready\"}"
+      });
+    case "server-injection-review":
+      return serverInjectionScenario(id, {
+        message: "publish/order/42 {\"status\":\"ready\"}",
+        review: true
+      });
+    case "server-injection-degraded":
+      return serverInjectionScenario(id, {
+        message: "publish/order/42 {\"status\":\"ready\"}",
+        captureStatus: "bridge disconnected"
+      });
+    case "server-injection-unknown":
+      return serverInjectionScenario(id, {
+        message: "publish/order/42 {\"status\":\"ready\"}",
+        review: true,
+        execute: true,
+        executorOutcome: "unknown"
+      });
+    case "server-injection-high-volume":
+      return serverInjectionScenario(id, {
+        message: `bulk/telemetry/${"0123456789abcdef".repeat(4_096)}`
+      });
     case "local-injection-large": {
       const source = topology.capturedEvents.at(-1);
       if (!source?.update || !source.subscription) throw new Error("Topology scenario requires a captured Item Update source.");
@@ -794,6 +830,71 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
     case "local-injection-scenario-diagnostic-unavailable":
       return localInjectionDiagnosticScenario(id, "unavailable");
   }
+}
+
+function serverInjectionScenario(
+  id: WorkbenchScenarioId,
+  options: Readonly<{
+    message: string;
+    captureStatus?: CaptureStatus;
+    review?: boolean;
+    execute?: boolean;
+    executorOutcome?: "pending" | "processed" | "denied" | "discarded" | "aborted" | "unknown";
+  }>
+): WorkbenchScenario {
+  const topology = getPanelScenario("topology-small");
+  const source: LightstreamerEventEnvelope = {
+    id: "server-injection-source-message",
+    timestamp: 1_780_872_000_250,
+    direction: "outbound",
+    source: "application",
+    synthetic: false,
+    kind: "client-message-sent",
+    client: {
+      id: "topology-small-client",
+      status: "CONNECTED:WS-STREAMING",
+      sessionId: "topology-small-session",
+      instrumentationSource: "public-api"
+    },
+    clientMessage: {
+      id: "server-injection-source-client-message",
+      pageEpoch: "topology-small-page",
+      message: "publish/order/42 {\"status\":\"captured\"}",
+      messageState: "available",
+      sequence: "orders",
+      delayTimeout: null,
+      enqueueWhileDisconnected: false,
+      listenerProvided: true,
+      outcome: "submitted",
+      outcomeAvailability: "pending"
+    },
+    topology: {
+      version: TOPOLOGY_OBSERVATION_VERSION,
+      kind: "client-message-sent",
+      pageEpoch: "topology-small-page",
+      captureSequence: 8,
+      provenance: { instrumentationSource: "official-public-api" },
+      coverage: { status: "complete", getters: {} },
+      client: {
+        id: "topology-small-client",
+        sessionId: "topology-small-session"
+      }
+    }
+  };
+  return {
+    id,
+    initialEvents: [source],
+    topologySyncFrames: topology.topologySyncFrames,
+    captureMessages: topology.captureMessages,
+    selectedEventId: source.id,
+    captureStatus: options.captureStatus ?? "capturing",
+    serverInjection: {
+      message: options.message,
+      ...(options.review ? { review: true } : {}),
+      ...(options.execute ? { execute: true } : {}),
+      ...(options.executorOutcome ? { executorOutcome: options.executorOutcome } : {})
+    }
+  };
 }
 
 type DiagnosticCheckpointVisualState = "authoring" | "review" | "waiting" | "pass" | "fail" | "unavailable";

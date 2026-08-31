@@ -25,6 +25,7 @@ const pages = [
   page("docs/evidence.md", "docs/evidence/index.html", "Ordered Evidence", "Filter, find, select, freeze, and inspect retained Lightstreamer Evidence.", "docs"),
   page("docs/command-state.md", "docs/command-state/index.html", "Debug COMMAND lifecycles", "Trace COMMAND operations, inspect Fields, and review lifecycle diagnostics.", "docs"),
   page("docs/local-injection.md", "docs/local-injection/index.html", "Local Injection", "Compare, edit, and inject one protected Local Injection Draft without contacting the server.", "docs"),
+  page("docs/server-injection.md", "docs/server-injection/index.html", "Server Injection", "Review and send one Client Message through the inspected client's current Lightstreamer Session.", "docs"),
   page("docs/export-and-privacy.md", "docs/export-and-privacy/index.html", "Export and privacy", "Create credential-safe scoped exports and understand Workbench's local data boundary.", "docs"),
   page("docs/troubleshooting.md", "docs/troubleshooting/index.html", "Troubleshooting", "Resolve missing Capture, limited coverage, retired targets, and storage fallback.", "docs"),
   page("docs/faq.md", "docs/faq/index.html", "Frequently asked questions", "Answers about supported clients, Capture, COMMAND state, Local Injection, and storage.", "docs"),

@@ -41,6 +41,8 @@ export const PANEL_REINJECT_RESULT = "lsew:panel-reinject-result" as const;
 export const PANEL_VISIBILITY_MESSAGE = "lsew:panel-visibility" as const;
 export const PAGE_REINJECTION_BRIDGE_GLOBAL = "__LSEW_REINJECTION_BRIDGE__" as const;
 export const PAGE_REINJECTION_BRIDGE_VERSION = 2 as const;
+export const PAGE_SERVER_INJECTION_BRIDGE_GLOBAL = "__LSEW_SERVER_INJECTION_BRIDGE__" as const;
+export const PAGE_SERVER_INJECTION_BRIDGE_VERSION = 1 as const;
 
 export type PanelSessionId = string;
 
@@ -82,6 +84,12 @@ export const CAPTURE_KINDS = [
   "subscription-error",
   "listener-added",
   "listener-removed",
+  "client-message-sent",
+  "client-message-processed",
+  "client-message-denied",
+  "client-message-discarded",
+  "client-message-error",
+  "client-message-aborted",
   "item-update",
   "end-of-snapshot",
   "lost-updates",
@@ -153,6 +161,12 @@ export const TOPOLOGY_OBSERVATION_KINDS = [
   "subscription-error",
   "listener-added",
   "listener-removed",
+  "client-message-sent",
+  "client-message-processed",
+  "client-message-denied",
+  "client-message-discarded",
+  "client-message-error",
+  "client-message-aborted",
   "listener-attached",
   "listener-detached",
   "item-update",
@@ -186,6 +200,12 @@ export const TOPOLOGY_CAPTURE_KIND_COMPATIBILITY: Readonly<
   "subscription-error": ["subscription-error", "callback-error"],
   "listener-added": ["listener-added", "listener-attached"],
   "listener-removed": ["listener-removed", "listener-detached"],
+  "client-message-sent": ["client-message-sent"],
+  "client-message-processed": ["client-message-processed"],
+  "client-message-denied": ["client-message-denied"],
+  "client-message-discarded": ["client-message-discarded"],
+  "client-message-error": ["client-message-error"],
+  "client-message-aborted": ["client-message-aborted"],
   "item-update": [
     "item-update",
     "callback-update",
@@ -288,6 +308,37 @@ export type ReinjectionDraftPayload = {
   changedFields: ReinjectionFields;
   isSnapshot: boolean;
   provenance: JsonObject;
+};
+
+export const CLIENT_MESSAGE_DEFAULT_SEQUENCE = "UNORDERED_MESSAGES" as const;
+
+export type ServerInjectionDraftPayload = {
+  sourceEventId: string | null;
+  target: {
+    pageEpoch: string;
+    clientId: string;
+    sessionId: string;
+  };
+  message: string;
+  sequence: string;
+  /** `null` preserves the Lightstreamer client's server-default timeout. */
+  delayTimeout: number | null;
+  enqueueWhileDisconnected: boolean;
+};
+
+export type ServerInjectionStartStatus =
+  | "started"
+  | "duplicate"
+  | "stale-target"
+  | "unsupported"
+  | "invalid-request"
+  | "send-threw";
+
+export type ServerInjectionStartResult = InjectionCorrelation & {
+  ok: boolean;
+  status: ServerInjectionStartStatus;
+  timestamp: number;
+  error?: string;
 };
 
 export type ReinjectionRequestMessage =
@@ -603,6 +654,43 @@ export function isReinjectionDraftPayload(value: unknown): value is ReinjectionD
   );
 }
 
+export function isServerInjectionDraftPayload(
+  value: unknown
+): value is ServerInjectionDraftPayload {
+  if (!isRecord(value) || !isRecord(value.target)) {
+    return false;
+  }
+  return (
+    (value.sourceEventId === null || isNonEmptyString(value.sourceEventId)) &&
+    isNonEmptyString(value.target.pageEpoch) &&
+    isNonEmptyString(value.target.clientId) &&
+    isNonEmptyString(value.target.sessionId) &&
+    typeof value.message === "string" &&
+    value.message.length > 0 &&
+    isNonEmptyString(value.sequence) &&
+    (value.delayTimeout === null ||
+      (typeof value.delayTimeout === "number" &&
+        Number.isSafeInteger(value.delayTimeout) &&
+        value.delayTimeout >= 0)) &&
+    typeof value.enqueueWhileDisconnected === "boolean"
+  );
+}
+
+export function isServerInjectionStartResult(
+  value: unknown
+): value is ServerInjectionStartResult {
+  return (
+    isRecord(value) &&
+    isInjectionCorrelation(value) &&
+    typeof value.ok === "boolean" &&
+    isServerInjectionStartStatus(value.status) &&
+    typeof value.timestamp === "number" &&
+    Number.isFinite(value.timestamp) &&
+    (value.error === undefined || typeof value.error === "string") &&
+    (value.status === "started" || value.status === "duplicate" ? value.ok : !value.ok)
+  );
+}
+
 function isPageReinjectionExecutionTarget(
   value: unknown
 ): value is PageReinjectionExecutionTarget {
@@ -881,6 +969,17 @@ function isReinjectionResultStatus(value: unknown): value is ReinjectionResultSt
     value === "wire-error" ||
     value === "bridge-error" ||
     value === "acknowledgement-unknown"
+  );
+}
+
+function isServerInjectionStartStatus(value: unknown): value is ServerInjectionStartStatus {
+  return (
+    value === "started" ||
+    value === "duplicate" ||
+    value === "stale-target" ||
+    value === "unsupported" ||
+    value === "invalid-request" ||
+    value === "send-threw"
   );
 }
 

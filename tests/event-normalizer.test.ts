@@ -5,7 +5,10 @@ import {
   createCaptureMessage,
   type TopologyObservation
 } from "../src/bridge/messages";
-import { toPersistableEventEnvelope } from "../src/core/event-envelope";
+import {
+  toBulkShareableEventEnvelope,
+  toPersistableEventEnvelope
+} from "../src/core/event-envelope";
 import { normalizeCaptureMessage } from "../src/core/event-normalizer";
 
 describe("event normalizer", () => {
@@ -144,6 +147,115 @@ describe("event normalizer", () => {
 
     expect(event.source).toBe("server");
     expect(event.captureSource).toBe("wire");
+  });
+
+  it("normalizes captured Client Messages as outbound application Evidence", () => {
+    const event = normalizeCaptureMessage(
+      createCaptureMessage("client-message-sent", {
+        client: { id: "client-1", sessionId: "session-1" },
+        clientMessage: {
+          id: "client-message-1",
+          pageEpoch: "page-a",
+          message: "hello",
+          messageState: "available",
+          sequence: "orders",
+          delayTimeout: null,
+          enqueueWhileDisconnected: false,
+          listenerProvided: false,
+          origin: "application",
+          outcome: "submitted",
+          outcomeAvailability: "unavailable"
+        }
+      })
+    );
+
+    expect(event).toMatchObject({
+      direction: "outbound",
+      source: "application",
+      synthetic: false,
+      clientMessage: {
+        id: "client-message-1",
+        pageEpoch: "page-a",
+        message: "hello",
+        outcome: "submitted",
+        outcomeAvailability: "unavailable"
+      }
+    });
+    expect(event.captureSource).toBeUndefined();
+  });
+
+  it("preserves Server Injection correlation and terminal outcome", () => {
+    const event = normalizeCaptureMessage(
+      createCaptureMessage("client-message-aborted", {
+        client: { id: "client-1", sessionId: "session-1" },
+        clientMessage: {
+          id: "client-message-2",
+          pageEpoch: "page-a",
+          message: "hello",
+          messageState: "available",
+          sequence: "orders",
+          delayTimeout: 1000,
+          enqueueWhileDisconnected: false,
+          listenerProvided: true,
+          origin: "workbench",
+          outcome: "aborted",
+          outcomeAvailability: "available",
+          sentOnNetwork: true,
+          injection: {
+            panelSessionId: "panel-00000000-0000-4000-8000-000000000017",
+            requestId: "send-1",
+            sourceEventId: "event-1"
+          }
+        }
+      })
+    );
+
+    expect(event.source).toBe("workbench");
+    expect(event.clientMessage).toMatchObject({
+      outcome: "aborted",
+      sentOnNetwork: true,
+      injection: { requestId: "send-1", sourceEventId: "event-1" }
+    });
+  });
+
+  it("redacts Client Message text from bulk sharing artifacts without mutating local Evidence", () => {
+    const event = normalizeCaptureMessage(
+      createCaptureMessage("client-message-denied", {
+        client: { id: "client-1", sessionId: "session-1" },
+        clientMessage: {
+          id: "client-message-private",
+          pageEpoch: "page-a",
+          message: "private-message-body",
+          messageState: "available",
+          sequence: "orders",
+          delayTimeout: null,
+          enqueueWhileDisconnected: false,
+          listenerProvided: true,
+          origin: "application",
+          outcome: "denied",
+          outcomeAvailability: "available",
+          response: "private-response",
+          error: "private-error"
+        }
+      })
+    );
+
+    const shareable = toBulkShareableEventEnvelope(event);
+    expect(shareable.clientMessage).toMatchObject({
+      message: "[REDACTED:client-message-body]",
+      messageState: "redacted",
+      response: "[REDACTED:client-message-response]",
+      error: "[REDACTED:client-message-error]"
+    });
+    expect(JSON.stringify(shareable)).not.toContain("private-message-body");
+    expect(JSON.stringify(shareable)).not.toContain("private-response");
+    expect(JSON.stringify(shareable)).not.toContain("private-error");
+    expect(event.clientMessage).toMatchObject({
+      message: "private-message-body",
+      messageState: "available",
+      response: "private-response",
+      error: "private-error"
+    });
   });
 
   it("keeps semantic topology in memory and removes it from persistence projections", () => {

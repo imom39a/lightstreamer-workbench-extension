@@ -4,11 +4,13 @@ Workbench can create a versioned JSON snapshot or an offline HTML report for the
 
 Workbench always excludes credentials. You can also remove server addresses, masked client IP information, item names, COMMAND keys, field names, and captured identifiers.
 
+Structural JSON and HTML exports do not include Client Message bodies. **Copy retained scoped Evidence** always redacts Client Message bodies, processed responses, and denial text. Complete raw Evidence for one selected message remains a deliberate local action and can contain application data.
+
 You must explicitly include complete Evidence. Captured application payloads can contain private or proprietary data.
 
 ## Local storage boundary
 
-Captured clients, Sessions, Subscriptions, updates, field values, diagnostics, Sources, and Drafts stay in the browser extension context. One Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. The first count or byte limit stops admission. Workbench does not change the storage type during the Panel Session.
+Captured clients, Sessions, Subscriptions, updates, field values, Client Messages, diagnostics, Sources, and Local or Server Drafts stay in the browser extension context. One Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. The first count or byte limit stops admission. Workbench does not change the storage type during the Panel Session.
 
 Complete History ends at the current History Interval's Committed Evidence Boundary. Clear ends the current interval. Clear does not restart Capture after a terminal stop. A controlled Close tries to erase the Event History. An abnormal stop can prevent this action. Residual data can remain until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen remain independent. The memory fallback does not reduce Coverage by itself.
 

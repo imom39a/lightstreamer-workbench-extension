@@ -456,6 +456,7 @@ function topologyGuardrailCaptureEvents(
     id: options.clientId,
     status: "CONNECTED:WS-STREAMING",
     sessionId: options.sessionId,
+    instrumentationSource: "public-api",
     serverAddress: "https://user:password@push.example.test/lightstreamer?token=secret-token"
   };
   const subscription = {
@@ -539,6 +540,7 @@ function createTopologyGuardrailSyncFrames(
     id: options.clientId,
     status: "CONNECTED:WS-STREAMING",
     sessionId: options.sessionId,
+    instrumentationSource: "public-api",
     serverAddress: "https://user:password@push.example.test/lightstreamer?token=secret-token"
   };
   const subscription = {

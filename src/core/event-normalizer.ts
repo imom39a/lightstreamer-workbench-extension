@@ -2,6 +2,7 @@ import { type CaptureMessage, type JsonObject, type JsonValue } from "../bridge/
 import {
   type EventCaptureSource,
   type EventClient,
+  type EventClientMessage,
   type EventSemanticValueState,
   type EventItem,
   type EventListener,
@@ -36,13 +37,20 @@ export function normalizeCaptureMessage(
   const captureSource = toCaptureSource(payload.raw);
   const update = toEventUpdate(payload.update, captureSource);
   const raw = toRaw(payload.raw);
+  const clientMessage = toClientMessage(payload.clientMessage, message.topology?.pageEpoch);
+  const outbound = clientMessage !== undefined;
+  const source = outbound
+    ? asRecord(payload.clientMessage)?.origin === "workbench"
+      ? "workbench" as const
+      : "application" as const
+    : "server" as const;
 
   return {
     id,
     timestamp: message.timestamp,
-    direction: "inbound",
-    source: "server",
-    captureSource,
+    direction: outbound ? "outbound" : "inbound",
+    source,
+    ...(outbound ? {} : { captureSource }),
     synthetic: false,
     kind: message.kind,
     logicalEventId: asString(raw?.logicalEventId),
@@ -53,8 +61,71 @@ export function normalizeCaptureMessage(
     update,
     serverError: toServerError(payload.serverError),
     keepalive: toKeepalive(payload.keepalive),
+    clientMessage,
     raw,
     ...(message.topology ? { topology: message.topology } : {})
+  };
+}
+
+function toClientMessage(
+  value: JsonValue | undefined,
+  topologyPageEpoch?: string
+): EventClientMessage | undefined {
+  const record = asRecord(value);
+  const id = asString(record?.id);
+  const pageEpoch = asString(record?.pageEpoch) ?? topologyPageEpoch;
+  const messageState = record?.messageState;
+  const sequence = asString(record?.sequence);
+  const enqueueWhileDisconnected = asBoolean(record?.enqueueWhileDisconnected);
+  const listenerProvided = asBoolean(record?.listenerProvided);
+  const outcome = record?.outcome;
+  const outcomeAvailability = record?.outcomeAvailability;
+  if (
+    !record ||
+    !id ||
+    !pageEpoch ||
+    (messageState !== "available" &&
+      messageState !== "unavailable" &&
+      messageState !== "redacted") ||
+    !sequence ||
+    enqueueWhileDisconnected === undefined ||
+    listenerProvided === undefined ||
+    (outcome !== "submitted" &&
+      outcome !== "processed" &&
+      outcome !== "denied" &&
+      outcome !== "discarded" &&
+      outcome !== "error" &&
+      outcome !== "aborted") ||
+    (outcomeAvailability !== "pending" &&
+      outcomeAvailability !== "available" &&
+      outcomeAvailability !== "unavailable")
+  ) {
+    return undefined;
+  }
+
+  const injectionRecord = asRecord(record.injection);
+  const panelSessionId = asString(injectionRecord?.panelSessionId);
+  const requestId = asString(injectionRecord?.requestId);
+  const sourceEventId = asNullableString(injectionRecord?.sourceEventId);
+  const injection = panelSessionId && requestId && sourceEventId !== undefined
+    ? { panelSessionId, requestId, sourceEventId }
+    : undefined;
+  return {
+    id,
+    pageEpoch,
+    message: asNullableString(record.message) ?? null,
+    messageState,
+    sequence,
+    delayTimeout: asNullableNumber(record.delayTimeout) ?? null,
+    enqueueWhileDisconnected,
+    listenerProvided,
+    outcome,
+    outcomeAvailability,
+    response: asNullableString(record.response),
+    code: asNullableNumber(record.code),
+    error: asNullableString(record.error),
+    sentOnNetwork: asBoolean(record.sentOnNetwork) ?? null,
+    ...(injection ? { injection } : {})
   };
 }
 

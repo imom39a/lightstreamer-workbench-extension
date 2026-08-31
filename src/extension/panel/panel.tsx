@@ -18,6 +18,7 @@ import { createThemeManager, type ThemeManager } from "./theme";
 import {
   createWorkbenchRuntime,
   type LocalInjectionExecutor,
+  type ServerInjectionExecutor,
   type WorkbenchRuntime
 } from "./workbench-runtime";
 import {
@@ -126,11 +127,26 @@ export function mountWorkbenchPanel(
         return bridge.reinjectDraft(request.draft, request.executionTarget);
       }
     };
+    const serverInjectionExecutor: ServerInjectionExecutor = {
+      execute(draft) {
+        if (!bridge?.sendServerInjection) {
+          return Promise.resolve({
+            requestId: `server-injection-unavailable-${Date.now()}`,
+            ok: false,
+            status: "bridge-error",
+            timestamp: Date.now(),
+            error: "The Server Injection bridge is not connected."
+          });
+        }
+        return bridge.sendServerInjection(draft);
+      }
+    };
     runtime = createRuntime({
       history,
       visible,
       theme: themeManager.preference,
       localInjectionExecutor,
+      serverInjectionExecutor,
       storage,
       storageEstimate,
       storageHeadroomSampler

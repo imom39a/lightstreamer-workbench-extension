@@ -157,10 +157,13 @@ describe("Event History shared proof deadline", () => {
 
   it("reports control cleanup timeout elapsed time separately from prior progress", async () => {
     const neverSettles = new Promise(() => undefined);
+    const nowReadings = [100, 104];
+    const now = () => nowReadings.shift() ?? 104;
     const result = await watchdog(requestControlCdpWithDeadline({ request: () => neverSettles }, "Target.closeTarget", {}, {
-      deadlineAt: Date.now() - 1,
+      deadlineAt: 99,
       requestCeilingMs: 5,
       allowAfterDeadline: true,
+      now,
       operation: { operationId: "last-op", state: "pending", elapsedMs: 12, heartbeat: 3, lastHeartbeatAt: 12, progress: strictProgress("last-op", { phase: "heap", stage: "cleanup", sequence: 4 }) as never }
     }).then((value) => ({ value }), (error) => ({ error })));
     const status = (result as { error: PerformanceOperationTimeout }).error.status;

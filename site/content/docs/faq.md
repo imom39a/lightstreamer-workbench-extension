@@ -8,7 +8,11 @@ No. It observes clients and Subscriptions that the page owns. It does not call `
 
 ## Does Local Injection reach the Lightstreamer Server?
 
-No. Local Injection delivers an Item Update in the inspected page. Planned Server Injection will send a Client Message through the page-owned client's normal `sendMessage` path. It will not create an inbound Server Update.
+No. Local Injection delivers an Item Update in the inspected page.
+
+## What does Server Injection send?
+
+Server Injection makes one reviewed call through the page-owned client's normal `sendMessage` path. It sends a Client Message; it does not create an inbound Server Update or contact a Data Adapter directly. Processed does not prove a downstream business effect. Workbench never retries an Unknown outcome automatically.
 
 ## Does Workbench show the server COMMAND state?
 

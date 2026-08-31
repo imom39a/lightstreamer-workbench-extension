@@ -6,7 +6,7 @@ import {
 } from "../bridge/messages";
 
 export type EventDirection = "inbound" | "outbound";
-export type EventSource = "server" | "synthetic";
+export type EventSource = "server" | "synthetic" | "application" | "workbench";
 export type EventCaptureSource = "listener" | "wire";
 
 export type EventSemanticValueState = {
@@ -100,6 +100,36 @@ export type EventKeepalive = {
   aggregate: boolean;
 };
 
+export type ClientMessageOutcome =
+  | "submitted"
+  | "processed"
+  | "denied"
+  | "discarded"
+  | "error"
+  | "aborted";
+
+export type EventClientMessage = {
+  id: string;
+  pageEpoch: string;
+  message: string | null;
+  messageState: "available" | "unavailable" | "redacted";
+  sequence: string;
+  delayTimeout: number | null;
+  enqueueWhileDisconnected: boolean;
+  listenerProvided: boolean;
+  outcome: ClientMessageOutcome;
+  outcomeAvailability: "pending" | "available" | "unavailable";
+  response?: string | null;
+  code?: number | null;
+  error?: string | null;
+  sentOnNetwork?: boolean | null;
+  injection?: {
+    panelSessionId: string;
+    requestId: string;
+    sourceEventId: string | null;
+  };
+};
+
 export const ITEM_UPDATE_FIELD_VALUE_STATES = [
   "concrete",
   "ambiguous-null",
@@ -139,6 +169,7 @@ export type LightstreamerEventEnvelope = {
   update?: EventUpdate;
   serverError?: EventServerError;
   keepalive?: EventKeepalive;
+  clientMessage?: EventClientMessage;
   raw?: JsonObject;
   /** Ephemeral semantic evidence for topology reconstruction; never persisted. */
   topology?: TopologyObservation;
@@ -178,5 +209,36 @@ export function toPersistableEventEnvelope(
           >
         }
       : {})
+  };
+}
+
+/**
+ * Removes ephemeral evidence and application-controlled Client Message text
+ * before an event is placed in a bulk sharing artifact. The complete local
+ * Evidence view remains available for deliberate, event-by-event inspection.
+ */
+export function toBulkShareableEventEnvelope(
+  event: LightstreamerEventEnvelope
+): PersistableLightstreamerEventEnvelope {
+  const persistable = toPersistableEventEnvelope(event);
+  const clientMessage = persistable.clientMessage;
+  if (!clientMessage) return persistable;
+  return {
+    ...persistable,
+    clientMessage: {
+      ...clientMessage,
+      ...(clientMessage.message === null
+        ? {}
+        : {
+            message: "[REDACTED:client-message-body]",
+            messageState: "redacted" as const
+          }),
+      ...(clientMessage.response === undefined || clientMessage.response === null
+        ? {}
+        : { response: "[REDACTED:client-message-response]" }),
+      ...(clientMessage.error === undefined || clientMessage.error === null
+        ? {}
+        : { error: "[REDACTED:client-message-error]" })
+    }
   };
 }

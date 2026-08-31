@@ -3,10 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
+  PAGE_SERVER_INJECTION_BRIDGE_GLOBAL,
+  PAGE_SERVER_INJECTION_BRIDGE_VERSION,
+  PANEL_CAPTURE_MESSAGE,
   PANEL_REGISTER_MESSAGE,
   PANEL_STATUS_MESSAGE,
   PANEL_REINJECT_REQUEST,
-  PANEL_REINJECT_RESULT
+  PANEL_REINJECT_RESULT,
+  createCaptureMessage
 } from "../src/bridge/messages";
 import { type ReinjectionDraft } from "../src/core/reinjection-draft";
 import { connectPanelBridge as connectPanelBridgeImpl } from "../src/extension/panel/bridge-client";
@@ -64,6 +68,7 @@ describe("panel bridge client", () => {
     vi.restoreAllMocks();
     delete (globalThis as { chrome?: unknown }).chrome;
     delete (globalThis as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL];
+    delete (globalThis as Record<string, unknown>)[PAGE_SERVER_INJECTION_BRIDGE_GLOBAL];
   });
 
   it("does not report bridge readiness until the background registration is acknowledged", () => {
@@ -505,6 +510,88 @@ describe("panel bridge client", () => {
       error: expect.stringContaining("disconnected")
     });
     bridge.disconnect();
+  });
+
+  it("sends Server Injection through the page bridge and resolves from outbound Evidence", async () => {
+    const port = createFakePort();
+    let requestId = "";
+    let deliveredDraft: unknown;
+    (globalThis as Record<string, unknown>)[PAGE_SERVER_INJECTION_BRIDGE_GLOBAL] = {
+      version: PAGE_SERVER_INJECTION_BRIDGE_VERSION,
+      send(candidateRequestId: string, panelSessionId: string, draft: unknown) {
+        requestId = candidateRequestId;
+        deliveredDraft = draft;
+        return {
+          requestId,
+          panelSessionId,
+          ok: true,
+          status: "started",
+          timestamp: 100
+        };
+      }
+    };
+    const evaluate = vi.fn((expression: string, callback: (value: unknown, info: chrome.devtools.inspectedWindow.EvaluationExceptionInfo) => void) => {
+      callback(globalThis.eval(expression), {
+        isError: false,
+        code: "",
+        description: "",
+        details: [],
+        isException: false,
+        value: ""
+      });
+    });
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 42, eval: evaluate } },
+      runtime: { connect: vi.fn(() => port) }
+    } as unknown as typeof chrome;
+    const onCaptureMessage = vi.fn();
+    const bridge = connectPanelBridge({ onStatusChange: vi.fn(), onCaptureMessage });
+    const draft = {
+      sourceEventId: "event-1",
+      target: { pageEpoch: "page-1", clientId: "client-1", sessionId: "session-1" },
+      message: "hello",
+      sequence: "orders",
+      delayTimeout: null,
+      enqueueWhileDisconnected: false
+    };
+
+    const resultPromise = bridge.sendServerInjection!(draft);
+    expect(requestId).toMatch(/^server-injection-/);
+    expect(deliveredDraft).toEqual(draft);
+    port.messageListeners[0]({
+      type: PANEL_CAPTURE_MESSAGE,
+      panelSessionId: PANEL_SESSION_ID,
+      message: createCaptureMessage("client-message-processed", {
+        clientMessage: {
+          id: "client-message-1",
+          pageEpoch: "page-1",
+          message: "hello",
+          messageState: "available",
+          sequence: "orders",
+          delayTimeout: null,
+          enqueueWhileDisconnected: false,
+          listenerProvided: true,
+          origin: "workbench",
+          outcome: "processed",
+          outcomeAvailability: "available",
+          response: "accepted",
+          injection: {
+            panelSessionId: PANEL_SESSION_ID,
+            requestId,
+            sourceEventId: "event-1"
+          }
+        }
+      }, 200)
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      requestId,
+      ok: true,
+      status: "processed",
+      timestamp: 200,
+      response: "accepted"
+    });
+    expect(onCaptureMessage).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a synchronous runtime-post failure distinct as a pre-execution bridge error", async () => {

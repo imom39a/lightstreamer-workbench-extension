@@ -12,6 +12,8 @@ narrative remains below as delivery context; the current product contract is a
 bounded rolling Retained Range, bounded commit recovery, memory continuation,
 and explicit Evidence Gaps.
 
+Delivery update (2026-08-30): Build 8 is implemented in the repository candidate. It captures Client Messages and listener outcomes, adds the protected reviewed Server Injection workflow, preserves Unknown without automatic retry, and proves the public `sendMessage` path against the official-client fixture. Material UI independent review and release publication remain separate gates.
+
 ## Recommendation
 
 The redesign is complete. Workbench now has a stable product shape: compact live-session orientation, focused investigation in a **Scoped Evidence Workspace**, and deliberate scoped action. The next evolution should deepen that operating model rather than rebuild the old feature-first panel under new labels.
@@ -20,7 +22,7 @@ The highest-value direction is now:
 
 1. Finish contextual faceted Evidence filtering, then add a scoped graphical **Observed Activity** dashboard that turns accepted Evidence into fast live-session orientation and reversible Evidence drill-down.
 2. Make selected Evidence more conclusive through changed-field and delivery inspection, diagnostics, connection recovery, and snapshot explanation.
-3. Add first-class Client Message Capture and the planned Server Injection workflow through the inspected client's normal `sendMessage` path.
+3. Stabilize the implemented Client Message Capture and Server Injection workflow through the inspected client's normal `sendMessage` path, then add a contextual sequence lens only if it improves real investigations.
 4. Keep extending the implemented deterministic Local Injection Scenario workflow without weakening its explicit-membership, single-target, immutable-Run boundary.
 5. Add deeper QoS, mode, two-level COMMAND, listener, and protocol diagnostics only after the primary Diagnose and Injection journeys remain coherent under the extra evidence.
 
@@ -39,7 +41,7 @@ The accepted contracts now require:
 - Runtime and selected-Evidence explanation to live in Context.
 - Raw evidence, export, and Injection to open contextually while preserving the investigation; internal COMMAND state supports validation, Scenarios, Checkpoints, and diagnostics without a general-purpose state surface.
 - Scope, Filter, Find, selection, focus, Capture Operation, Observation Coverage, History Capacity, and Live/Frozen position to remain distinct.
-- One protected standalone target-anchored Local Injection Draft or one separate temporary Scenario. A Scenario is neither an inferred Draft Set nor a generic run-all queue.
+- One protected standalone target-anchored Local or Server Injection Draft, or one separate temporary Local Injection Scenario. A Scenario is neither an inferred Draft Set nor a generic run-all queue.
 - New permanent surfaces and shared UI abstractions to pass the explicit evidence and maintainer-approval gates.
 
 Consequently, this reassessment removes already-shipped foundations, narrows several oversized proposals into contextual lenses, and demotes controls whose main use case is already solved by Frozen Evidence and accepted Evidence bounded by the current History Interval's Committed Evidence Boundary.
@@ -56,6 +58,8 @@ The redesigned production panel now provides:
 - Full committed-Evidence copy for the current interval plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in interval-bounded evidence, category redaction, and unconditional credential exclusion.
 - Ordered COMMAND lifecycle Evidence plus internal observed-server and local-effective derivations for validation, Scenarios, Checkpoints, and diagnostics.
 - One protected standalone Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, default Source comparison for captured Drafts, validation, direct explicit local delivery from the authoring preview, a persistent outcome, and marked Local Evidence.
+- First-class outbound Client Message Evidence for application and Workbench `sendMessage` calls, including the exact client and Session, send arguments, listener availability, and processed, denied, discarded, error, or aborted outcomes.
+- One protected standalone Server Injection Draft from an immutable Captured Client Message or a live client, with an exact page/client/Session target, explicit review, one public-API `sendMessage` attempt, truthful Unknown handling, and deliberate Repeat guidance.
 - Deterministic Local Injection Scenarios with one to 100 explicit single-target Steps, optional zero-Injection Checkpoints, an 8 MiB accounted-state boundary, immutable reviewed Runs, serial controls, Workbench-owned assertions, per-Step outcomes, and complete Scenario/Run/Step/Injection/request/Evidence correlation.
 - Scenario Checkpoints now include normalized Diagnostic Observation existence assertions against the shipped journal contract; richer selected-update inspection and full contextual diagnostics remain parallel enhancements rather than Scenario execution gates.
 - Primary public-API instrumentation plus WebSocket/TLCP fallback, including documented connection and subscription metadata, `onPropertyChange`, real maximum frequency, and second-level COMMAND error/loss callbacks.
@@ -65,7 +69,7 @@ The most important remaining gaps are:
 
 - Event History acceptance, the Committed Evidence Boundary, History Intervals, Complete History, rolling History Capacity, explicit Evidence Gaps, and Local Injection retention are delivered through the production state machine. Storage fallback and Retention Advance do not automatically change Observation Coverage.
 - `ClientListener.onServerError` and `onServerKeepalive` are not captured as first-class Evidence.
-- `LightstreamerClient.sendMessage` calls and `ClientMessageListener` outcomes are not captured, so Captured Client Messages and Server Injection are not yet available.
+- Client Message sequence timing is available as ordered Evidence, but the optional contextual sequence waterfall remains unimplemented.
 - The filter engine supports structured fields, but the redesigned panel primarily exposes Scope and free-text filtering rather than contextual facets and clickable values.
 - Workbench already retains timestamps, Logical Update and Update Delivery identity, Server/Local provenance, snapshot/live phase, loss and subscription-error Evidence, client-status and Session transitions, requested/real bandwidth and frequency, and scoped runtime counts. It does not yet turn those facts into a graphical activity overview or provide chart-to-Evidence drill-down.
 - Selected Item Update Context shows resolved fields but does not yet make changed fields, per-listener Update Deliveries, JSON Patch evidence, and value ambiguity equally easy to inspect.
@@ -129,7 +133,7 @@ Effort includes the implementation and the proportional evidence required by the
 | 5 | Connection, transport, recovery, and Session-epoch lens | 4.8/5 | Topology facts exist; correlated lens absent | M | P0 |
 | 6 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Implemented and release-verified in the repository candidate | L + accepted design gate, delivered | Delivered |
 | 7 | Snapshot bootstrap and resubscription correctness lens | 4.7/5 | Snapshot phases exist; explanation partial | M | P0 |
-| 8 | Captured Client Messages and deliberate Server Injection | 4.6/5 | Planned, not implemented | L | P0 |
+| 8 | Captured Client Messages and deliberate Server Injection | 4.6/5 | Implemented in the repository candidate; independent Material UI approval and release publication remain | L + Material UI gate, delivered | Delivered |
 | 9 | Committed Evidence Boundary and fail-closed History Capacity | 4.5/5 | Delivered through the Event History implementation train; future refinements remain possible | M-L | P0 |
 | 10 | Deep Delivery QoS and Loss Profiler | 4.4/5 | Metadata and basic activity Evidence exist; deeper profiler absent | M | P1 |
 | 11 | Watch rules and conditional listener breakpoints | 4.3/5 | Not implemented | M | P1 |
@@ -393,6 +397,8 @@ Observed Activity may show snapshot/live counts and captured boundaries, but thi
 
 ### Build 8 — Captured Client Messages and Deliberate Server Injection
 
+Delivered in the repository candidate. The implemented boundary follows the accepted decisions below; a contextual sequence waterfall remains a separate possible enhancement.
+
 Instrument `LightstreamerClient.sendMessage` and the associated `ClientMessageListener` as first-class outbound Evidence:
 
 - immutable Captured Client Message;
@@ -401,7 +407,7 @@ Instrument `LightstreamerClient.sendMessage` and the associated `ClientMessageLi
 - processed, denied, discarded, error, aborted, and unknown outcomes;
 - call-to-outcome timing and connection/recovery context.
 
-Then add the planned Server Injection workflow:
+The Server Injection workflow:
 
 - Start from an immutable Captured Client Message or explicitly author a Client Message against one live client and Session.
 - Copy it into a separate Injection Draft; never edit or suppress the application's original message.
@@ -416,7 +422,7 @@ Presentation consequence:
 
 - Outbound Evidence joins the existing ordered ledger.
 - A sequence waterfall is a contextual lens for a client, Session, sequence, or selected message—not a new peer destination.
-- Message bodies are arbitrary application data. Keep them local, make exposure deliberate, and include them in export redaction controls before any sharing workflow claims support.
+- Message bodies are arbitrary application data. They stay local; structural exports exclude them, bulk retained-Evidence copies redact the body and outcome text unconditionally, and complete raw inspection is a deliberate per-event action.
 
 Boundary:
 
@@ -612,13 +618,13 @@ For applications using the optional MPN module, inspect device registration/susp
 5. Subscription linting.
 6. Connection/recovery and snapshot correctness lenses.
 
-### Increment C: Complete the Planned Server Boundary
+### Increment C: Delivered Server Boundary
 
-1. Capture Client Messages and every listener outcome observationally.
-2. Add outbound Evidence filters, Context, privacy handling, and export redaction.
-3. Extend the single protected Injection Draft boundary to Client Messages and reviewed `sendMessage` execution.
-4. Prove processed, denied, discarded, error, aborted, stale-Session, and unknown outcomes.
-5. Add explicit Repeat Injection handling without automatic retry.
+1. Captured Client Messages and listener outcomes observationally without altering the application's original send or callbacks.
+2. Added outbound Evidence facets, Context, local privacy handling, and unconditional Client Message text redaction for bulk Evidence copies.
+3. Extended the single protected Injection Draft boundary to Client Messages and reviewed `sendMessage` execution.
+4. Proved processed, denied, discarded, error, aborted, stale-Session, and unknown outcomes, including an official-client fixture path.
+5. Added explicit Repeat Injection handling without automatic retry.
 
 ### Increment D: Delivered Multi-Event Local Scenarios
 

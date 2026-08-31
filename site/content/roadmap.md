@@ -14,9 +14,9 @@ Add controls that create Filter criteria from selected values. Show changed fiel
 
 Connect related recovery events, Session epochs, snapshots, Subscription settings, server errors, keepalives, and loss signals. Show the result in Context or Notifications.
 
-### Client Messages and Server Injection
+### Client Messages and Server Injection candidate
 
-Capture `LightstreamerClient.sendMessage` calls and listener outcomes as outbound Evidence. A reviewed Server Injection will send one Client Message through the inspected client's normal message path. It will not create an inbound Item Update. It will not prove an application result or retry an unknown result automatically.
+The repository candidate captures `LightstreamerClient.sendMessage` calls and listener outcomes as outbound Evidence. A reviewed Server Injection sends one Client Message through the inspected client's normal message path. It does not create an inbound Item Update, claim an application result, or retry an Unknown result automatically. Independent Material UI review and release publication remain separate gates.
 
 ### Local Injection Scenario release
 

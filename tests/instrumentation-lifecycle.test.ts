@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
+  PAGE_SERVER_INJECTION_BRIDGE_GLOBAL,
+  PAGE_SERVER_INJECTION_BRIDGE_VERSION,
   PAGE_REINJECT_REQUEST,
   RUNTIME_REINJECT_RESULT,
   type CaptureMessage,
@@ -176,6 +178,14 @@ class TopologyFakeSubscription extends FakeSubscription {
 
   isSubscribed() {
     return this.subscribed;
+  }
+}
+
+class ClientMessageFakeLightstreamerClient extends TopologyFakeLightstreamerClient {
+  sentMessages: unknown[][] = [];
+
+  sendMessage(...args: unknown[]) {
+    this.sentMessages.push(args);
   }
 }
 
@@ -459,6 +469,134 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       item: { name: "portfolio", position: 1 },
       update: { lostUpdates: 3 }
     });
+  });
+
+  it("captures outbound Client Messages without adding a listener to fire-and-forget calls", () => {
+    const messages: CaptureMessage[] = [];
+    const target = {
+      LightstreamerClient: ClientMessageFakeLightstreamerClient,
+      Subscription: FakeSubscription
+    };
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+    const client = new target.LightstreamerClient("https://push.example.test", "DEMO");
+    client.sessionId = "session-1";
+    client.status = "CONNECTED:WS-STREAMING";
+
+    client.sendMessage("fire-and-forget");
+
+    expect(client.sentMessages[0]).toEqual(["fire-and-forget"]);
+    expect(messages.find((message) => message.kind === "client-message-sent")?.payload)
+      .toMatchObject({
+        client: { id: "client-1", sessionId: "session-1" },
+        clientMessage: {
+          message: "fire-and-forget",
+          sequence: "UNORDERED_MESSAGES",
+          listenerProvided: false,
+          origin: "application",
+          outcome: "submitted",
+          outcomeAvailability: "unavailable"
+        }
+      });
+  });
+
+  it("captures every ClientMessageListener terminal callback and preserves the app listener", () => {
+    const messages: CaptureMessage[] = [];
+    const target = {
+      LightstreamerClient: ClientMessageFakeLightstreamerClient,
+      Subscription: FakeSubscription
+    };
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+    const client = new target.LightstreamerClient("https://push.example.test", "DEMO");
+    client.sessionId = "session-1";
+    client.status = "CONNECTED:WS-STREAMING";
+    const listener = { onDeny: vi.fn() };
+
+    client.sendMessage("deny-me", "orders", 500, listener, false);
+    const forwarded = client.sentMessages[0][3] as { onDeny(...args: unknown[]): void };
+    forwarded.onDeny("deny-me", 41, "not allowed");
+
+    expect(listener.onDeny).toHaveBeenCalledWith("deny-me", 41, "not allowed");
+    const sent = messages.find((message) => message.kind === "client-message-sent");
+    const denied = messages.find((message) => message.kind === "client-message-denied");
+    expect(sent?.payload.clientMessage).toMatchObject({
+      sequence: "orders",
+      delayTimeout: 500,
+      listenerProvided: true,
+      outcome: "submitted",
+      outcomeAvailability: "pending"
+    });
+    expect(denied?.payload.clientMessage).toMatchObject({
+      id: (sent?.payload.clientMessage as { id: string }).id,
+      outcome: "denied",
+      code: 41,
+      error: "[redacted]"
+    });
+  });
+
+  it("submits a reviewed Server Injection once against the exact captured Session", () => {
+    const messages: CaptureMessage[] = [];
+    const target = {
+      LightstreamerClient: ClientMessageFakeLightstreamerClient,
+      Subscription: FakeSubscription
+    };
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+    const client = new target.LightstreamerClient("https://push.example.test", "DEMO");
+    client.sessionId = "session-1";
+    client.status = "CONNECTED:WS-STREAMING";
+    const created = messages.find((message) => message.kind === "client-created")!;
+    const pageEpoch = created.topology!.pageEpoch;
+    const clientId = (created.payload.client as { id: string }).id;
+    const bridge = (target as unknown as Record<string, unknown>)[
+      PAGE_SERVER_INJECTION_BRIDGE_GLOBAL
+    ] as {
+      version: number;
+      send(requestId: string, panelSessionId: string, draft: unknown): unknown;
+    };
+    const draft = {
+      sourceEventId: null,
+      target: { pageEpoch, clientId, sessionId: "session-1" },
+      message: "workbench-message",
+      sequence: "orders",
+      delayTimeout: null,
+      enqueueWhileDisconnected: false
+    };
+
+    expect(bridge.version).toBe(PAGE_SERVER_INJECTION_BRIDGE_VERSION);
+    expect(bridge.send("send-1", PANEL_SESSION_ID, draft)).toMatchObject({
+      ok: true,
+      status: "started"
+    });
+    expect(bridge.send("send-1", PANEL_SESSION_ID, draft)).toMatchObject({
+      ok: true,
+      status: "duplicate"
+    });
+    expect(client.sentMessages).toHaveLength(1);
+    expect(client.sentMessages[0].slice(0, 3)).toEqual([
+      "workbench-message",
+      "orders",
+      -1
+    ]);
+    const forwarded = client.sentMessages[0][3] as { onAbort(...args: unknown[]): void };
+    forwarded.onAbort("workbench-message", true);
+    expect(messages.find((message) => message.kind === "client-message-aborted")?.payload)
+      .toMatchObject({
+        clientMessage: {
+          origin: "workbench",
+          outcome: "aborted",
+          sentOnNetwork: true,
+          injection: {
+            panelSessionId: PANEL_SESSION_ID,
+            requestId: "send-1",
+            sourceEventId: null
+          }
+        }
+      });
   });
 
   it("instruments constructors assigned after document_start installation", () => {

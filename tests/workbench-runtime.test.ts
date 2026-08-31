@@ -2683,6 +2683,47 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
+  it("redacts Client Message bodies and outcome text from retained scoped Evidence copies", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer({
+      id: "copy-client-message",
+      timestamp: 1,
+      direction: "outbound",
+      source: "application",
+      synthetic: false,
+      kind: "client-message-denied",
+      client: { id: "copy-client", sessionId: "copy-session" },
+      clientMessage: {
+        id: "private-client-message",
+        pageEpoch: "copy-page",
+        message: "private-message-body",
+        messageState: "available",
+        sequence: "orders",
+        delayTimeout: null,
+        enqueueWhileDisconnected: false,
+        listenerProvided: true,
+        outcome: "denied",
+        outcomeAvailability: "available",
+        response: "private-response",
+        error: "private-error"
+      }
+    });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
+
+    runtime.dispatch({ type: "prepare-scoped-evidence-copy" });
+    await flushStoreNotifications();
+
+    const text = runtime.getSnapshot().evidenceCopy.text ?? "";
+    expect(text).toContain("[REDACTED:client-message-body]");
+    expect(text).toContain("[REDACTED:client-message-response]");
+    expect(text).toContain("[REDACTED:client-message-error]");
+    expect(text).not.toContain("private-message-body");
+    expect(text).not.toContain("private-response");
+    expect(text).not.toContain("private-error");
+    runtime.dispose();
+  });
+
   it("keeps Filter membership independent while preserving a hidden selection and Context", async () => {
     const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
@@ -3011,6 +3052,116 @@ describe("WorkbenchRuntime", () => {
     expect(itemDocument?.overview.itemCount).toBe(1);
     expect(itemDocument?.clients[0]?.sessions[0]?.subscriptions[0]?.items).toHaveLength(1);
     expect(itemDocument?.privacy.credentialsExcluded).toBe(true);
+    runtime.dispose();
+  });
+
+  it("protects, reviews, and executes one Server Injection Draft without mutating its source", async () => {
+    const history = createAuthoritativeHistory();
+    const execute = vi.fn(async () => ({
+      requestId: "server-request-1",
+      ok: true,
+      status: "processed" as const,
+      timestamp: 500,
+      response: "accepted"
+    }));
+    const runtime = createWorkbenchRuntime({
+      history,
+      captureStatus: "capturing",
+      serverInjectionExecutor: { execute }
+    });
+    await flushStoreNotifications();
+    const topology = (kind: LightstreamerEventEnvelope["kind"], sequence: number) => ({
+      version: 1 as const,
+      kind,
+      pageEpoch: "page-server-injection",
+      captureSequence: sequence,
+      provenance: { instrumentationSource: "official-public-api" as const },
+      coverage: { status: "complete" as const, getters: {} },
+      client: { id: "client-server", sessionId: "session-server" }
+    });
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("client-created", {
+        client: {
+          id: "client-server",
+          status: "CONNECTED:WS-STREAMING",
+          sessionId: "session-server",
+          instrumentationSource: "public-api"
+        }
+      }, 100, topology("client-created", 1))
+    });
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("client-status", {
+        client: {
+          id: "client-server",
+          status: "CONNECTED:WS-STREAMING",
+          sessionId: "session-server",
+          instrumentationSource: "public-api"
+        }
+      }, 101, topology("client-status", 2))
+    });
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("client-message-sent", {
+        client: {
+          id: "client-server",
+          status: "CONNECTED:WS-STREAMING",
+          sessionId: "session-server",
+          instrumentationSource: "public-api"
+        },
+        clientMessage: {
+          id: "client-message-source",
+          pageEpoch: "page-server-injection",
+          message: "original",
+          messageState: "available",
+          sequence: "orders",
+          delayTimeout: null,
+          enqueueWhileDisconnected: false,
+          listenerProvided: false,
+          origin: "application",
+          outcome: "submitted",
+          outcomeAvailability: "unavailable"
+        }
+      }, 102, topology("client-message-sent", 3))
+    });
+    await flushStoreNotifications();
+    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(3));
+    const source = runtime.getSnapshot().evidence.events.find(
+      ({ raw }) => raw.kind === "client-message-sent"
+    )!;
+    runtime.dispatch({ type: "select-evidence", eventId: source.id });
+    await flushStoreNotifications();
+    runtime.dispatch({ type: "begin-server-injection-from-selection" });
+    runtime.dispatch({ type: "set-server-injection-message", message: "changed" });
+
+    expect(runtime.getSnapshot().serverInjection?.draft).toMatchObject({
+      phase: "edit",
+      ready: true,
+      value: { message: "changed", target: { sessionId: "session-server" } }
+    });
+    expect(runtime.getSnapshot().selectedEvidence?.raw.clientMessage?.message).toBe("original");
+
+    runtime.dispatch({ type: "review-server-injection" });
+    expect(runtime.getSnapshot().serverInjection?.draft?.phase).toBe("review");
+    runtime.dispatch({ type: "execute-server-injection" });
+    expect(runtime.getSnapshot().serverInjection?.draft?.phase).toBe("pending");
+    await vi.waitFor(() => expect(runtime.getSnapshot().serverInjection?.draft?.phase).toBe("outcome"));
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ message: "changed" }));
+    expect(runtime.getSnapshot().serverInjection?.draft?.outcome).toMatchObject({
+      status: "processed",
+      response: "accepted"
+    });
+    runtime.dispatch({ type: "prepare-server-injection-repeat" });
+    runtime.dispatch({ type: "request-discard-server-injection" });
+    expect(runtime.getSnapshot().serverInjection?.draft?.discardConfirmation).toBe(true);
+    runtime.dispatch({ type: "cancel-discard-server-injection" });
+    expect(runtime.getSnapshot().serverInjection?.draft?.discardConfirmation).toBe(false);
+    runtime.dispatch({ type: "request-discard-server-injection" });
+    runtime.dispatch({ type: "confirm-discard-server-injection" });
+    expect(runtime.getSnapshot().serverInjection?.draft).toBeNull();
     runtime.dispose();
   });
 });

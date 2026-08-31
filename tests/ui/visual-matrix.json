@@ -43,6 +43,42 @@
     "production": { "scenario": "local-injection-authored", "setup": "authored-direct" }
   },
   {
+    "id": "server-injection-edit-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "server-injection-edit", "setup": "server-injection" }
+  },
+  {
+    "id": "server-injection-review-normal-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "server-injection-review", "setup": "server-injection" }
+  },
+  {
+    "id": "server-injection-degraded-shallow-light",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "light",
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "server-injection-degraded", "setup": "server-injection" }
+  },
+  {
+    "id": "server-injection-unknown-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "server-injection-unknown", "setup": "server-injection" }
+  },
+  {
+    "id": "server-injection-high-volume-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "server-injection-high-volume", "setup": "server-injection" }
+  },
+  {
     "id": "normal-retained-find-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",

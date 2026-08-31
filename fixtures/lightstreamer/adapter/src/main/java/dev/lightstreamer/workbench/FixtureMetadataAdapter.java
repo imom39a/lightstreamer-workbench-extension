@@ -1,7 +1,9 @@
 package dev.lightstreamer.workbench;
 
 import com.lightstreamer.adapters.metadata.LiteralBasedProvider;
+import com.lightstreamer.interfaces.metadata.CreditsException;
 import com.lightstreamer.interfaces.metadata.ItemsException;
+import com.lightstreamer.interfaces.metadata.NotificationException;
 import java.util.Map;
 
 public final class FixtureMetadataAdapter extends LiteralBasedProvider {
@@ -18,5 +20,14 @@ public final class FixtureMetadataAdapter extends LiteralBasedProvider {
       return items.clone();
     }
     return super.getItems(user, sessionID, itemGroup, dataAdapter);
+  }
+
+  @Override
+  public void notifyUserMessage(String user, String sessionID, String message)
+      throws CreditsException, NotificationException {
+    if (!FixtureDataAdapter.publishClientMessage(message)) {
+      throw new NotificationException(
+          "The deterministic Client Message target is not currently subscribed.");
+    }
   }
 }

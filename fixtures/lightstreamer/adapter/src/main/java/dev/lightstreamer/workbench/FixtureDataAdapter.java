@@ -11,8 +11,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class FixtureDataAdapter implements SmartDataProvider {
+  private static final String CLIENT_MESSAGE_ITEM = "scenario.server-injection";
+  private static final String CLIENT_MESSAGE_KEY = "fixture-message.TICKER";
+  private static final AtomicLong CLIENT_MESSAGE_SEQUENCE = new AtomicLong();
+  private static volatile FixtureDataAdapter activeAdapter;
   private static final Map<String, Integer> ISSUE_16_EVENT_COUNTS =
       Map.ofEntries(
           Map.entry("session.metadata", 2),
@@ -38,7 +43,7 @@ public final class FixtureDataAdapter implements SmartDataProvider {
 
   @Override
   public void init(Map params, File configDir) throws DataProviderException {
-    // No external configuration is required for the deterministic fixture.
+    activeAdapter = this;
   }
 
   @Override
@@ -69,7 +74,8 @@ public final class FixtureDataAdapter implements SmartDataProvider {
       emitSnapshotBasic(itemName, itemHandle);
       return;
     }
-    if ("scenario.mutate-reinject".equals(itemName)) {
+    if ("scenario.mutate-reinject".equals(itemName)
+        || CLIENT_MESSAGE_ITEM.equals(itemName)) {
       emitMutateReinjectSnapshot(itemName, itemHandle);
       return;
     }
@@ -90,6 +96,37 @@ public final class FixtureDataAdapter implements SmartDataProvider {
   @Override
   public void unsubscribe(String itemName) throws SubscriptionException, FailureException {
     activeHandles.remove(itemName);
+  }
+
+  static boolean publishClientMessage(String message) {
+    FixtureDataAdapter adapter = activeAdapter;
+    return adapter != null && adapter.emitClientMessage(message);
+  }
+
+  private boolean emitClientMessage(String message) {
+    Object itemHandle = activeHandles.get(CLIENT_MESSAGE_ITEM);
+    if (itemHandle == null) {
+      return false;
+    }
+
+    String messageId = "client-message-" + CLIENT_MESSAGE_SEQUENCE.incrementAndGet();
+    Map<String, String> update = new LinkedHashMap<>();
+    update.put(COMMAND_FIELD, "UPDATE");
+    update.put(KEY_FIELD, CLIENT_MESSAGE_KEY);
+    update.put("modelId", "MESSENGER");
+    update.put(
+        "modelValues",
+        "{\"messageId\":\""
+            + jsonEscape(messageId)
+            + "\",\"messageText\":\""
+            + jsonEscape(message)
+            + "\",\"messageType\":\"CLIENT_MESSAGE\"}");
+    try {
+      smartUpdateIfActive(CLIENT_MESSAGE_ITEM, itemHandle, update, false);
+      return itemHandle.equals(activeHandles.get(CLIENT_MESSAGE_ITEM));
+    } catch (FailureException exception) {
+      return false;
+    }
   }
 
   private void emitSnapshotBasic(String itemName, Object itemHandle) throws FailureException {
@@ -231,6 +268,7 @@ public final class FixtureDataAdapter implements SmartDataProvider {
     return "scenario.snapshot-basic".equals(itemName)
         || "scenario.add-update-delete".equals(itemName)
         || "scenario.mutate-reinject".equals(itemName)
+        || CLIENT_MESSAGE_ITEM.equals(itemName)
         || "scenario.continuous-evidence".equals(itemName)
         || ISSUE_16_EVENT_COUNTS.containsKey(itemName);
   }
@@ -245,6 +283,43 @@ public final class FixtureDataAdapter implements SmartDataProvider {
     row.put("status", status);
     row.put("version", version);
     return row;
+  }
+
+  private static String jsonEscape(String value) {
+    StringBuilder escaped = new StringBuilder(value.length() + 16);
+    for (int index = 0; index < value.length(); index += 1) {
+      char character = value.charAt(index);
+      switch (character) {
+        case '\"':
+          escaped.append("\\\"");
+          break;
+        case '\\':
+          escaped.append("\\\\");
+          break;
+        case '\b':
+          escaped.append("\\b");
+          break;
+        case '\f':
+          escaped.append("\\f");
+          break;
+        case '\n':
+          escaped.append("\\n");
+          break;
+        case '\r':
+          escaped.append("\\r");
+          break;
+        case '\t':
+          escaped.append("\\t");
+          break;
+        default:
+          if (character < 0x20) {
+            escaped.append(String.format("\\u%04x", (int) character));
+          } else {
+            escaped.append(character);
+          }
+      }
+    }
+    return escaped.toString();
   }
 
   private static void sleep(long millis) {

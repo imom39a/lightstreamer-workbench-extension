@@ -8,10 +8,11 @@ Lightstreamer Workbench is a Chrome DevTools extension. Use it to inspect applic
 4. Learn how to use [Filter, Find, selection, Live, Frozen, and Notifications]({{site}}docs/evidence/).
 5. [Debug a COMMAND lifecycle]({{site}}docs/command-state/) with ordered operations, Fields, and diagnostics.
 6. Create a Draft or a [Local Injection Scenario]({{site}}docs/local-injection/).
+7. [Capture and deliberately send a Client Message]({{site}}docs/server-injection/) with Server Injection.
 
 ## Product boundary
 
-Workbench observes Lightstreamer clients that the page owns. It does not create clients or Sessions. It does not subscribe for the application. It does not interpret application-specific business objects. Local Injection delivers an Item Update in the inspected page. It does not add the update to the Lightstreamer Server stream.
+Workbench observes Lightstreamer clients that the page owns. It does not create clients or Sessions. It does not subscribe for the application. It does not interpret application-specific business objects. Local Injection delivers an Item Update in the inspected page. Server Injection sends a Client Message through a page-owned client's current Session; it does not create an inbound Server Update.
 
 ## Need help?
 

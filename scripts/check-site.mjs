@@ -17,6 +17,7 @@ const requiredRoutes = [
   "docs/evidence/index.html",
   "docs/command-state/index.html",
   "docs/local-injection/index.html",
+  "docs/server-injection/index.html",
   "docs/export-and-privacy/index.html",
   "docs/troubleshooting/index.html",
   "docs/faq/index.html",

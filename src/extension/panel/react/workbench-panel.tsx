@@ -44,6 +44,10 @@ const LazyLocalInjectionScenarioDocument = lazy(async () => {
   const module = await import("./local-injection-scenario-document");
   return { default: module.LocalInjectionScenarioDocument };
 });
+const LazyServerInjectionDocument = lazy(async () => {
+  const module = await import("./server-injection-document");
+  return { default: module.ServerInjectionDocument };
+});
 
 export type WorkbenchPanelProps = { runtime: WorkbenchRuntime };
 
@@ -600,6 +604,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const parkedDiscardDialog = useRef<HTMLElement | null>(null);
   const restoreParkedDiscardFocus = useRef(false);
   const previousLocalInjectionDraft = useRef<WorkbenchSnapshot["localInjection"]["draft"]>(null);
+  const serverInjectionTrigger = useRef<HTMLButtonElement | null>(null);
+  const previousServerInjectionDraft = useRef<NonNullable<WorkbenchSnapshot["serverInjection"]>["draft"]>(null);
   const previousScenario = useRef<WorkbenchSnapshot["scenario"]>(null);
   const previousParkedDiscardConfirmation = useRef(false);
   const scopeCollapse = useRef<HTMLButtonElement | null>(null);
@@ -719,6 +725,10 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes, snapshot.scope, scopeOwnsFocus]);
   const canAuthorCommandUpdate = snapshot.localInjection.availability.commandScope.available;
   const canCreateLocalInjectionDraft = snapshot.localInjection.availability.selectedUpdate.available;
+  const serverInjection = snapshot.serverInjection;
+  const serverInjectionDraft = serverInjection?.draft ?? null;
+  const canCloneClientMessage = serverInjection?.availability.cloneSelected.available ?? false;
+  const canAuthorClientMessage = serverInjection?.availability.authorSelectedClient.available ?? false;
   const total = evidence.total;
   const filterCounts = evidence.investigation.counts;
   const shown = filterCounts.shown;
@@ -765,13 +775,13 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       : null;
   const localInjection = snapshot.localInjection;
   const localInjectionDraft = localInjection.draft;
-  const notificationsPresented = notificationsOpen && !localInjectionDraft?.open && !snapshot.scenario;
+  const notificationsPresented = notificationsOpen && !localInjectionDraft?.open && !snapshot.scenario && !serverInjectionDraft;
   const contextMode = snapshot.contextId === "context:actions"
     ? "actions"
     : snapshot.contextId === "context:export"
       ? "export"
       : "inspect";
-  const workspaceAvailable = !localInjectionDraft?.open && !snapshot.scenario && !rawEvidence && !notificationsOpen;
+  const workspaceAvailable = !localInjectionDraft?.open && !snapshot.scenario && !serverInjectionDraft && !rawEvidence && !notificationsOpen;
   const scopeIsPresented = geometry === "wide"
     ? !scopeCollapsed
     : geometry === "compact"
@@ -1637,6 +1647,25 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [geometry, localInjectionDraft]);
 
   useLayoutEffect(() => {
+    const previous = previousServerInjectionDraft.current;
+    const current = serverInjectionDraft;
+    if (previous && !current) {
+      window.requestAnimationFrame(() => {
+        if (serverInjectionTrigger.current?.isConnected) {
+          serverInjectionTrigger.current.focus({ preventScroll: true });
+          return;
+        }
+        const source = previous.source.eventId
+          ? evidenceRows.current.get(previous.source.eventId)
+          : null;
+        if (source?.isConnected) source.focus({ preventScroll: true });
+        else contextLens.current?.focus({ preventScroll: true });
+      });
+    }
+    previousServerInjectionDraft.current = current;
+  }, [serverInjectionDraft]);
+
+  useLayoutEffect(() => {
     const previous = previousScenario.current;
     const current = snapshot.scenario;
     if (previous && !current) {
@@ -1684,7 +1713,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         if (rawEvidence || notificationsOpen || keyEvent.defaultPrevented) return;
         if ((keyEvent.metaKey || keyEvent.ctrlKey) && keyEvent.key.toLowerCase() === "f") {
           const target = keyEvent.target;
-          if (target instanceof Element && target.closest('[aria-label="Local Injection Draft"]')) return;
+          if (target instanceof Element && target.closest('[aria-label="Local Injection Draft"], [aria-label="Server Injection Draft"]')) return;
           keyEvent.preventDefault();
           openFind(document.activeElement instanceof HTMLElement ? document.activeElement : keyEvent.currentTarget);
           return;
@@ -1757,12 +1786,17 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         {canAuthorCommandUpdate ? <button type="button" onClick={() => dispatch(runtime, { type: "begin-local-injection-from-scope" })}>Author COMMAND Item Update</button> : null}
       </nav>
       {localInjection.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Local Injection unavailable</strong><span>{localInjection.entryError}</span></div> : null}
+      {serverInjection?.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Server Injection unavailable</strong><span>{serverInjection.entryError}</span></div> : null}
       {snapshot.scenario ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection Scenario…</div>}><LazyLocalInjectionScenarioDocument runtime={runtime} snapshot={snapshot} /></Suspense> : null}
       {localInjectionDraft && !snapshot.scenario ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection editor…</div>}><LazyLocalInjectionDocument
         runtime={runtime}
         localInjection={localInjection}
         hidden={!localInjectionDraft.open}
         inlineCompare={geometry !== "wide"}
+      /></Suspense> : null}
+      {serverInjectionDraft && serverInjection ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Server Injection editor…</div>}><LazyServerInjectionDocument
+        runtime={runtime}
+        serverInjection={serverInjection}
       /></Suspense> : null}
       {localInjectionDraft?.parked && !snapshot.scenario ? <section className="workbench-react__local-parked" aria-label="Parked Local Injection Draft">
         <div><span className="workbench-react__eyebrow">Parked Local Injection Draft</span><strong>{localInjectionDraft.anchor.subscriptionId} · {localInjectionDraft.anchor.itemName ?? `Item #${localInjectionDraft.anchor.itemPosition ?? "Unknown"}`}</strong></div>
@@ -1792,7 +1826,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         onCommand={(command) => dispatch(runtime, command)}
         onInspect={inspectNotification}
       />
-      {localInjectionDraft?.open || snapshot.scenario ? null : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
+      {localInjectionDraft?.open || snapshot.scenario || serverInjectionDraft ? null : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
         <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Complete raw Evidence</span><strong>{rawEvidence.id} · immutable {rawEvidence.source} Evidence</strong></div><div className="workbench-react__document-actions"><button type="button" onClick={() => void copyRawEvidence()}>Copy raw Evidence</button><button type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
         <div className="workbench-react__document-boundary"><span>Source <strong>{rawEvidence.source}</strong></span><span>Phase <strong>{rawEvidence.phase}</strong></span><span>Mutable <strong>NO</strong></span></div>
         <p className="workbench-react__document-status" role="status">{copyStatus}</p>
@@ -1887,7 +1921,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
               <p>The current Panel Session owns one temporary Event History using <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong>. Closing attempts controlled erasure; abnormal termination relies on guarded cleanup, and residual data may remain until the extension next runs.</p>
               {geometry === "compact" ? <section><h3>Panel appearance</h3><label htmlFor="workbench-actions-theme">Panel theme</label><select id="workbench-actions-theme" value={snapshot.theme} onChange={(event) => dispatch(runtime, { type: "set-theme", theme: event.currentTarget.value as "auto" | "dark" | "light" })}><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select></section> : null}
-              <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}).</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading retained Evidence: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy retained scoped Evidence</button>}</section>
+              <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}). Client Message bodies and outcome text are always redacted from this bulk copy.</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading retained Evidence: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy retained scoped Evidence</button>}</section>
               <section className="workbench-react__operations-danger"><h3>Clear retained Evidence</h3><p>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>{snapshot.retention.clearState === "confirming" ? <div className="workbench-react__confirmation"><strong>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button className="workbench-react__confirmation-primary" type="button" onClick={() => dispatch(runtime, { type: "confirm-clear-history" })}>Clear retained events</button><button type="button" onClick={() => dispatch(runtime, { type: "cancel-clear-history" })}>Keep Evidence</button></div></div> : <button type="button" onClick={() => dispatch(runtime, { type: "request-clear-history" })}>Clear retained Evidence…</button>}</section>
               <section><h3>Help &amp; resources</h3><p>Open first-party guides and reporting routes for this Workbench release.</p><nav className="workbench-react__resource-links" aria-label="Help and resources">{WORKBENCH_PUBLIC_RESOURCES.map((resource) => <a className="workbench-react__resource-link" href={resource.href} target="_blank" rel="noopener noreferrer" key={resource.href}>{resource.label}</a>)}</nav></section>
               <section><h3>Scoped export</h3><p>Prepare a versioned download for the current Scope. Credentials are always excluded.</p>{snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing retained-Evidence export: {(snapshot.export.operation.progress.completed ?? 0).toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence · {snapshot.export.operation.progress.excludedAfterLatch} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : <button ref={exportTrigger} type="button" onClick={() => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); }}>Export Scope…</button>}</section>
@@ -1925,6 +1959,31 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
                   {!canCreateLocalInjectionDraft && snapshot.localInjection.availability.selectedUpdate.reason
                     ? <span className="workbench-react__action-reason" id="workbench-local-injection-unavailable-reason">{snapshot.localInjection.availability.selectedUpdate.reason}</span>
                     : null}
+                  {serverInjection ? selected.raw.clientMessage ? <>
+                    <button
+                      ref={serverInjectionTrigger}
+                      type="button"
+                      className={!canCloneClientMessage ? "workbench-react__context-action--unavailable" : undefined}
+                      disabled={!canCloneClientMessage}
+                      aria-describedby={!canCloneClientMessage ? "workbench-server-injection-unavailable-reason" : undefined}
+                      onClick={() => dispatch(runtime, { type: "begin-server-injection-from-selection" })}
+                    >Create Server Injection Draft{!canCloneClientMessage ? " · Unavailable" : ""}</button>
+                    {!canCloneClientMessage && serverInjection.availability.cloneSelected.reason
+                      ? <span className="workbench-react__action-reason" id="workbench-server-injection-unavailable-reason">{serverInjection.availability.cloneSelected.reason}</span>
+                      : null}
+                  </> : <>
+                    <button
+                      ref={serverInjectionTrigger}
+                      type="button"
+                      className={!canAuthorClientMessage ? "workbench-react__context-action--unavailable" : undefined}
+                      disabled={!canAuthorClientMessage}
+                      aria-describedby={!canAuthorClientMessage ? "workbench-server-author-unavailable-reason" : undefined}
+                      onClick={() => dispatch(runtime, { type: "begin-server-injection-from-selected-client" })}
+                    >Author Client Message{!canAuthorClientMessage ? " · Unavailable" : ""}</button>
+                    {!canAuthorClientMessage && serverInjection.availability.authorSelectedClient.reason
+                      ? <span className="workbench-react__action-reason" id="workbench-server-author-unavailable-reason">{serverInjection.availability.authorSelectedClient.reason}</span>
+                      : null}
+                  </> : null}
                   <button type="button" onClick={() => dispatch(runtime, { type: "open-raw-evidence", eventId: selected.id })}>Open complete raw</button>
                 </> : <button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button>}
               </div>
@@ -2005,7 +2064,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         >{historyStatus.retained.toLocaleString()}/{historyStatus.accepted.toLocaleString()} Evidence · {snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}</span><button
               ref={notificationsTrigger}
               type="button"
-              disabled={Boolean(localInjectionDraft?.open || snapshot.scenario || rawEvidence)}
+              disabled={Boolean(localInjectionDraft?.open || snapshot.scenario || serverInjectionDraft || rawEvidence)}
               aria-expanded={notificationsPresented}
               aria-controls={notificationsPresented ? "workbench-notifications" : undefined}
               onClick={() => notificationsOpen ? dispatch(runtime, { type: "close-notifications" }) : openNotifications()}

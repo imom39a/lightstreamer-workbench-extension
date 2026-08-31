@@ -1,6 +1,8 @@
 import { ItemUpdate, LightstreamerClient, Subscription } from "lightstreamer-client-web";
 
-const ITEM = "scenario.mutate-reinject";
+const ITEM = new URLSearchParams(window.location.search).has("server-injection")
+  ? "scenario.server-injection"
+  : "scenario.mutate-reinject";
 // Match the reported production COMMAND schema exactly: key precedes command.
 const FIELDS = ["key", "command", "modelId", "modelValues"];
 

@@ -35,6 +35,8 @@ A controlled Close tries to erase the Event History. An abnormal stop can preven
 
 Workbench shows `SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` as text. It does not show a Local Injected Update as a Server Update. `ADD`, `UPDATE`, and `DELETE` are COMMAND operations, not result or severity values.
 
+Outbound Client Message Evidence records the page-owned or Workbench-owned `sendMessage` submission and any available terminal listener outcome. An application message is `RUNTIME`; a Server Injection is `WORKBENCH`. A Processed message is not proof of a later Server Update or business effect.
+
 ## Diagnostics are not Evidence filters
 
 Notifications applies to the Panel Session. It has Code, Severity, and Affected filters. These filters do not change Evidence Scope, Filter, Find, selection, Live or Frozen state, or retained history. **Dismiss** hides the footer message. It does not remove the notification or supporting Evidence.

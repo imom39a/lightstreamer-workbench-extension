@@ -152,7 +152,7 @@ try {
     contactSheets,
     review: !grep && results.length === allScenarios.length ? {
       classification: "Material UI",
-      changedWorkflow: "The integrated Workbench matrix covers the approved Variant C Scope priority blocks and Ordered Evidence order rail, the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, diagnostics, and compact operating actions in the shipped panel shell.",
+      changedWorkflow: "The integrated Workbench matrix covers the approved Variant C Scope priority blocks and Ordered Evidence order rail, the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, protected Server Injection through LightstreamerClient.sendMessage, diagnostics, and compact operating actions in the shipped panel shell.",
       acceptanceCriteria: [
         "Scope rows present object type and lifecycle first, identity on its own primary line with the exact value programmatically available and reachable, and facts as a secondary line across populated normal and compact pane pressure.",
         "Ordered Evidence presents authoritative retained History sequence separately from exact Evidence identity, then semantic meaning, timestamp/provenance/phase, COMMAND operation, object, and key in that reading order.",
@@ -160,6 +160,7 @@ try {
         "One shared SERVER/LOCAL timeline belongs above Evidence, uses elapsed time since the first retained timestamped event, and preserves exact range and captured-event routes without a separate Activity page.",
         "One collapsed Activity summary in Context retains exact SERVER/LOCAL counts, bounded SERVER busiest identities and captured facts, including 10,000-record, limited and memory-fallback states.",
         "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
+        "Server Injection preserves the exact client, Session, page epoch, message body, sequence, timeout, and enqueue arguments; starts one reviewed sendMessage call; records outbound Evidence; never retries an Unknown outcome automatically; and requires an explicit separate Repeat.",
         "Notifications owns active Workbench conditions and recent Lightstreamer diagnostics, including History pressure, Capture coverage, snapshot completion, server errors and bounded keepalives without a health verdict; filters remain independent of Evidence, dismissal hides only the active footer copy, and captured inspection routes remain available.",
         "Committed snapshot, COMMAND, and lost-update anomalies preserve exact epoch attribution, bounded limitations, and one normalized lifecycle without duplicate footer ownership.",
         "Advisory storage-headroom warnings remain global, uncertain, keyboard reachable, and separate from authoritative History Capacity and Observation Coverage.",
@@ -176,7 +177,7 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; every captured footer Dismiss action is checked individually, and help-resource, shallow diagnostic-disclosure, and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
-      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; approved Variant C base/current/diff comparisons; Activity, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
+      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; approved Variant C base/current/diff comparisons; Activity, Local and Server Injection, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
       readabilityComparison: results.filter(({ id }) => id.startsWith("readability-c-")).map(({ id, artifacts, changedPixels, totalPixels }) => ({ id, artifacts, changedPixels, totalPixels })),
       baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
     } : results.every(({ id }) => id.startsWith("local-injection-")) ? {
@@ -201,6 +202,27 @@ try {
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked Local Injection states retained a visible, unobscured Inject locally control; maintained browser scenarios separately cover physical keyboard entry and traversal.`,
       matrixRationale: "Five deterministic states cover captured preview at compact Light, a changed captured Draft at normal Dark and wide Light, authored direct delivery at shallow Dark, and the same shallow action in forced colors.",
       baselineIntent: "Replace the obsolete standalone Review baselines, update the captured Draft baseline for default comparison, and add Darwin/Linux normal, wide, and forced-colors baselines for the simplified workflow."
+    } : results.every(({ id }) => id.startsWith("server-injection-")) ? {
+      classification: "Material UI",
+      changedWorkflow: "Server Injection clones or authors one Client Message and submits it once through the exact inspected Lightstreamer client's current sendMessage path.",
+      acceptanceCriteria: [
+        "The client, active Session, page epoch, public sendMessage boundary, immutable Source or authored state, and all editable send arguments remain explicit before submission.",
+        "Review freezes one exact call; Processed is not presented as proof of a business effect; Unknown never retries automatically and exposes only a separate deliberate Repeat.",
+        "Disconnected or stale targets block before submission, edited Draft discard requires inline confirmation, and a high-volume message remains bounded by one document scroll owner.",
+        "Compact, normal, shallow, and wide geometry plus Dark, Light, and forced colors preserve visible keyboard focus, no horizontal overflow, and no serious or critical axe violations."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0),
+        shellOrDocumentOverflows: results.reduce((count, result) => count + Number(result.checks.horizontalOverflow.shell || result.checks.horizontalOverflow.document), 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked Server Injection states retained visible, unobscured controls; the maintained browser journey separately checks phase focus and discard restoration.`,
+      matrixRationale: "Five deterministic states cover compact Light editing, normal Dark Review, shallow Light disconnection, shallow forced-colors Dark Unknown, and a wide Light high-volume message.",
+      baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all five protected Server Injection states."
     } : results.every(({ production }) => production.setup.startsWith("activity")) ? {
       classification: "Material UI",
       changedWorkflow: "Activity is integrated into the existing Evidence and Context workspace; the separate Activity page is retired.",
@@ -346,9 +368,13 @@ function isLocalInjectionSetup(setup) {
   return setup === "captured-draft" || setup === "captured-draft-changed" || setup === "authored-direct";
 }
 
+function isServerInjectionScenario(scenario) {
+  return scenario.startsWith("server-injection-");
+}
+
 function contactSheetScenarioIds(matrix) {
   return matrix
-    .filter(({ id, production }) => id.startsWith("scenario-") || id.startsWith("readability-c-") || id.startsWith("local-injection-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup) || isHistoryFooterSetup(production.setup))
+    .filter(({ id, production }) => id.startsWith("scenario-") || id.startsWith("readability-c-") || id.startsWith("local-injection-") || id.startsWith("server-injection-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup) || isHistoryFooterSetup(production.setup))
     .map(({ id }) => id);
 }
 
@@ -365,10 +391,11 @@ function publicReviewScope() {
   const activityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
   const readabilityIds = allScenarios.filter(({ production }) => isReadabilitySetup(production.setup)).map(({ id }) => id);
   const localInjectionIds = allScenarios.filter(({ production }) => isLocalInjectionSetup(production.setup)).map(({ id }) => id);
+  const serverInjectionIds = allScenarios.filter(({ production }) => isServerInjectionScenario(production.scenario)).map(({ id }) => id);
   return {
     contactSheetScenarioIds: contactSheetScenarioIds(allScenarios),
-    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds],
-    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds]
+    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds],
+    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds]
   };
 }
 
@@ -671,7 +698,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
     let focusEvidence = null;
     let memoryEvidence = null;
     let storageEvidence = null;
-    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isLocalInjectionSetup(scenario.production.setup) || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || isHistoryFooterSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
+    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isLocalInjectionSetup(scenario.production.setup) || isServerInjectionScenario(scenario.production.scenario) || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || isHistoryFooterSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -749,6 +776,34 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
       });
       if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
         throw new Error(`Local Injection focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
+      }
+    }
+    if (isServerInjectionScenario(scenario.production.scenario)) {
+      const serverDocument = page.getByRole("region", { name: "Server Injection Draft" });
+      const action = scenario.production.scenario === "server-injection-review"
+        ? serverDocument.getByRole("button", { name: "Send Client Message once" })
+        : scenario.production.scenario === "server-injection-unknown"
+          ? serverDocument.getByRole("button", { name: "Finish" })
+          : scenario.production.scenario === "server-injection-degraded"
+            ? serverDocument.getByRole("button", { name: "Discard draft…" })
+          : serverDocument.getByLabel("Client Message body");
+      await action.scrollIntoViewIfNeeded();
+      await action.focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      focusEvidence = await action.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          action: element.getAttribute("aria-label") ?? element.labels?.[0]?.textContent?.trim() ?? element.textContent?.trim() ?? "",
+          focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+        };
+      });
+      if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
+        throw new Error(`Server Injection focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
     }
     if (scenario.production.setup === "diagnostics" || isHistoryFooterSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) && scenario.production.storageMode !== "clean") {
@@ -1077,6 +1132,10 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
   }
   if (setup === "scenario") {
     await page.getByRole("region", { name: "Local Injection Scenario" }).waitFor({ state: "visible" });
+    return;
+  }
+  if (setup === "server-injection") {
+    await page.getByRole("region", { name: "Server Injection Draft" }).waitFor({ state: "visible" });
     return;
   }
   if (setup === "none") return;

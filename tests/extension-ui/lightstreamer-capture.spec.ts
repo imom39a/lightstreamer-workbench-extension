@@ -31,6 +31,10 @@ const authoredFixtureUrl = new URL(
   "/mutate-reinject.html?capture=listener",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
+const serverInjectionFixtureUrl = new URL(
+  "/mutate-reinject.html?capture=listener&server-injection=1",
+  process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
+).href;
 const highVolumeFixtureUrl = new URL(
   "/?scenario=loading-evidence",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
@@ -41,6 +45,7 @@ const issue16FixtureUrl = new URL(
 ).href;
 type OfficialClientScenario =
   | "authored"
+  | "server-injection"
   | "scenario"
   | "diagnostics"
   | "high-volume-loading"
@@ -108,7 +113,9 @@ async function runOfficialClientPanelJourney(
         ? highVolumeFixtureUrl
         : scenario === "issue-16" || scenario === "issue-16-scope"
           ? issue16FixtureUrl
-          : authoredFixtureUrl
+          : scenario === "server-injection"
+            ? serverInjectionFixtureUrl
+            : authoredFixtureUrl
     });
     if (scenario === "issue-16-scope") {
       await waitForCondition(
@@ -205,6 +212,12 @@ async function runOfficialClientPanelJourney(
 
     if (scenario === "scenario") {
       await runOfficialClientScenarioJourney(pageCdp, panelCdp);
+      expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      return;
+    }
+
+    if (scenario === "server-injection") {
+      await runOfficialClientServerInjectionJourney(pageCdp, panelCdp);
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
       return;
     }
@@ -741,6 +754,138 @@ test("official-client authored COMMAND Local Injection works through visible nor
 test("official-client authored COMMAND Local Injection works through visible compact DevTools controls", async () => {
   await runOfficialClientPanelJourney("1653,727", { width: 563, height: 700 });
 });
+
+test("official-client Server Injection sends one Client Message through the current Session", async () => {
+  await runOfficialClientPanelJourney(
+    "2664,727",
+    { width: 900, height: 700 },
+    "server-injection"
+  );
+});
+
+async function runOfficialClientServerInjectionJourney(
+  pageCdp: CdpClient,
+  panelCdp: CdpClient
+): Promise<void> {
+  const message = "Sent through Workbench Server Injection.";
+  await waitForCondition(
+    pageCdp,
+    `globalThis.__LSEW_SERVER_INJECTION_BRIDGE__?.version === 1 &&
+      typeof globalThis.__LSEW_SERVER_INJECTION_BRIDGE__.send === "function"`,
+    "the exact-target page Server Injection bridge"
+  );
+  await evaluateByValue<boolean>(pageCdp, `(() => {
+    const bridge = globalThis.__LSEW_SERVER_INJECTION_BRIDGE__;
+    const original = bridge.send;
+    globalThis.__LSEW_SERVER_INJECTION_CALLS__ = [];
+    bridge.send = function(requestId, panelSessionId, draft) {
+      const result = original.call(bridge, requestId, panelSessionId, draft);
+      globalThis.__LSEW_SERVER_INJECTION_CALLS__.push({
+        requestId,
+        panelSessionId,
+        draft: structuredClone(draft),
+        result: structuredClone(result)
+      });
+      return result;
+    };
+    return true;
+  })()`);
+
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+      .some((row) => row.textContent?.includes("scenario.server-injection"))`,
+    "the deterministic Server Evidence used to choose the current client Session"
+  );
+  await clickVisiblePanelElement(
+    panelCdp,
+    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+      .find((row) => row.textContent?.includes("scenario.server-injection"))`,
+    "the deterministic Server Evidence"
+  );
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Author Client Message" && !button.disabled
+    )`,
+    "the live official client Session to offer authored Server Injection"
+  );
+  await pressVisiblePanelButton(panelCdp, "Author Client Message");
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Server Injection Draft"] textarea')`,
+    "the Server Injection editor"
+  );
+  await evaluateByValue<boolean>(panelCdp, `(() => {
+    const editor = document.querySelector('[aria-label="Server Injection Draft"] textarea');
+    if (!(editor instanceof HTMLTextAreaElement)) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(editor, ${JSON.stringify(message)});
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ${JSON.stringify(message)} }));
+    return true;
+  })()`);
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Review Client Message" && !button.disabled
+    )`,
+    "the authored Client Message to become reviewable"
+  );
+  await clickPanelButton(panelCdp, "Review Client Message");
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Reviewed Server Injection"]')?.textContent?.includes(${JSON.stringify(message)}) &&
+      document.querySelector('[aria-label="Protected Server Injection boundary"]')?.textContent?.includes("LightstreamerClient.sendMessage")`,
+    "the exact sendMessage arguments and protected Session boundary"
+  );
+  await clickPanelButton(panelCdp, "Send Client Message once");
+  await waitForCondition(
+    pageCdp,
+    `globalThis.__LSEW_SERVER_INJECTION_CALLS__?.length === 1 &&
+      Number(document.querySelector("#update-count")?.textContent) === 2 &&
+      document.querySelector("#message-text")?.textContent === ${JSON.stringify(message)}`,
+    "one Client Message to reach the Metadata Adapter and produce the fixture Server Update"
+  );
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Server Injection Draft"]')?.textContent?.includes("Processed by Lightstreamer")`,
+    "the processed ClientMessageListener outcome"
+  );
+
+  await clickPanelButton(panelCdp, "Finish");
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+        .some((row) => row.textContent?.includes("Client Message Sent") && row.textContent?.includes("WORKBENCH")) &&
+      [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+        .some((row) => row.textContent?.includes("Client Message Processed") && row.textContent?.includes("WORKBENCH"))`,
+    "the correlated outbound Workbench Evidence"
+  );
+  await clickVisiblePanelElement(
+    panelCdp,
+    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+      .find((row) => row.textContent?.includes("Client Message Sent") && row.textContent?.includes("WORKBENCH"))`,
+    "the captured outbound Client Message"
+  );
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Create Server Injection Draft" && !button.disabled
+    )`,
+    "the captured Client Message to offer an immutable-source Draft"
+  );
+  await pressVisiblePanelButton(panelCdp, "Create Server Injection Draft");
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Server Injection Draft"] textarea')?.value === ${JSON.stringify(message)} &&
+      document.querySelector('[aria-label="Server Injection Draft"]')?.textContent?.includes("Immutable Source")`,
+    "the captured message body to clone without mutating Evidence"
+  );
+  await clickPanelButton(panelCdp, "Discard draft…");
+  await clickPanelButton(panelCdp, "Confirm discard");
+  expect(await evaluateByValue<number>(pageCdp, `globalThis.__LSEW_SERVER_INJECTION_CALLS__?.length ?? -1`)).toBe(1);
+  expect(await evaluateByValue<number>(pageCdp, `Number(document.querySelector("#update-count")?.textContent)`)).toBe(2);
+}
 
 async function runOfficialClientScenarioJourney(
   pageCdp: CdpClient,
