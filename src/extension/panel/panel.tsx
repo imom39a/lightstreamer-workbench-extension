@@ -25,6 +25,10 @@ import {
   createStorageHeadroomSampler,
   sampleStorageEstimate
 } from "./storage-headroom";
+import {
+  unavailableClientMessageRecipes,
+  type ClientMessageRecipeProvider
+} from "../../core/client-message-recipe";
 
 export type WorkbenchPanelMountOptions = {
   createPanelSessionId?: () => PanelSessionId;
@@ -141,12 +145,23 @@ export function mountWorkbenchPanel(
         return bridge.sendServerInjection(draft);
       }
     };
+    const clientMessageRecipeProvider: ClientMessageRecipeProvider = {
+      resolve(context) {
+        if (!bridge?.resolveClientMessageRecipes) {
+          return Promise.resolve(unavailableClientMessageRecipes(
+            "The inspected-page bridge is not connected, so application Message Recipes are unavailable."
+          ));
+        }
+        return bridge.resolveClientMessageRecipes(context);
+      }
+    };
     runtime = createRuntime({
       history,
       visible,
       theme: themeManager.preference,
       localInjectionExecutor,
       serverInjectionExecutor,
+      clientMessageRecipeProvider,
       storage,
       storageEstimate,
       storageHeadroomSampler

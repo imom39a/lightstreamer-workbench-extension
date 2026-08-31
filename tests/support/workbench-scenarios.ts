@@ -73,7 +73,8 @@ export const WORKBENCH_SCENARIO_IDS = [
   "server-injection-review",
   "server-injection-degraded",
   "server-injection-unknown",
-  "server-injection-high-volume"
+  "server-injection-high-volume",
+  "server-injection-recipe"
   ,"local-injection-scenario-edit"
   ,"local-injection-scenario-review"
   ,"local-injection-scenario-complete"
@@ -169,6 +170,8 @@ export type WorkbenchScenario = Readonly<{
     }>;
   }>;
   serverInjection?: Readonly<{
+    entry?: "clone" | "author";
+    recipes?: boolean;
     message?: string;
     review?: boolean;
     execute?: boolean;
@@ -722,6 +725,8 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return serverInjectionScenario(id, {
         message: `bulk/telemetry/${"0123456789abcdef".repeat(4_096)}`
       });
+    case "server-injection-recipe":
+      return serverInjectionRecipeScenario(id);
     case "local-injection-large": {
       const source = topology.capturedEvents.at(-1);
       if (!source?.update || !source.subscription) throw new Error("Topology scenario requires a captured Item Update source.");
@@ -894,6 +899,75 @@ function serverInjectionScenario(
       ...(options.execute ? { execute: true } : {}),
       ...(options.executorOutcome ? { executorOutcome: options.executorOutcome } : {})
     }
+  };
+}
+
+function serverInjectionRecipeScenario(id: WorkbenchScenarioId): WorkbenchScenario {
+  const topology = getPanelScenario("topology-small");
+  const source: LightstreamerEventEnvelope = {
+    id: "server-injection-recipe-source-update",
+    timestamp: 1_780_872_000_260,
+    direction: "inbound",
+    source: "server",
+    synthetic: false,
+    kind: "item-update",
+    client: {
+      id: "topology-small-client",
+      status: "CONNECTED:WS-STREAMING",
+      sessionId: "topology-small-session",
+      instrumentationSource: "public-api",
+      adapterSet: "LSEW_FIXTURE"
+    },
+    subscription: {
+      id: "topology-small-subscription",
+      mode: "COMMAND",
+      items: ["scenario.snapshot-basic"],
+      fields: ["command", "key", "name", "qty", "status", "version"],
+      active: true,
+      subscribed: true
+    },
+    item: { name: "scenario.snapshot-basic", position: 1 },
+    update: {
+      command: "ADD",
+      key: "beta",
+      isSnapshot: true,
+      fields: {
+        command: "ADD",
+        key: "beta",
+        name: "Beta",
+        qty: "20",
+        status: "open",
+        version: "1"
+      },
+      changedFields: {
+        command: "ADD",
+        key: "beta",
+        name: "Beta",
+        qty: "20",
+        status: "open",
+        version: "1"
+      }
+    },
+    topology: {
+      version: TOPOLOGY_OBSERVATION_VERSION,
+      kind: "item-update",
+      pageEpoch: "topology-small-page",
+      captureSequence: 8,
+      provenance: { instrumentationSource: "official-public-api" },
+      coverage: { status: "complete", getters: {} },
+      client: { id: "topology-small-client", sessionId: "topology-small-session" },
+      subscription: { id: "topology-small-subscription" },
+      item: { name: "scenario.snapshot-basic", position: 1 }
+    }
+  };
+  return {
+    id,
+    initialEvents: [source],
+    topologySyncFrames: topology.topologySyncFrames,
+    captureMessages: topology.captureMessages,
+    selectedEventId: source.id,
+    captureStatus: "capturing",
+    serverInjection: { entry: "author", recipes: true }
   };
 }
 

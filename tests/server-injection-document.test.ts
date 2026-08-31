@@ -44,6 +44,49 @@ describe("Server Injection document", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "review-server-injection" });
   });
 
+  it("explains an empty authored body and applies one inspected-application Message Recipe deliberately", () => {
+    const base = snapshot("edit");
+    const authored = {
+      ...base,
+      draft: {
+        ...base.draft,
+        value: { ...base.draft.value, sourceEventId: null, message: "" },
+        ready: false,
+        source: { kind: "authored", eventId: "event-1" },
+        recipes: {
+          status: "available",
+          detail: null,
+          items: [{
+            id: "fixture.update-fields.v1",
+            label: "Update fields for beta",
+            description: "Starts from the selected COMMAND key and its current version.",
+            message: '{"type":"update-fields","item":"scenario.snapshot-basic","key":"beta","expectedVersion":"1","fields":{"qty":"20"}}',
+            sequence: "LSEW_FIXTURE_FIELD_UPDATES",
+            delayTimeout: null,
+            enqueueWhileDisconnected: false
+          }]
+        }
+      }
+    } as unknown as WorkbenchServerInjectionSnapshot;
+
+    act(() => root.render(createElement(ServerInjectionDocument, {
+      runtime,
+      serverInjection: authored
+    })));
+
+    expect(container.textContent).toContain("accepted by this application's Metadata Adapter");
+    expect(container.textContent).toContain("Workbench cannot infer a Client Message from an inbound Item Update");
+    expect(container.textContent).toContain("Application Message Recipe");
+    const recipe = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Use Update fields for beta"
+    )!;
+    act(() => recipe.click());
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "apply-server-injection-recipe",
+      recipeId: "fixture.update-fields.v1"
+    });
+  });
+
   it("makes the exactly-once action and no-retry consequence explicit at review", () => {
     act(() => root.render(createElement(ServerInjectionDocument, {
       runtime,
@@ -148,7 +191,12 @@ function snapshot(
       reviewedFingerprint: phase === "review" ? "fingerprint" : null,
       outcome: null,
       repeatWarning: false,
-      discardConfirmation: false
+      discardConfirmation: false,
+      recipes: {
+        status: "unavailable",
+        items: [],
+        detail: "Captured Client Messages already provide their exact body."
+      }
     }
   };
 }

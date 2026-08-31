@@ -394,6 +394,14 @@
 .workbench-react__server-diagnostics { display: grid; gap: 4px; border-left: 3px solid var(--wb-warning); background: var(--wb-warning-soft); padding: 7px 9px; }
 .workbench-react__server-diagnostics > strong, .workbench-react__server-diagnostics ul { margin: 0; }
 .workbench-react__server-diagnostics ul { padding-left: 20px; }
+.workbench-react__server-recipes { display: grid; gap: 5px; border-left: 3px solid var(--wb-accent); background: var(--wb-raised); padding: 7px 9px; }
+.workbench-react__server-recipes > p, .workbench-react__server-recipes > span, .workbench-react__server-recipes ul { margin: 0; }
+.workbench-react__server-recipes > p, .workbench-react__server-recipes > span { color: var(--wb-muted); }
+.workbench-react__server-recipes ul { display: grid; gap: 5px; padding: 0; list-style: none; }
+.workbench-react__server-recipes li { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--wb-border); padding-top: 5px; }
+.workbench-react__server-recipes li > span { display: grid; flex: 1 1 auto; color: var(--wb-muted); }
+.workbench-react__server-recipes li > span > strong { color: var(--wb-text); }
+.workbench-react__server-recipes li > button { flex: 0 0 auto; }
 .workbench-react__server-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-top: 1px solid var(--wb-border); padding-top: 8px; }
 .workbench-react__server-actions > div { display: flex; flex: 1 1 360px; flex-wrap: wrap; align-items: center; gap: 6px; }
 .workbench-react__server-actions > div > span { color: var(--wb-muted); }
@@ -805,6 +813,7 @@
 .workbench-react[data-geometry="compact"] .workbench-react__server-options { grid-template-columns: 1fr; align-items: stretch; }
 .workbench-react[data-geometry="compact"] .workbench-react__server-options .workbench-react__server-checkbox { padding-bottom: 0; white-space: normal; }
 .workbench-react[data-geometry="compact"] .workbench-react__server-actions > button:last-child { margin-left: 0; }
+.workbench-react[data-geometry="compact"] .workbench-react__server-recipes li { align-items: stretch; flex-direction: column; }
 @media (forced-colors: active) {
   .workbench-react__status-diagnostic {
     forced-color-adjust: none;

@@ -8,6 +8,8 @@ import {
   type ServerInjectionDraftPayload,
   type ServerInjectionStartResult,
   type TopologySyncFrame,
+  PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL,
+  PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_VERSION,
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
   PAGE_SERVER_INJECTION_BRIDGE_GLOBAL,
@@ -33,6 +35,13 @@ import {
   type ServerInjectionDraft,
   type ServerInjectionExecutionResult
 } from "../../core/server-injection";
+import {
+  errorClientMessageRecipes,
+  normalizeClientMessageRecipes,
+  unavailableClientMessageRecipes,
+  type ClientMessageRecipeContext,
+  type ClientMessageRecipeResolution
+} from "../../core/client-message-recipe";
 
 export type PanelBridgeHandlers = {
   onStatusChange(status: CaptureStatus): void;
@@ -46,6 +55,9 @@ export type PanelBridgeConnection = {
     executionTarget?: PageReinjectionExecutionTarget
   ): Promise<ReinjectionResult>;
   sendServerInjection?(draft: ServerInjectionDraft): Promise<ServerInjectionExecutionResult>;
+  resolveClientMessageRecipes?(
+    context: ClientMessageRecipeContext
+  ): Promise<ClientMessageRecipeResolution>;
   disconnect(): void;
 };
 
@@ -72,6 +84,11 @@ export function connectPanelBridge(
         return Promise.resolve(createServerBridgeErrorResult(
           createServerInjectionRequestId(),
           "Bridge is disconnected."
+        ));
+      },
+      resolveClientMessageRecipes() {
+        return Promise.resolve(unavailableClientMessageRecipes(
+          "The inspected-page bridge is disconnected, so application Message Recipes are unavailable."
         ));
       },
       disconnect() {}
@@ -193,6 +210,14 @@ export function connectPanelBridge(
         ));
       }
       return sendServerInjectionThroughInspectedPage(requestId, draft);
+    },
+    resolveClientMessageRecipes(context) {
+      if (!port || typeof chrome.devtools.inspectedWindow.eval !== "function") {
+        return Promise.resolve(errorClientMessageRecipes(
+          "Workbench could not inspect the application's Message Recipe adapter. Reload the page with DevTools open."
+        ));
+      }
+      return resolveClientMessageRecipesThroughInspectedPage(context);
     },
     disconnect() {
       disposed = true;
@@ -402,6 +427,112 @@ export function connectPanelBridge(
       finishServerInjection(createServerUnknownResult(requestId, error));
     }
   }
+
+  function resolveClientMessageRecipesThroughInspectedPage(
+    context: ClientMessageRecipeContext
+  ): Promise<ClientMessageRecipeResolution> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result: ClientMessageRecipeResolution) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(() => {
+        finish(errorClientMessageRecipes(
+          "The inspected application's Message Recipe adapter did not respond in time."
+        ));
+      }, INSPECTED_PAGE_EVAL_TIMEOUT_MS);
+
+      try {
+        chrome.devtools.inspectedWindow.eval<unknown>(
+          pageClientMessageRecipeExpression(context),
+          (value, exceptionInfo) => {
+            if (exceptionInfo?.isError || exceptionInfo?.isException) {
+              finish(errorClientMessageRecipes(
+                exceptionInfo.description || exceptionInfo.value ||
+                  "The inspected application rejected the Message Recipe request."
+              ));
+              return;
+            }
+            const evaluation = readPageClientMessageRecipeEvaluation(value);
+            if (evaluation?.bridgeState === "unavailable") {
+              finish(unavailableClientMessageRecipes(
+                "This application does not expose a Workbench Message Recipe adapter."
+              ));
+              return;
+            }
+            if (evaluation?.bridgeState === "error") {
+              finish(errorClientMessageRecipes(evaluation.error));
+              return;
+            }
+            if (!evaluation || evaluation.bridgeState !== "result") {
+              finish(errorClientMessageRecipes(
+                "The inspected application returned an invalid Message Recipe response."
+              ));
+              return;
+            }
+            finish(normalizeClientMessageRecipes(evaluation.recipes));
+          }
+        );
+      } catch (error) {
+        finish(errorClientMessageRecipes(
+          error instanceof Error
+            ? error.message
+            : "The Message Recipe evaluation could not be started."
+        ));
+      }
+    });
+  }
+}
+
+type PageClientMessageRecipeEvaluation =
+  | { bridgeState: "unavailable" }
+  | { bridgeState: "error"; error: string }
+  | { bridgeState: "result"; recipes: unknown };
+
+export function pageClientMessageRecipeExpression(
+  context: ClientMessageRecipeContext
+): string {
+  const adapterName = JSON.stringify(PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL);
+  return `(() => {
+    const adapter = globalThis[${adapterName}];
+    if (!adapter) return { bridgeState: "unavailable" };
+    if (
+      adapter.version !== ${PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_VERSION} ||
+      typeof adapter.list !== "function"
+    ) {
+      return { bridgeState: "error", error: "The application exposes an incompatible Message Recipe adapter." };
+    }
+    try {
+      const recipes = adapter.list(${JSON.stringify(context)});
+      if (recipes && typeof recipes.then === "function") {
+        return { bridgeState: "error", error: "Message Recipe adapters must return synchronously." };
+      }
+      return { bridgeState: "result", recipes };
+    } catch (error) {
+      return {
+        bridgeState: "error",
+        error: error instanceof Error ? error.message : "The application Message Recipe adapter threw."
+      };
+    }
+  })()`;
+}
+
+function readPageClientMessageRecipeEvaluation(
+  value: unknown
+): PageClientMessageRecipeEvaluation | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  if (record.bridgeState === "unavailable") return { bridgeState: "unavailable" };
+  if (record.bridgeState === "error" && typeof record.error === "string") {
+    return { bridgeState: "error", error: record.error };
+  }
+  if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, "recipes")) {
+    return { bridgeState: "result", recipes: record.recipes };
+  }
+  return null;
 }
 
 type PageServerInjectionEvaluation =

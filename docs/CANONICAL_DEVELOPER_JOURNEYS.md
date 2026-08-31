@@ -172,6 +172,7 @@ What does the server boundary report when this exact Client Message is submitted
 
 - An immutable Captured Client Message Source when the developer starts from Evidence.
 - A separate editable Server Injection Draft containing message, sequence, delay timeout, and enqueue choice.
+- Optional application-owned Message Recipes that may prepare exact Draft arguments from selected Evidence without implying a generic Item Update-to-Client Message translation.
 - One protected page epoch, official public-API client, and current Session target.
 - A Review phase showing the exact `LightstreamerClient.sendMessage` arguments.
 - A persistent processed, denied, discarded, aborted, unknown, stale-target, or bridge outcome.
@@ -181,7 +182,7 @@ What does the server boundary report when this exact Client Message is submitted
 
 1. Enter from a compatible Captured Client Message or explicitly author against one live client.
 2. Confirm the exact page, client, Session, and public `sendMessage` boundary.
-3. Edit the body and send arguments without mutating the Source or application's original call.
+3. Optionally apply one application-owned Message Recipe, then edit the body and send arguments without mutating the Source or application's original call.
 4. Resolve validation errors and review the exact call.
 5. Invoke **Send Client Message once**.
 6. Read the terminal outcome without inferring a downstream business effect or causal relationship to later Server Updates.
@@ -195,6 +196,7 @@ The developer can cite the reviewed call, exact target, outbound Evidence, and t
 
 - The selected client is fallback-only, retired, disconnected, reloaded, or in a different Session.
 - The message or sequence is empty, or the timeout is invalid.
+- No application Message Recipe matches the selected Evidence; the developer must clone captured outbound Evidence or use the application's message contract.
 - The page bridge is missing before execution starts.
 - Page evaluation or a listener outcome becomes uncertain after the call may have started; the outcome is Unknown and Workbench does not retry.
 - The developer deliberately prepares a Repeat; the UI warns that server-side effects may be duplicated and creates a fresh execution identity.

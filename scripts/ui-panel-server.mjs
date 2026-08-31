@@ -150,6 +150,29 @@ const serverInjectionExecutor = scenario.serverInjection?.executorOutcome ? {
     return Promise.resolve({ requestId, ok: false, status: "unknown", timestamp: 1_780_872_100_105, error: "The outcome channel closed after submission. Do not repeat automatically." });
   }
 } : undefined;
+const clientMessageRecipeProvider = scenario.serverInjection?.recipes ? {
+  resolve(context) {
+    return Promise.resolve({
+      status: "available",
+      detail: null,
+      items: [{
+        id: "fixture.update-fields.v1",
+        label: "Update fields for beta",
+        description: "Starts from the selected COMMAND key and its current version.",
+        message: JSON.stringify({
+          type: "update-fields",
+          item: context.item.name,
+          key: context.update?.key,
+          expectedVersion: context.update?.fields.version,
+          fields: { qty: context.update?.fields.qty }
+        }, null, 2),
+        sequence: "LSEW_FIXTURE_FIELD_UPDATES",
+        delayTimeout: null,
+        enqueueWhileDisconnected: false
+      }]
+    });
+  }
+} : undefined;
 const runtime = createWorkbenchRuntime({
   history,
   scenarioClock,
@@ -172,7 +195,8 @@ const runtime = createWorkbenchRuntime({
   } : {}),
   theme,
   ...(localInjectionExecutor ? { localInjectionExecutor } : {}),
-  ...(serverInjectionExecutor ? { serverInjectionExecutor } : {})
+  ...(serverInjectionExecutor ? { serverInjectionExecutor } : {}),
+  ...(clientMessageRecipeProvider ? { clientMessageRecipeProvider } : {})
 });
 for (const frame of scenario.topologySyncFrames ?? []) {
   runtime.dispatch({ type: "apply-topology-sync-frame", frame });
@@ -277,7 +301,11 @@ if (scenario.localInjection) {
   }
 }
 if (scenario.serverInjection) {
-  runtime.dispatch({ type: "begin-server-injection-from-selection" });
+  runtime.dispatch({
+    type: scenario.serverInjection.entry === "author"
+      ? "begin-server-injection-from-selected-client"
+      : "begin-server-injection-from-selection"
+  });
   if (scenario.serverInjection.message !== undefined) {
     runtime.dispatch({ type: "set-server-injection-message", message: scenario.serverInjection.message });
   }

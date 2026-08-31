@@ -1,10 +1,21 @@
 import { ItemUpdate, LightstreamerClient, Subscription } from "lightstreamer-client-web";
+import {
+  PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL,
+  PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_VERSION
+} from "../../../src/bridge/messages";
+import type { ClientMessageRecipeContext } from "../../../src/core/client-message-recipe";
 
-const ITEM = new URLSearchParams(window.location.search).has("server-injection")
+const parameters = new URLSearchParams(window.location.search);
+const RECIPE_MODE = parameters.get("recipe") === "qty";
+const ITEM = RECIPE_MODE
+  ? "scenario.snapshot-basic"
+  : parameters.has("server-injection")
   ? "scenario.server-injection"
   : "scenario.mutate-reinject";
 // Match the reported production COMMAND schema exactly: key precedes command.
-const FIELDS = ["key", "command", "modelId", "modelValues"];
+const FIELDS = RECIPE_MODE
+  ? ["command", "key", "name", "qty", "status", "version"]
+  : ["key", "command", "modelId", "modelValues"];
 
 type FixtureModel = {
   messageId: string;
@@ -55,7 +66,7 @@ function fixtureConstructors(): {
   LightstreamerClient: typeof LightstreamerClient;
   Subscription: typeof Subscription;
 } {
-  if (new URLSearchParams(window.location.search).get("capture") !== "listener") {
+  if (parameters.get("capture") !== "listener") {
     return { LightstreamerClient, Subscription };
   }
 
@@ -69,6 +80,7 @@ function fixtureConstructors(): {
 }
 
 installProductionFeedbackInterference();
+installMessageRecipeAdapter();
 
 function setConnectionState(value: string): void {
   if (connectionState) {
@@ -78,6 +90,32 @@ function setConnectionState(value: string): void {
 
 function renderUpdate(update: ItemUpdate): void {
   receivedUpdates += 1;
+  if (RECIPE_MODE) {
+    const rendered = {
+      command: update.getValue("command"),
+      key: update.getValue("key"),
+      name: update.getValue("name"),
+      qty: update.getValue("qty"),
+      status: update.getValue("status"),
+      version: update.getValue("version")
+    };
+    if (messageText) messageText.textContent = `${rendered.key} qty ${rendered.qty}`;
+    if (updateCount) updateCount.textContent = String(receivedUpdates);
+    if (renderedModel) renderedModel.textContent = JSON.stringify(rendered, null, 2);
+    if (events) {
+      const row = document.createElement("li");
+      row.textContent = [
+        update.isSnapshot() ? "snapshot" : "live",
+        update.getItemName(),
+        rendered.command,
+        rendered.key,
+        `qty ${rendered.qty}`,
+        `version ${rendered.version}`
+      ].join(" | ");
+      events.prepend(row);
+    }
+    return;
+  }
   const rawModel = update.getValue("modelValues");
   const parsedModel = parseModel(rawModel);
 
@@ -103,6 +141,39 @@ function renderUpdate(update: ItemUpdate): void {
     ].join(" | ");
     events.prepend(row);
   }
+}
+
+function installMessageRecipeAdapter(): void {
+  if (!RECIPE_MODE) return;
+  const host = globalThis as typeof globalThis & Record<string, unknown>;
+  host[PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL] = Object.freeze({
+    version: PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_VERSION,
+    list(context: ClientMessageRecipeContext) {
+      if (
+        context.client.adapterSet !== "LSEW_FIXTURE" ||
+        context.item.name !== "scenario.snapshot-basic" ||
+        context.update?.key !== "beta"
+      ) return [];
+      const version = context.update.fields.version;
+      const qty = context.update.fields.qty;
+      if (typeof version !== "string" || typeof qty !== "string") return [];
+      return [{
+        id: "fixture.update-fields.v1",
+        label: "Update fields for beta",
+        description: "Starts from the selected COMMAND key and its current version.",
+        message: JSON.stringify({
+          type: "update-fields",
+          item: context.item.name,
+          key: context.update.key,
+          expectedVersion: version,
+          fields: { qty }
+        }, null, 2),
+        sequence: "LSEW_FIXTURE_FIELD_UPDATES",
+        delayTimeout: null,
+        enqueueWhileDisconnected: false
+      }];
+    }
+  });
 }
 
 function parseModel(value: unknown): FixtureModel | null {

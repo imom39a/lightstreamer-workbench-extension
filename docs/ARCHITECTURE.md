@@ -848,6 +848,8 @@ Draft validation remains a core boundary even though the user-facing document is
 
 Server Injection sends a Client Message; it never manufactures an inbound Item Update. `src/core/server-injection.ts` owns cloning or authoring the protected Draft, validation, immutable target data, and review fingerprint. The target is one captured page epoch, official public-API client, and current Session. A Local Draft, Server Draft, and Local Scenario share one active-work boundary, so starting one cannot silently replace or ambiguously coexist with another.
 
+`src/core/client-message-recipe.ts` defines an optional application-owned authoring seam. For an authored Draft, `bridge-client.ts` evaluates the page global `__LSEW_CLIENT_MESSAGE_RECIPE_ADAPTER__`, passes a bounded snapshot of selected source/target/client/Subscription/item/update facts, and validates the synchronous version-1 response. The application returns exact Client Message bodies and send arguments; the generic core neither interprets application JSON nor translates an Item Update. The runtime exposes a recipe only as a deliberate Draft mutation, and never applies or sends one automatically. Missing, incompatible, throwing, asynchronous, oversized, or malformed adapters degrade to guidance while ordinary manual authoring remains available.
+
 `src/extension/panel/bridge-client.ts` installs the pending correlation before evaluating `__LSEW_SERVER_INJECTION_BRIDGE__`. The page-side `client-message-delivery.ts` revalidates the exact target, claims the request before calling page-owned code, and invokes:
 
 ```text
@@ -938,7 +940,7 @@ A Local Injection Scenario is a separate mutually protected temporary document r
 
 ### Server Injection Document
 
-`react/server-injection-document.tsx` is a lazy-loaded promoted document with Edit, Review, Pending, and terminal Outcome phases. The exact page/client/Session and public `LightstreamerClient.sendMessage` boundary remain visible outside the editable body. Review presents the message, sequence, timeout, and enqueue choice before the single consequential action. Pending locks the Draft and states that no retry occurs. Unknown is terminal; Repeat is a separate explicit action. Discarding an edited Draft requires inline confirmation and restores focus on cancellation.
+`react/server-injection-document.tsx` is a lazy-loaded promoted document with Edit, Review, Pending, and terminal Outcome phases. The exact page/client/Session and public `LightstreamerClient.sendMessage` boundary remain visible outside the editable body. An empty authored Draft explains the Metadata Adapter contract and, when available, lists application Message Recipes as explicit **Use …** actions. Review presents the message, sequence, timeout, and enqueue choice before the single consequential action. Pending locks the Draft and states that no retry occurs. Unknown is terminal; Repeat is a separate explicit action. Discarding an edited Draft requires inline confirmation and restores focus on cancellation.
 
 `topology-export.ts` maps one immutable scoped `TopologyState` snapshot into the shared versioned export schema. Compact evidence collections declare total, included, omitted, truncation, and latest-sampling metadata; complete evidence is opt-in. Server addresses, client IPs, item names, COMMAND keys, configured fields/schemas, and captured identifiers are independently redactable, while credential-like fields and URL credentials are always excluded. `topology-html-report.ts` renders the approved structured snapshot into offline HTML with inline CSS/search only, escaped application-controlled values, collapsible hierarchy, and the same bounded evidence metadata.
 
@@ -982,9 +984,9 @@ The fixture under `fixtures/lightstreamer/` provides deterministic scenarios for
 | `fixtures/lightstreamer/pages/index.html` | Browser fixture page served by the Lightstreamer fixture scripts. |
 | `fixtures/lightstreamer/pages/fixture-client.js` | Creates Lightstreamer COMMAND subscriptions and exposes expected deterministic event counts. |
 | `fixtures/lightstreamer/pages/mutate-reinject.html` | Application UI used to prove that a Local Injected Update reaches an official Lightstreamer client listener and changes rendered state. The filename is retained as an internal fixture route. |
-| `fixtures/lightstreamer/client/mutate-reinject-client.ts` | Module-bundled official client fixture; keeping constructors off `window` forces the production WebSocket/TLCP Capture and Local Injection delivery path. The filename is retained for fixture compatibility. |
-| `fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureDataAdapter.java` | Emits deterministic snapshot/live COMMAND rows and publishes the fixture Client Message as an ordinary live COMMAND update. |
-| `fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureMetadataAdapter.java` | Expands fixture item groups and forwards `notifyUserMessage` to the active fixture Data Adapter. |
+| `fixtures/lightstreamer/client/mutate-reinject-client.ts` | Module-bundled official client fixture; keeping constructors off `window` forces the production WebSocket/TLCP Capture and Local Injection delivery path. Its opt-in qty page exposes the first application Message Recipe. The filename is retained for fixture compatibility. |
+| `fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureDataAdapter.java` | Emits deterministic snapshot/live COMMAND rows, publishes the fixture Client Message as an ordinary live COMMAND update, and applies the recipe fixture's version-checked beta qty update. |
+| `fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureMetadataAdapter.java` | Expands fixture item groups, forwards ordinary `notifyUserMessage` calls, and validates the fixture-only `update-fields` contract before asking the active fixture Data Adapter to publish. |
 | `fixtures/lightstreamer/adapters/LSEW_FIXTURE/adapters.xml` | Registers fixture data and metadata adapter classes under adapter set `LSEW_FIXTURE`. |
 | `scripts/lightstreamer/*` | Helper scripts for building, starting, waiting on, stopping, and testing the fixture. |
 
@@ -1037,11 +1039,11 @@ Coverage is organized by architectural boundary:
 | `tests/reinjection-draft.test.ts` | Internal Injection Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
 | `tests/command-draft.test.ts` | Context-bound new COMMAND drafts, schema validation, and synthetic event conversion. |
 | `tests/synthetic-event.test.ts` | Synthetic envelope creation from successful reinjection results. |
-| `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, direct reinjection, request-scoped missing-global recovery, version-skew relay fallback, and timeout/error behavior. |
+| `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, direct reinjection, bounded inspected-page Message Recipe resolution, request-scoped missing-global recovery, version-skew relay fallback, and timeout/error behavior. |
 | `tests/client-message-delivery.test.ts` | Exact page/client/Session preflight, public `sendMessage` arguments, bounded request deduplication, and no-retry behavior. |
 | `tests/server-injection.test.ts` | Captured/authored Server Draft cloning, immutable Source protection, validation, and fingerprinting. |
 | `tests/workbench-runtime.test.ts` | Cached snapshot ownership, Scope/Evidence/Context independence, bounded history, internal derived state, storage fallback, export, passive publication, and disposal. |
-| `tests/server-injection-document.test.ts` | Edit/Review/Pending/Outcome semantics, explicit one-send action, Unknown Repeat guidance, and inline discard confirmation. |
+| `tests/server-injection-document.test.ts` | Edit/Review/Pending/Outcome semantics, empty-authored guidance, deliberate Message Recipe application, explicit one-send action, Unknown Repeat guidance, and inline discard confirmation. |
 | `tests/workbench-local-injection-runtime.test.ts` | Both Local Injection entry paths, exactly-one-Draft protection, validation, atomic direct-execution preflight, stale targets, pending locks, truthful outcomes, and committed Local Evidence effects. |
 | `tests/local-injection-execution-coordinator.test.ts` | Shared standalone preflight and Scenario Review, fingerprint revalidation, execute-once behavior, committed-Evidence settlement, and terminal outcome mapping. |
 | `tests/local-injection-scenario.test.ts` | Scenario membership, target protection, per-Step Drafts, immutable Runs, correlation, capacity accounting, and Trace bounds. |
@@ -1054,7 +1056,7 @@ Coverage is organized by architectural boundary:
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |
 | `tests/extension-panel.browser.spec.ts` | Loaded-extension semantic smoke for the shipped Scoped Evidence Workspace. |
-| `tests/extension-ui/lightstreamer-capture.spec.ts` | Official-client loaded-extension proof for listener and wire Capture, outbound Client Messages, Scoped Evidence, Local Injection entry paths, one exact Server Injection through the Metadata/Data Adapter fixture, lazy editor loading, Manifest V3 CSP compatibility, noise-free runtime Context, and the three-Step Scenario request/callback, correlation, and Run-again proof. |
+| `tests/extension-ui/lightstreamer-capture.spec.ts` | Official-client loaded-extension proof for listener and wire Capture, outbound Client Messages, Scoped Evidence, Local Injection entry paths, one exact Server Injection plus one recipe-authored qty update through the Metadata/Data Adapter fixture, lazy editor loading, Manifest V3 CSP compatibility, noise-free runtime Context, and the three-Step Scenario request/callback, correlation, and Run-again proof. |
 
 Other quality commands:
 

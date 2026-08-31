@@ -2688,12 +2688,31 @@ test("Workbench keeps dense Evidence controls and protected Local Injection boun
 test("Server Injection keeps exact sendMessage arguments protected across material UI states", async ({
   page
 }, testInfo) => {
-  await openScenario(page, "server-injection-edit", { width: 563, height: 700 }, "light");
+  await openScenario(page, "server-injection-recipe", { width: 900, height: 700 }, "light");
   let document = page.getByRole("region", { name: "Server Injection Draft" });
+  await expect(document).toHaveAttribute("data-phase", "edit");
+  const recipes = document.getByRole("region", { name: "Application Message Recipes" });
+  await expect(recipes).toContainText("cannot infer a Client Message from an inbound Item Update");
+  await expect(recipes).toContainText("Update fields for beta");
+  let message = document.getByLabel("Client Message body");
+  await expect(message).toHaveValue("");
+  await expect(message).toBeFocused();
+  await recipes.getByRole("button", { name: "Use Update fields for beta" }).click();
+  await expect(message).toHaveValue(/"qty": "20"/);
+  await expect(document.getByLabel("Sequence")).toHaveValue("LSEW_FIXTURE_FIELD_UPDATES");
+  await message.fill((await message.inputValue()).replace('"qty": "20"', '"qty": "25"'));
+  await expect(message).toHaveValue(/"qty": "25"/);
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "server-injection-recipe-normal-light");
+
+  await openScenario(page, "server-injection-edit", { width: 563, height: 700 }, "light");
+  document = page.getByRole("region", { name: "Server Injection Draft" });
   await expect(document).toHaveAttribute("data-phase", "edit");
   await expect(document.getByLabel("Protected Server Injection boundary")).toContainText("LightstreamerClient.sendMessage");
   await expect(document.getByLabel("Protected Server Injection boundary")).toContainText("topology-small-session");
-  const message = document.getByLabel("Client Message body");
+  message = document.getByLabel("Client Message body");
   await expect(message).toHaveValue('publish/order/42 {"status":"ready"}');
   await expect(message).toBeFocused();
   await page.keyboard.press("Tab");

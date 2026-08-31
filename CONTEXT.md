@@ -138,6 +138,10 @@ _Avoid_: Remote replay, session-targeted injection
 An application message sent from a Lightstreamer client to the server-side application in the context of its current Session. It is a request, not an item update.
 _Avoid_: Upstream update, injected update
 
+**Message Recipe**:
+An optional application-supplied suggestion that prepares an exact Client Message Draft from selected Evidence. It is never an inferred translation or an automatic Injection.
+_Avoid_: Inferred Client Message, automatic update translation
+
 **Server Update**:
 An item update delivered through the normal Lightstreamer Server subscription flow. It is not distinguishable as injection-caused unless it carries Injection Attribution.
 _Avoid_: Injection response

@@ -221,8 +221,8 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked Server Injection states retained visible, unobscured controls; the maintained browser journey separately checks phase focus and discard restoration.`,
-      matrixRationale: "Five deterministic states cover compact Light editing, normal Dark Review, shallow Light disconnection, shallow forced-colors Dark Unknown, and a wide Light high-volume message.",
-      baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all five protected Server Injection states."
+      matrixRationale: "Six deterministic states cover application-guided authoring at normal Light, compact Light editing, normal Dark Review, shallow Light disconnection, shallow forced-colors Dark Unknown, and a wide Light high-volume message.",
+      baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all six protected Server Injection states."
     } : results.every(({ production }) => production.setup.startsWith("activity")) ? {
       classification: "Material UI",
       changedWorkflow: "Activity is integrated into the existing Evidence and Context workspace; the separate Activity page is retired.",

@@ -3064,10 +3064,24 @@ describe("WorkbenchRuntime", () => {
       timestamp: 500,
       response: "accepted"
     }));
+    const resolveRecipes = vi.fn(async () => ({
+      status: "available" as const,
+      detail: null,
+      items: [{
+        id: "fixture.update-fields.v1",
+        label: "Update fields for beta",
+        description: "Uses the selected key and current version.",
+        message: '{"type":"update-fields","fields":{"qty":"20"}}',
+        sequence: "LSEW_FIXTURE_FIELD_UPDATES",
+        delayTimeout: null,
+        enqueueWhileDisconnected: false
+      }]
+    }));
     const runtime = createWorkbenchRuntime({
       history,
       captureStatus: "capturing",
-      serverInjectionExecutor: { execute }
+      serverInjectionExecutor: { execute },
+      clientMessageRecipeProvider: { resolve: resolveRecipes }
     });
     await flushStoreNotifications();
     const topology = (kind: LightstreamerEventEnvelope["kind"], sequence: number) => ({
@@ -3125,8 +3139,36 @@ describe("WorkbenchRuntime", () => {
         }
       }, 102, topology("client-message-sent", 3))
     });
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("item-update", {
+        client: {
+          id: "client-server",
+          status: "CONNECTED:WS-STREAMING",
+          sessionId: "session-server",
+          instrumentationSource: "public-api",
+          adapterSet: "LSEW_FIXTURE"
+        },
+        subscription: {
+          id: "subscription-server",
+          mode: "COMMAND",
+          items: ["scenario.snapshot-basic"],
+          fields: ["command", "key", "qty", "version"],
+          active: true,
+          subscribed: true
+        },
+        item: { name: "scenario.snapshot-basic", position: 1 },
+        update: {
+          command: "ADD",
+          key: "beta",
+          isSnapshot: true,
+          fields: { command: "ADD", key: "beta", qty: "20", version: "1" },
+          changedFields: { command: "ADD", key: "beta", qty: "20", version: "1" }
+        }
+      }, 103, topology("item-update", 4))
+    });
     await flushStoreNotifications();
-    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(3));
+    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(4));
     const source = runtime.getSnapshot().evidence.events.find(
       ({ raw }) => raw.kind === "client-message-sent"
     )!;
@@ -3162,6 +3204,33 @@ describe("WorkbenchRuntime", () => {
     runtime.dispatch({ type: "request-discard-server-injection" });
     runtime.dispatch({ type: "confirm-discard-server-injection" });
     expect(runtime.getSnapshot().serverInjection?.draft).toBeNull();
+
+    const inbound = runtime.getSnapshot().evidence.events.find(
+      ({ raw }) => raw.kind === "item-update"
+    )!;
+    runtime.dispatch({ type: "select-evidence", eventId: inbound.id });
+    await flushStoreNotifications();
+    runtime.dispatch({ type: "begin-server-injection-from-selected-client" });
+    await vi.waitFor(() => expect(
+      runtime.getSnapshot().serverInjection?.draft?.recipes.status
+    ).toBe("available"));
+    expect(resolveRecipes).toHaveBeenCalledWith(expect.objectContaining({
+      client: { adapterSet: "LSEW_FIXTURE" },
+      item: { name: "scenario.snapshot-basic", position: 1 },
+      update: expect.objectContaining({ key: "beta", fields: expect.objectContaining({ qty: "20" }) })
+    }));
+    runtime.dispatch({
+      type: "apply-server-injection-recipe",
+      recipeId: "fixture.update-fields.v1"
+    });
+    expect(runtime.getSnapshot().serverInjection?.draft).toMatchObject({
+      phase: "edit",
+      ready: true,
+      value: {
+        message: '{"type":"update-fields","fields":{"qty":"20"}}',
+        sequence: "LSEW_FIXTURE_FIELD_UPDATES"
+      }
+    });
     runtime.dispose();
   });
 });

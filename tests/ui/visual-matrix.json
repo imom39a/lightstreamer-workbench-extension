@@ -50,6 +50,13 @@
     "production": { "scenario": "server-injection-edit", "setup": "server-injection" }
   },
   {
+    "id": "server-injection-recipe-normal-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "reference": { "source": "production", "storageMode": "clean" },
+    "production": { "scenario": "server-injection-recipe", "setup": "server-injection" }
+  },
+  {
     "id": "server-injection-review-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",

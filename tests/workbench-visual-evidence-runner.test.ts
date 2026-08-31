@@ -20,7 +20,7 @@ describe("Workbench visual-evidence runner", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(result.stdout).toContain("--print-review-scope");
-    expect(matrix).toHaveLength(92);
+    expect(matrix).toHaveLength(93);
   });
 
   it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
@@ -161,7 +161,7 @@ describe("Workbench visual-evidence runner", () => {
       focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds])
     });
     expect(localInjectionIds).toHaveLength(5);
-    expect(serverInjectionIds).toHaveLength(5);
+    expect(serverInjectionIds).toHaveLength(6);
     for (const id of historyFooterIds) {
       expect(reviewScope.accessibilityScenarioIds).not.toContain(id);
       expect(reviewScope.focusScenarioIds).not.toContain(id);

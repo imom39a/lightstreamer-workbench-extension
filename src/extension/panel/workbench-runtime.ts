@@ -104,6 +104,14 @@ import {
   type ServerInjectionExecutor
 } from "../../core/server-injection";
 import {
+  createClientMessageRecipeContext,
+  errorClientMessageRecipes,
+  loadingClientMessageRecipes,
+  unavailableClientMessageRecipes,
+  type ClientMessageRecipeProvider,
+  type ClientMessageRecipeResolution
+} from "../../core/client-message-recipe";
+import {
   createTopologyProjection,
   type TopologyCheckpointBasisMetadata,
   type TopologyProjection
@@ -582,6 +590,7 @@ export type WorkbenchServerInjectionSnapshot = Readonly<{
     outcome: ServerInjectionExecutionResult | null;
     repeatWarning: boolean;
     discardConfirmation: boolean;
+    recipes: ClientMessageRecipeResolution;
   }> | null;
 }>;
 
@@ -708,6 +717,7 @@ export type WorkbenchCommand =
   | { type: "set-server-injection-sequence"; sequence: string }
   | { type: "set-server-injection-delay-timeout"; value: string }
   | { type: "set-server-injection-enqueue"; enabled: boolean }
+  | { type: "apply-server-injection-recipe"; recipeId: string }
   | { type: "review-server-injection" }
   | { type: "edit-server-injection" }
   | { type: "execute-server-injection" }
@@ -885,6 +895,7 @@ export type WorkbenchRuntimeOptions = {
   scenarioClock?: ScenarioClock;
   localInjectionExecutor?: LocalInjectionExecutor;
   serverInjectionExecutor?: ServerInjectionExecutor;
+  clientMessageRecipeProvider?: ClientMessageRecipeProvider;
   performanceHooks?: WorkbenchRuntimePerformanceHooks;
   evidenceQuery?: EvidenceInvestigationQuery;
   /** Test seam for proving Activity projection failures stay renderer-local. */
@@ -945,6 +956,7 @@ type ServerInjectionDraftState = {
   outcome: ServerInjectionExecutionResult | null;
   repeatWarning: boolean;
   discardConfirmation: boolean;
+  recipes: ClientMessageRecipeResolution;
 };
 
 type ScenarioState = {
@@ -1040,6 +1052,7 @@ class Runtime implements WorkbenchRuntime {
   private diagnosticFilterCriteria: DiagnosticFilterCriteria = Object.freeze({});
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly serverInjectionExecutor: ServerInjectionExecutor | null;
+  private readonly clientMessageRecipeProvider: ClientMessageRecipeProvider | null;
   private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
   private readonly activityProjectionFactory: (input: ActivityProjectionInput) => ActivityProjection;
@@ -1267,6 +1280,7 @@ class Runtime implements WorkbenchRuntime {
     this.diagnosticObservations = options.diagnosticObservations ?? createMemoryDiagnosticObservationJournal({ panelSessionId: `runtime-${Date.now().toString(36)}` });
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
     this.serverInjectionExecutor = options.serverInjectionExecutor ?? null;
+    this.clientMessageRecipeProvider = options.clientMessageRecipeProvider ?? null;
     this.performanceHooks = options.performanceHooks ?? null;
     this.activityProjectionFactory = options.activityProjectionFactory ?? createActivityProjection;
     this.activityPublicationDelayMs = Math.max(0, options.activityPublicationDelayMs ?? 1_000);
@@ -1902,6 +1916,9 @@ class Runtime implements WorkbenchRuntime {
           ...draft,
           enqueueWhileDisconnected: command.enabled
         }));
+        return;
+      case "apply-server-injection-recipe":
+        this.applyServerInjectionRecipe(command.recipeId);
         return;
       case "review-server-injection":
         this.reviewServerInjection();
@@ -5818,7 +5835,8 @@ class Runtime implements WorkbenchRuntime {
             reviewedFingerprint: draft.reviewedFingerprint,
             outcome: draft.outcome,
             repeatWarning: draft.repeatWarning,
-            discardConfirmation: draft.discardConfirmation
+            discardConfirmation: draft.discardConfirmation,
+            recipes: draft.recipes
           })
         : null
     });
@@ -5897,9 +5915,70 @@ class Runtime implements WorkbenchRuntime {
       reviewedFingerprint: null,
       outcome: null,
       repeatWarning: false,
-      discardConfirmation: false
+      discardConfirmation: false,
+      recipes: authored
+        ? loadingClientMessageRecipes()
+        : unavailableClientMessageRecipes(
+            "Captured Client Messages already provide the exact body accepted by the application."
+          )
     };
     this.refreshServerInjectionValidation(this.serverInjectionDraft);
+    this.publish();
+    if (authored && event) {
+      this.resolveServerInjectionRecipes(
+        this.serverInjectionDraft.id,
+        createClientMessageRecipeContext(event, candidate.target)
+      );
+    }
+  }
+
+  private resolveServerInjectionRecipes(
+    draftId: string,
+    context: ReturnType<typeof createClientMessageRecipeContext>
+  ): void {
+    const resolution = this.clientMessageRecipeProvider
+      ? this.clientMessageRecipeProvider.resolve(context)
+      : Promise.resolve(unavailableClientMessageRecipes(
+          "This application does not expose a Workbench Message Recipe adapter."
+        ));
+    void resolution.then(
+      (recipes) => this.setServerInjectionRecipes(draftId, recipes),
+      (error) => this.setServerInjectionRecipes(draftId, errorClientMessageRecipes(
+        error instanceof Error
+          ? error.message
+          : "Workbench could not resolve application Message Recipes."
+      ))
+    );
+  }
+
+  private setServerInjectionRecipes(
+    draftId: string,
+    recipes: ClientMessageRecipeResolution
+  ): void {
+    const state = this.serverInjectionDraft;
+    if (this.disposed || !state || state.id !== draftId || state.phase !== "edit") return;
+    state.recipes = recipes;
+    this.publish();
+  }
+
+  private applyServerInjectionRecipe(recipeId: string): void {
+    const state = this.serverInjectionDraft;
+    if (!state || state.phase !== "edit" || state.recipes.status !== "available") return;
+    const recipe = state.recipes.items.find(({ id }) => id === recipeId);
+    if (!recipe) return;
+    state.draft = {
+      ...state.draft,
+      message: recipe.message,
+      sequence: recipe.sequence,
+      delayTimeout: recipe.delayTimeout,
+      enqueueWhileDisconnected: recipe.enqueueWhileDisconnected
+    };
+    state.delayTimeoutText = recipe.delayTimeout === null ? "" : String(recipe.delayTimeout);
+    state.reviewedDraft = null;
+    state.reviewedFingerprint = null;
+    state.outcome = null;
+    state.discardConfirmation = false;
+    this.refreshServerInjectionValidation(state);
     this.publish();
   }
 

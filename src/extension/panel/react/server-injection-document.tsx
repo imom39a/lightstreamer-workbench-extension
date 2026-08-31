@@ -89,6 +89,27 @@ export function ServerInjectionDocument({
         dispatch({ type: "review-server-injection" });
       }}>
         <DiagnosticList errors={errors} warnings={warnings} />
+        {state.source.kind === "authored" ? <section
+          className="workbench-react__server-recipes"
+          aria-label="Application Message Recipes"
+        >
+          <strong>Application Message Recipe</strong>
+          <p>
+            The Client Message body must be accepted by this application's Metadata Adapter.
+            Workbench cannot infer a Client Message from an inbound Item Update.
+          </p>
+          {state.recipes.status === "loading" ? <span role="status">Looking for recipes exposed by the inspected application…</span> : null}
+          {state.recipes.status === "available" ? <ul>{state.recipes.items.map((recipe) => <li key={recipe.id}>
+            <span><strong>{recipe.label}</strong>{recipe.description}</span>
+            <button type="button" onClick={() => dispatch({
+              type: "apply-server-injection-recipe",
+              recipeId: recipe.id
+            })}>Use {recipe.label}</button>
+          </li>)}</ul> : null}
+          {state.recipes.status === "unavailable" || state.recipes.status === "error" ? <span>
+            {state.recipes.detail} Capture an outbound Client Message to clone its exact body, or author one from your application's message contract.
+          </span> : null}
+        </section> : null}
         <label htmlFor="workbench-server-message">Client Message body</label>
         <textarea
           ref={firstField}

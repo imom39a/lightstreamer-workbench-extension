@@ -26,7 +26,7 @@ Version 2 inspects the current Panel Session for the selected tab. Scope, Ordere
 - Keeps current-session Evidence through its Committed Evidence Boundary. The panel renders a limited set of rows at one time.
 - Traces COMMAND `ADD`, `UPDATE`, and `DELETE` Evidence while internal derived state powers Draft validation, Scenarios, Checkpoints, and lifecycle diagnostics.
 - Keeps one protected **Local Injection Draft** for one target. Create it from captured Evidence or from a live COMMAND Scope. Captured Drafts compare Source and Draft by default; edit, validate, and inject directly from that preview.
-- Keeps one protected **Server Injection Draft** for one exact live client, Session, and page. Clone an immutable Captured Client Message or author one, review the exact `sendMessage` arguments, and send it once through the inspected application's normal client-to-server path.
+- Keeps one protected **Server Injection Draft** for one exact live client, Session, and page. Clone an immutable Captured Client Message or author one, optionally start from an application-owned Message Recipe, review the exact `sendMessage` arguments, and send it once through the inspected application's normal client-to-server path.
 - Provides a temporary **Local Injection Scenario** for ordered Steps and optional Checkpoints. Review creates an immutable Run. Each Step makes one Local Injection request and gets one result.
 - Delivers Drafts and Scenario Steps through a captured listener or Lightstreamer WebSocket path in the inspected page.
 - Provides WebSocket/TLCP fallback diagnostics when primary Web Client API instrumentation is unavailable.

@@ -17,6 +17,8 @@ public final class FixtureDataAdapter implements SmartDataProvider {
   private static final String CLIENT_MESSAGE_ITEM = "scenario.server-injection";
   private static final String CLIENT_MESSAGE_KEY = "fixture-message.TICKER";
   private static final AtomicLong CLIENT_MESSAGE_SEQUENCE = new AtomicLong();
+  private static final AtomicLong SNAPSHOT_BASIC_BETA_VERSION = new AtomicLong(1);
+  private static volatile String snapshotBasicBetaQty = "20";
   private static volatile FixtureDataAdapter activeAdapter;
   private static final Map<String, Integer> ISSUE_16_EVENT_COUNTS =
       Map.ofEntries(
@@ -103,6 +105,30 @@ public final class FixtureDataAdapter implements SmartDataProvider {
     return adapter != null && adapter.emitClientMessage(message);
   }
 
+  static synchronized boolean publishSnapshotBasicQty(
+      String key, String expectedVersion, String qty) {
+    FixtureDataAdapter adapter = activeAdapter;
+    if (adapter == null
+        || !"beta".equals(key)
+        || !String.valueOf(SNAPSHOT_BASIC_BETA_VERSION.get()).equals(expectedVersion)) {
+      return false;
+    }
+    Object itemHandle = adapter.activeHandles.get("scenario.snapshot-basic");
+    if (itemHandle == null) return false;
+
+    long nextVersion = SNAPSHOT_BASIC_BETA_VERSION.incrementAndGet();
+    Map<String, String> update = row(
+        "UPDATE", "beta", "Beta", qty, "open", String.valueOf(nextVersion));
+    try {
+      adapter.smartUpdateIfActive("scenario.snapshot-basic", itemHandle, update, false);
+      if (!itemHandle.equals(adapter.activeHandles.get("scenario.snapshot-basic"))) return false;
+      snapshotBasicBetaQty = qty;
+      return true;
+    } catch (FailureException exception) {
+      return false;
+    }
+  }
+
   private boolean emitClientMessage(String message) {
     Object itemHandle = activeHandles.get(CLIENT_MESSAGE_ITEM);
     if (itemHandle == null) {
@@ -131,7 +157,17 @@ public final class FixtureDataAdapter implements SmartDataProvider {
 
   private void emitSnapshotBasic(String itemName, Object itemHandle) throws FailureException {
     smartUpdateIfActive(itemName, itemHandle, row("ADD", "alpha", "Alpha", "10", "open", "1"), true);
-    smartUpdateIfActive(itemName, itemHandle, row("ADD", "beta", "Beta", "20", "open", "1"), true);
+    smartUpdateIfActive(
+        itemName,
+        itemHandle,
+        row(
+            "ADD",
+            "beta",
+            "Beta",
+            snapshotBasicBetaQty,
+            "open",
+            String.valueOf(SNAPSHOT_BASIC_BETA_VERSION.get())),
+        true);
     smartEndOfSnapshotIfActive(itemName, itemHandle);
   }
 

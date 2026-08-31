@@ -35,6 +35,10 @@ const serverInjectionFixtureUrl = new URL(
   "/mutate-reinject.html?capture=listener&server-injection=1",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
+const serverInjectionRecipeFixtureUrl = new URL(
+  "/mutate-reinject.html?capture=listener&recipe=qty",
+  process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
+).href;
 const highVolumeFixtureUrl = new URL(
   "/?scenario=loading-evidence",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
@@ -46,6 +50,7 @@ const issue16FixtureUrl = new URL(
 type OfficialClientScenario =
   | "authored"
   | "server-injection"
+  | "server-injection-recipe"
   | "scenario"
   | "diagnostics"
   | "high-volume-loading"
@@ -115,6 +120,8 @@ async function runOfficialClientPanelJourney(
           ? issue16FixtureUrl
           : scenario === "server-injection"
             ? serverInjectionFixtureUrl
+            : scenario === "server-injection-recipe"
+              ? serverInjectionRecipeFixtureUrl
             : authoredFixtureUrl
     });
     if (scenario === "issue-16-scope") {
@@ -140,6 +147,15 @@ async function runOfficialClientPanelJourney(
           [...document.querySelectorAll("#fixture-events li")]
             .filter((row) => !row.textContent?.startsWith("end-of-snapshot")).length === 1692`,
         "the exact issue-16 fixture to deliver 1,692 updates across 15 subscriptions and 17 groups"
+      );
+    } else if (scenario === "server-injection-recipe") {
+      await waitForCondition(
+        pageCdp,
+        `document.querySelector("#connection-state")?.textContent === "SUBSCRIBED" &&
+          Number(document.querySelector("#update-count")?.textContent) === 2 &&
+          document.querySelector("#message-text")?.textContent === "beta qty 20" &&
+          globalThis.__LSEW_CLIENT_MESSAGE_RECIPE_ADAPTER__?.version === 1`,
+        "the recipe fixture to receive beta and expose its Message Recipe adapter"
       );
     } else {
       await waitForCondition(
@@ -218,6 +234,12 @@ async function runOfficialClientPanelJourney(
 
     if (scenario === "server-injection") {
       await runOfficialClientServerInjectionJourney(pageCdp, panelCdp);
+      expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      return;
+    }
+
+    if (scenario === "server-injection-recipe") {
+      await runOfficialClientServerInjectionRecipeJourney(pageCdp, panelCdp);
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
       return;
     }
@@ -762,6 +784,76 @@ test("official-client Server Injection sends one Client Message through the curr
     "server-injection"
   );
 });
+
+test("official-client Message Recipe updates qty through Metadata and Data Adapters", async () => {
+  await runOfficialClientPanelJourney(
+    "2664,727",
+    { width: 900, height: 700 },
+    "server-injection-recipe"
+  );
+});
+
+async function runOfficialClientServerInjectionRecipeJourney(
+  pageCdp: CdpClient,
+  panelCdp: CdpClient
+): Promise<void> {
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+      .some((row) => row.textContent?.includes("scenario.snapshot-basic") && row.textContent?.includes("beta"))`,
+    "the beta snapshot Evidence used to author a Client Message"
+  );
+  await clickVisiblePanelElement(
+    panelCdp,
+    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+      .find((row) => row.textContent?.includes("scenario.snapshot-basic") && row.textContent?.includes("beta"))`,
+    "the beta snapshot Evidence"
+  );
+  await pressVisiblePanelButton(panelCdp, "Author Client Message");
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Application Message Recipes"]')?.textContent?.includes("Update fields for beta") &&
+      [...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Use Update fields for beta")`,
+    "the application Message Recipe for beta"
+  );
+  await clickPanelButton(panelCdp, "Use Update fields for beta");
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('#workbench-server-message')?.value.includes('"expectedVersion": "1"') &&
+      document.querySelector('#workbench-server-sequence')?.value === "LSEW_FIXTURE_FIELD_UPDATES"`,
+    "the exact recipe body and sequence to be applied"
+  );
+  await evaluateByValue<boolean>(panelCdp, `(() => {
+    const editor = document.querySelector('#workbench-server-message');
+    if (!(editor instanceof HTMLTextAreaElement)) return false;
+    const next = editor.value.replace('"qty": "20"', '"qty": "25"');
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(editor, next);
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "25" }));
+    return true;
+  })()`);
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Review Client Message" && !button.disabled
+    )`,
+    "the edited qty recipe to become reviewable"
+  );
+  await clickPanelButton(panelCdp, "Review Client Message");
+  await clickPanelButton(panelCdp, "Send Client Message once");
+  await waitForCondition(
+    pageCdp,
+    `Number(document.querySelector("#update-count")?.textContent) === 3 &&
+      document.querySelector("#message-text")?.textContent === "beta qty 25" &&
+      document.querySelector("#rendered-model")?.textContent?.includes('"version": "2"')`,
+    "the Metadata Adapter to accept the message and Data Adapter to publish qty 25"
+  );
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Server Injection Draft"]')?.textContent?.includes("Processed by Lightstreamer")`,
+    "the processed recipe Client Message outcome"
+  );
+}
 
 async function runOfficialClientServerInjectionJourney(
   pageCdp: CdpClient,

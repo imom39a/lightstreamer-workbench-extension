@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
+  PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL,
+  PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_VERSION,
   PAGE_SERVER_INJECTION_BRIDGE_GLOBAL,
   PAGE_SERVER_INJECTION_BRIDGE_VERSION,
   PANEL_CAPTURE_MESSAGE,
@@ -69,6 +71,7 @@ describe("panel bridge client", () => {
     delete (globalThis as { chrome?: unknown }).chrome;
     delete (globalThis as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL];
     delete (globalThis as Record<string, unknown>)[PAGE_SERVER_INJECTION_BRIDGE_GLOBAL];
+    delete (globalThis as Record<string, unknown>)[PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL];
   });
 
   it("does not report bridge readiness until the background registration is acknowledged", () => {
@@ -509,6 +512,64 @@ describe("panel bridge client", () => {
       status: "acknowledgement-unknown",
       error: expect.stringContaining("disconnected")
     });
+    bridge.disconnect();
+  });
+
+  it("resolves bounded Message Recipes from the inspected application's synchronous adapter", async () => {
+    const port = createFakePort();
+    let receivedContext: unknown;
+    (globalThis as Record<string, unknown>)[PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL] = {
+      version: PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_VERSION,
+      list(context: unknown) {
+        receivedContext = context;
+        return [{
+          id: "fixture.update-fields.v1",
+          label: "Update fields for beta",
+          description: "Uses the selected key and version.",
+          message: '{"type":"update-fields","fields":{"qty":"20"}}',
+          sequence: "LSEW_FIXTURE_FIELD_UPDATES",
+          delayTimeout: null,
+          enqueueWhileDisconnected: false
+        }];
+      }
+    };
+    const evaluate = vi.fn((
+      expression: string,
+      callback: (value: unknown, info: chrome.devtools.inspectedWindow.EvaluationExceptionInfo) => void
+    ) => callback(globalThis.eval(expression), {
+      isError: false,
+      code: "",
+      description: "",
+      details: [],
+      isException: false,
+      value: ""
+    }));
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 42, eval: evaluate } },
+      runtime: { connect: vi.fn(() => port) }
+    } as unknown as typeof chrome;
+    const bridge = connectPanelBridge({ onStatusChange: vi.fn(), onCaptureMessage: vi.fn() });
+    const context = {
+      source: { eventId: "event-6", kind: "item-update", direction: "inbound", provenance: "server" },
+      target: { pageEpoch: "page-1", clientId: "client-1", sessionId: "session-1" },
+      client: { adapterSet: "LSEW_FIXTURE" },
+      subscription: { id: "subscription-1", mode: "COMMAND", dataAdapter: null },
+      item: { name: "scenario.snapshot-basic", position: 1 },
+      update: {
+        command: "ADD",
+        key: "beta",
+        isSnapshot: true,
+        fields: { qty: "20", version: "1" },
+        changedFields: { qty: "20", version: "1" }
+      }
+    } as const;
+
+    await expect(bridge.resolveClientMessageRecipes!(context)).resolves.toMatchObject({
+      status: "available",
+      items: [{ id: "fixture.update-fields.v1", sequence: "LSEW_FIXTURE_FIELD_UPDATES" }]
+    });
+    expect(receivedContext).toEqual(context);
+    expect(evaluate).toHaveBeenCalledTimes(1);
     bridge.disconnect();
   });
 
