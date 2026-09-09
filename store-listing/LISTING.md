@@ -186,7 +186,7 @@ No account is required. Open DevTools on a page using the official Lightstreamer
 - [x] Run `npm run store:assets` and inspect all five current screenshots, including Server Injection Review.
 - [x] Run `npm run release:package` and record the ZIP size, integrity result, and SHA-256.
 - [x] Run `npm run docs:check` and `npm run test:site`.
-- [ ] Publish the matching website and privacy policy before submitting the Store candidate.
+- [x] Publish the matching website and privacy policy before submitting the Store candidate.
 - [ ] Upload `release/lightstreamer-workbench-v2.0.3.zip` as a draft.
 - [ ] Replace the Store description, release notes, reviewer instructions, icon, five screenshots, and promo tiles from this directory.
 - [ ] Update the privacy questionnaire for usage analytics, the random installation identifier, captured website content, `storage`, and Google's collection host.
