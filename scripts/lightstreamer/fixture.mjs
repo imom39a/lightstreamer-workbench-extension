@@ -190,7 +190,9 @@ async function waitForFixture() {
 
 async function testFixture({ browserOnly = false } = {}) {
   try {
-    await runProcess("npm", ["run", "build"]);
+    await runProcess("npm", ["run", "build"], {
+      env: { ...process.env, LSEW_ANALYTICS_DISABLED: "1" }
+    });
     await buildFixtureClient();
     await buildAdapter();
     await startFixture();

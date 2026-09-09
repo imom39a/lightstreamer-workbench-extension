@@ -17,7 +17,7 @@ const projectRoot = resolve(import.meta.dirname, "..");
 const outputRoot = resolve(projectRoot, "site-dist");
 const contentRoot = resolve(projectRoot, "site/content");
 const pages = [
-  page("index.md", "index.html", "Lightstreamer Workbench for Chrome DevTools", "Inspect Lightstreamer Web Client activity and test local Item Updates in Chrome DevTools.", "home"),
+  page("index.md", "index.html", "Lightstreamer Workbench for Chrome DevTools", "Inspect Lightstreamer activity and test Item Updates or Client Messages in Chrome DevTools.", "home"),
   page("docs/index.md", "docs/index.html", "Documentation", "Install Lightstreamer Workbench and learn how to inspect Lightstreamer activity.", "docs"),
   page("docs/developer-guide.md", "docs/developer-guide/index.html", "Developer guide", "Use Workbench to capture, inspect, diagnose, and test Lightstreamer activity.", "docs"),
   page("docs/getting-started.md", "docs/getting-started/index.html", "Getting started", "Install Workbench, open its DevTools panel, and capture your first Lightstreamer session.", "docs"),
@@ -59,6 +59,7 @@ await Promise.all([
   copy("docs/assets/app-workspace-context.png", "assets/app-workspace-context.png"),
   copy("docs/assets/app-local-injection-editor.png", "assets/app-local-injection-editor.png"),
   copy("docs/assets/app-notifications.png", "assets/app-notifications.png"),
+  copy("docs/assets/app-server-injection.png", "assets/app-server-injection.png"),
   copy("docs/assets/real-app-gallery.png", "assets/real-app-gallery.png"),
   copy("site/assets/og.png", "assets/og.png")
 ]);

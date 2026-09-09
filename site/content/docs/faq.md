@@ -20,11 +20,13 @@ No. Workbench shows captured `ADD`, `UPDATE`, and `DELETE` Evidence and related 
 
 ## Is captured data uploaded?
 
-No. Version 2 has no analytics or maintainer upload service. An export is a local download that you request. The inspected application controls its own network traffic.
+No. Captured Evidence, payloads, inspected URLs, search text, Drafts, and raw errors stay in the browser extension context. An export is a local download that you request. The inspected application controls its own network traffic.
+
+Configured production builds separately send fixed feature names, foreground engagement, coarse outcomes, and a random installation identifier to Google Analytics. Turn this off under **More actions → Help & resources → Usage analytics**. Workbench has no maintainer-operated upload service.
 
 ## How long is Evidence retained?
 
-Workbench retains Evidence only for the current Panel Session. One Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. The first count or byte limit stops admission.
+Workbench retains Evidence only for the current Panel Session. One Panel Session owns one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 5,000 records or 32 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible.
 
 Complete History ends at the current History Interval's Committed Evidence Boundary. The visible Evidence window shows only part of the retained Evidence. Clear ends the current History Interval. Clear does not restart Capture after a terminal stop. A controlled Close tries to erase the Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence.
 

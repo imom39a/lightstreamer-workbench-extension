@@ -10,6 +10,10 @@ export default defineConfig({
   root: sourceRoot,
   envDir: projectRoot,
   publicDir: resolve(projectRoot, "public"),
+  define: process.env.LSEW_ANALYTICS_DISABLED === "1" ? {
+    "import.meta.env.VITE_LSEW_GA_MEASUREMENT_ID": '""',
+    "import.meta.env.VITE_LSEW_GA_API_SECRET": '""'
+  } : {},
   build: {
     emptyOutDir: true,
     outDir: resolve(projectRoot, extensionOutDir),

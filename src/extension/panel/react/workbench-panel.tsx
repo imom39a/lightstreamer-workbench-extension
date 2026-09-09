@@ -28,6 +28,8 @@ import {
 import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filter-actions";
 import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
+import { UNAVAILABLE_ANALYTICS, type AnalyticsClient } from "../../analytics/client";
+import { UsageAnalytics } from "./usage-analytics";
 import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
 import { NotificationsDocument } from "./notifications-document";
@@ -49,7 +51,7 @@ const LazyServerInjectionDocument = lazy(async () => {
   return { default: module.ServerInjectionDocument };
 });
 
-export type WorkbenchPanelProps = { runtime: WorkbenchRuntime };
+export type WorkbenchPanelProps = { runtime: WorkbenchRuntime; analytics?: AnalyticsClient };
 
 type ScopeNode = WorkbenchSnapshot["scope"]["nodes"][number];
 type ScopeTreeEntry = { node: ScopeNode; index: number };
@@ -470,7 +472,7 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 /** React presentation for the Slice 1 read-only Scoped Evidence Workspace. */
-export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
+export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: WorkbenchPanelProps): JSX.Element {
   const subscribe = useMemo(() => (listener: () => void) => {
     runtime.reportPanelPerformanceEvent?.({ type: "subscription-active", active: true });
     const unsubscribe = runtime.subscribe(listener);
@@ -847,14 +849,15 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     if (snapshot.evidenceCopy.state !== "ready" || !snapshot.evidenceCopy.text) return;
     if (!navigator.clipboard?.writeText) {
       setScopedCopyStatus("Could not copy retained scoped Evidence.");
+      analytics.track({ name: "export_result", params: { format: "clipboard", outcome: "unavailable" } });
       dispatch(runtime, { type: "clear-scoped-evidence-copy" });
       return;
     }
     void navigator.clipboard.writeText(snapshot.evidenceCopy.text).then(
-      () => setScopedCopyStatus(`Copied retained scoped Evidence (${snapshot.evidenceCopy.eventCount.toLocaleString()} events).`),
-      () => setScopedCopyStatus("Could not copy retained scoped Evidence.")
+      () => { setScopedCopyStatus(`Copied retained scoped Evidence (${snapshot.evidenceCopy.eventCount.toLocaleString()} events).`); analytics.track({ name: "export_result", params: { format: "clipboard", outcome: "success" } }); },
+      () => { setScopedCopyStatus("Could not copy retained scoped Evidence."); analytics.track({ name: "export_result", params: { format: "clipboard", outcome: "failed" } }); }
     ).finally(() => dispatch(runtime, { type: "clear-scoped-evidence-copy" }));
-  }, [snapshot.evidenceCopy]);
+  }, [snapshot.evidenceCopy, analytics]);
 
   useLayoutEffect(() => {
     const copyFinished = snapshot.evidenceCopy.state !== "preparing" && operationFocusOrigin.current === "copy";
@@ -1224,13 +1227,16 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       if (format === "json") {
         downloadText(prepared.filename, prepared.json, "application/json");
         setExportDownloadStatus("Downloaded versioned JSON export.");
+        analytics.track({ name: "export_result", params: { format, outcome: "success" } });
         return;
       }
       const { renderTopologyHtmlReport } = await import("../topology-html-report");
       downloadText(topologySnapshotFilename(prepared.document, "html"), renderTopologyHtmlReport(prepared.document), "text/html");
       setExportDownloadStatus("Downloaded offline HTML export.");
+      analytics.track({ name: "export_result", params: { format, outcome: "success" } });
     } catch {
       setExportDownloadStatus("The export could not be downloaded. Try again or save the prepared JSON manually.");
+      analytics.track({ name: "export_result", params: { format, outcome: "failed" } });
     }
   };
 
@@ -1238,13 +1244,16 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     if (!rawEvidence) return;
     if (!navigator.clipboard?.writeText) {
       setCopyStatus("Raw Evidence copy is unavailable in this context.");
+      analytics.track({ name: "export_result", params: { format: "raw", outcome: "unavailable" } });
       return;
     }
     try {
       await navigator.clipboard.writeText(JSON.stringify(rawEvidence.raw, null, 2));
       setCopyStatus(`Copied raw Evidence ${rawEvidence.id}.`);
+      analytics.track({ name: "export_result", params: { format: "raw", outcome: "success" } });
     } catch {
       setCopyStatus("Raw Evidence could not be copied. Select and copy the document instead.");
+      analytics.track({ name: "export_result", params: { format: "raw", outcome: "failed" } });
     }
   };
 
@@ -1923,7 +1932,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               {geometry === "compact" ? <section><h3>Panel appearance</h3><label htmlFor="workbench-actions-theme">Panel theme</label><select id="workbench-actions-theme" value={snapshot.theme} onChange={(event) => dispatch(runtime, { type: "set-theme", theme: event.currentTarget.value as "auto" | "dark" | "light" })}><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select></section> : null}
               <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}). Client Message bodies and outcome text are always redacted from this bulk copy.</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading retained Evidence: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy retained scoped Evidence</button>}</section>
               <section className="workbench-react__operations-danger"><h3>Clear retained Evidence</h3><p>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>{snapshot.retention.clearState === "confirming" ? <div className="workbench-react__confirmation"><strong>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button className="workbench-react__confirmation-primary" type="button" onClick={() => dispatch(runtime, { type: "confirm-clear-history" })}>Clear retained events</button><button type="button" onClick={() => dispatch(runtime, { type: "cancel-clear-history" })}>Keep Evidence</button></div></div> : <button type="button" onClick={() => dispatch(runtime, { type: "request-clear-history" })}>Clear retained Evidence…</button>}</section>
-              <section><h3>Help &amp; resources</h3><p>Open first-party guides and reporting routes for this Workbench release.</p><nav className="workbench-react__resource-links" aria-label="Help and resources">{WORKBENCH_PUBLIC_RESOURCES.map((resource) => <a className="workbench-react__resource-link" href={resource.href} target="_blank" rel="noopener noreferrer" key={resource.href}>{resource.label}</a>)}</nav></section>
+              <section><h3>Help &amp; resources</h3><p>Open first-party guides and reporting routes for this Workbench release.</p><nav className="workbench-react__resource-links" aria-label="Help and resources">{WORKBENCH_PUBLIC_RESOURCES.map((resource) => <a className="workbench-react__resource-link" href={resource.href} target="_blank" rel="noopener noreferrer" key={resource.href} onClick={() => analytics.track({ name: "feature_used", params: { feature: resource.label === "Documentation" ? "documentation" : resource.label === "Privacy" ? "privacy" : "support", action: "open" } })}>{resource.label}</a>)}</nav><UsageAnalytics client={analytics} /></section>
               <section><h3>Scoped export</h3><p>Prepare a versioned download for the current Scope. Credentials are always excluded.</p>{snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing retained-Evidence export: {(snapshot.export.operation.progress.completed ?? 0).toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence · {snapshot.export.operation.progress.excludedAfterLatch} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : <button ref={exportTrigger} type="button" onClick={() => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); }}>Export Scope…</button>}</section>
             </section> : contextMode === "export" ? <section className="workbench-react__export" aria-label="Scoped export options">
               <p>Download the current Scope as versioned JSON or offline HTML. Credentials are always excluded.</p>

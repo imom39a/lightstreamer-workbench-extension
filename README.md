@@ -10,9 +10,9 @@ Lightstreamer Workbench is an open-source Chrome DevTools extension. Use it to i
 
 ## Project Status
 
-Version `2.0.0` is the current public release. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf). You can also build the source and load `dist/` as an unpacked extension.
+Version `2.0.2` is the current public release. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf). You can also build the source and load `dist/` as an unpacked extension.
 
-This repository contains a verified `2.0.1` release candidate. A build or package does not publish the release. Version `2.0.0` stays public until a maintainer completes the Chrome Web Store release process.
+This repository contains the `2.0.3` release candidate. A build or package does not publish the release. Version `2.0.2` stays public until a maintainer completes the Chrome Web Store release process.
 
 Version 2 inspects the current Panel Session for the selected tab. Scope, Ordered Evidence, and Context are in one workspace. The public [roadmap](https://imom39a.github.io/lightstreamer-workbench-extension/roadmap/) lists planned work without release dates.
 
@@ -51,14 +51,14 @@ only deliberate History Interval reset.
 
 ## What It Does Not Do
 
-- It does not send inspected URLs, Lightstreamer addresses, captured values, identifiers, search text, Injection Drafts, or error details to this project, the maintainers, analytics services, or any external backend.
+- It does not send inspected URLs, Lightstreamer addresses, captured values, search text, Injection Drafts, or raw error details to this project, the maintainers, analytics services, or any external backend.
 - It does not intentionally keep captured events after the current Panel Session. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
 - It does not inject an arbitrary Item Update into the real Lightstreamer server stream. Server Injection sends a Client Message through `LightstreamerClient.sendMessage`; only the server-side application decides what that message does.
 - It does not automatically retry Server Injection. An Unknown outcome remains terminal until you deliberately prepare a separate Repeat, which may duplicate server-side effects.
 - It does not create a Lightstreamer client, call `connect()` or `subscribe()`, or establish a server session; capture only observes clients and WebSockets owned by the inspected page.
 - It does not provide app-specific interpretation rules in the core product.
 - It does not treat arbitrary WebSocket protocols as first-class Lightstreamer domain models.
-- It does not include product analytics, tracking, advertising, account sign-in, or remote error logging.
+- It does not include advertising, account sign-in, remote error logging, or a maintainer-operated collection backend. Configured production builds send the limited usage analytics described below.
 
 ## Intended use
 
@@ -106,7 +106,7 @@ Keep the core model based on Lightstreamer terms. Do not add application-specifi
 
 Lightstreamer Workbench keeps captured event data, including Client Message bodies and Injection Drafts, in one temporary Event History for the Panel Session. The extension does not send this data to the maintainers or an analytics service. Complete History ends at the current History Interval's Committed Evidence Boundary. Workbench masks Lightstreamer client IP addresses before the panel receives them. The panel cannot show the exact address. Bulk retained-Evidence copies always redact Client Message bodies and outcome text; complete local raw Evidence remains a deliberate per-event action. You can inspect a retired Scope, but you cannot use it for Injection.
 
-Version 2 has no product analytics, remote error logging, or persistent installation identifier. At startup, it clears old analytics settings and identifier records from earlier versions. The public website uses static HTML and CSS. It has no analytics, cookies, or JavaScript. Read the [privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) for more information.
+The repository candidate adds usage analytics, enabled by default in configured production builds. It sends fixed feature names, foreground engagement, coarse outcomes, and a random installation identifier to Google Analytics. Turn it off under **More actions → Help & resources → Usage analytics**; this removes the saved analytics identifier. Captured data and typed text stay local. See [analytics setup and reports](docs/USAGE_ANALYTICS.md). The public website remains static HTML and CSS without analytics, cookies, or JavaScript. Read the [privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) for more information.
 
 The extension needs broad page access to observe the Lightstreamer Web Client before the application creates clients or Subscriptions. Use Workbench only on pages that you have permission to inspect. Do not share screenshots or logs that contain secrets, customer data, tokens, or proprietary payloads.
 

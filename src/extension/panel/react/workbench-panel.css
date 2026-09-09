@@ -352,6 +352,9 @@
 .workbench-react__resource-links { display: flex; flex-wrap: wrap; gap: 6px; }
 .workbench-react__resource-link { border: 1px solid var(--wb-border-strong); background: var(--wb-raised); color: var(--wb-text); padding: 3px 7px; text-decoration: none; }
 .workbench-react__resource-link:hover { border-color: var(--wb-accent); color: var(--wb-accent); }
+.workbench-react__usage-analytics summary { cursor: pointer; }
+.workbench-react__usage-analytics[open] { display: grid; gap: 7px; }
+.workbench-react__usage-analytics label { display: flex; gap: 6px; align-items: center; }
 .workbench-react__confirmation { display: grid; gap: 7px; border-left: 3px solid var(--wb-warning); background: var(--wb-warning-soft); color: var(--wb-text); padding: 8px; }
 .workbench-react__confirmation > div { display: flex; flex-wrap: wrap; gap: 6px; }
 .workbench-react button.workbench-react__confirmation-primary:focus-visible { outline: 3px solid var(--wb-focus); outline-offset: 2px; box-shadow: 0 0 0 1px var(--wb-warning-soft); }

@@ -1,4 +1,6 @@
 import { createRoot } from "react-dom/client";
+import { createAnalyticsClient, type AnalyticsClient } from "../analytics/client";
+import { observeWorkbenchAnalytics } from "../analytics/observer";
 
 import {
   createPanelSessionId,
@@ -36,6 +38,7 @@ export type WorkbenchPanelMountOptions = {
   createInMemoryHistory?: typeof createInMemoryEventHistory;
   createRuntime?: typeof createWorkbenchRuntime;
   connectBridge?: typeof connectPanelBridge;
+  analytics?: AnalyticsClient;
 };
 
 export type DisposeWorkbenchPanel = () => Promise<void>;
@@ -59,6 +62,8 @@ export function mountWorkbenchPanel(
   let runtime: WorkbenchRuntime | null = null;
   let bridge: PanelBridgeConnection | null = null;
   let reactRoot: ReturnType<typeof createRoot> | null = null;
+  const analytics = options.analytics ?? createAnalyticsClient();
+  let analyticsObserver: ReturnType<typeof observeWorkbenchAnalytics> | null = null;
   const themeManager = createThemeManager({
     target: root,
     documentElement: document.documentElement
@@ -75,6 +80,8 @@ export function mountWorkbenchPanel(
       return;
     }
     disposed = true;
+    analyticsObserver?.dispose();
+    analytics.dispose();
     window.removeEventListener("message", onVisibilityMessage);
     bridge?.disconnect();
     reactRoot?.unmount();
@@ -166,9 +173,10 @@ export function mountWorkbenchPanel(
       storageEstimate,
       storageHeadroomSampler
     });
-    const presentationRuntime = bindRuntime(runtime, themeManager);
+    analyticsObserver = observeWorkbenchAnalytics(runtime, analytics, window);
+    const presentationRuntime = bindRuntime(runtime, themeManager, analyticsObserver);
     reactRoot = createRoot(root);
-    reactRoot.render(<WorkbenchPanel runtime={presentationRuntime} />);
+    reactRoot.render(<WorkbenchPanel runtime={presentationRuntime} analytics={analytics} />);
     bridge = connectBridgeClient({
       onStatusChange(status) {
         document.documentElement.dataset.lsewPanelBridgeStatus = status;
@@ -189,6 +197,7 @@ export function mountWorkbenchPanel(
     }
     visible = event.data.visible;
     runtime?.dispatch({ type: "set-visible", visible });
+    analyticsObserver?.setVisible(visible);
   }
 
   function closeHistory(): void {
@@ -205,11 +214,12 @@ export function mountWorkbenchPanel(
   }
 }
 
-function bindRuntime(runtime: WorkbenchRuntime, themeManager: ThemeManager): WorkbenchRuntime {
+function bindRuntime(runtime: WorkbenchRuntime, themeManager: ThemeManager, analytics: Pick<ReturnType<typeof observeWorkbenchAnalytics>, "command">): WorkbenchRuntime {
   return {
     getSnapshot: runtime.getSnapshot.bind(runtime),
     subscribe: runtime.subscribe.bind(runtime),
     dispatch(command) {
+      analytics.command(command);
       if (command.type === "set-theme") {
         themeManager.setPreference(command.theme);
       }

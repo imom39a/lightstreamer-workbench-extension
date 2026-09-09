@@ -1,6 +1,6 @@
 {
   "name": "lightstreamer-workbench",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "node scripts/build-extension.mjs",
+    "analytics:validate": "node scripts/validate-analytics.mjs",
     "site:build": "node scripts/build-site.mjs",
     "site:check": "npm run site:build && node scripts/check-site.mjs",
     "site:serve": "node scripts/site-server.mjs",
@@ -52,7 +53,7 @@
     "test:ui": "node scripts/test-ui.mjs",
     "test:ui:update": "node scripts/test-ui-update.mjs",
     "test:ui:visual": "node scripts/generate-workbench-visual-evidence.mjs",
-    "test:ui:extension": "npm run build && node scripts/test-ui-extension.mjs",
+    "test:ui:extension": "node scripts/test-ui-extension.mjs",
     "docs:check": "node scripts/check-docs.mjs"
   },
   "devDependencies": {

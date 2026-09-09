@@ -56,6 +56,8 @@ import { createInMemoryEventHistory } from ${source("src/core/event-history-auth
 import { createMemoryDiagnosticObservationJournal, createUnavailableDiagnosticObservationJournal } from ${source("src/core/diagnostic-observation.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
+import { createAnalyticsClient } from ${source("src/extension/analytics/client.ts")};
+import { observeWorkbenchAnalytics } from ${source("src/extension/analytics/observer.ts")};
 import { getWorkbenchScenario, isWorkbenchScenarioId } from ${source("tests/support/workbench-scenarios.ts")};
 
 const params = new URLSearchParams(window.location.search);
@@ -205,7 +207,27 @@ for (const message of scenario.captureMessages ?? []) {
   runtime.dispatch({ type: "ingest-capture-message", message });
 }
 const reactRoot = createRoot(root);
-reactRoot.render(createElement(WorkbenchPanel, { runtime }));
+const analyticsEvents = [];
+const analytics = createAnalyticsClient({
+  async send(message) {
+    if (message.action === "event") { analyticsEvents.push(message.event); return { ok: true, value: true }; }
+    if (params.get("analytics") === "error") return { ok: false };
+    if (message.action === "preference") localStorage.setItem("fixture.analytics.enabled", String(message.enabled));
+    return { ok: true, value: { enabled: localStorage.getItem("fixture.analytics.enabled") !== "false", configured: params.get("analytics") !== "unconfigured" } };
+  },
+  onPreferenceChange: () => () => {}
+});
+const analyticsObserver = observeWorkbenchAnalytics(runtime, analytics, window);
+const presentationRuntime = {
+  getSnapshot: runtime.getSnapshot.bind(runtime), subscribe: runtime.subscribe.bind(runtime),
+  dispatch(command) { analyticsObserver.command(command); runtime.dispatch(command); },
+  dispose: runtime.dispose.bind(runtime), disposeAndWait: runtime.disposeAndWait.bind(runtime),
+  reportVisibleFrame: runtime.reportVisibleFrame?.bind(runtime),
+  reportPanelPerformanceEvent: runtime.reportPanelPerformanceEvent?.bind(runtime)
+};
+reactRoot.render(createElement(WorkbenchPanel, { runtime: presentationRuntime, analytics }));
+window.__analyticsEvents = () => analyticsEvents;
+window.addEventListener("pagehide", () => { analyticsObserver.dispose(); analytics.dispose(); }, { once: true });
 
 await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 if (scenario.selectedScope) {
@@ -317,7 +339,7 @@ document.documentElement.dataset.reactScenario = scenarioId;
 document.documentElement.dataset.reactSceneReady = "true";
 window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
 window.__serverInjectionExecutionCount = () => serverInjectionExecutionCount;
-window.__setWorkbenchVisible = (visible) => runtime.dispatch({ type: "set-visible", visible });
+window.__setWorkbenchVisible = (visible) => { runtime.dispatch({ type: "set-visible", visible }); analyticsObserver.setVisible(visible); };
 window.__setWorkbenchCaptureStatus = (status) => runtime.dispatch({ type: "set-capture-status", status });
 window.__setWorkbenchStorageMode = (mode) => runtime.dispatch({
   type: "set-storage-state",

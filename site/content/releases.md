@@ -1,6 +1,14 @@
-## 2.0.1 — current release line
+## 2.0.3 candidate — Client Messages, Server Injection, and usage analytics
 
-Version 2.0.1 is the current release line. Chrome Web Store review controls when this version is available. Check Chrome extension details to see your installed version.
+The 2.0.3 candidate captures outbound Client Messages and their listener outcomes. Server Injection can clone a captured message or author one for an exact live client and Session, optionally using an application-owned Message Recipe. Review shows every `LightstreamerClient.sendMessage` argument before one deliberate send. Workbench does not automatically retry an Unknown outcome, and Processed does not prove a later Server Update or business effect.
+
+The candidate also adds Google Analytics 4 measurement for Workbench feature use, foreground engagement, investigation journeys, and coarse failure categories. Analytics is on by default in configured builds, with an off switch under **More actions → Help & resources → Usage analytics**. Captured Lightstreamer data, inspected URLs, search text, Drafts, and raw errors stay local. Turning analytics off removes the saved analytics identifier.
+
+This candidate adds `storage` permission for analytics preferences and identity, plus access to Google's collection host. It does not load remote scripts. The website and offline exports remain free of analytics. The [Privacy policy]({{site}}privacy/) describes the data boundary. This entry does not mean the candidate is published.
+
+## 2.0.2 — current release
+
+Version 2.0.2 is the current Chrome Web Store release. Check Chrome extension details to see your installed version.
 
 - Adds Local Injection Scenarios for ordered multi-event tests. Each Scenario uses one target, immutable reviewed Runs, serial controls, per-Step outcomes, and Workbench Checkpoints.
 - Adds diagnostic Checkpoints after Review. These Checkpoints use normalized diagnostic data, active-time periods, bounded references, and explicit Clear or unavailable results.
@@ -13,7 +21,7 @@ Version 2.0.1 is the current release line. Chrome Web Store review controls when
 - Keeps the same Manifest V3 permissions, local-only data handling, Panel Session-owned temporary Event History, and Local Injection boundaries.
 - Updates the product site, screenshots, and developer guide.
 
-The maintainer controls the staged release process. A package or source commit does not prove that the Chrome Web Store release is available.
+The maintainer controls the staged release process. A candidate package or source commit does not prove that version 2.0.3 is available.
 
 ## 2.0.0 — unified workspace foundation
 

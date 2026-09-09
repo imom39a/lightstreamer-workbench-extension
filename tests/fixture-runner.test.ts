@@ -79,7 +79,7 @@ describe("cross-platform Lightstreamer fixture commands", () => {
 
   it("exposes one production unpacked-extension smoke command", () => {
     expect(packageJson.scripts["test:ui:extension"]).toBe(
-      "npm run build && node scripts/test-ui-extension.mjs"
+      "node scripts/test-ui-extension.mjs"
     );
     expect(packageJson.scripts["test:ui:extension:react"]).toBeUndefined();
     expect(packageJson.scripts["fixture:test:react"]).toBeUndefined();

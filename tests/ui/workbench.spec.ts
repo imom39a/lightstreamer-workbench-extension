@@ -590,7 +590,7 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   await expect(operations).toContainText("4,000 captured");
   await expect(operations).toContainText("60 currently shown");
   await expect(operations).toContainText("Capacity AVAILABLE (NORMAL)");
-  await expect(operations).not.toContainText("Usage analytics");
+  await expect(operations).toContainText("Usage analytics");
   await expect(operations.getByRole("link", { name: "Documentation" })).toHaveAttribute(
     "href",
     "https://imom39a.github.io/lightstreamer-workbench-extension/docs/"

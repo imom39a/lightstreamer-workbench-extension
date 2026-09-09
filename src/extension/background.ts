@@ -14,6 +14,9 @@ import {
   isRuntimeCaptureMessage,
   isRuntimeTopologySyncFrameMessage
 } from "../bridge/messages";
+import { registerAnalyticsService } from "./analytics/background";
+
+registerAnalyticsService();
 
 type PanelRegistration = {
   tabId: number;

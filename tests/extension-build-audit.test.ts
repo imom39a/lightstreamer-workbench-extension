@@ -58,7 +58,7 @@ describe("release extension build audit", () => {
     expect(result.output).toContain("new Function");
   });
 
-  it("rejects analytics transport and persistent analytics identifiers", async () => {
+  it("rejects analytics transport outside the service worker", async () => {
     const dist = await createDist({
       panelSource: '"useSyncExternalStore";import("../../assets/local-injection-document.js");"https://www.google-analytics.com/mp/collect";"lsew.analytics.client-id.v1"'
     });
@@ -66,7 +66,15 @@ describe("release extension build audit", () => {
     const result = await runAudit(dist);
 
     expect(result.exitCode).toBe(1);
-    expect(result.output).toContain("analytics transport or identifier residue");
+    expect(result.output).toContain("analytics transport outside the service worker");
+  });
+
+  it("allows Measurement Protocol only in the background and keeps it out of content scripts", async () => {
+    const dist = await createDist();
+    await writeFile(resolve(dist, "extension/background.js"), '"https://www.google-analytics.com/mp/collect";');
+    expect((await runAudit(dist)).exitCode).toBe(0);
+    await writeFile(resolve(dist, "content/content-script.js"), '"lsew:usage-analytics:v1";');
+    expect((await runAudit(dist)).output).toContain("product analytics in the inspected-page boundary");
   });
 });
 

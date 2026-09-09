@@ -8,10 +8,10 @@ Name:
 Lightstreamer Workbench
 ```
 
-Summary, 89 characters:
+Summary, 91 characters:
 
 ```text
-Inspect Lightstreamer Web Client activity and test local Item Updates in Chrome DevTools.
+Inspect Lightstreamer activity and test Item Updates or Client Messages in Chrome DevTools.
 ```
 
 Category:
@@ -46,6 +46,8 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
+The description below is the analytics candidate draft. Publish it only with the matching package and privacy disclosures. The versioned release records later in this file describe their original packages.
+
 ```text
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
 
@@ -57,17 +59,22 @@ Key features:
 - Read events in retained order. Each row shows its event number, time, Source, phase, operation, object, and key.
 - Use Find, Filter, selection, Capture, Coverage, and Live or Frozen independently.
 - Select an event to inspect its Fields, raw Evidence, Source, COMMAND details, and limits in Context.
+- Capture outbound Client Messages and their normal listener outcomes as ordered Evidence.
 - Review active conditions and recent Lightstreamer diagnostics in Notifications. Dismiss hides only the footer message.
 - Trace COMMAND `ADD`, `UPDATE`, and `DELETE` operations. Use Fields, diagnostics, and Checkpoints for more detail.
 - Create one protected Local Injection Draft from captured Evidence or from a live COMMAND Scope.
 - Edit raw JSON and validate the Draft. Captured Drafts compare Source and Draft by default, then inject directly from that preview.
 - Use a Local Injection Scenario for ordered Steps, immutable reviewed Runs, serial controls, Checkpoints, and results for each Step.
 - Deliver an Item Update to the exact live Subscription in the inspected page. Workbench reports delivered, failed, partial, unknown, and stale-target results.
+- Create a protected Server Injection Draft from captured Client Message Evidence, author one for an exact live client and Session, or start from an application-owned Message Recipe.
+- Review every LightstreamerClient.sendMessage argument, then send the Client Message once through the inspected application's normal client-to-server path.
+- Treat Processed as a Lightstreamer message outcome, not proof of an application business effect or later Server Update. Workbench never retries an Unknown outcome automatically.
 - Use WebSocket/TLCP fallback diagnostics when the primary Web Client instrumentation is not available.
 - Keep one temporary Event History for each Panel Session. IndexedDB can keep 100,000 records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB.
-- Use the Committed Evidence Boundary to find the end of complete History. Clear ends the current History Interval and cannot restart stopped Capture.
+- Use the Committed Evidence Boundary to find the end of complete History. Retention removes the oldest accepted prefix while Capture continues and reports the resulting Evidence Gap explicitly.
 - A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
-- No product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer-operated backend.
+- Usage analytics helps improve feature adoption and reliability. It sends fixed feature names, engagement time, coarse outcomes, and a random installation identifier to Google Analytics. It is on by default and can be turned off in More actions → Help & resources → Usage analytics. Captured data, inspected URLs, and typed text stay local.
+- No advertising, account sign-in, or maintainer-operated collection backend.
 - Help links open the project documentation, privacy policy, and support page.
 
 Use this extension to inspect and test Lightstreamer behavior in Chrome DevTools.
@@ -85,6 +92,8 @@ Remove every legacy screenshot that shows the retired three-section interface be
    - Caption: Compare, edit, validate, and inject one protected Local Injection Draft from the same preview.
 4. `screenshots/04-notifications.png`
    - Caption: Review active Workbench conditions and recent Lightstreamer diagnostics in Notifications.
+5. `screenshots/05-server-injection.png`
+   - Caption: Review the exact client, Session, and sendMessage arguments before one deliberate Client Message send.
 
 ## Graphic Assets
 
@@ -111,19 +120,20 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.2
+2.0.3
 ```
 
 What's new:
 
 ```text
-Update for the Workbench workspace.
+Client Messages, Server Injection, and privacy-controlled usage analytics.
 
-- Adds Local Injection Scenarios with immutable reviewed Runs, serial controls, Checkpoints, and results for each Step.
-- Adds one Notifications document for active conditions and recent Lightstreamer diagnostics. Dismiss hides only the footer message.
-- Adds a separate rail for retained Event order and a two-line layout for Scope items.
-- Shows selected update Fields before the closed supporting sections in Context.
-- Keeps the same Manifest V3 permissions, local-only data handling, temporary Event History, and Local Injection server boundary.
+- Captures outbound Client Messages and their normal listener outcomes as ordered Evidence.
+- Adds Server Injection for cloning or authoring one Client Message, reviewing its exact sendMessage arguments, and sending it once through the page-owned client's current Session.
+- Supports optional application-owned Message Recipes without adding application-specific schemas to Workbench.
+- Adds limited Google Analytics usage measurement with a persistent off switch under More actions → Help & resources → Usage analytics.
+- Keeps captured Evidence, payloads, inspected URLs, search text, Drafts, raw errors, and exports out of analytics.
+- Adds storage permission for the analytics preference and random installation identifier, plus access to Google's collection endpoint. No remote script is loaded.
 ```
 
 ## Privacy Practices Draft
@@ -133,7 +143,7 @@ Lightstreamer Workbench processes inspected-page Lightstreamer event data in the
 
 Complete History ends at the current History Interval's Committed Evidence Boundary. Clear ends the current History Interval. It cannot restart Capture after a terminal stop. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
 
-Version 2 has no product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer server. It does not create an analytics identifier. It can remove old 0.1.x analytics consent and installation identifier records when local storage is available. This cleanup does not send data. A cleanup failure does not block the panel.
+The analytics candidate sends fixed Workbench feature names, foreground engagement time, coarse outcomes, extension version, event time, and a random installation identifier to Google Analytics 4. Analytics is enabled by default in configured builds. More actions → Help & resources → Usage analytics provides a persistent off switch. Turning it off stops collection and removes the identifier and analytics session. Captured Evidence, payloads, inspected URLs, search text, clipboard/export content, and raw errors are never sent. Workbench does not sell data, use analytics for advertising, require sign-in, or operate a maintainer collection server.
 
 Workbench uses host and page access to observe the official Lightstreamer Web Client. It also uses this access for Local Injection in the inspected page. Local Injection does not contact the Lightstreamer Server. Workbench creates a JSON or offline HTML export only when the user requests it. Each export excludes credentials and creates a local download.
 ```
@@ -141,29 +151,16 @@ Workbench uses host and page access to observe the official Lightstreamer Web Cl
 Privacy questionnaire note:
 
 ```text
-Version 2 does not send user data off the device. Do not declare product analytics or an analytics identifier. State that Workbench processes website content in the current DevTools session. State that only a user-requested export creates a local file. Certify that Workbench does not sell data or use it for advertising. Certify that Workbench has no account sign-in or remote logging. Keep the dashboard answers, listing, and privacy policy consistent.
+For the analytics candidate, declare collection of user activity and the pseudonymous installation identifier in the dashboard's applicable categories. Describe the fixed product events, Google Analytics recipient, default-on behavior, and off switch. Do not claim that all data stays on the device. Captured website content, message bodies, credentials, browsing history, search text, and raw errors remain excluded from collection. Explain storage permission for preferences/identity and https://www.google-analytics.com/* host access for Measurement Protocol. Keep dashboard answers, listing, and policy consistent before publishing. Earlier no-analytics releases retain their original disclosures.
 ```
 
 ## Reviewer Test Instructions
 
 ```text
-No account or login is required.
-
-This is a Chrome DevTools extension. Open Chrome DevTools on a page that uses the official Lightstreamer Web Client. Select the "Lightstreamer Workbench" panel. The panel stays idle until the page creates a Lightstreamer client or Subscription. Captured activity appears in Ordered Evidence. Use Runtime Scope to select a client, Session, Subscription, item, or listener. Select Evidence to inspect it in Context. Use ordered operations, Fields, diagnostics, and Checkpoints to inspect COMMAND lifecycles.
-
-To test Local Injection, select a compatible captured Item Update. Then select **Create Local Injection Draft**. You can also select **Author COMMAND Item Update** from an applicable live COMMAND Scope. Workbench protects one Draft. For captured Evidence, **Compare Source** is active by default. Edit the JSON, correct validation errors, verify the exact target, then select **Inject locally** on the same authoring surface. Workbench freezes and revalidates the Draft and target before delivery. The outcome document reports delivered, failed, partial, unknown, and stale-target results. It does not report an application business result.
-
-Open **More actions**. Confirm that **Help & resources** has Documentation, Privacy, and Support links. Version 2 has no analytics control.
-
-For deterministic local verification from the repository:
-
-1. Run `npm ci`.
-2. Run `npm run release:package`.
-3. Load the generated `dist/` directory as an unpacked extension in Chrome.
-4. Run `npm run fixture:test` to verify the bundled Lightstreamer fixture smoke path.
+No account is required. Open DevTools on a page using the official Lightstreamer Web Client and select Lightstreamer Workbench. Capture appears in Ordered Evidence. For Local Injection, create a Draft from an Item Update and choose Inject locally. For Server Injection, clone captured Client Message Evidence or author one for a live client, review the sendMessage arguments, then choose Send Client Message once. Usage analytics is under More actions > Help & resources and can be turned off.
 ```
 
-## Release Checklist
+## Version 2.0.2 Release Checklist (historical)
 
 - [x] Confirm `public/manifest.json` version matches `package.json`.
 - [x] Run `npm run release:package`.
@@ -181,3 +178,17 @@ For deterministic local verification from the repository:
 - [x] Confirm the privacy policy URL is `https://imom39a.github.io/lightstreamer-workbench-extension/privacy/`.
 - [x] Confirm the support URL is `https://imom39a.github.io/lightstreamer-workbench-extension/support/`.
 - [ ] Confirm the homepage URL is `https://imom39a.github.io/lightstreamer-workbench-extension/` and staged publishing remains enabled.
+
+## Version 2.0.3 Preparation Checklist
+
+- [x] Confirm `public/manifest.json`, `package.json`, and the package lock use version `2.0.3`.
+- [x] Run `npm run analytics:validate` with the dedicated production measurement configuration and confirm the DebugView probes.
+- [x] Run `npm run store:assets` and inspect all five current screenshots, including Server Injection Review.
+- [x] Run `npm run release:package` and record the ZIP size, integrity result, and SHA-256.
+- [x] Run `npm run docs:check` and `npm run test:site`.
+- [ ] Publish the matching website and privacy policy before submitting the Store candidate.
+- [ ] Upload `release/lightstreamer-workbench-v2.0.3.zip` as a draft.
+- [ ] Replace the Store description, release notes, reviewer instructions, icon, five screenshots, and promo tiles from this directory.
+- [ ] Update the privacy questionnaire for usage analytics, the random installation identifier, captured website content, `storage`, and Google's collection host.
+- [ ] Confirm the homepage, support, and privacy policy URLs and keep staged publishing enabled.
+- [x] Obtain the Material UI visual-QA disposition; maintainer approval is still required before Store review submission.

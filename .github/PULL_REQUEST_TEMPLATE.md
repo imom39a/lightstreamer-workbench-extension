@@ -61,7 +61,7 @@ Commands run:
 ## Extension Safety Checklist
 
 - [ ] No secrets, credentials, private URLs, or production payloads are committed.
-- [ ] The change adds no product analytics, tracking, remote logging, or off-device event upload; any proposed exception has a separately approved design and matching policy/store updates.
+- [ ] Product analytics stays within ADR 0015's closed vocabulary and off-switch contract; captured data, typed text, and raw errors are not uploaded. Any expansion has an approved design and matching policy/Store updates.
 - [ ] New permissions or host-access changes are explained.
 - [ ] Local Injected Updates remain clearly marked and local to the inspected page workflow.
 - [ ] Persistent storage behavior is unchanged or explicitly documented.

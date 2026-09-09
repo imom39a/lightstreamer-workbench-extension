@@ -68,10 +68,12 @@ for (const [file, source] of sources) {
   if (/@babel\/standalone|jsxDEV\s*\(/.test(source)) {
     failures.push(`${file} contains a runtime JSX transformer`);
   }
-  if (
-    /google-analytics\.com|googletagmanager|lsew\.analytics\.(?:consent|client-id)|VITE_LSEW_GA|analytics_enabled/.test(source)
-  ) {
-    failures.push(`${file} contains analytics transport or identifier residue`);
+  if (/googletagmanager|gtag\s*\(/.test(source)) failures.push(`${file} contains a remote analytics SDK`);
+  if (/google-analytics\.com|api_secret/.test(source) && file !== "extension/background.js") {
+    failures.push(`${file} contains analytics transport outside the service worker`);
+  }
+  if (contentScriptFiles.includes(file) && /lsew:usage-analytics|lsew\.usage\./.test(source)) {
+    failures.push(`${file} contains product analytics in the inspected-page boundary`);
   }
 }
 

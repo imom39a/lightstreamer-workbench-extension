@@ -563,7 +563,8 @@ describe("production panel mount wiring", () => {
     await clickButton(root, "More actions");
     expect(root.textContent).toContain("Help & resources");
     expect(root.querySelector<HTMLAnchorElement>('.workbench-react__resource-link[href="https://imom39a.github.io/lightstreamer-workbench-extension/docs/"]')).not.toBeNull();
-    expect(root.textContent).not.toContain("Usage analytics");
+    expect(root.textContent).toContain("Usage analytics");
+    expect(root.querySelector<HTMLInputElement>('input[aria-label="Share usage analytics"]')?.checked).toBe(true);
 
     await disposePanel(dispose);
   });

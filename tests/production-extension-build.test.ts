@@ -21,6 +21,7 @@ describe("production built-extension boundary", () => {
         env: {
           ...process.env,
           LSEW_EXTENSION_OUT_DIR: outputArgument,
+          LSEW_ANALYTICS_DISABLED: "1",
           NODE_ENV: "production"
         },
         encoding: "utf8"

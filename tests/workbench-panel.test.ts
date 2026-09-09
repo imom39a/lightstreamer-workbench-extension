@@ -1091,7 +1091,7 @@ describe("React Workbench Diagnose panel", () => {
       Privacy: "https://imom39a.github.io/lightstreamer-workbench-extension/privacy/",
       Support: "https://imom39a.github.io/lightstreamer-workbench-extension/support/"
     });
-    expect(document.body.textContent).not.toContain("Usage analytics");
+    expect(document.body.textContent).toContain("Usage analytics");
     await click("Copy retained scoped Evidence");
     expect(runtime.commands).toEqual(expect.arrayContaining([
       { type: "show-oldest-evidence" },

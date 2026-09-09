@@ -30,6 +30,10 @@ const screenshots = [
   {
     file: "04-notifications.png",
     scene: "notifications"
+  },
+  {
+    file: "05-server-injection.png",
+    scene: "server-injection"
   }
 ];
 
@@ -99,7 +103,8 @@ const scenarioId = {
   "workspace-context": "live-selected",
   "timeline-detail": "raw-evidence",
   "local-injection": "local-injection-large",
-  "notifications": "diagnostics-stress"
+  "notifications": "diagnostics-stress",
+  "server-injection": "server-injection-review"
 }[scene];
 if (!scenarioId) throw new Error("Unknown store-listing scenario: " + scene);
 const root = document.querySelector("#app");
@@ -168,6 +173,14 @@ if (scene === "local-injection") {
   runtime.dispatch({ type: "set-local-injection-compare", open: true });
   if (runtime.getSnapshot().localInjection.draft?.compareStatus !== "changed") {
     throw new Error("Store-listing Local Injection preview must contain a visible Source-to-Draft change.");
+  }
+}
+if (scene === "server-injection") {
+  runtime.dispatch({ type: "begin-server-injection-from-selection" });
+  runtime.dispatch({ type: "set-server-injection-message", message: scenario.serverInjection?.message ?? "publish/order/42 status=ready" });
+  runtime.dispatch({ type: "review-server-injection" });
+  if (runtime.getSnapshot().serverInjection?.phase !== "review") {
+    throw new Error("Store-listing Server Injection review did not open.");
   }
 }
 await new Promise((resolveReady) => setTimeout(resolveReady, 160));
@@ -325,6 +338,10 @@ async function generateRealAppPreviewAssets() {
     {
       source: resolve(projectRoot, "store-listing/screenshots/04-notifications.png"),
       output: resolve(docsAssetsDir, "app-notifications.png")
+    },
+    {
+      source: resolve(projectRoot, "store-listing/screenshots/05-server-injection.png"),
+      output: resolve(docsAssetsDir, "app-server-injection.png")
     }
   ];
 

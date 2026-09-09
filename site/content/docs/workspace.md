@@ -28,4 +28,4 @@ The **Notifications** footer control opens the Notifications document. It contai
 
 ## Session operations
 
-**More actions** contains session operations that are not used frequently. These operations include copy, clear history, export, appearance settings, and Help links. These operations do not open a primary workspace page.
+**More actions** contains session operations that are not used frequently. These operations include copy, clear history, export, appearance settings, and Help links. Builds with usage analytics include its disclosure and off switch under **Help & resources → Usage analytics**. These operations do not open a primary workspace page.

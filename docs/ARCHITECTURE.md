@@ -35,7 +35,7 @@ The project is designed around these concrete implementation goals:
 - Run entirely inside a Chrome DevTools extension for the inspected tab.
 - Install instrumentation at `document_start` so clients, subscriptions, and listeners can be wrapped before application code uses them.
 - Preserve application behavior while observing constructor calls, lifecycle methods, listener callbacks, and selected wire-level fallback frames.
-- Keep Capture and product-usage data local to the browser extension session; version 2 has no analytics, tracking, or remote error transport.
+- Keep captured Evidence local to its Panel Session. The analytics candidate sends only the closed product-usage vocabulary in ADR 0015, with a persistent off switch; application data stays outside that transport.
 - Support backend-free Local Injection through captured listener callbacks and local TLCP delivery on captured page WebSockets.
 - Capture application `sendMessage` calls observationally without adding callbacks to fire-and-forget calls or suppressing application listeners.
 - Send a reviewed Server Injection exactly once through one exact current page/client/Session target, with Unknown as a terminal no-retry outcome.
@@ -969,7 +969,9 @@ Developer commands publish synchronously. Passive Capture updates enter history 
 
 ## Remote Data Boundary
 
-Version 2 contains no product analytics, usage tracking, remote error logging, account sign-in, or maintainer-operated backend. No runtime command, snapshot, or React control exposes an off-device product-data path. The compiled-build audit rejects the retired collection endpoint, configuration names, event marker, and persistent identifier keys.
+The analytics candidate follows [ADR 0015](adr/0015-measure-extension-usage-with-a-closed-analytics-vocabulary.md). `src/extension/analytics/observer.ts` observes semantic panel commands and published outcomes, converting them to the closed enum vocabulary in `events.ts`. `client.ts` exposes a preference store and typed event sink to the panel; `service.ts` serializes identity, analytics sessions, and bounded Measurement Protocol requests in the service worker. The background listener accepts only the extension's own panel page. Core runtime commands, Capture, and page instrumentation do not depend on analytics. The build audit keeps transport and credentials in the service worker and rejects analytics in content scripts.
+
+Configured production builds enable analytics by default. The native preference disclosure belongs in the existing More actions surface. Opt-out blocks sending immediately, aborts active requests, invalidates queued events, and removes the random installation identifier and session. The preference and identifier use `chrome.storage.local`; the session uses `chrome.storage.session`. There is no persistent analytics event queue, retry loop, raw error upload, account sign-in, or maintainer backend. See [Usage analytics](USAGE_ANALYTICS.md) for event and reporting contracts.
 
 `src/extension/panel/legacy-storage.ts` enumerates extension-local storage on panel mount and removes the retired 0.1.x consent and client-identifier records by their scoped suffixes. It does not create or replace an identifier, and failure to access storage cannot prevent the panel from mounting. Theme preference remains unrelated and is preserved.
 

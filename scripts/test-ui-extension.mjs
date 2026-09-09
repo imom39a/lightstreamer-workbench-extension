@@ -15,6 +15,8 @@ const temporaryRoot = await mkdtemp(
 const outputPath = join(temporaryRoot, "extension-panel.browser.spec.mjs");
 
 try {
+  // A maintainer's configured production stream must never receive smoke-test usage.
+  await runProcess(process.execPath, [join(rootDir, "scripts", "build-extension.mjs")]);
   await build({
     entryPoints: [browserTest],
     outfile: outputPath,
@@ -36,6 +38,7 @@ function runProcess(executable, args) {
       cwd: rootDir,
       env: {
         ...process.env,
+        LSEW_ANALYTICS_DISABLED: "1",
         LSEW_PROJECT_ROOT: rootDir,
         LSEW_EXTENSION_DIR: "dist"
       },
