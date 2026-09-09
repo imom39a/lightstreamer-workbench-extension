@@ -84,7 +84,7 @@ The local preparation gate completed on 2026-09-09 from base revision `b0b0c85f3
 - `release/lightstreamer-workbench-v2.0.3.zip` is 461,676 bytes with SHA-256 `a4c83c580a1d7c91bc87bbe235dccba83c4a2957920c858e92cb8b21e425fd3b`, below the strict 1 MiB budget. ZIP integrity passed, and the archive, `dist/`, and `public/` manifests are byte-identical.
 - The Manifest V3 package declares version `2.0.3`, `storage` for the analytics preference and random installation identifier, and `https://www.google-analytics.com/*` for fixed service-worker Measurement Protocol events. It does not request `unlimitedStorage`, ship a remote analytics SDK, or expose captured Evidence to analytics.
 
-The Chrome Web Store dashboard was audited against `store-listing/LISTING.md`. At the time of this local record it still contains the published 2.0.2 package, three older screenshots, and stale listing text; replacing those existing uploads requires a separate deliberate dashboard action. Preparing or uploading this candidate does not submit it for review, publish it, create a Git tag, or authorize rollout.
+The Chrome Web Store dashboard was audited and updated from `store-listing/LISTING.md` on 2026-09-09. The verified 2.0.3 ZIP is the unpublished draft, and the listing now has the current description, privacy disclosures, reviewer instructions, icon, five screenshots, and both promo tiles. The dashboard still shows 2.0.2 as the published package. The candidate was not submitted for review or published, and no Git tag or rollout was created.
 
 ## Usage analytics release contract
 

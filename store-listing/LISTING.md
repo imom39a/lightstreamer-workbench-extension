@@ -141,7 +141,7 @@ Client Messages, Server Injection, and privacy-controlled usage analytics.
 ```text
 Lightstreamer Workbench processes inspected-page Lightstreamer event data in the browser extension context. Each Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. Workbench does not change the storage type during the Panel Session. The extension does not send captured Evidence to the maintainers, an analytics service, or another external service.
 
-Complete History ends at the current History Interval's Committed Evidence Boundary. Clear ends the current History Interval. It cannot restart Capture after a terminal stop. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
+Complete History ends at the current History Interval's Committed Evidence Boundary. Retention removes the oldest accepted prefix while Capture continues and reports the resulting Evidence Gap explicitly. Clear makes an exact History Interval cut. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
 
 The analytics candidate sends fixed Workbench feature names, foreground engagement time, coarse outcomes, extension version, event time, and a random installation identifier to Google Analytics 4. Analytics is enabled by default in configured builds. More actions → Help & resources → Usage analytics provides a persistent off switch. Turning it off stops collection and removes the identifier and analytics session. Captured Evidence, payloads, inspected URLs, search text, clipboard/export content, and raw errors are never sent. Workbench does not sell data, use analytics for advertising, require sign-in, or operate a maintainer collection server.
 
@@ -152,6 +152,24 @@ Privacy questionnaire note:
 
 ```text
 For the analytics candidate, declare collection of user activity and the pseudonymous installation identifier in the dashboard's applicable categories. Describe the fixed product events, Google Analytics recipient, default-on behavior, and off switch. Do not claim that all data stays on the device. Captured website content, message bodies, credentials, browsing history, search text, and raw errors remain excluded from collection. Explain storage permission for preferences/identity and https://www.google-analytics.com/* host access for Measurement Protocol. Keep dashboard answers, listing, and policy consistent before publishing. Earlier no-analytics releases retain their original disclosures.
+```
+
+Single purpose description:
+
+```text
+Provide a Chrome DevTools panel that observes official Lightstreamer Web Client activity, reconstructs runtime and COMMAND Evidence, and lets developers test Item Updates locally or send reviewed Client Messages through the inspected client's current Session.
+```
+
+Storage permission justification:
+
+```text
+The storage permission keeps the user's usage-analytics preference and a random installation identifier. Turning analytics off removes the identifier and analytics session. It is not used for captured Lightstreamer Evidence; each Panel Session owns a temporary Event History in IndexedDB with a bounded memory fallback.
+```
+
+Host permission justification:
+
+```text
+Page access is required to run packaged instrumentation at document_start before the application creates Lightstreamer clients or Subscriptions. It observes the official Web Client, captures outbound Client Messages, and supports developer-requested Local Injection. https://www.google-analytics.com/* is used only by the packaged service worker to send fixed usage events while enabled. Captured Evidence, payloads, inspected URLs, search text, Drafts, and raw errors are excluded. No remote code is loaded.
 ```
 
 ## Reviewer Test Instructions
@@ -187,8 +205,9 @@ No account is required. Open DevTools on a page using the official Lightstreamer
 - [x] Run `npm run release:package` and record the ZIP size, integrity result, and SHA-256.
 - [x] Run `npm run docs:check` and `npm run test:site`.
 - [x] Publish the matching website and privacy policy before submitting the Store candidate.
-- [ ] Upload `release/lightstreamer-workbench-v2.0.3.zip` as a draft.
-- [ ] Replace the Store description, release notes, reviewer instructions, icon, five screenshots, and promo tiles from this directory.
-- [ ] Update the privacy questionnaire for usage analytics, the random installation identifier, captured website content, `storage`, and Google's collection host.
-- [ ] Confirm the homepage, support, and privacy policy URLs and keep staged publishing enabled.
+- [x] Upload `release/lightstreamer-workbench-v2.0.3.zip` as a draft.
+- [x] Replace the Store description, reviewer instructions, icon, five screenshots, and promo tiles from this directory; keep the release notes above ready for submission.
+- [x] Update the privacy questionnaire for usage analytics, the random installation identifier, captured website content, `storage`, and Google's collection host.
+- [x] Confirm the homepage, support, and privacy policy URLs.
+- [ ] Confirm staged publishing during the later Store review submission.
 - [x] Obtain the Material UI visual-QA disposition; maintainer approval is still required before Store review submission.
