@@ -278,6 +278,7 @@ export function LocalInjectionDocument({
       <div
         className="workbench-react__local-scroll"
         data-shared-scroll-owner="true"
+        tabIndex={authoring ? undefined : 0}
         ref={scrollOwnerRef}
         onKeyDownCapture={(event) => {
           if ((event.key !== "PageDown" && event.key !== "PageUp")

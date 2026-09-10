@@ -49,7 +49,7 @@ describe("history-100k-02 activated query workload", () => {
     });
     expect(DORMANT_100K_QUERY_PROFILE.productionStartupMemoryCapacity).toEqual({
       maxRetainedCount: HISTORY_CAPACITY_LIMITS.LOWER.maxRetainedCount,
-      maxRetainedBytes: 32 * MIB
+      maxRetainedBytes: 128 * MIB
     });
   });
 });

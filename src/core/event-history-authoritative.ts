@@ -1505,7 +1505,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
         journalLastProblem = problem(
           reason,
-          error instanceof Error ? error.message : "The Event History journal commit failed.",
+          error instanceof Error ? `${error.name}: ${error.message}` : "The Event History journal commit failed.",
           { reason, dimension: "JOURNAL" }
         );
         if (attempt < 3) {

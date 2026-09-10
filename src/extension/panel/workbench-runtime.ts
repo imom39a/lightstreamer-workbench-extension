@@ -1,5 +1,5 @@
 import { type CaptureMessage, type CaptureStatus, type TopologySyncFrame } from "../../bridge/messages";
-import { createCommandStateProjections, type CommandStateProjections } from "../../core/command-state";
+import { createCommandStateProjections, findCommandItem, type CommandStateProjections } from "../../core/command-state";
 import type {
   ScenarioAssertionObservation,
   ScenarioCommittedBoundaryFeed,
@@ -5037,11 +5037,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private activeCommandKeys(anchor: WorkbenchLocalInjectionAnchor): readonly string[] {
-    const subscription = this.commandStateProjections.snapshot("local-effective").subscriptions
-      .find(({ subscriptionId }) => subscriptionId === anchor.subscriptionId);
-    const item = subscription?.items.find((candidate) =>
-      (anchor.itemName !== null && candidate.itemName === anchor.itemName) ||
-      (anchor.itemPosition !== null && candidate.itemPosition === anchor.itemPosition));
+    const item = findCommandItem(this.commandStateProjections.snapshot("local-effective"), anchor);
     return Object.freeze(item?.activeRows.map(({ key }) => key) ?? []);
   }
 
@@ -5627,7 +5623,7 @@ class Runtime implements WorkbenchRuntime {
       diagnostics: this.diagnosticSnapshot(scope, activity.projection),
       historyCondition: this.historyCondition,
       historyAnnouncement: this.historyAnnouncement,
-      storage: Object.freeze({ ...this.storage }),
+      storage: historyStorageSnapshot(this.historyStatus, this.storage),
       retention: this.retentionSnapshot(),
       export: this.exportSnapshot(),
       evidenceCopy: this.evidenceCopy,
@@ -7838,6 +7834,13 @@ function authoredDraftFromScope(
     draft: protectedDraft,
     anchor: anchorFromDraft(protectedDraft, "authored", pageEpoch, fieldSchema)
   };
+}
+
+function historyStorageSnapshot(status: HistoryStatus, adapter: WorkbenchStorageSnapshot): WorkbenchStorageSnapshot {
+  if (status.persistence?.mode === "MEMORY_ONLY" || status.fallback !== null) {
+    return Object.freeze({ mode: "memory", reason: status.persistence?.lastProblem?.message ?? adapter.reason ?? status.fallback ?? "IndexedDB journal unavailable" });
+  }
+  return Object.freeze({ ...adapter });
 }
 
 function localInjectionReady(draft: LocalInjectionDraftState): boolean {

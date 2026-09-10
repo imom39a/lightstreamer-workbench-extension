@@ -18,6 +18,25 @@ function candidate(id: string): EvidenceCandidate {
 }
 
 describe("continuous memory Event History", () => {
+  it("retains the expanded fallback budget and rolls at 25,000 records or 128 MiB", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "expanded-memory-count", capacityTier: "LOWER", fallback: "PRIMARY_JOURNAL_UNAVAILABLE" });
+    try {
+      for (let start = 0; start < 25_000; start += 250) {
+        await Promise.all(Array.from({ length: 250 }, (_, offset) => history.offer(candidate(`expanded-${start + offset}`)).settled));
+      }
+      expect(history.status()).toMatchObject({ retained: 25_000, accepted: 25_000, continuity: { gapCount: 0 }, retention: { highWater: { count: 25_000, bytes: 128 * 1_048_576 } } });
+      await history.offer(candidate("expanded-rollover")).settled;
+      expect(history.status()).toMatchObject({ phase: "RUNNING", accepted: 25_001, retained: 22_500, retainedRange: { last: { eventId: "expanded-rollover" } }, continuity: { gapCount: 0 } });
+    } finally { await history.close(); }
+    const bytes = await createMemoryEventHistoryForTests({ panelSessionId: "expanded-memory-bytes", capacityTier: "LOWER", fallback: "PRIMARY_JOURNAL_UNAVAILABLE", byteEstimator: () => 16 * 1_048_576 });
+    try {
+      for (let i = 0; i < 8; i++) await bytes.offer(candidate(`large-${i}`)).settled;
+      expect(bytes.status().retained).toBe(8);
+      await bytes.offer(candidate("large-rollover")).settled;
+      expect(bytes.status()).toMatchObject({ phase: "RUNNING", accepted: 9, retained: 7, continuity: { gapCount: 0 } });
+    } finally { await bytes.close(); }
+  }, 30_000);
+
   it("rolls the oldest retained prefix toward the count low-water mark without stopping Capture", async () => {
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "rolling-count",
@@ -217,8 +236,8 @@ describe("continuous memory Event History", () => {
     const mib = 1024 * 1024;
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "commit-memory-lower-high-water",
-      byteEstimator: (event) => event.id === "larger-than-memory-tier" ? 40 * mib : 1 * mib,
-      capacity: { pendingStopBytes: 64 * mib },
+      byteEstimator: (event) => event.id === "larger-than-memory-tier" ? 160 * mib : 1 * mib,
+      capacity: { pendingStopBytes: 192 * mib },
       commitBatch: async () => { throw new Error("persistent journal failure"); }
     });
 
@@ -230,12 +249,12 @@ describe("continuous memory Event History", () => {
       phase: "RUNNING",
       capacity: {
         tier: "LOWER",
-        limits: { maxRetainedBytes: 32 * mib },
+        limits: { maxRetainedBytes: 128 * mib },
         measurements: { retainedBytes: 0 }
       },
       retained: 0,
       retainedRange: null,
-      retention: { evicted: { count: 1, bytes: 40 * mib } },
+      retention: { evicted: { count: 1, bytes: 160 * mib } },
       persistence: { mode: "MEMORY_ONLY" },
       continuity: { state: "CONTIGUOUS", gapCount: 0 }
     });

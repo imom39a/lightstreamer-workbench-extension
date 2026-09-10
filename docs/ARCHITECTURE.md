@@ -487,7 +487,7 @@ IndexedDB startup, ownership coordination, schema validation, or guarded cleanup
 cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the
 same Panel Session. The normal IndexedDB tier retains at most 100,000 Evidence
 records or 256 MiB of canonical accounted bytes; memory-backed operation retains
-at most 5,000 records or 32 MiB. These are rolling retention budgets, not
+at most 25,000 records or 128 MiB. These are rolling retention budgets, not
 lifetime acceptance caps. Crossing either retained high-water mark removes the
 oldest complete prefix toward a lower target before later Evidence is published.
 

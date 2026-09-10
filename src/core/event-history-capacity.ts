@@ -83,10 +83,10 @@ const DEFAULTS: Record<HistoryCapacityTier, HistoryCapacityLimits> = {
     pendingAgeStopMs: 30_000
   },
   LOWER: {
-    maxRetainedCount: 5_000,
-    maxRetainedBytes: 32 * MIB,
-    retainedWarningCount: 4_000,
-    retainedWarningBytes: Math.ceil(32 * MIB * 0.8),
+    maxRetainedCount: 25_000,
+    maxRetainedBytes: 128 * MIB,
+    retainedWarningCount: 20_000,
+    retainedWarningBytes: Math.ceil(128 * MIB * 0.8),
     pendingWarningBytes: 16 * MIB,
     pendingStopBytes: 32 * MIB,
     pendingAgeWarningMs: 1_000,

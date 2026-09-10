@@ -33,10 +33,10 @@ describe("history-100k-01 activated capacity profile", () => {
       retainedWarningBytes: Math.ceil(256 * MIB * 0.8)
     });
     expect(HISTORY_CAPACITY_LIMITS.LOWER).toMatchObject({
-      maxRetainedCount: 5_000,
-      maxRetainedBytes: 32 * MIB,
-      retainedWarningCount: 4_000,
-      retainedWarningBytes: Math.ceil(32 * MIB * 0.8)
+      maxRetainedCount: 25_000,
+      maxRetainedBytes: 128 * MIB,
+      retainedWarningCount: 20_000,
+      retainedWarningBytes: Math.ceil(128 * MIB * 0.8)
     });
   });
 

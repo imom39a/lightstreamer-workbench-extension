@@ -118,13 +118,18 @@ function memoryFallbackCondition(
     count: historyCapacityLimits("LOWER").maxRetainedCount,
     bytes: historyCapacityLimits("LOWER").maxRetainedBytes
   };
-  const reason = status.persistence?.lastProblem?.code ?? problem?.code ?? status.fallback ?? "PRIMARY_JOURNAL_UNAVAILABLE";
+  const failure = status.persistence?.lastProblem ?? problem;
+  const reason = failure?.code ?? status.fallback ?? "PRIMARY_JOURNAL_UNAVAILABLE";
+  const cause = failure?.message ? ` ${failure.message.replace(/[.!?]$/, "")}.` : "";
+  const attempts = status.persistence?.failureCount
+    ? ` ${status.persistence.failureCount.toLocaleString()} failed journal attempt${status.persistence.failureCount === 1 ? "" : "s"}; ${status.persistence.retryCount.toLocaleString()} retries. IndexedDB writes remain disabled for this Panel Session.`
+    : "";
   return condition({
     kind: "memory-fallback",
     severity: "Warning",
     title: "History using memory",
     affected: intervalLabel(status),
-    detail: `${reason}. Capture continues with a rolling memory Retained Range of ${limits.count.toLocaleString()} Evidence records or ${bytesInMiB(limits.bytes)}. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.`,
+    detail: `${reason}.${cause}${attempts} Capture continues with a rolling memory Retained Range of ${limits.count.toLocaleString()} Evidence records or ${bytesInMiB(limits.bytes)}. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.`,
     recovery: "Keep investigating; reopen DevTools later if durable session storage is required",
     announcement: "History is using bounded memory; Capture continues."
   });

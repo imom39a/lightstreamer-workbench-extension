@@ -1101,6 +1101,32 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("edits and delivers a captured grouped item using its position", async () => {
+    const subscription = { id: identity.subscriptionId, mode: "COMMAND", itemGroup: "orders-group", fields: ["command", "key", "qty"], active: true, subscribed: true };
+    const source = commandEvent("source-6", "item-update", {
+      subscription,
+      item: { name: null, position: 2 },
+      update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 1 }, changedFields: { qty: 1 } }
+    });
+    const history = createAuthoritativeHistory({ precommitted: [
+      ...["client-created", "client-status", "subscription-created", "subscription-started", "listener-added"].map((kind, i) => commandEvent(`journey-${i + 1}`, kind as LightstreamerEventEnvelope["kind"], { subscription })),
+      commandEvent("other-item", "item-update", { subscription, item: { name: null, position: 1 }, update: { isSnapshot: false, command: "ADD", key: "other-key", fields: { command: "ADD", key: "other-key", qty: 9 }, changedFields: { qty: 9 } } }),
+      source
+    ] });
+    const execute = vi.fn(async (_request: LocalInjectionExecutionRequest) => result("success", { attemptedCount: 1, deliveredCount: 1, failedCount: 0 }));
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: { execute } });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(42) });
+    expect(runtime.getSnapshot().localInjection.draft).toMatchObject({ ready: true, diagnostics: [], anchor: { itemName: null, itemPosition: 2 } });
+    runtime.dispatch({ type: "execute-local-injection" });
+    await flushAsync();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({ draft: { item: { name: null, position: 2 }, fields: { qty: 42 } } });
+    expect(source.update?.fields?.qty).toBe(1);
+    runtime.dispose();
+  });
+
   it("blocks invalid raw JSON, then becomes ready after a corrected edit", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     await flushAsync();

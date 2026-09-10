@@ -223,6 +223,20 @@ describe("history-impl-10 continuity-first History condition", () => {
     expect(conditions.map(({ kind }) => kind)).toEqual(["evidence-gap", "memory-fallback"]);
   });
 
+  it("hydrates the current memory mode and cause even when fallback precedes the panel follower", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "fallback-before-panel", commitBatch: async () => { throw Object.assign(new Error("The transaction was aborted"), { name: "AbortError" }); } });
+    await history.offer(candidate("accepted-before-panel")).settled;
+    const runtime = createWorkbenchRuntime({ history, storage: { mode: "indexeddb" }, captureStatus: "capturing", scheduler: immediateScheduler() });
+    await flushRuntime();
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.storage).toMatchObject({ mode: "memory", reason: expect.stringContaining("AbortError") });
+    expect(snapshot.historyCondition).toMatchObject({ title: "History using memory", detail: expect.stringContaining("AbortError") });
+    expect(snapshot.historyCondition?.detail).toContain("3 failed journal attempts");
+    runtime.dispatch({ type: "set-storage-state", storage: { mode: "indexeddb" } });
+    expect(runtime.getSnapshot().storage.mode).toBe("memory");
+    runtime.dispose();
+  });
+
   it("coalesces rollover into Notifications without a footer warning", async () => {
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "history-impl-10-rollover",

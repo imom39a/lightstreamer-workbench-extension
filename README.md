@@ -37,7 +37,7 @@ Version 2 inspects the current Panel Session for the selected tab. Scope, Ordere
 Each Panel Session owns one temporary Event History. The normal IndexedDB journal
 uses a rolling retention budget of 100,000 Evidence records or 256 MiB of
 canonical accounted bytes. Memory-backed operation uses the smaller rolling
-budget of 5,000 records or 32 MiB. Event History retries a definitively aborted
+budget of 25,000 records or 128 MiB. Event History retries a definitively aborted
 commit a bounded number of times and can continue in memory when IndexedDB is
 unavailable. Storage degradation does not by itself reduce Observation Coverage
 or alter Live/Frozen view state.

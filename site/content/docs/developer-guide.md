@@ -132,7 +132,7 @@ Processed means Lightstreamer handled the Client Message. It does not prove a do
 One Panel Session owns one temporary Event History:
 
 - normal IndexedDB: up to 100,000 Evidence records or 256 MiB;
-- startup memory fallback: up to 5,000 records or 32 MiB.
+- startup memory fallback: up to 25,000 records or 128 MiB.
 
 The first count or byte limit stops the admission of new Evidence. Complete History ends at the current History Interval's **Committed Evidence Boundary**. If Capture stops, preserve the retained range before you close DevTools.
 

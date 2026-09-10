@@ -810,7 +810,7 @@ describe("continuity-first IndexedDB Event History", () => {
         captureOperation: "RUNNING",
         committedEvidenceBoundary: { sequence: 2 },
         retained: 2,
-        capacity: { tier: "LOWER" },
+        capacity: { tier: "LOWER", limits: { maxRetainedCount: 25_000, maxRetainedBytes: 128 * 1_048_576 } },
         persistence: { mode: "MEMORY_ONLY", health: "DEGRADED", commitAttempts: 3, retryCount: 2, failureCount: 3 }
       });
       expect(history.storage.mode).toBe("memory");
@@ -886,8 +886,8 @@ describe("continuity-first IndexedDB Event History", () => {
     let attempts = 0;
     const history = await createIndexedDbEventHistory({
       panelSessionId: `continuity-idb-lower-bytes-${Date.now()}`,
-      byteEstimator: (event) => event.id === "larger-than-memory-tier" ? 40 * mib : 1 * mib,
-      capacity: { pendingStopBytes: 64 * mib },
+      byteEstimator: (event) => event.id === "larger-than-memory-tier" ? 160 * mib : 1 * mib,
+      capacity: { pendingStopBytes: 192 * mib },
       commitBatch: () => {
         attempts += 1;
         throw new Error("journal remains unavailable");
@@ -908,11 +908,11 @@ describe("continuity-first IndexedDB Event History", () => {
         retained: 0,
         capacity: {
           tier: "LOWER",
-          limits: { maxRetainedBytes: 32 * mib },
+          limits: { maxRetainedBytes: 128 * mib },
           measurements: { retainedBytes: 0 }
         },
         retention: {
-          evicted: { count: 1, bytes: 40 * mib },
+          evicted: { count: 1, bytes: 160 * mib },
           lastAdvance: { retainedRange: null, evicted: { first: { sequence: 1 }, last: { sequence: 1 } } }
         }
       });

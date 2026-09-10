@@ -617,7 +617,7 @@ describe("production panel mount wiring", () => {
     await flushPanel();
 
     const footerDiagnostics = root.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
-    const storageDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Capture continues with a rolling memory Retained Range of 5,000 Evidence records or 32 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
+    const storageDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Capture continues with a rolling memory Retained Range of 25,000 Evidence records or 128 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
 
     expect(root.textContent).toContain("Coverage USEFUL");
     expect(root.textContent).not.toContain("Coverage LIMITED");

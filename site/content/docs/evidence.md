@@ -23,7 +23,7 @@ Live or Frozen does not start or stop Capture. Capture does not delete history o
 
 ## Retained history
 
-One Panel Session owns one temporary Event History. IndexedDB can retain up to 100,000 Evidence records or 256 MiB. The memory fallback can retain up to 5,000 records or 32 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. Workbench does not change the storage type during the Panel Session. Use **Oldest**, **Older**, **Newer**, and **Newest** to move through retained Evidence.
+One Panel Session owns one temporary Event History. IndexedDB can retain up to 100,000 Evidence records or 256 MiB. The memory fallback can retain up to 25,000 records or 128 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session. The footer shows the current storage mode, and Notifications records the failure reason. Use **Oldest**, **Older**, **Newer**, and **Newest** to move through retained Evidence.
 
 Complete History ends at the current History Interval's Committed Evidence Boundary. A journal failure or History Capacity limit stops the admission of new Evidence at this boundary. A refused or failed event does not become Evidence. It also does not change derived COMMAND state. Capture, Coverage, History Capacity, and Live or Frozen remain independent.
 

@@ -6,6 +6,7 @@ import {
   createCommandStateIndex,
   createCommandStateProjections,
   reduceCommandState,
+  inspectCommandState,
   validateCommandDraftAgainstState
 } from "../src/core/command-state";
 
@@ -571,6 +572,29 @@ describe("COMMAND state reducer", () => {
       itemName: "inventorySearch.STORE_NYC_001",
       itemPosition: 1
     });
+  });
+
+  it("uses the same unambiguous item identity for draft validation and Scenario inspection", () => {
+    const state = reduceCommandState([
+      commandEvent("event-1", { itemName: null, itemPosition: 1, subscriptionItemGroup: "orders-group", key: "first" }),
+      commandEvent("event-2", { itemName: null, itemPosition: 2, subscriptionItemGroup: "orders-group", key: "second" }),
+      commandEvent("event-3", { subscriptionId: "named-sub", itemName: null, itemPosition: 1, subscriptionItems: ["orders"], key: "named" })
+    ]);
+    for (const [subscriptionId, itemName, itemPosition, key] of [
+      ["subscription-1", null, 1, "first"],
+      ["subscription-1", null, 2, "second"],
+      ["subscription-1", "orders-group", 2, "second"],
+      ["named-sub", null, 1, "named"]
+    ] as const) {
+      expect(validateCommandDraftAgainstState({ command: "UPDATE", key }, state, { subscriptionId, itemName, itemPosition }).diagnostics).toEqual([]);
+      expect(inspectCommandState(state, { subscriptionId, item: { name: itemName, position: itemPosition }, key }).state).toBe("key-present");
+    }
+    for (const [itemName, itemPosition, key] of [
+      [null, 1, "second"], [null, 2, "first"], ["orders-group", null, "first"], ["wrong-name", 1, "first"]
+    ] as const) {
+      expect(validateCommandDraftAgainstState({ command: "UPDATE", key }, state, { subscriptionId: "subscription-1", itemName, itemPosition }).diagnostics).toContainEqual(expect.objectContaining({ code: "unknown-key-update" }));
+      expect(inspectCommandState(state, { subscriptionId: "subscription-1", item: { name: itemName, position: itemPosition }, key }).state).toBe("key-absent");
+    }
   });
 
   it("tracks each position independently when a Lightstreamer item group has no item list names", () => {

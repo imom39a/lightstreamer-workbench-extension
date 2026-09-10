@@ -26,11 +26,11 @@ Configured production builds separately send fixed feature names, foreground eng
 
 ## How long is Evidence retained?
 
-Workbench retains Evidence only for the current Panel Session. One Panel Session owns one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 5,000 records or 32 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible.
+Workbench retains Evidence only for the current Panel Session. One Panel Session owns one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 25,000 records or 128 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible.
 
 Complete History ends at the current History Interval's Committed Evidence Boundary. The visible Evidence window shows only part of the retained Evidence. Clear ends the current History Interval. Clear does not restart Capture after a terminal stop. A controlled Close tries to erase the Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence.
 
-Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. Workbench does not change the storage type during the Panel Session.
+Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session. The footer shows the current storage mode, and Notifications records the failure reason.
 
 ## Is Workbench open source?
 

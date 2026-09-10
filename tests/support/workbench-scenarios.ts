@@ -57,6 +57,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "recovering",
   "retired-scope",
   "local-injection-captured",
+  "local-injection-grouped",
   "local-injection-json",
   "local-injection-authored",
   "local-injection-large",
@@ -683,6 +684,16 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         },
         captureStatus: "capturing"
       };
+    case "local-injection-grouped": {
+      const client = { id: "grouped-client", status: "CONNECTED:WS-STREAMING", sessionId: "grouped-session", transport: "WS-STREAMING" };
+      const subscription = { id: "grouped-subscription", mode: "COMMAND", itemGroup: "orders-group", fields: ["command", "key", "qty"], active: true, subscribed: true };
+      const initialEvents: LightstreamerEventEnvelope[] = Array.from({ length: 2_667 }, (_, index) => ({
+        id: `grouped-event-${index + 1}`, timestamp: 1_780_872_100_000 + index, direction: "inbound", source: "server", captureSource: "listener", synthetic: false,
+        kind: "item-update", client, subscription, listener: { id: "grouped-listener", callbacks: ["onItemUpdate"] }, item: { name: null, position: index % 2 + 1 },
+        update: { command: index < 2 ? "ADD" : "UPDATE", key: "order-1", isSnapshot: false, fields: { command: index < 2 ? "ADD" : "UPDATE", key: "order-1", qty: index }, changedFields: { qty: index } }
+      }));
+      return { id, initialEvents, selectedEventId: "grouped-event-2667", captureStatus: "capturing", localInjection: { entry: "selection", executorOutcome: "delivered" } };
+    }
     case "local-injection-captured":
       return localInjectionCapturedScenario(id);
     case "local-injection-json":

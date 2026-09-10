@@ -2108,7 +2108,7 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
 
   await openScenario(page, "memory-fallback", { width: 563, height: 700 }, "dark");
   const fallbackDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
-  const fallbackDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Capture continues with a rolling memory Retained Range of 5,000 Evidence records or 32 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
+  const fallbackDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Capture continues with a rolling memory Retained Range of 25,000 Evidence records or 128 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
   await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
   await expect(fallbackDiagnostics.getByText("Warning · History using memory", { exact: true })).toBeVisible();
   await expect(fallbackDiagnostics).toContainText(fallbackDetail);

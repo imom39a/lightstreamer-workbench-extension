@@ -488,10 +488,11 @@ function applyCommandEvent(
 }
 
 export function inspectCommandState(state: CommandState, input: CommandStateInspectionInput): CommandStateInspection {
-  const subscription = state.subscriptions.find(({ subscriptionId }) => subscriptionId === input.subscriptionId);
-  const item = subscription?.items.find((candidate) => candidate.itemName !== null && input.item.name !== null
-    ? candidate.itemName === input.item.name
-    : candidate.itemPosition === input.item.position);
+  const item = findCommandItem(state, {
+    subscriptionId: input.subscriptionId,
+    itemName: input.item.name,
+    itemPosition: input.item.position
+  });
   const row = item?.activeRows.find(({ key }) => key === input.key);
   if (!row) return Object.freeze({ state: "key-absent", provenance: null });
   if (input.field === undefined) return Object.freeze({ state: "key-present", provenance: row.latest });
@@ -958,16 +959,21 @@ function validationEvent(
   };
 }
 
-function findActiveRow(state: CommandState, context: CommandDraftContext, key: string): CommandRow | null {
+/** Resolves a Subscription item without treating an Item Group as an item name. */
+export function findCommandItem(state: CommandState, context: CommandDraftContext): CommandItemGroup | null {
   const subscription = state.subscriptions.find((group) => group.subscriptionId === context.subscriptionId);
-  if (!subscription) {
-    return null;
-  }
+  if (!subscription) return null;
+  const name = stringOrNull(context.itemName);
+  const position = context.itemPosition ?? null;
+  const matches = subscription.items.filter((item) => {
+    if (position !== null && item.itemPosition !== null && position !== item.itemPosition) return false;
+    if (name !== null && item.itemName !== null && name !== item.itemName) return false;
+    return (position !== null && position === item.itemPosition) || (name !== null && name === item.itemName);
+  });
+  // A group label can match several positions. Never borrow another item's key.
+  return matches.length === 1 ? matches[0]! : null;
+}
 
-  const itemId = itemIdentity(context.itemName ?? null, context.itemPosition ?? null);
-  const item =
-    subscription.items.find((group) => group.itemId === itemId) ??
-    subscription.items.find((group) => group.itemName === context.itemName && group.itemPosition === context.itemPosition);
-
-  return item?.activeRows.find((row) => row.key === key) ?? null;
+function findActiveRow(state: CommandState, context: CommandDraftContext, key: string): CommandRow | null {
+  return findCommandItem(state, context)?.activeRows.find((row) => row.key === key) ?? null;
 }

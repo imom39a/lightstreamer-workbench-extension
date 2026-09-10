@@ -11,7 +11,7 @@ Interval at a time, one Evidence sequence, and one Committed Evidence Boundary.
 Valid Capture must not permanently stop because a retained budget or journal
 commit failed.
 
-The existing normal 100,000-record/256 MiB and memory 5,000-record/32 MiB limits
+The normal 100,000-record/256 MiB and memory 25,000-record/128 MiB limits
 are rolling retention budgets. At a retained high-water crossing, Event History
 removes the oldest complete prefix toward a 90% low-water target and continues
 accepting recent Evidence. The Retained Range advances inside the same History
@@ -61,3 +61,18 @@ outcome. A new Panel Session never replays abandoned Evidence.
   continuity gap.
 - This supersedes ADR 0011's fixed-adapter, terminal-capacity, and fail-closed
   commit-failure rules while retaining its ownership and acceptance boundaries.
+
+## Memory capacity amendment (2026-09-10)
+
+The maintainer authorized expanding memory fallback from 5,000 records/32 MiB
+to 25,000 records/128 MiB to retain more useful Evidence after a journal failure.
+The count and canonical-byte budgets remain independent, with a 90% rollover
+target. These bytes measure canonical Evidence, not total browser heap: decoded
+projections, indexes, and editor state consume additional memory. The pending-work
+budgets and bounded journal retries remain unchanged. This supersedes the older
+memory-capacity figures in ADR 0011; its historical measurements remain historical.
+
+The footer derives storage mode from current History persistence status, including
+fallback that happened before the panel follower attached. Notifications includes
+the recorded journal failure and failed-attempt/retry counts. A mode label never
+asserts that a prior failure was a browser quota error without that evidence.

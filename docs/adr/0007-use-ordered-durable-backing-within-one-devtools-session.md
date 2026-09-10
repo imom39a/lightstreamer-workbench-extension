@@ -33,8 +33,8 @@ The fallback changes History Capacity, not Observation Coverage. Workbench repor
 
 ADR 0014 now governs the implementation. One Panel Session owns one temporary
 rolling Event History with a normal IndexedDB retention budget of 100,000
-Evidence records or 256 MiB and a memory-backed budget of 5,000 records or
-32 MiB. Bounded journal retry can continue into memory without changing
+Evidence records or 256 MiB and a memory-backed budget of 25,000 records or
+128 MiB. Bounded journal retry can continue into memory without changing
 Observation Coverage by itself.
 
 Clear makes an exact History Interval cut, and Complete History is qualified by

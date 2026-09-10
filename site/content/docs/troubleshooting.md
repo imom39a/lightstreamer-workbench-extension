@@ -15,7 +15,7 @@ Limited Coverage does not make captured Evidence invalid. State the Coverage lim
 
 ## History uses the in-memory fallback
 
-IndexedDB is not available in the panel. The memory fallback can keep 5,000 Evidence records or 32 MiB. IndexedDB can keep 100,000 records or 256 MiB. Workbench does not change the storage type after Capture starts. The memory fallback changes History Capacity. It does not reduce Coverage by itself. Restore IndexedDB and open a new Panel Session when you need the larger capacity. The new Panel Session starts empty.
+IndexedDB is not available in the panel. The memory fallback can keep 25,000 Evidence records or 128 MiB. IndexedDB can keep 100,000 records or 256 MiB. If IndexedDB writes repeatedly fail after Capture starts, Workbench continues in memory for the rest of the Panel Session. The footer shows the current storage mode, and Notifications records the failure reason and failed-attempt count. The memory fallback changes History Capacity. It does not reduce Coverage by itself. Restore IndexedDB and open a new Panel Session when you need the larger capacity. The new Panel Session starts empty.
 
 ## Capture stopped at a history boundary
 
