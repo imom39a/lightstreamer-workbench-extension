@@ -15,23 +15,30 @@ import {
 } from "../bridge/messages";
 
 const PAGE_REINJECT_TIMEOUT_MS = 5000;
+const runtime = typeof chrome === "undefined" ? undefined : chrome.runtime;
+const pendingPageRequests = new Set<() => void>();
+let active = false;
 
-if (typeof chrome !== "undefined" && chrome.runtime) {
-  document.documentElement.dataset.lsewContentBridgeReady = "true";
+if (runtime?.sendMessage && runtime.onMessage) {
+  active = true;
+  try {
+    runtime.onMessage.addListener(onRuntimeMessage);
+    window.addEventListener("message", onPageMessage);
+    document.documentElement.dataset.lsewContentBridgeReady = "true";
+    window.postMessage({ type: CONTENT_BRIDGE_READY }, "*");
+  } catch (error) {
+    handleRuntimeError(error);
+  }
 }
 
-window.addEventListener("message", (event) => {
-  if (event.source !== window) {
-    return;
-  }
-
-  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+function onPageMessage(event: MessageEvent) {
+  if (!active || event.source !== window) {
     return;
   }
 
   if (isCaptureMessage(event.data)) {
     const panelSessionId = event.data.panelSessionId;
-    chrome.runtime.sendMessage({
+    sendRuntimeMessage({
       type: RUNTIME_CAPTURE_MESSAGE,
       ...(panelSessionId ? { panelSessionId } : {}),
       message: event.data
@@ -41,47 +48,94 @@ window.addEventListener("message", (event) => {
 
   if (isTopologySyncFrame(event.data)) {
     const panelSessionId = event.data.panelSessionId;
-    chrome.runtime.sendMessage({
+    sendRuntimeMessage({
       type: RUNTIME_TOPOLOGY_SYNC_FRAME,
       panelSessionId,
       frame: event.data
     });
   }
-});
+}
 
-if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
-  chrome.runtime.onMessage.addListener((message) => {
-    if (isContentCaptureSyncRequestMessage(message)) {
-      window.postMessage({
-        type: PAGE_CAPTURE_SYNC_REQUEST,
-        panelSessionId: message.panelSessionId
-      }, "*");
-      return false;
-    }
-
-    if (!isContentReinjectRequestMessage(message)) {
-      return false;
-    }
-
-    void forwardReinjectionToPage(message.requestId, message.panelSessionId, message.draft).then((result) => {
-      // Publish independently of the original request channel so page delivery
-      // remains correlated even when the sender is already detached.
-      chrome.runtime.sendMessage(
-        {
-          type: CONTENT_REINJECT_RESULT,
-          panelSessionId: message.panelSessionId,
-          result
-        },
-        () => {
-          void chrome.runtime.lastError;
-        }
-      );
-    });
-
+function onRuntimeMessage(message: unknown): false {
+  if (!active) {
     return false;
+  }
+
+  if (isContentCaptureSyncRequestMessage(message)) {
+    window.postMessage({
+      type: PAGE_CAPTURE_SYNC_REQUEST,
+      panelSessionId: message.panelSessionId
+    }, "*");
+    return false;
+  }
+
+  if (!isContentReinjectRequestMessage(message)) {
+    return false;
+  }
+
+  void forwardReinjectionToPage(message.requestId, message.panelSessionId, message.draft).then((result) => {
+    // Publish independently of the original request channel so page delivery
+    // remains correlated even when the sender is already detached.
+    sendRuntimeMessage({
+      type: CONTENT_REINJECT_RESULT,
+      panelSessionId: message.panelSessionId,
+      result
+    });
   });
 
-  window.postMessage({ type: CONTENT_BRIDGE_READY }, "*");
+  return false;
+}
+
+function sendRuntimeMessage(message: unknown): void {
+  if (!active || !runtime) {
+    return;
+  }
+  try {
+    // The API function survives extension reload, but calling it can throw.
+    // Callback form also consumes transient delivery errors instead of leaving
+    // an unhandled rejected Promise when the background receiver is unavailable.
+    runtime.sendMessage(message, () => {
+      try {
+        const error = runtime.lastError;
+        if (isInvalidatedContext(error)) {
+          retireBridge();
+        }
+      } catch (error) {
+        handleRuntimeError(error);
+      }
+    });
+  } catch (error) {
+    handleRuntimeError(error);
+  }
+}
+
+function isInvalidatedContext(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "message" in error &&
+    typeof error.message === "string" && error.message.includes("Extension context invalidated");
+}
+
+function handleRuntimeError(error: unknown): void {
+  if (!isInvalidatedContext(error)) {
+    throw error;
+  }
+  retireBridge();
+}
+
+function retireBridge(): void {
+  if (!active) {
+    return;
+  }
+  active = false;
+  window.removeEventListener("message", onPageMessage);
+  delete document.documentElement.dataset.lsewContentBridgeReady;
+  try {
+    runtime?.onMessage.removeListener?.(onRuntimeMessage);
+  } catch {
+    // Chrome can also reject listener removal after invalidating the context.
+  }
+  for (const cancel of pendingPageRequests) {
+    cancel();
+  }
 }
 
 function forwardReinjectionToPage(
@@ -107,6 +161,7 @@ function forwardReinjectionToPage(
         return;
       }
       settled = true;
+      pendingPageRequests.delete(cancel);
       clearTimeout(timeout);
       window.removeEventListener("message", onPageMessage);
       responsePort?.removeEventListener("message", onPortMessage);
@@ -136,6 +191,14 @@ function forwardReinjectionToPage(
       acceptPageResult(event.data);
     }
 
+    // Losing the bridge cannot prove whether the page already delivered the
+    // Injection. Stop waiting without retrying or claiming a failed delivery.
+    const cancel = () => finish(createAcknowledgementUnknownResult(
+      requestId,
+      panelSessionId,
+      "Extension context invalidated while waiting for page reinjection result."
+    ));
+    pendingPageRequests.add(cancel);
     window.addEventListener("message", onPageMessage);
     const pageRequest = {
       type: PAGE_REINJECT_REQUEST,
@@ -161,21 +224,6 @@ function forwardReinjectionToPage(
 
     window.postMessage(pageRequest, "*");
   });
-}
-
-function createBridgeErrorResult(
-  requestId: string,
-  panelSessionId: string,
-  error: string
-): ReinjectionResult {
-  return {
-    requestId,
-    panelSessionId,
-    ok: false,
-    status: "bridge-error",
-    timestamp: Date.now(),
-    error
-  };
 }
 
 function createAcknowledgementUnknownResult(

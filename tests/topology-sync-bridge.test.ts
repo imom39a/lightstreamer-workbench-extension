@@ -48,7 +48,7 @@ describe("topology checkpoint bridge", () => {
       type: RUNTIME_TOPOLOGY_SYNC_FRAME,
       panelSessionId: PANEL_SESSION_ID,
       frame
-    });
+    }, expect.any(Function));
   });
 
   it("routes validated runtime checkpoint frames only to the registered tab panel", async () => {

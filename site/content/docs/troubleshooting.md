@@ -13,6 +13,12 @@ Do the recovery action that Workbench shows. Common causes are late attachment, 
 
 Limited Coverage does not make captured Evidence invalid. State the Coverage limit when you make a conclusion from missing data.
 
+## “Extension context invalidated” after updating or reloading Workbench
+
+An already-open page can still contain the previous extension's content script after Workbench is updated, reloaded, or disabled. Chrome invalidates that script's connection to the extension. Workbench retires the stale bridge when it detects this condition, so further page updates do not repeatedly call the invalid connection.
+
+After loading the updated extension, reopen DevTools and reload the inspected page once to attach a fresh bridge. This refresh also removes old content scripts from versions that repeated the error. If loading an unpacked extension, keep Developer mode enabled in the browser's extension manager.
+
 ## History uses the in-memory fallback
 
 IndexedDB is not available in the panel. The memory fallback can keep 25,000 Evidence records or 128 MiB. IndexedDB can keep 100,000 records or 256 MiB. If IndexedDB writes repeatedly fail after Capture starts, Workbench continues in memory for the rest of the Panel Session. The footer shows the current storage mode, and Notifications records the failure reason and failed-attempt count. The memory fallback changes History Capacity. It does not reduce Coverage by itself. Restore IndexedDB and open a new Panel Session when you need the larger capacity. The new Panel Session starts empty.
