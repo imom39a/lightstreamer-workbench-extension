@@ -35,7 +35,7 @@ async function includeItemUpdates(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
   await page.getByRole("option", { name: "Add Evidence kind criterion" }).click();
-  await page.getByRole("button", { name: /^Include item-update/ }).click();
+  await page.getByRole("radiogroup", { name: /^Evidence kind value item-update \(/ }).getByRole("radio", { name: "Include", exact: true }).click();
   await page.getByRole("button", { name: "Apply", exact: true }).click();
 }
 

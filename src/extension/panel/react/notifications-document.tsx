@@ -1,7 +1,11 @@
 import { useLayoutEffect, useRef, useState, type JSX } from "react";
 
-import { DIAGNOSTIC_FILTER_FACETS } from "../../../core/diagnostic-observation-index";
+import { DIAGNOSTIC_FILTER_FACETS, type DiagnosticFilterCriteria, type DiagnosticFilterFacet } from "../../../core/diagnostic-observation-index";
+import type { TypedFacetValue } from "../../../core/evidence-filter-contract";
 import type { WorkbenchCommand, WorkbenchDiagnostic, WorkbenchNotificationsSnapshot } from "../workbench-runtime";
+import { FilterValueControl, type FilterValueState } from "./filter-value-control";
+
+import "./notifications-document.css";
 
 type Props = Readonly<{
   open: boolean;
@@ -15,6 +19,23 @@ function notificationKey(entry: WorkbenchDiagnostic): string {
   return JSON.stringify([entry.code, entry.id, entry.affectedIdentity ?? entry.affected]);
 }
 
+function criterionValues(
+  criterion: DiagnosticFilterCriteria[DiagnosticFilterFacet]
+): Readonly<{ include: readonly TypedFacetValue[]; exclude: readonly TypedFacetValue[] }> {
+  if (!criterion) return { include: [], exclude: [] };
+  return "include" in criterion ? criterion : { include: criterion, exclude: [] };
+}
+
+function filterValueState(
+  criterion: DiagnosticFilterCriteria[DiagnosticFilterFacet],
+  identity: string
+): FilterValueState {
+  const { include, exclude } = criterionValues(criterion);
+  if (include.some((entry) => entry.identity === identity)) return "include";
+  if (exclude.some((entry) => entry.identity === identity)) return "exclude";
+  return "off";
+}
+
 /** One temporary document; its scroll and disclosures survive Evidence inspection. */
 export function NotificationsDocument({ open, notifications, onBack, onCommand, onInspect }: Props): JSX.Element | null {
   const heading = useRef<HTMLHeadingElement | null>(null);
@@ -24,6 +45,8 @@ export function NotificationsDocument({ open, notifications, onBack, onCommand, 
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [inspectionUnavailable, setInspectionUnavailable] = useState(false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const filterValueRows = useRef(new Map<string, HTMLDivElement>());
+  const pendingOffFocus = useRef<string | null>(null);
   const { entries, total, limit, filter } = notifications;
 
   useLayoutEffect(() => {
@@ -33,13 +56,17 @@ export function NotificationsDocument({ open, notifications, onBack, onCommand, 
     if (body.current) body.current.scrollTop = scrollTop.current;
   }, [open]);
 
+  useLayoutEffect(() => {
+    const identity = pendingOffFocus.current;
+    if (identity === null) return;
+    pendingOffFocus.current = null;
+    if (!filterValueRows.current.has(identity)) filterSummary.current?.focus();
+  }, [filter.criteria, filter.options]);
+
   if (!open) return null;
 
   const activeCriteria = DIAGNOSTIC_FILTER_FACETS.flatMap((facet) => {
-    const criterion = filter.criteria[facet];
-    if (!criterion) return [];
-    const include = "include" in criterion ? criterion.include : criterion;
-    const exclude = "exclude" in criterion ? criterion.exclude : [];
+    const { include, exclude } = criterionValues(filter.criteria[facet]);
     return [
       ...include.map((value) => ({ facet, value, polarity: "include" as const })),
       ...exclude.map((value) => ({ facet, value, polarity: "exclude" as const }))
@@ -73,14 +100,47 @@ export function NotificationsDocument({ open, notifications, onBack, onCommand, 
       <div className="workbench-react__notifications-filters">
         <details className="workbench-react__diagnostic-filter-options" open={filtersOpen} onToggle={(event) => setFiltersOpen(event.currentTarget.open)}>
           <summary ref={filterSummary}>Filter notifications</summary>
-          {DIAGNOSTIC_FILTER_FACETS.map((facet) => <fieldset key={facet}>
+          {DIAGNOSTIC_FILTER_FACETS.map((facet) => {
+            const existing = filter.options[facet];
+            const known = new Set(existing.map(({ value }) => value.identity));
+            const pinned = criterionValues(filter.criteria[facet]);
+            const options = [
+              ...existing,
+              ...[...pinned.include, ...pinned.exclude]
+                .filter((value, index, values) => !known.has(value.identity) && values.findIndex((candidate) => candidate.identity === value.identity) === index)
+                .map((value) => ({ value, count: 0 }))
+            ];
+            return <fieldset key={facet}>
             <legend>{facet === "diagnosticCode" ? "Code" : facet === "diagnosticSeverity" ? "Severity" : "Affected"}</legend>
-            {filter.options[facet].length ? filter.options[facet].map(({ value, count }) => <span key={value.identity}>
-              <span>{value.label} ({count})</span>
-              <button type="button" onClick={() => onCommand({ type: "apply-diagnostic-filter", facet, value, polarity: "include" })}>Include {value.label}</button>
-              <button type="button" onClick={() => onCommand({ type: "apply-diagnostic-filter", facet, value, polarity: "exclude" })}>Exclude {value.label}</button>
-            </span>) : <span>No values recorded.</span>}
-          </fieldset>)}
+            {options.length ? options.map(({ value, count }) => <div
+              className="workbench-react__notifications-filter-value"
+              data-filter-value-identity={value.identity}
+              key={value.identity}
+              ref={(row) => {
+                if (row) filterValueRows.current.set(value.identity, row);
+                else filterValueRows.current.delete(value.identity);
+              }}
+              title={value.label}
+            >
+              <span className="workbench-react__notifications-filter-label">{value.label} ({count})</span>
+              <FilterValueControl
+                label={value.label}
+                state={filterValueState(filter.criteria[facet], value.identity)}
+                onChange={(state) => {
+                  const current = filterValueState(filter.criteria[facet], value.identity);
+                  if (state === "off") {
+                    if (current !== "off") {
+                      if (filterValueRows.current.get(value.identity)?.contains(document.activeElement)) pendingOffFocus.current = value.identity;
+                      onCommand({ type: "remove-diagnostic-filter", facet, value, polarity: current });
+                    }
+                  } else {
+                    onCommand({ type: "apply-diagnostic-filter", facet, value, polarity: state });
+                  }
+                }}
+              />
+            </div>) : <span>No values recorded.</span>}
+          </fieldset>;
+          })}
         </details>
         <button type="button" aria-disabled={!filter.active} onClick={() => {
           if (filter.active) onCommand({ type: "reset-diagnostic-filter" });

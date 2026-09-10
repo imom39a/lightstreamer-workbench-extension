@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 
 import axe from "axe-core";
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 
 declare global {
   interface Window {
@@ -30,9 +30,9 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/current-compact-light.png` });
   await testInfo.attach("current-compact-light.png", { path: `${evidenceRoot}/current-compact-light.png`, contentType: "image/png" });
 
-  const include = page.getByRole("button", { name: /^Include / }).first();
+  const include = page.getByRole("radiogroup", { name: /^Evidence kind value item-update \(/ }).getByRole("radio", { name: "Include", exact: true });
   await include.click();
-  await expect(include).toHaveAttribute("aria-pressed", "true");
+  await expect(include).toBeChecked();
   await assertAxe(page);
   await page.emulateMedia({ colorScheme: "light", forcedColors: "active" });
   await expect(page.getByRole("dialog", { name: "Evidence kind exact values" })).toBeVisible();
@@ -90,8 +90,8 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await expect.poll(() => valueList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   const lastValue = valueList.getByRole("listitem").last();
   await lastValue.scrollIntoViewIfNeeded();
-  await lastValue.getByRole("button", { name: /^Include / }).focus();
-  await expect(lastValue.getByRole("button", { name: /^Include / })).toBeFocused();
+  await lastValue.getByRole("radio", { name: "Include", exact: true }).focus();
+  await expect(lastValue.getByRole("radio", { name: "Include", exact: true })).toBeFocused();
   await page.getByLabel("Search exact values").fill("220");
   await expect(valueList.getByRole("listitem")).toHaveCount(1);
   await expect(valueList.getByRole("listitem").first()).toContainText("high-scope-item-220");
@@ -131,7 +131,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
   await openExplorer(page, "filter-active-zero", { width: 900, height: 700 }, "light", "Evidence kind");
-  await page.getByRole("button", { name: /^Include item-update/ }).click();
+  await page.getByRole("radiogroup", { name: /^Evidence kind value item-update \(/ }).getByRole("radio", { name: "Include", exact: true }).click();
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
   await expect(page.locator(".workbench-react__active-filter")).toHaveText(/Filter:.*item-update/);
@@ -152,7 +152,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await expect(collisionRows).toHaveCount(2);
   const collisionIdentities = await collisionRows.evaluateAll((rows) => rows.map((row) => row.getAttribute("data-filter-value-identity")));
   expect(new Set(collisionIdentities).size).toBe(2);
-  await expect(page.getByRole("button", { name: /^Include 1; typed identity / })).toHaveCount(2);
+  await expect(page.getByRole("radio", { name: "Include", exact: true })).toHaveCount(2);
   await assertExplorerLayout(page);
   await assertAxe(page);
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/current-collision-light.png` });
@@ -173,6 +173,67 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: not-applied-yet");
   await expect(filter).toBeFocused();
   await assertAxe(page);
+});
+
+test("filter-impl-13 reveals a long exact explorer value with native keyboard disclosure", async ({ page }) => {
+  await openExplorer(page, "frozen-high-volume", { width: 900, height: 700 }, "light", "COMMAND key");
+  const row = page.locator('[role="list"][aria-label="COMMAND key values"] [data-filter-value-identity]').first();
+  const disclosure = row.locator("details.workbench-react__filter-value-label--expandable");
+  await expect(disclosure).toHaveCount(1);
+  const summary = disclosure.locator("summary");
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(disclosure).toHaveAttribute("open", "");
+  const exact = disclosure.locator("code");
+  await expect(exact).toContainText("string · customer-order-command-key-with-long-production-identity-");
+  await expect(exact).toHaveCSS("white-space", "pre-wrap");
+  await assertExplorerLayout(page);
+  await assertAxe(page);
+});
+
+test("filter-impl-13 keeps expanded long values inspectable in compact and shallow explorer layouts", async ({ page }, testInfo: TestInfo) => {
+  for (const [id, viewport] of [
+    ["compact", { width: 563, height: 700 }],
+    ["shallow", { width: 900, height: 320 }],
+    ["wide", { width: 1440, height: 900 }]
+  ] as const) {
+    await openExplorer(page, "frozen-high-volume", viewport, "dark", "COMMAND key");
+    const list = page.getByRole("list", { name: "COMMAND key values" });
+    const disclosure = list.locator("details.workbench-react__filter-value-label--expandable").first();
+    await disclosure.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    await expect(disclosure).toHaveAttribute("open", "");
+    await expect(disclosure.locator("code")).toContainText("customer-order-command-key-with-long-production-identity-");
+    await assertExplorerControlsHitTestable(page, page.getByRole("dialog", { name: "COMMAND key exact values" }), list);
+    const path = `test-results/ui-terra/filter-explorer-long-${id}-dark.png`;
+    await page.locator(".workbench-react").screenshot({ path });
+    await testInfo.attach(`filter-explorer-long-${id}-dark.png`, { path, contentType: "image/png" });
+  }
+});
+
+test("filter-impl-13 keeps compact and docked high-cardinality explorer controls visible and hit-testable", async ({ page }) => {
+  for (const [id, viewport] of [
+    ["compact", { width: 563, height: 700 }],
+    ["normal", { width: 900, height: 700 }],
+    ["shallow", { width: 900, height: 320 }],
+    ["wide", { width: 1440, height: 900 }]
+  ] as const) {
+    await openExplorer(page, "filter-high-cardinality", viewport, "dark", "Item");
+    const dialog = page.getByRole("dialog", { name: "Item exact values" });
+    const list = dialog.getByRole("list", { name: "Item values" });
+    await expect(list.getByRole("listitem")).toHaveCount(12);
+    await expect(list.getByRole("listitem").first()).toBeInViewport({ ratio: 1 });
+    await expect(list.getByRole("radio", { name: "Off", exact: true }).first()).toBeInViewport({ ratio: 1 });
+    await assertExplorerControlsHitTestable(page, dialog, list);
+    await list.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    const last = list.getByRole("listitem").last();
+    await last.getByRole("radio", { name: "Include", exact: true }).focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(last.getByRole("radio", { name: "Exclude", exact: true })).toBeChecked();
+    await page.locator(".workbench-react").screenshot({ path: `test-results/ui-terra/filter-explorer-${id}-dark.png` });
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  }
 });
 
 async function openExplorer(
@@ -223,6 +284,26 @@ async function assertExplorerLayout(page: Page): Promise<void> {
     expect(control.bottom).toBeLessThanOrEqual(layout.shellRect.bottom);
   }
   if (layout.list) expect(layout.list.overflowY).toMatch(/auto|scroll/);
+}
+
+async function assertExplorerControlsHitTestable(page: Page, dialog: Locator, list: Locator): Promise<void> {
+  const controls = await dialog.locator("#workbench-filter-value-search, button").evaluateAll((elements) => elements
+    .filter((element) => element.id === "workbench-filter-value-search" || ["Back to facets", "Apply", "Cancel"].includes(element.textContent?.trim() ?? ""))
+    .map((element) => {
+      const rect = element.getBoundingClientRect();
+      const point = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return {
+        label: element.id || element.textContent?.trim(),
+        visible: rect.width > 0 && rect.height > 0,
+        insideViewport: rect.top >= 0 && rect.bottom <= innerHeight && rect.left >= 0 && rect.right <= innerWidth,
+        hit: point === element || element.contains(point) || point?.contains(element) === true
+      };
+    }));
+  expect(controls).toHaveLength(4);
+  expect(controls).toEqual(controls.map((control) => ({ ...control, visible: true, insideViewport: true, hit: true })));
+  const scroll = await list.evaluate((element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, overflowY: getComputedStyle(element).overflowY }));
+  expect(scroll.overflowY).toMatch(/auto|scroll/);
+  expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
 }
 
 async function assertAxe(page: Page): Promise<void> {

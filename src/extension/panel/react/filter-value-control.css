@@ -1,0 +1,60 @@
+.workbench-react .workbench-filter-value-control.workbench-filter-value-control {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  gap: 0;
+  align-items: stretch;
+}
+
+.workbench-react .workbench-filter-value-control__legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.workbench-react .workbench-filter-value-control__choice {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--wb-border-strong);
+  background: var(--wb-raised);
+  color: var(--wb-text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.workbench-react .workbench-filter-value-control__choice + .workbench-filter-value-control__choice { margin-left: -1px; }
+.workbench-react .workbench-filter-value-control__choice:first-of-type { border-radius: 3px 0 0 3px; }
+.workbench-react .workbench-filter-value-control__choice:last-of-type { border-radius: 0 3px 3px 0; }
+.workbench-react .workbench-filter-value-control__choice span { pointer-events: none; padding: 2px 5px; font-size: 11px; line-height: 1.2; }
+.workbench-react .workbench-filter-value-control__choice > input {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.workbench-react .workbench-filter-value-control__choice:has(input:checked) { border-color: var(--wb-focus); background: transparent; box-shadow: inset 0 -2px 0 var(--wb-focus); font-weight: 700; }
+.workbench-react .workbench-filter-value-control__choice:has(input:focus-visible) { z-index: 1; outline: 2px solid var(--wb-focus); outline-offset: 1px; }
+.workbench-react .workbench-filter-value-control:disabled .workbench-filter-value-control__choice { color: var(--wb-muted); cursor: not-allowed; opacity: .7; }
+
+@media (forced-colors: active) {
+  .workbench-react .workbench-filter-value-control__choice { forced-color-adjust: none; border-color: var(--wb-border-strong); background: var(--wb-raised); color: var(--wb-text); }
+  .workbench-react .workbench-filter-value-control__choice:has(input:checked) { border-color: var(--wb-focus); background: transparent; box-shadow: inset 0 -2px 0 var(--wb-focus); color: var(--wb-text); }
+  .workbench-react .workbench-filter-value-control__choice:has(input:focus-visible) { outline-color: var(--wb-focus); }
+}

@@ -26,7 +26,7 @@ test("filter-impl-14 exposes typed selected-Evidence actions and immediate recov
   const actions = page.getByRole("complementary", { name: "Context" });
   const activitySummary = actions.locator('details[aria-label="Activity summary"]');
   const selectedFilter = actions.locator('details[aria-label="Filter selected Evidence"]');
-  const selectedFilterSummary = selectedFilter.locator("summary");
+  const selectedFilterSummary = selectedFilter.locator(":scope > summary");
   const evidenceMetadata = actions.locator('details[aria-label="Evidence metadata"]');
   await expect(selectedFilter).not.toHaveAttribute("open", "");
   await expect(activitySummary.locator("xpath=following-sibling::*[1]")).toHaveAttribute("aria-label", "Filter selected Evidence");
@@ -48,16 +48,16 @@ test("filter-impl-14 exposes typed selected-Evidence actions and immediate recov
   await selectedFilterSummary.focus();
   await page.keyboard.press("Enter");
   await expect(selectedFilter).toHaveAttribute("open", "");
-  await expect(actions.getByRole("button", { name: /^Include Client/ })).toBeVisible();
-  await expect(actions.getByRole("button", { name: /^Exclude Client/ })).toBeVisible();
+  await expect(actions.getByRole("radiogroup", { name: /^Client:/ }).getByRole("radio", { name: "Include", exact: true })).toBeVisible();
+  await expect(actions.getByRole("radiogroup", { name: /^Client:/ }).getByRole("radio", { name: "Exclude", exact: true })).toBeVisible();
   await expect(actions.locator('[data-filter-action-kind="around"]')).toHaveCount(1);
   await expect(actions.getByRole("button", { name: "Around selected Evidence ±5 seconds" })).toBeVisible();
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/base-normal-selected-action-context-light.png` });
 
-  await actions.getByRole("button", { name: /^Include COMMAND key/ }).click();
+  await actions.getByRole("radiogroup", { name: /^COMMAND key:/ }).getByRole("radio", { name: "Include", exact: true }).click();
   await expect(activeFilter).toBeVisible();
   await expect(activeFilter).toHaveText("Filter: scenario-event · key: alpha");
-  await expect(actions.getByRole("button", { name: /^Exclude Client/ })).toBeVisible();
+  await expect(actions.getByRole("radiogroup", { name: /^Client:/ }).getByRole("radio", { name: "Exclude", exact: true })).toBeVisible();
   await actions.getByRole("button", { name: "Around selected Evidence ±5 seconds" }).click();
   await expect(activeFilter).toBeVisible();
   await expect(activeFilter).toHaveText("Filter: scenario-event · key: alpha · Range −4.998s–+5.002s");

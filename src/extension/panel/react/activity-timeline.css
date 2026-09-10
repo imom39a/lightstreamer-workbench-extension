@@ -1,5 +1,4 @@
 .workbench-activity-timeline { --wb-timeline-local: #c69af5; position: relative; z-index: 4; flex: 0 0 auto; min-width: 0; border-bottom: 1px solid var(--wb-border-strong); background: var(--wb-bg); padding: 2px 9px 2px; font-size: 10px; }
-.workbench-react[data-theme="light"] .workbench-activity-timeline { --wb-timeline-local: #7a35bc; }
 .workbench-activity-timeline > header { display: flex; min-height: 24px; align-items: center; gap: 9px; color: var(--wb-muted); }
 .workbench-react .workbench-activity-timeline > header > button { flex: 0 0 auto; min-height: 24px; border: 0; background: transparent; padding: 0 3px; font-size: 11px; font-weight: 600; }
 .workbench-activity-timeline__origin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -46,7 +45,7 @@
 .workbench-activity-timeline__snapshot-legend i { width: 10px; height: 8px; border: 1px solid var(--wb-muted); background: repeating-linear-gradient(90deg, var(--wb-muted) 0, var(--wb-muted) 1px, transparent 1px, transparent 3px); }
 .workbench-activity-timeline__caveat { margin: 2px 0 0; color: var(--wb-muted); font-size: 10px; }
 @media (forced-colors: active) {
-  .workbench-activity-timeline__server-mark, .workbench-activity-timeline__legend i { background: CanvasText; forced-color-adjust: none; }
-  .workbench-activity-timeline__local-mark, .workbench-activity-timeline__legend i.workbench-activity-timeline__local { border-color: CanvasText; background: Canvas; forced-color-adjust: none; }
-  .workbench-activity-timeline__server-point { background: CanvasText; forced-color-adjust: none; }
+  .workbench-activity-timeline__server-mark, .workbench-activity-timeline__legend i { background: var(--wb-muted); forced-color-adjust: none; }
+  .workbench-activity-timeline__local-mark, .workbench-activity-timeline__legend i.workbench-activity-timeline__local { border-color: var(--wb-timeline-local); background: var(--wb-bg); forced-color-adjust: none; }
+  .workbench-activity-timeline__server-point { background: var(--wb-muted); forced-color-adjust: none; }
 }

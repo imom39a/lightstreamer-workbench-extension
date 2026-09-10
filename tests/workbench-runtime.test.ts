@@ -239,6 +239,19 @@ function contextFields(runtime: ReturnType<typeof createWorkbenchRuntime>): Reco
 }
 
 describe("WorkbenchRuntime", () => {
+  it("normalizes legacy runtime theme inputs and commands to dark", async () => {
+    const runtime = createWorkbenchRuntime({
+      history: createInMemoryEventHistory(),
+      theme: "light"
+    });
+    expect(runtime.getSnapshot().theme).toBe("dark");
+    runtime.dispatch({ type: "set-theme", theme: "auto" });
+    expect(runtime.getSnapshot().theme).toBe("dark");
+    runtime.dispatch({ type: "set-theme", theme: "light" });
+    expect(runtime.getSnapshot().theme).toBe("dark");
+    await runtime.disposeAndWait();
+  });
+
   it("migrates committed and runtime findings through the normalized Diagnostic Observation journal without changing the footer", async () => {
     const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "runtime-diagnostics" });
     const baseHistory = createAuthoritativeHistory({

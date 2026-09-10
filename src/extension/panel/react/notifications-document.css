@@ -1,0 +1,13 @@
+.workbench-react__notifications-filter-value {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.workbench-react__notifications-filter-label {
+  min-width: 0;
+  flex: 1 1 150px;
+  overflow-wrap: anywhere;
+}

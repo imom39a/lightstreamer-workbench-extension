@@ -18,8 +18,7 @@ import {
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import {
-  THEME_STORAGE_KEY,
-  type DevToolsThemeName
+  THEME_STORAGE_KEY
 } from "../src/extension/panel/theme";
 import {
   createWorkbenchRuntime,
@@ -297,14 +296,16 @@ describe("production panel mount wiring", () => {
     await disposePanel(dispose);
   });
 
-  it("starts from the developer's persisted theme preference", async () => {
+  it("ignores a persisted legacy light preference and mounts dark without a theme selector", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
-    localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    localStorage.setItem(THEME_STORAGE_KEY, "light");
+    const getItem = vi.spyOn(localStorage, "getItem");
+    const setThemeChangeHandler = vi.fn();
     (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: {
         inspectedWindow: { tabId: 40 },
-        panels: { themeName: "default", setThemeChangeHandler: vi.fn() }
+        panels: { themeName: "default", setThemeChangeHandler }
       }
     } as unknown as typeof chrome;
 
@@ -314,16 +315,22 @@ describe("production panel mount wiring", () => {
     });
     await flushPanel();
 
-    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("dark");
+    expect(root.querySelector("#workbench-theme")).toBeNull();
     expect(root.dataset.theme).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(getItem).not.toHaveBeenCalled();
+    expect(setThemeChangeHandler).not.toHaveBeenCalled();
 
     await disposePanel(dispose);
   });
 
-  it("persists a developer's theme change and applies it immediately", async () => {
+  it("keeps mounted legacy Auto input dark without reading or writing theme storage", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
+    const getItem = vi.spyOn(localStorage, "getItem");
+    const setItem = vi.spyOn(localStorage, "setItem");
+    localStorage.setItem(THEME_STORAGE_KEY, "auto");
+    setItem.mockClear();
     (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: {
         inspectedWindow: { tabId: 41 },
@@ -337,30 +344,19 @@ describe("production panel mount wiring", () => {
     });
     await flushPanel();
 
-    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("auto");
-    expect(root.dataset.theme).toBe("light");
-
-    await selectTheme(root, "dark");
-
-    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("dark");
+    expect(root.querySelector("#workbench-theme")).toBeNull();
     expect(root.dataset.theme).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
+    expect(getItem).not.toHaveBeenCalled();
+    expect(setItem).not.toHaveBeenCalled();
 
     await disposePanel(dispose);
   });
 
-  it("follows the live DevTools theme in Auto and disposes the theme listener", async () => {
+  it("does not register or dispose a live DevTools theme listener", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
-    const themeHandler: { current: ((theme: DevToolsThemeName) => void) | null } = {
-      current: null
-    };
-    const setThemeChangeHandler = vi.fn(
-      (handler?: ((theme: DevToolsThemeName) => void) | null) => {
-        themeHandler.current = handler ?? null;
-      }
-    );
+    const setThemeChangeHandler = vi.fn();
     (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: {
         inspectedWindow: { tabId: 43 },
@@ -374,26 +370,15 @@ describe("production panel mount wiring", () => {
     });
     await flushPanel();
 
-    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("auto");
-    expect(root.dataset.theme).toBe("light");
-    const installedHandler = themeHandler.current;
-    if (!installedHandler) {
-      throw new Error("DevTools theme handler was not installed");
-    }
-
-    installedHandler?.("dark");
-
+    expect(root.querySelector("#workbench-theme")).toBeNull();
     expect(root.dataset.theme).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("auto");
 
     await disposePanel(dispose);
     await disposePanel(dispose);
-    installedHandler?.("default");
 
     expect(root.dataset.theme).toBe("dark");
-    expect(setThemeChangeHandler).toHaveBeenCalledTimes(2);
-    expect(setThemeChangeHandler).toHaveBeenLastCalledWith(null);
+    expect(setThemeChangeHandler).not.toHaveBeenCalled();
   });
 
   it("opens session history and routes bridge, topology, and visibility input into one panel", async () => {
@@ -731,19 +716,6 @@ function findButton(root: HTMLElement, label: string): HTMLButtonElement {
 async function clickButton(root: HTMLElement, label: string): Promise<void> {
   await act(async () => {
     findButton(root, label).click();
-    await Promise.resolve();
-  });
-  await flushPanel();
-}
-
-async function selectTheme(root: HTMLElement, theme: "auto" | "dark" | "light"): Promise<void> {
-  const select = root.querySelector<HTMLSelectElement>("#workbench-theme");
-  if (!select) {
-    throw new Error("Missing Theme select");
-  }
-  await act(async () => {
-    select.value = theme;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
     await Promise.resolve();
   });
   await flushPanel();

@@ -131,6 +131,11 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     case "scenario-authored-undo": {
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
       await scenario.getByRole("button", { name: "Add authored update" }).click();
+      // The authored step mounts a CodeMirror editor whose serialized
+      // presentation is folded into Scenario accounting.  Wait for that
+      // mount callback before removing another step so the footer is captured
+      // after the same canonical state on every browser/OS.
+      await expect(scenario.getByLabel("Step 3 Injection Draft").locator(".workbench-react__local-code[data-selection-anchor]")).toBeVisible();
       await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).click();
       await expect(scenario.getByRole("button", { name: "Undo removal" })).toBeVisible();
       await expect(scenario.getByText("None · newly authored")).toBeVisible();

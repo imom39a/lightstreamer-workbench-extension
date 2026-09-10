@@ -30,9 +30,9 @@ describe("Workbench visual-evidence runner", () => {
     expect(matrix.filter((scenario: { production?: { scenario?: string } }) =>
       scenario.production?.scenario === "diagnostics-stress"
     ).map((scenario: { id: string }) => scenario.id)).toEqual([
-      "wide-diagnostics-stress-light",
+      "wide-diagnostics-stress-dark",
       "normal-diagnostics-stress-dark",
-      "shallow-diagnostics-stress-light",
+      "shallow-diagnostics-stress-dark",
       "compact-diagnostics-stress-dark"
     ]);
   });
@@ -69,7 +69,7 @@ describe("Workbench visual-evidence runner", () => {
 
     expect(continuousHistoryScenarios).toEqual([
       {
-        id: "wide-history-rollover-notifications-light",
+        id: "wide-history-rollover-notifications-dark",
         category: "integrated-notification",
         productionScenario: "history-rolling-high-volume",
         setup: "notifications-history-rollover"
@@ -81,7 +81,7 @@ describe("Workbench visual-evidence runner", () => {
         setup: "notifications-history-recovered"
       },
       {
-        id: "compact-history-journal-memory-light",
+        id: "compact-history-journal-memory-dark",
         category: "history-footer",
         productionScenario: "history-journal-memory-fallback",
         setup: "history-memory"
@@ -143,11 +143,11 @@ describe("Workbench visual-evidence runner", () => {
     expect(diagnosticIds).toHaveLength(12);
     expect(notificationIds).toHaveLength(7);
     expect(historyNotificationIds).toEqual([
-      "wide-history-rollover-notifications-light",
+      "wide-history-rollover-notifications-dark",
       "normal-history-recovered-notifications-dark"
     ]);
     expect(historyFooterIds).toEqual([
-      "compact-history-journal-memory-light",
+      "compact-history-journal-memory-dark",
       "shallow-history-gap-forced-dark"
     ]);
     expect(storageIds).toHaveLength(5);
@@ -183,8 +183,8 @@ describe("Workbench visual-evidence runner", () => {
   it("keeps the approved Variant C normal asset and compact prototype as readability references", () => {
     const readabilityReferences = matrix.filter((scenario: { id: string }) => scenario.id.startsWith("readability-c-"));
     expect(readabilityReferences).toMatchObject([
-      { id: "readability-c-normal-light", reference: { source: "asset", path: "prototypes/workbench-ui-12/screenshots/C-normal.jpg" } },
-      { id: "readability-c-compact-light", reference: { source: "prototype-12", variant: "C", frame: "compact" } }
+      { id: "readability-c-normal-dark", reference: { source: "asset", path: "prototypes/workbench-ui-12/screenshots/C-normal.jpg" } },
+      { id: "readability-c-compact-dark", reference: { source: "prototype-12", variant: "C", frame: "compact" } }
     ]);
   });
 

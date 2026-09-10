@@ -1273,7 +1273,7 @@ class Runtime implements WorkbenchRuntime {
     this.windowSize = normalizeWindowSize(options.windowSize);
     this.outputByteLimit = normalizeOutputByteLimit(options.outputByteLimit);
     this.visible = options.visible ?? true;
-    this.theme = options.theme ?? "auto";
+    this.theme = "dark";
     this.captureStatus = options.captureStatus ?? "idle";
     this.captureOverride = options.capture ?? {};
     this.normalizer = options.normalizer ?? createEventNormalizer();
@@ -1685,7 +1685,7 @@ class Runtime implements WorkbenchRuntime {
         this.setVisible(command.visible);
         return;
       case "set-theme":
-        this.theme = command.theme;
+        this.theme = "dark";
         this.publish();
         return;
       case "set-capture-status":

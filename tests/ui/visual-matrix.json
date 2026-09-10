@@ -7,9 +7,9 @@
     "production": { "scenario": "live-selected", "setup": "none" }
   },
   {
-    "id": "local-injection-captured-preview-compact-light",
+    "id": "local-injection-captured-preview-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "B", "state": "edit", "frame": "compact", "setup": "captured-draft" },
     "production": { "scenario": "local-injection-json", "setup": "captured-draft" }
   },
@@ -28,9 +28,9 @@
     "production": { "scenario": "local-injection-captured", "setup": "captured-draft-changed" }
   },
   {
-    "id": "local-injection-captured-diff-wide-light",
+    "id": "local-injection-captured-diff-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "B", "state": "edit", "frame": "wide", "setup": "captured-draft" },
     "production": { "scenario": "local-injection-captured", "setup": "captured-draft-changed" }
   },
@@ -43,16 +43,16 @@
     "production": { "scenario": "local-injection-authored", "setup": "authored-direct" }
   },
   {
-    "id": "server-injection-edit-compact-light",
+    "id": "server-injection-edit-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-edit", "setup": "server-injection" }
   },
   {
-    "id": "server-injection-recipe-normal-light",
+    "id": "server-injection-recipe-normal-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-recipe", "setup": "server-injection" }
   },
@@ -64,9 +64,9 @@
     "production": { "scenario": "server-injection-review", "setup": "server-injection" }
   },
   {
-    "id": "server-injection-degraded-shallow-light",
+    "id": "server-injection-degraded-shallow-dark",
     "viewport": { "width": 900, "height": 320 },
-    "theme": "light",
+    "theme": "dark",
     "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-degraded", "setup": "server-injection" }
   },
@@ -79,9 +79,9 @@
     "production": { "scenario": "server-injection-unknown", "setup": "server-injection" }
   },
   {
-    "id": "server-injection-high-volume-wide-light",
+    "id": "server-injection-high-volume-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-high-volume", "setup": "server-injection" }
   },
@@ -93,16 +93,16 @@
     "production": { "scenario": "frozen-high-volume", "setup": "retained-find" }
   },
   {
-    "id": "compact-long-identities-light",
+    "id": "compact-long-identities-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "frozen", "frame": "compact", "setup": "long-identities" },
     "production": { "scenario": "frozen-high-volume", "setup": "none" }
   },
   {
-    "id": "normal-help-resources-light",
+    "id": "normal-help-resources-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "more-actions" },
     "production": { "scenario": "live-selected", "setup": "more-actions-help" }
   },
@@ -128,9 +128,9 @@
     "production": { "scenario": "local-injection-json", "setup": "none" }
   },
   {
-    "id": "normal-limited-capture-light",
+    "id": "normal-limited-capture-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "C", "state": "coverage", "frame": "normal", "setup": "none" },
     "production": { "scenario": "limited-capture", "setup": "none" }
   },
@@ -142,9 +142,9 @@
     "production": { "scenario": "memory-fallback", "setup": "memory-operations" }
   },
   {
-    "id": "wide-history-rollover-notifications-light",
+    "id": "wide-history-rollover-notifications-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "visualEvidenceOnly": true,
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "history-rolling-high-volume", "setup": "notifications-history-rollover" }
@@ -158,9 +158,9 @@
     "production": { "scenario": "history-journal-recovered", "setup": "notifications-history-recovered" }
   },
   {
-    "id": "compact-history-journal-memory-light",
+    "id": "compact-history-journal-memory-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "visualEvidenceOnly": true,
     "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "none" },
     "production": { "scenario": "history-journal-memory-fallback", "setup": "history-memory" }
@@ -182,16 +182,16 @@
     "production": { "scenario": "disconnected", "setup": "none" }
   },
   {
-    "id": "wide-recovering-light",
+    "id": "wide-recovering-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "C", "state": "recovering", "frame": "wide", "setup": "none" },
     "production": { "scenario": "recovering", "setup": "none" }
   },
   {
-    "id": "compact-clear-confirmation-light",
+    "id": "compact-clear-confirmation-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "clear-confirmation", "surface": "context" },
     "production": { "scenario": "live-selected", "setup": "clear-confirmation" }
   },
@@ -203,9 +203,9 @@
     "production": { "scenario": "live-selected", "setup": "clear-confirmation" }
   },
   {
-    "id": "wide-diagnostics-stress-light",
+    "id": "wide-diagnostics-stress-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "C", "state": "coverage", "frame": "wide", "setup": "none" },
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   },
@@ -217,9 +217,9 @@
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   },
   {
-    "id": "shallow-diagnostics-stress-light",
+    "id": "shallow-diagnostics-stress-dark",
     "viewport": { "width": 900, "height": 320 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "C", "state": "coverage", "frame": "shallow", "setup": "none" },
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   },
@@ -239,9 +239,9 @@
     "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
   },
   {
-    "id": "compact-storage-headroom-warning-light",
+    "id": "compact-storage-headroom-warning-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "visualEvidenceOnly": true,
     "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
@@ -255,9 +255,9 @@
     "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
   },
   {
-    "id": "wide-storage-headroom-warning-light",
+    "id": "wide-storage-headroom-warning-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "visualEvidenceOnly": true,
     "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "storage-headroom-warning", "setup": "storage-headroom" }
@@ -279,9 +279,9 @@
     "production": { "scenario": "integrated-activity-main", "setup": "activity-main" }
   },
   {
-    "id": "activity-main-chooser-compact-light",
+    "id": "activity-main-chooser-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "reference": { "source": "asset", "path": "docs/reference/integrated-activity/D-single-track-compact-light.jpg" },
     "production": { "scenario": "integrated-activity-main", "setup": "activity-main-chooser" }
   },
@@ -301,9 +301,9 @@
     "production": { "scenario": "integrated-activity-main", "setup": "activity-main" }
   },
   {
-    "id": "activity-10k-normal-light",
+    "id": "activity-10k-normal-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "activity", "frame": "normal", "setup": "activity-10k" },
     "production": { "scenario": "activity-10k", "setup": "activity-10k" }
   },
@@ -315,9 +315,9 @@
     "production": { "scenario": "activity-graphical", "setup": "activity-graphical" }
   },
   {
-    "id": "activity-wide-light",
+    "id": "activity-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "activity", "frame": "wide", "setup": "activity-graphical" },
     "production": { "scenario": "activity-graphical", "setup": "activity-graphical" }
   },
@@ -329,16 +329,16 @@
     "production": { "scenario": "limited-capture", "setup": "activity-limited" }
   },
   {
-    "id": "activity-memory-compact-light",
+    "id": "activity-memory-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "activity-memory" },
     "production": { "scenario": "memory-fallback", "setup": "activity-memory" }
   },
   {
-    "id": "scenario-edit-compact-light",
+    "id": "scenario-edit-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario" }
   },
@@ -350,9 +350,9 @@
     "production": { "scenario": "local-injection-scenario-review", "setup": "scenario" }
   },
   {
-    "id": "scenario-complete-wide-light",
+    "id": "scenario-complete-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-complete", "setup": "scenario" }
   },
@@ -365,9 +365,9 @@
     "production": { "scenario": "local-injection-scenario-stop-in-flight", "setup": "scenario-inflight-stop" }
   },
   {
-    "id": "scenario-paused-compact-light",
+    "id": "scenario-paused-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-review", "setup": "scenario-hidden-pause" }
   },
@@ -379,9 +379,9 @@
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-membership-preview" }
   },
   {
-    "id": "scenario-authored-undo-wide-light",
+    "id": "scenario-authored-undo-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-authored-undo" }
   },
@@ -394,10 +394,10 @@
     "production": { "scenario": "local-injection-scenario-high-volume", "setup": "scenario-capacity-refusal" }
   },
   {
-    "id": "scenario-halt-partial-compact-light",
+    "id": "scenario-halt-partial-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
-    "prototype": { "variant": "A", "state": "stopped", "frame": "compact", "setup": "scenario-halt" },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "stopped", "frame": "compact", "setup": "scenario-halt", "referenceId": "scenario-halt-partial-compact-light" },
     "production": { "scenario": "local-injection-scenario-partial", "setup": "scenario" }
   },
   {
@@ -416,17 +416,17 @@
     "production": { "scenario": "local-injection-scenario-unknown", "setup": "scenario" }
   },
   {
-    "id": "scenario-halt-server-drift-wide-light",
+    "id": "scenario-halt-server-drift-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
-    "prototype": { "variant": "A", "state": "drift", "frame": "wide", "setup": "scenario-halt" },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "drift", "frame": "wide", "setup": "scenario-halt", "referenceId": "scenario-halt-server-drift-wide-light" },
     "production": { "scenario": "local-injection-scenario-server-drift", "setup": "scenario" }
   },
   {
-    "id": "scenario-halt-unretained-normal-light",
+    "id": "scenario-halt-unretained-normal-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
-    "prototype": { "variant": "A", "state": "unretained", "frame": "normal", "setup": "scenario-halt" },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "unretained", "frame": "normal", "setup": "scenario-halt", "referenceId": "scenario-halt-unretained-normal-light" },
     "production": { "scenario": "local-injection-scenario-unretained", "setup": "scenario" }
   },
   {
@@ -437,9 +437,9 @@
     "production": { "scenario": "local-injection-scenario-cleared", "setup": "scenario" }
   },
   {
-    "id": "scenario-checkpoint-authoring-compact-light",
+    "id": "scenario-checkpoint-authoring-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-authoring", "setup": "scenario-checkpoint" }
   },
@@ -451,16 +451,16 @@
     "production": { "scenario": "local-injection-scenario-checkpoint-review", "setup": "scenario-checkpoint" }
   },
   {
-    "id": "scenario-checkpoint-waiting-wide-light",
+    "id": "scenario-checkpoint-waiting-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-waiting", "setup": "scenario-checkpoint" }
   },
   {
-    "id": "scenario-checkpoint-pass-evidence-normal-light",
+    "id": "scenario-checkpoint-pass-evidence-normal-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-pass", "setup": "scenario-checkpoint" }
   },
@@ -487,9 +487,9 @@
     "production": { "scenario": "local-injection-scenario-checkpoint-ambiguous-null", "setup": "scenario-checkpoint" }
   },
   {
-    "id": "scenario-checkpoint-high-volume-wide-light",
+    "id": "scenario-checkpoint-high-volume-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-high-volume", "setup": "scenario-checkpoint-high-volume" }
   },
@@ -501,9 +501,9 @@
     "production": { "scenario": "diagnostic-server-callbacks", "setup": "diagnostic-server" }
   },
   {
-    "id": "server-diagnostics-normal-light",
+    "id": "server-diagnostics-normal-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-server-callbacks", "setup": "diagnostic-server" }
   },
@@ -516,9 +516,9 @@
     "production": { "scenario": "diagnostic-server-callbacks", "setup": "diagnostic-server" }
   },
   {
-    "id": "server-diagnostics-wide-light",
+    "id": "server-diagnostics-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-server-callbacks", "setup": "diagnostic-server" }
   },
@@ -530,9 +530,9 @@
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
   },
   {
-    "id": "subscription-diagnostics-normal-light",
+    "id": "subscription-diagnostics-normal-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
   },
@@ -545,9 +545,9 @@
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
   },
   {
-    "id": "subscription-diagnostics-wide-light",
+    "id": "subscription-diagnostics-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
   },
@@ -559,9 +559,9 @@
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   },
   {
-    "id": "anomaly-diagnostics-normal-light",
+    "id": "anomaly-diagnostics-normal-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   },
@@ -574,16 +574,16 @@
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   },
   {
-    "id": "anomaly-diagnostics-wide-light",
+    "id": "anomaly-diagnostics-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   },
   {
-    "id": "scenario-diagnostic-authoring-compact-light",
+    "id": "scenario-diagnostic-authoring-compact-dark",
     "viewport": { "width": 563, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-authoring", "setup": "scenario-diagnostic-checkpoint" }
   },
@@ -595,16 +595,16 @@
     "production": { "scenario": "local-injection-scenario-diagnostic-review", "setup": "scenario-diagnostic-checkpoint" }
   },
   {
-    "id": "scenario-diagnostic-waiting-wide-light",
+    "id": "scenario-diagnostic-waiting-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-waiting", "setup": "scenario-diagnostic-checkpoint" }
   },
   {
-    "id": "scenario-diagnostic-pass-normal-light",
+    "id": "scenario-diagnostic-pass-normal-dark",
     "viewport": { "width": 900, "height": 700 },
-    "theme": "light",
+    "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-pass", "setup": "scenario-diagnostic-checkpoint" }
   },
@@ -631,9 +631,9 @@
     "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
   },
   {
-    "id": "notifications-volume-normal-light",
+    "id": "notifications-volume-normal-dark",
     "viewport": {"width": 900, "height": 700},
-    "theme": "light",
+    "theme": "dark",
     "prototype": {"variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer"},
     "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
   },
@@ -646,30 +646,30 @@
     "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
   },
   {
-    "id": "notifications-volume-wide-light",
+    "id": "notifications-volume-wide-dark",
     "viewport": {"width": 1440, "height": 900},
-    "theme": "light",
+    "theme": "dark",
     "prototype": {"variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer"},
     "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
   },
   {
-    "id": "notifications-empty-compact-light",
+    "id": "notifications-empty-compact-dark",
     "viewport": {"width": 563, "height": 700},
-    "theme": "light",
+    "theme": "dark",
     "prototype": {"variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer"},
     "production": {"scenario": "notifications-empty", "setup": "notifications-empty"}
   },
   {
-    "id": "readability-c-normal-light",
+    "id": "readability-c-normal-dark",
     "viewport": {"width": 1440, "height": 900},
-    "theme": "light",
+    "theme": "dark",
     "reference": {"source": "asset", "path": "prototypes/workbench-ui-12/screenshots/C-normal.jpg"},
     "production": {"scenario": "recovering", "setup": "readability"}
   },
   {
-    "id": "readability-c-compact-light",
+    "id": "readability-c-compact-dark",
     "viewport": {"width": 563, "height": 700},
-    "theme": "light",
+    "theme": "dark",
     "reference": {"source": "prototype-12", "variant": "C", "frame": "compact"},
     "production": {"scenario": "frozen-high-volume", "setup": "readability-scope"}
   }

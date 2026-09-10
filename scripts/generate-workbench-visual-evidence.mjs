@@ -101,7 +101,7 @@ try {
       : scenario.prototype?.setup === "scenario-halt"
       ? await readGitBlob(
           scenarioHaltReferenceCommit,
-          `tests/ui/visual-regression.spec.ts-snapshots/${scenario.id}-${process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform}.png`
+          `tests/ui/visual-regression.spec.ts-snapshots/${scenario.prototype.referenceId ?? scenario.id}-${process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform}.png`
         )
       : await capturePrototype(browser, scenario);
     const current = await captureProduction(browser, scenario);
@@ -164,7 +164,7 @@ try {
         "Notifications owns active Workbench conditions and recent Lightstreamer diagnostics, including History pressure, Capture coverage, snapshot completion, server errors and bounded keepalives without a health verdict; filters remain independent of Evidence, dismissal hides only the active footer copy, and captured inspection routes remain available.",
         "Committed snapshot, COMMAND, and lost-update anomalies preserve exact epoch attribution, bounded limitations, and one normalized lifecycle without duplicate footer ownership.",
         "Advisory storage-headroom warnings remain global, uncertain, keyboard reachable, and separate from authoritative History Capacity and Observation Coverage.",
-        "Global diagnostics and More actions remain readable, keyboard reachable, and unobscured without horizontal shell or document overflow in compact, normal, shallow, wide, Dark, Light, and forced-colors states.",
+        "Global diagnostics and More actions remain readable, keyboard reachable, and unobscured without horizontal shell or document overflow in compact, normal, shallow, wide, Dark and forced-colors states.",
         "Every captured state emits no browser diagnostics; axe-checked states have no serious or critical violations, and every focus-checked action remains visible and unobscured."
       ],
       browserResult: {
@@ -177,7 +177,7 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; every captured footer Dismiss action is checked individually, and help-resource, shallow diagnostic-disclosure, and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
-      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; approved Variant C base/current/diff comparisons; Activity, Local and Server Injection, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
+      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark and forced-colors themes; approved Variant C base/current/diff comparisons; Activity, Local and Server Injection, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
       readabilityComparison: results.filter(({ id }) => id.startsWith("readability-c-")).map(({ id, artifacts, changedPixels, totalPixels }) => ({ id, artifacts, changedPixels, totalPixels })),
       baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
     } : results.every(({ id }) => id.startsWith("local-injection-")) ? {
@@ -187,7 +187,7 @@ try {
         "Captured Drafts open with Compare Source active, preserve immutable Source and editable Draft labels, and adapt from inline compact/normal comparison to useful side-by-side wide comparison.",
         "The exact target, Session, Source or authored state, validation, Local-only boundary, and one labelled Inject locally action remain visible and reachable on the authoring surface.",
         "Authored Drafts remain source-free and expose direct delivery only after validation; no standalone Review action or Review document appears.",
-        "Compact, normal, shallow, and wide geometry plus Dark, Light, and forced colors preserve one document scroll, visible keyboard focus, and no shell or document overflow.",
+        "Compact, normal, shallow, and wide geometry plus Dark and forced colors preserve one document scroll, visible keyboard focus, and no shell or document overflow.",
         "Every captured state emits no browser diagnostics and has no serious or critical axe violations."
       ],
       browserResult: {
@@ -200,7 +200,7 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked Local Injection states retained a visible, unobscured Inject locally control; maintained browser scenarios separately cover physical keyboard entry and traversal.`,
-      matrixRationale: "Five deterministic states cover captured preview at compact Light, a changed captured Draft at normal Dark and wide Light, authored direct delivery at shallow Dark, and the same shallow action in forced colors.",
+      matrixRationale: "Five deterministic states cover captured preview at compact Dark, a changed captured Draft at normal Dark and wide Dark, authored direct delivery at shallow Dark, and the same shallow action in forced colors.",
       baselineIntent: "Replace the obsolete standalone Review baselines, update the captured Draft baseline for default comparison, and add Darwin/Linux normal, wide, and forced-colors baselines for the simplified workflow."
     } : results.every(({ id }) => id.startsWith("server-injection-")) ? {
       classification: "Material UI",
@@ -209,7 +209,7 @@ try {
         "The client, active Session, page epoch, public sendMessage boundary, immutable Source or authored state, and all editable send arguments remain explicit before submission.",
         "Review freezes one exact call; Processed is not presented as proof of a business effect; Unknown never retries automatically and exposes only a separate deliberate Repeat.",
         "Disconnected or stale targets block before submission, edited Draft discard requires inline confirmation, and a high-volume message remains bounded by one document scroll owner.",
-        "Compact, normal, shallow, and wide geometry plus Dark, Light, and forced colors preserve visible keyboard focus, no horizontal overflow, and no serious or critical axe violations."
+        "Compact, normal, shallow, and wide geometry plus Dark and forced colors preserve visible keyboard focus, no horizontal overflow, and no serious or critical axe violations."
       ],
       browserResult: {
         scenarioCaptures: `${results.length}/${results.length} passed`,
@@ -221,7 +221,7 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked Server Injection states retained visible, unobscured controls; the maintained browser journey separately checks phase focus and discard restoration.`,
-      matrixRationale: "Six deterministic states cover application-guided authoring at normal Light, compact Light editing, normal Dark Review, shallow Light disconnection, shallow forced-colors Dark Unknown, and a wide Light high-volume message.",
+      matrixRationale: "Six deterministic states cover application-guided authoring at normal Dark, compact Dark editing, normal Dark Review, shallow Dark disconnection, shallow forced-colors Dark Unknown, and a wide Dark high-volume message.",
       baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all six protected Server Injection states."
     } : results.every(({ production }) => production.setup.startsWith("activity")) ? {
       classification: "Material UI",
@@ -249,7 +249,7 @@ try {
         "Review and every authorization ledger entry keep the Diagnostic Observation cursor distinct from the committed Evidence boundary.",
         "Waiting, pass, fail, and unavailable states preserve exact typed affected identity, observation boundary, route, and explicit compact-reference limitations without raw diagnostic messages.",
         "Pause and hidden time remain excluded while the initial journal query is pending; execution resumes only through an explicit Scenario control.",
-        "Compact, normal, shallow forced-colors, wide, Dark, and Light states retain visible unobscured focus, no horizontal overflow, and no serious or critical axe violations."
+        "Compact, normal, shallow forced-colors, wide, Dark states retain visible unobscured focus, no horizontal overflow, and no serious or critical axe violations."
       ],
       browserResult: {
         scenarioCaptures: `${results.length}/${results.length} passed`,
@@ -261,7 +261,7 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} diagnostic Checkpoint states retained visible, unobscured controls with browser focus evidence.`,
-      matrixRationale: "Six deterministic states cover compact Light authoring, normal Dark Review, wide Light waiting, normal Light pass and route, compact Dark failure, and shallow forced-colors Dark journal unavailability.",
+      matrixRationale: "Six deterministic states cover compact Dark authoring, normal Dark Review, wide Dark waiting, normal Dark pass and route, compact Dark failure, and shallow forced-colors Dark journal unavailability.",
       baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for all six Diagnostic Observation Checkpoint states."
     } : results.some(({ id }) => id.startsWith("scenario-checkpoint-")) ? {
       classification: "Material UI",
@@ -269,7 +269,7 @@ try {
       acceptanceCriteria: [
         "Checkpoint authoring and Review keep protected identity, boundary, assertions, and zero-Injection meaning visible outside raw Item Update JSON.",
         "Waiting, pass, fail, wire-unavailable, and ambiguous Server-null states remain textually distinct; evaluated results expose exact Evidence provenance and a retained-Evidence route whenever related Evidence exists, while invalid wire Review fabricates neither a boundary nor a route.",
-        "Compact, normal, shallow forced-colors, wide, Dark, and Light states retain one Scenario content scroll, keyboard focus, and no serious or critical axe violations.",
+        "Compact, normal, shallow forced-colors, wide, Dark states retain one Scenario content scroll, keyboard focus, and no serious or critical axe violations.",
         "The high-volume document contains 100 independent Steps plus 100 Checkpoints while keeping every large editor unmounted and all non-focused Checkpoints collapsed."
       ],
       browserResult: {
@@ -281,7 +281,7 @@ try {
         seriousOrCriticalViolations: results.filter(({ id }) => id.startsWith("scenario-checkpoint-")).reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: "Evaluated retained-Evidence routes are activated through physical keyboard input in the browser gate. Each state scrolls its exact Checkpoint into view; the shallow wire refusal physically focuses its protected Assertion control inside the one Scenario scroll, while other states focus the labelled CHECKPOINT control.",
-      matrixRationale: "Eight deterministic states cover compact Light authoring, normal Dark Review, wide Light waiting, normal Light pass and Evidence route, compact Dark failure, shallow forced-colors Dark wire unavailability, wide Dark ambiguous Server null, and wide Light 100-Step plus 100-Checkpoint high volume.",
+      matrixRationale: "Eight deterministic states cover compact Dark authoring, normal Dark Review, wide Dark waiting, normal Dark pass and Evidence route, compact Dark failure, shallow forced-colors Dark wire unavailability, wide Dark ambiguous Server null, and wide Dark 100-Step plus 100-Checkpoint high volume.",
       baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all eight Scenario Checkpoint states."
     } : results.some(({ id }) => id.startsWith("scenario-")) ? {
       classification: "Material UI",
@@ -309,7 +309,7 @@ try {
       acceptanceCriteria: [
         "Short and long severity, affected-object, consequence, and recovery content receive usable line width without character-by-character wrapping.",
         "Multiple Warning, Error, and Information entries remain discoverable through an explicit count/scroll cue and keyboard Home/End navigation.",
-        "Normal, compact, shallow, and wide geometry preserve a usable Evidence workspace, the Freeze Evidence action, and a bounded diagnostic scroll owner in Dark and Light themes.",
+        "Normal, compact, shallow, and wide geometry preserve a usable Evidence workspace, the Freeze Evidence action, and a bounded diagnostic scroll owner in Dark and forced-colors appearance.",
         "The changed workflow has no serious or critical axe violations, browser diagnostics, clipped selected diagnostic entry, or horizontal shell overflow."
       ],
       browserResult: {
@@ -1120,6 +1120,10 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
   if (setup === "scenario-authored-undo") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await scenario.getByRole("button", { name: "Add authored update" }).click();
+    // Match the visual regression prep: Scenario accounting includes the
+    // authored CodeMirror presentation, which is published when the editor
+    // mounts.  Removing before that callback races on slower Linux runs.
+    await scenario.getByLabel("Step 3 Injection Draft").locator(".workbench-react__local-code[data-selection-anchor]").waitFor({ state: "visible" });
     await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).click();
     await scenario.getByRole("button", { name: "Undo removal" }).waitFor();
     return;

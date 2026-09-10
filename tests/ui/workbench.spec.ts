@@ -659,11 +659,10 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
       return `${style.outlineStyle} ${style.outlineWidth}`;
     })).toBe("solid 2px");
     if (viewport.width === 563) {
-      const compactTheme = page.getByLabel("Panel theme");
-      await expect(compactTheme).toBeVisible();
-      await compactTheme.selectOption("dark");
+      await expect(page.getByLabel("Panel theme", { exact: true })).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "Panel appearance", exact: true })).toHaveCount(0);
       await expect(page.locator(".workbench-react")).toHaveAttribute("data-theme", "dark");
-      await attachNamedScenarioScreenshot(page, testInfo, "compact-more-actions-theme-route");
+      await attachNamedScenarioScreenshot(page, testInfo, "compact-more-actions-dark-only");
     }
     await back.click();
     await expect(more).toBeFocused();
@@ -827,10 +826,10 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   await metadata.locator("summary").focus();
   await page.keyboard.press("Enter");
   await expect(metadata).toHaveAttribute("open", "");
-  await expect(context.getByText(longClient, { exact: true })).toBeVisible();
-  await expect(context.getByText(longSession, { exact: true })).toBeVisible();
-  await expect(context.getByText(longSubscription, { exact: true })).toBeVisible();
-  await expect(context.getByText(longItem, { exact: true })).toBeVisible();
+  await expect(metadata.getByText(longClient, { exact: true })).toBeVisible();
+  await expect(metadata.getByText(longSession, { exact: true })).toBeVisible();
+  await expect(metadata.getByText(longSubscription, { exact: true })).toBeVisible();
+  await expect(metadata.getByText(longItem, { exact: true })).toBeVisible();
   await expect(context.locator(".workbench-react__context-fields dd").filter({ hasText: longKey })).toBeVisible();
   await expectNoSeriousAxeViolations(page, testInfo);
 });
@@ -1222,29 +1221,32 @@ test("Workbench preserves structural selection contrast in forced colors", async
   await expect(selected).toHaveAttribute("aria-selected", "true");
   const selectedUnfocused = await selected.evaluate((row) => {
     const style = getComputedStyle(row);
-    return { backgroundColor: style.backgroundColor, boxShadow: style.boxShadow, outlineStyle: style.outlineStyle };
+    return { backgroundColor: style.backgroundColor, markerColor: style.borderLeftColor, markerWidth: style.borderLeftWidth, outlineStyle: style.outlineStyle };
   });
   expect(selectedUnfocused.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
-  expect(selectedUnfocused.boxShadow).not.toBe("none");
+  expect(selectedUnfocused.markerColor).not.toBe("rgba(0, 0, 0, 0)");
+  expect(selectedUnfocused.markerColor).not.toBe(selectedUnfocused.backgroundColor);
+  expect(Number.parseFloat(selectedUnfocused.markerWidth)).toBeGreaterThan(0);
   expect(selectedUnfocused.outlineStyle).toBe("none");
-  await expect(selected.locator(".workbench-react__evidence-order")).toHaveCSS("background-color", selectedUnfocused.backgroundColor);
+  await expect(selected.locator(".workbench-react__evidence-order")).toHaveCSS("background-color", "rgb(34, 37, 42)");
 
   await selected.focus();
   const selectedFocused = await selected.evaluate((row) => {
     const style = getComputedStyle(row);
-    return { backgroundColor: style.backgroundColor, boxShadow: style.boxShadow, outlineStyle: style.outlineStyle };
+    return { backgroundColor: style.backgroundColor, markerColor: style.borderLeftColor, markerWidth: style.borderLeftWidth, outlineStyle: style.outlineStyle };
   });
   expect(selectedFocused.backgroundColor).toBe(selectedUnfocused.backgroundColor);
-  expect(selectedFocused.boxShadow).toBe(selectedUnfocused.boxShadow);
+  expect(selectedFocused.markerColor).toBe(selectedUnfocused.markerColor);
+  expect(selectedFocused.markerWidth).toBe(selectedUnfocused.markerWidth);
   expect(selectedFocused.outlineStyle).toBe("solid");
 
   await unselected.focus();
   const unselectedFocused = await unselected.evaluate((row) => {
     const style = getComputedStyle(row);
-    return { backgroundColor: style.backgroundColor, boxShadow: style.boxShadow, outlineStyle: style.outlineStyle };
+    return { backgroundColor: style.backgroundColor, markerColor: style.borderLeftColor, markerWidth: style.borderLeftWidth, outlineStyle: style.outlineStyle };
   });
   expect(unselectedFocused.backgroundColor).not.toBe(selectedFocused.backgroundColor);
-  expect(unselectedFocused.boxShadow).toBe("none");
+  expect(unselectedFocused.markerColor).not.toBe(selectedFocused.markerColor);
   expect(unselectedFocused.outlineStyle).toBe("solid");
   await expect(page.getByRole("button", { name: "Scope", exact: true })).toBeVisible();
 
@@ -1255,6 +1257,9 @@ test("Workbench preserves structural selection contrast in forced colors", async
   await expect(localDraft).toContainText("READY");
   const localEditor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   await localEditor.focus();
+  for (const editor of await page.locator(".workbench-react__local-code .cm-editor").all()) {
+    await expect(editor).toHaveCSS("background-color", "rgb(16, 18, 20)");
+  }
   await expect(page.locator(".workbench-react__local-code .cm-editor.cm-focused")).toHaveCSS("outline-style", "solid");
   const boundaryColors = await localDraft.locator(".workbench-react__local-only").evaluate((boundary) => {
     const style = getComputedStyle(boundary);
@@ -1566,7 +1571,7 @@ test("Notifications retains operational warnings after their footer copy is dism
   await page.getByRole("textbox", { name: "Find in ordered Evidence", exact: true }).fill("snapshot");
   await page.getByRole("button", { name: /^Notifications/ }).click();
   await notifications.getByText("Filter notifications", { exact: true }).click();
-  await notifications.getByRole("button", { name: "Exclude Information", exact: true }).click();
+  await notifications.locator('fieldset[aria-label^="Information"]').getByRole("radio", { name: "Exclude", exact: true }).click();
   await expect(notifications).toContainText("0 of 100 notifications");
   await expect(notifications).toContainText("No notifications match the active notification filters.");
   await expect(page.getByRole("button", { name: "Notifications (100)", exact: true })).toBeVisible();
@@ -1648,7 +1653,7 @@ test("Workbench explains server errors and keepalives in Notifications without a
     await trigger.click();
     const notifications = page.getByRole("region", { name: "Notifications", exact: true });
     await notifications.getByText("Filter notifications", { exact: true }).click();
-    await notifications.getByRole("button", { name: "Exclude Warning", exact: true }).click();
+    await notifications.locator('fieldset[aria-label^="Warning"]').getByRole("radio", { name: "Exclude", exact: true }).click();
     await expect(notifications).toContainText("1 of 2 notifications");
     await expect(trigger).toBeVisible();
     await notifications.getByRole("button", { name: "Reset notification filters", exact: true }).click();
@@ -1704,19 +1709,19 @@ test("Workbench explains committed Subscription and topology diagnostics in Noti
 
     if (sceneIndex === 0) {
       await contextDiagnostics.getByText("Filter notifications", { exact: true }).click();
-      const includeExact = contextDiagnostics.getByRole("button", { name: "Include ls.subscription.exact-duplicate", exact: true });
-      const includeOverlap = contextDiagnostics.getByRole("button", { name: "Include ls.subscription.semantic-overlap", exact: true });
+      const includeExact = contextDiagnostics.locator('fieldset[aria-label^="ls.subscription.exact-duplicate"]').getByRole("radio", { name: "Include", exact: true });
+      const includeOverlap = contextDiagnostics.locator('fieldset[aria-label^="ls.subscription.semantic-overlap"]').getByRole("radio", { name: "Include", exact: true });
       await includeExact.click();
       await expect(contextDiagnostics).toContainText("Exact duplicate Subscriptions");
       await expect(contextDiagnostics).not.toContainText("Semantic Subscription overlap");
       await expect(includeOverlap).toBeVisible();
-      await expect(contextDiagnostics.getByRole("button", { name: "Include Information", exact: true })).toBeVisible();
-      await expect(contextDiagnostics.getByRole("button", { name: "Include Subscription duplicate-a", exact: true })).toBeVisible();
+      await expect(contextDiagnostics.locator('fieldset[aria-label^="Information"]').getByRole("radio", { name: "Include", exact: true })).toBeVisible();
+      await expect(contextDiagnostics.locator('fieldset[aria-label^="Subscription duplicate-a"]').getByRole("radio", { name: "Include", exact: true })).toBeVisible();
       await includeOverlap.click();
       await expect(contextDiagnostics).toContainText("Exact duplicate Subscriptions");
       await expect(contextDiagnostics).toContainText("Semantic Subscription overlap");
       await expect(contextDiagnostics.getByRole("button", { name: "Remove Include ls.subscription.exact-duplicate", exact: true })).toBeVisible();
-      await contextDiagnostics.getByRole("button", { name: "Exclude ls.subscription.exact-duplicate", exact: true }).click();
+      await contextDiagnostics.locator('fieldset[aria-label^="ls.subscription.exact-duplicate"]').getByRole("radio", { name: "Exclude", exact: true }).click();
       await expect(contextDiagnostics).not.toContainText("Exact duplicate Subscriptions");
       await expect(contextDiagnostics).toContainText("Semantic Subscription overlap");
       await expect(contextDiagnostics.getByRole("button", { name: "Remove Exclude ls.subscription.exact-duplicate", exact: true })).toBeVisible();
@@ -2049,12 +2054,8 @@ test("Workbench routes an empty Scope change through the temporary picker above 
 
 test("Workbench keeps Filter and Find separate across raw, disconnected, fallback, and reopened scenarios", async ({ page }, testInfo) => {
   await openScenario(page, "filter-find", { width: 900, height: 700 }, "auto");
-  await expect(page.locator(".workbench-react")).toHaveAttribute("data-theme", "auto");
-  await expect(page.locator(".workbench-react")).toHaveCSS("background-color", "rgb(255, 255, 255)");
-  await page.evaluate(() => {
-    document.documentElement.dataset.theme = "dark";
-    document.querySelector<HTMLElement>("#app")!.dataset.theme = "dark";
-  });
+  await expect(page.locator(".workbench-react")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByLabel("Workbench theme", { exact: true })).toHaveCount(0);
   await expect(page.locator(".workbench-react")).toHaveCSS("background-color", "rgb(27, 29, 32)");
   await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
   await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event");

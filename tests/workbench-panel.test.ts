@@ -670,7 +670,7 @@ describe("React Workbench Diagnose panel", () => {
     const context = rootElement.querySelector<HTMLElement>('[aria-label="Notifications"]');
     expect(context?.textContent).toContain("RAW snapshot unavailable");
     expect(rootElement.querySelector('[aria-label="Workbench diagnostics"]')?.textContent).not.toContain("RAW snapshot unavailable");
-    Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Include ls.sub.raw-snapshot-unavailable")?.click();
+    (Array.from(context?.querySelectorAll<HTMLLabelElement>('fieldset[aria-label^="ls.sub.raw-snapshot-unavailable"] label') ?? []).find(({ textContent }) => textContent?.trim() === "Include"))?.click();
     await act(async () => Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect affected Scope")?.click());
     expect(runtime.commands).toContainEqual({ type: "apply-diagnostic-filter", facet: "diagnosticCode", value: codeValue, polarity: "include" });
     expect(runtime.commands).toContainEqual({ type: "inspect-diagnostic-affected", affected: diagnostic.affectedIdentity });
@@ -790,7 +790,7 @@ describe("React Workbench Diagnose panel", () => {
     const stableDisclosure = rootElement.querySelector<HTMLDetailsElement>('details[aria-label="Filter selected Evidence"]');
     expect(stableDisclosure).not.toBeNull();
     expect(stableDisclosure!.open).toBe(true);
-    expect(stableDisclosure?.textContent).toContain("No typed Filter actions are available for this Evidence.");
+    expect(stableDisclosure?.textContent).toContain("No Filter values are available for this Evidence.");
     expect(document.activeElement).toBe(stableDisclosure!.querySelector("summary"));
 
     await act(async () => root.unmount());
