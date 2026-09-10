@@ -300,7 +300,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
       find: { text }
     });
     const shortFind = await find("lph");
-    expect(shortFind).toMatchObject({ ok: true, value: { find: { total: 3 }, telemetry: { shortFindFallback: false, fullRetainedScan: false, findCursorBound: 3, findCursorReads: 3 } } });
+    expect(shortFind).toMatchObject({ ok: true, value: { find: { total: 3 }, telemetry: { shortFindFallback: false, fullRetainedScan: false, findCursorBound: 4, findCursorReads: 4 } } });
     await expect(find("ALPHA")).resolves.toMatchObject({ ok: true, value: { find: { total: 3 } } });
     const shortNormalizedFind = await find("it");
     expect(shortNormalizedFind).toMatchObject({ ok: true, value: { find: { total: 4 }, telemetry: { shortFindFallback: true, fullRetainedScan: true, retainedCount: 4, cursorWorkBound: 4 } } });
@@ -334,7 +334,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
   });
 
-  it("uses a bounded exact-token posting for a hyphenated Find query", async () => {
+  it("verifies a hyphenated Find query against a bounded candidate block", async () => {
     const panelSessionId = `filter-impl-08-exact-token-${Date.now()}`;
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const durable = await createIndexedDbEventHistory({ panelSessionId });
@@ -356,7 +356,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
         ok: true,
         value: {
           find: { total: 3, matches: [{ eventId: "order-1" }, { eventId: "order-2" }, { eventId: "order-3" }] },
-          telemetry: { findCursorBound: 3, findCursorReads: 3, shortFindFallback: false, fullRetainedScan: false }
+          telemetry: { findCursorBound: 20, findCursorReads: 20, shortFindFallback: false, fullRetainedScan: false }
         }
       });
     } finally {
@@ -390,7 +390,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     }
   });
 
-  it("falls back to an exact bounded projection scan when trigram coverage is partial", async () => {
+  it("keeps complete substring coverage for long identifiers beyond the first 128 records", async () => {
     const panelSessionId = `filter-impl-08-partial-search-index-${Date.now()}`;
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const durable = await createIndexedDbEventHistory({ panelSessionId });
@@ -407,7 +407,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
         ok: true,
         value: {
           find: { total: 1, matches: [{ eventId: "history-100k-07-small-lifecycle-1-small-lifecycle-128" }] },
-          telemetry: { fullRetainedScan: true, shortFindFallback: false }
+          telemetry: { fullRetainedScan: false, shortFindFallback: false }
         }
       });
     } finally {

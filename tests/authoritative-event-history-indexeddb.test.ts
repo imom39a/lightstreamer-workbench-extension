@@ -158,10 +158,10 @@ function legacyOwnerLock(databaseName: string): string {
   return `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}-${databaseName}`;
 }
 
-async function createModernJournal(panelSessionId: string, count: number): Promise<void> {
+async function createLegacyV6Journal(panelSessionId: string, count: number): Promise<void> {
   const name = authoritativeEventDatabaseName(panelSessionId);
   const interval = { id: `${panelSessionId}:interval-1`, ordinal: 1 };
-  const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
+  const request = indexedDB.open(name, 6);
   request.onupgradeneeded = () => {
     const database = request.result;
     database.createObjectStore("historyControl", { keyPath: "key" });
@@ -610,14 +610,14 @@ describe("IndexedDB authoritative EventHistory", () => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    expect([...database.objectStoreNames]).toEqual(["evidence", "facetAggregates", "facetPostings", "historyControl", "queryProjections"]);
+    expect([...database.objectStoreNames]).toEqual(["evidence", "facetAggregates", "facetPostings", "historyControl", "queryProjections", "searchBlocks"]);
     const transaction = database.transaction("evidence", "readonly");
     const evidence = transaction.objectStore("evidence");
     expect([...evidence.indexNames]).toEqual(["eventIdentity", "facets"]);
     expect(evidence.index("eventIdentity").unique).toBe(true);
     expect(evidence.index("facets").multiEntry).toBe(true);
     const postings = database.transaction("facetPostings", "readonly").objectStore("facetPostings");
-    expect([...postings.indexNames]).toEqual(["facet", "token"]);
+    expect([...postings.indexNames]).toEqual(["facet", "sequence", "token"]);
     const aggregates = database.transaction("facetAggregates", "readonly").objectStore("facetAggregates");
     expect([...aggregates.indexNames]).toEqual(["intervalFacet"]);
     database.close();
@@ -1199,9 +1199,7 @@ describe("IndexedDB authoritative EventHistory", () => {
   it("uses one reusable MessageChannel macrotask yield per read and preserves exact ordering", async () => {
     const history = await freshHistory("indexed-message-channel-read");
     const count = 1692;
-    for (let index = 0; index < count; index += 1) {
-      await history.offer(candidate(`message-channel-${index}`)).settled;
-    }
+    await Promise.all(Array.from({ length: count }, (_, index) => history.offer(candidate(`message-channel-${index}`)).settled));
 
     const previousMessageChannel = Reflect.get(globalThis, "MessageChannel");
     FakeMessageChannel.constructed = 0;
@@ -1261,7 +1259,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     const panelSessionId = "indexed-replay-handoff";
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
-    await createModernJournal(panelSessionId, 600);
+    await createLegacyV6Journal(panelSessionId, 600);
 
     const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll");
     const reopened = await openEventHistory({ panelSessionId });
@@ -1490,7 +1488,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(replacedStatus).toMatchObject({ capacity: { tier: "NORMAL" }, fallback: null });
     const replacedDatabase = await requestValue(indexedDB.open(knownName, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION));
     expect(replacedDatabase.version).toBe(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
-    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "facetAggregates", "facetPostings", "historyControl", "queryProjections"]);
+    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "facetAggregates", "facetPostings", "historyControl", "queryProjections", "searchBlocks"]);
     replacedDatabase.close();
     await replaced.close();
 
@@ -1992,7 +1990,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     const siblingPanelSessionId = "sibling-panel-session";
     const siblingName = authoritativeEventDatabaseName(siblingPanelSessionId);
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
-    await createModernJournal(siblingPanelSessionId, 0);
+    await createLegacyV6Journal(siblingPanelSessionId, 0);
     const leaseKey = `lsew-events-panel-live-v2-${siblingName}`;
     const storageValues = new Map([[leaseKey, String(Date.now())]]);
     vi.stubGlobal("localStorage", {
@@ -2027,8 +2025,8 @@ describe("IndexedDB authoritative EventHistory", () => {
     const orphanName = authoritativeEventDatabaseName(orphanPanelSessionId);
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await Promise.all([
-      createModernJournal(leasedPanelSessionId, 1),
-      createModernJournal(orphanPanelSessionId, 1)
+      createLegacyV6Journal(leasedPanelSessionId, 1),
+      createLegacyV6Journal(orphanPanelSessionId, 1)
     ]);
     const storageValues = new Map([
       [`lsew-events-panel-live-v2-${leasedName}`, String(Date.now())]
@@ -2188,8 +2186,8 @@ describe("IndexedDB authoritative EventHistory", () => {
     const firstDatabaseName = authoritativeEventDatabaseName(firstPanelSessionId);
     const secondDatabaseName = authoritativeEventDatabaseName(secondPanelSessionId);
     await Promise.all([
-      createModernJournal(firstPanelSessionId, 1),
-      createModernJournal(secondPanelSessionId, 1)
+      createLegacyV6Journal(firstPanelSessionId, 1),
+      createLegacyV6Journal(secondPanelSessionId, 1)
     ]);
 
     const activeLocks = new Set<string>();

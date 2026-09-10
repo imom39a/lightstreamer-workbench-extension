@@ -1,6 +1,7 @@
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 
+import { readFacetPostingBlock } from "../src/core/indexeddb/event-index-blocks";
 import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
 import { authoritativeEventDatabaseName } from "../src/core/indexeddb/authoritative-event-db";
 import { type EvidenceFilter, typedFacetValue } from "../src/core/evidence-filter-contract";
@@ -30,16 +31,16 @@ function workloadEvent(sequence: number): LightstreamerEventEnvelope {
   };
 }
 
-async function postingCount(name: string): Promise<number> {
+async function postingObservationCount(name: string): Promise<number> {
   return await new Promise((resolve, reject) => {
     const request = indexedDB.open(authoritativeEventDatabaseName(name));
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const database = request.result;
       const transaction = database.transaction("facetPostings", "readonly");
-      const count = transaction.objectStore("facetPostings").count();
+      const count = transaction.objectStore("facetPostings").getAll();
       count.onerror = () => reject(count.error);
-      count.onsuccess = () => resolve(count.result);
+      count.onsuccess = () => resolve(count.result.reduce((total, block) => total + readFacetPostingBlock(block).observations.length, 0));
       transaction.oncomplete = () => database.close();
     };
   });
@@ -59,7 +60,7 @@ describe("filter-impl-09 durable IndexedDB workload", () => {
     const durable = await createIndexedDbEventHistory({ panelSessionId: name });
     try {
       await offerBatch(durable, Array.from({ length: 20 }, (_, sequence) => workloadEvent(sequence)));
-      expect(await postingCount(name)).toBe(20 * 12);
+      expect(await postingObservationCount(name)).toBe(20 * 12);
       const result = await durable.query!({
         at: "LATEST_COMMITTED",
         page: { order: "OLDEST_FIRST", size: 20 },
@@ -93,7 +94,7 @@ describe("filter-impl-09 durable IndexedDB workload", () => {
       await offerBatch(durable, Array.from({ length: evidenceCount }, (_, sequence) => workloadEvent(sequence)));
       phases.offerBatchMs = Math.round(performance.now() - phaseStarted);
       phaseStarted = performance.now();
-      expect(await postingCount(name)).toBe(evidenceCount * 12);
+      expect(await postingObservationCount(name)).toBe(evidenceCount * 12);
       phases.postingCountMs = Math.round(performance.now() - phaseStarted);
 
       const request = {

@@ -1,5 +1,5 @@
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { describe, expect, it } from "vitest";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+import { describe, expect, it, vi } from "vitest";
 
 import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
 import type { EventHistory } from "../src/core/event-history-authoritative";
@@ -142,7 +142,7 @@ async function createLegacyV5Fixture(panelSessionId: string, candidates: readonl
     projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
   };
   const database = await requestValue(request);
-  const transaction = database.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES).filter((store) => store !== AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates), "readwrite");
+  const transaction = database.transaction(["historyControl", "evidence", "facetPostings", "queryProjections"], "readwrite");
   let replayPayloadBytes = 0;
   let accountedBytes = 0;
   for (const [index, candidate] of candidates.entries()) {
@@ -390,5 +390,39 @@ describe("filter-impl-09 durable public-result parity", () => {
     } finally {
       await deleteAuthoritativeEventDatabase(name);
     }
+  });
+
+  it.each(["before population", "during population"])("finishes derived-index migration after interruption %s", async interruption => {
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const panelSessionId = `filter-impl-09-interrupted-upgrade-${Date.now()}`;
+    const name = await createLegacyV5Fixture(panelSessionId, [event("upgrade-needle", 10, "unique-upgrade-key")]);
+    // Simulate losing the process-local migration flag after versionchange
+    // commits, before EventHistory has populated the derived query indexes.
+    const upgraded = await openAuthoritativeEventDatabase(name);
+    upgraded.db.close();
+    if (interruption === "during population") {
+      const original = IDBObjectStore.prototype.put;
+      const interrupted = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, value, key) {
+        if (this.name === "searchBlocks" && value.sequence > 0) throw new Error("Interrupted migration write.");
+        return original.call(this, value, key);
+      });
+      try { await expect(createIndexedDbEventHistory({ panelSessionId })).rejects.toThrow(); }
+      finally { interrupted.mockRestore(); }
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const database = await requestValue(indexedDB.open(name));
+      try {
+        expect(await requestValue(database.transaction("searchBlocks", "readonly").objectStore("searchBlocks").get(0)))
+          .toMatchObject({ migrationVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION });
+      } finally { database.close(); }
+    }
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    try {
+      await expect(durable.query!({ ...requestAt("LATEST_COMMITTED", emptyFilter()), find: { text: "upgrade-needle" } }))
+        .resolves.toMatchObject({ ok: true, value: { find: { total: 1 } } });
+      const database = await requestValue(indexedDB.open(name));
+      try {
+        expect(await requestValue(database.transaction("searchBlocks", "readonly").objectStore("searchBlocks").get(0))).toBeUndefined();
+      } finally { database.close(); }
+    } finally { await durable.close(); }
   });
 });

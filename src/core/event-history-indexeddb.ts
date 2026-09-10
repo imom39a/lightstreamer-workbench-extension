@@ -12,6 +12,7 @@ import {
 } from "./event-history-capacity";
 import {
   AUTHORITATIVE_EVENT_CONTROL_KEY,
+  AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY,
   AUTHORITATIVE_EVENT_STORE_NAMES,
   AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
   authoritativeEventDatabaseRuntime,
@@ -68,6 +69,12 @@ import { extractEvidenceFacets, canonicalEvidenceSearchText, canonicalEvidenceSe
 import { discoverFacet, discoverFacetFromAccounting, discoverFacetFromAggregates, type DiscoveryAccountingEntry, type DiscoveryAggregateEntry } from "./evidence-filter-discovery";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
+import {
+  appendFacetPostingBlocks, appendSearchIndexBlocks, expandFacetPostingBlock,
+  facetPostingToken, facetIdentityParts, indexBlockStart, readFacetPostingBlock, readSearchIndexBlock,
+  searchBlockMayContain, EVENT_INDEX_BLOCK_SIZE, FACET_POSTING_NAMESPACE,
+  type SearchIndexBlock, type FacetPosting as FacetPostingRecord
+} from "./indexeddb/event-index-blocks";
 import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor, type EvidenceQueryCursor } from "./evidence-filter-cursor";
 import {
   MAX_EVIDENCE_PAGE_SIZE,
@@ -92,16 +99,6 @@ export const AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS = 30_000;
 const JOURNAL_COMMIT_MAX_ATTEMPTS = 3;
 const RETENTION_LOW_WATER_RATIO = 0.9;
 const EVIDENCE_FACET_COUNT = 12;
-// Persist exact words for every projection, but only materialize trigrams for
-// short semantic tokens. High-cardinality replay identifiers and JSON values
-// otherwise create hundreds of multi-entry index rows per Evidence record.
-// Projections that omit some trigrams carry a reserved marker; Find detects
-// that marker and uses its exact bounded projection scan instead of returning
-// an incomplete candidate set.
-const SEARCH_TOKEN_TRIGRAM_WORD_MAX_LENGTH = 8;
-const SEARCH_TOKEN_TRIGRAM_IDENTIFIER_MAX_LENGTH = 16;
-const SEARCH_TOKEN_PARTIAL_MARKER = "\u0000lsew-search-partial-v1";
-const SEARCH_TOKEN_FULL_INDEX_RECORD_LIMIT = 128;
 // Controlled close erases a session by deleting its IndexedDB database after
 // the connection is closed. Deletion avoids a giant read/write clear over all
 // derived indexes; keep a bounded window for the browser's delete request.
@@ -149,16 +146,7 @@ type QueryProjection = {
   facets: Readonly<Record<string, unknown>>;
 };
 
-export const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = "facet-v2";
-
-type FacetPostingRecord = {
-  token: string;
-  sequence: number;
-  intervalId: string;
-  eventId: string;
-  facet: string;
-  facetIdentity: string;
-};
+export const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = FACET_POSTING_NAMESPACE;
 
 type Pending = {
   kind: "candidate";
@@ -962,24 +950,16 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       durableRetainedRange !== null
       && (durableRetainedCount > targetDurableCount || durableRetainedCapacityBytes > targetDurableBytes)
     ) {
-      const trim = persistenceMode === "INDEXEDDB"
-        ? await planJournalRetentionTrim(
-            database,
-            interval,
-            durableRetainedRange,
-            durableRetainedCount,
-            durableRetainedCapacityBytes,
-            targetDurableCount,
-            targetDurableBytes,
-            capacityBytesBySequence
-          )
-        : planCachedRetentionTrim(
-            durableRetentionEntries,
-            durableRetainedCount,
-            durableRetainedCapacityBytes,
-            targetDurableCount,
-            targetDurableBytes
-          );
+      // Entries are recorded only after a journal commit or validated recovery.
+      // Plan from that metadata so rolling retention does not reread thousands
+      // of replay payloads before its atomic deletion transaction can start.
+      const trim = planCachedRetentionTrim(
+        durableRetentionEntries,
+        durableRetainedCount,
+        durableRetainedCapacityBytes,
+        targetDurableCount,
+        targetDurableBytes
+      );
       if (trim.evictedCount > 0) {
         const nextDurableCount = durableRetainedCount - trim.evictedCount;
         const nextReplayPayloadBytes = Math.max(0, replayPayloadBytes - trim.evictedReplayPayloadBytes);
@@ -1358,7 +1338,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
           registerJournalOwnedCandidate(candidate, entry.serialized.payload);
           const committed = toCommittedEvidence(candidate, interval, nextSequence + index);
-          return prepareEvidence(committed, entry.serialized, retainedCount + index >= SEARCH_TOKEN_FULL_INDEX_RECORD_LIMIT);
+          return prepareEvidence(committed, entry.serialized);
         });
         evidence = prepared.map((entry) => entry.evidence);
         candidates = evidence.map((entry) => entry.candidate);
@@ -2160,6 +2140,12 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
   const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readonly");
   try {
     const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
+    const migration = await requestToPromise<unknown>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).get(AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY), "checking query index migration");
+    if (migration !== undefined) {
+      assertExactKeys(migration as object, ["sequence", "migrationVersion"]);
+      if ((migration as { sequence: unknown }).sequence !== AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY
+        || (migration as { migrationVersion: unknown }).migrationVersion !== AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) throw new Error("Invalid query index migration marker.");
+    }
     const durableRetentionEntries = await validateJournalRecords(
       panelSessionId,
       control,
@@ -2168,7 +2154,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates)
     );
     await transactionDone(transaction, "loading Event History");
-    if (database.queryProjectionMigrationRequired) {
+    if (database.queryProjectionMigrationRequired || migration !== undefined) {
       await ensureQueryProjections(database, control, panelSessionId);
     }
     if (!control) {
@@ -2227,44 +2213,79 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
 }
 
 async function ensureQueryProjections(database: AuthoritativeEventDatabase, control: ControlRecord | undefined, panelSessionId: string): Promise<void> {
-  if (!control || control.retainedCount === 0) return;
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections], "readwrite");
-  const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
-  const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
-  await new Promise<void>((resolve, reject) => {
-    const request = projections.openCursor();
-    request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) { resolve(); return; }
-      const projection = cursor.value as QueryProjection;
-      const searchTokens = querySearchTokens(projection.searchText);
-      if (!Array.isArray(projection.searchTokens) || JSON.stringify(projection.searchTokens) !== JSON.stringify(searchTokens)) {
-        projections.put({ ...projection, searchTokens });
-      }
-      cursor.continue();
-    };
-  });
-  const evidenceCount = await requestToPromise<number>(evidence.count(), "checking query projection migration state");
-  const projectionCount = await requestToPromise<number>(projections.count(), "checking query projection migration state");
-  if (projectionCount < evidenceCount) {
+  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections, AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks], "readwrite");
+  const completed = transactionDone(transaction, `migrating query projections for ${panelSessionId}`, AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS);
+  void completed.catch(() => undefined);
+  try {
+    if (!control || control.retainedCount === 0) {
+      transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).delete(AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY);
+      await completed;
+      return;
+    }
+    const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+    const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
     await new Promise<void>((resolve, reject) => {
-      const request = evidence.openCursor();
+      const request = projections.openCursor();
       request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor) { resolve(); return; }
-        const record = cursor.value as EvidenceRecord;
-        const get = projections.get(record.sequence);
-        get.onerror = () => reject(get.error ?? new Error("Query projection migration failed."));
-        get.onsuccess = () => {
-          if (get.result === undefined) projections.put(queryProjection(deserializeJournalEvidenceCandidate(record.replayPayload), record.intervalId, record.sequence));
+        try {
+          const projection = cursor.value as QueryProjection;
+          if (!Array.isArray(projection.searchTokens) || projection.searchTokens.length > 0) {
+            projections.put({ ...projection, searchTokens: [] });
+          }
           cursor.continue();
-        };
+        } catch (error) { reject(error); }
       };
     });
+    const evidenceCount = await requestToPromise<number>(evidence.count(), "checking query projection migration state");
+    const projectionCount = await requestToPromise<number>(projections.count(), "checking query projection migration state");
+    if (projectionCount < evidenceCount) {
+      await new Promise<void>((resolve, reject) => {
+        const request = evidence.openCursor();
+        request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) { resolve(); return; }
+          try {
+            const record = cursor.value as EvidenceRecord;
+            const get = projections.get(record.sequence);
+            get.onerror = () => reject(get.error ?? new Error("Query projection migration failed."));
+            get.onsuccess = () => {
+              try {
+                if (get.result === undefined) projections.put(queryProjection(deserializeJournalEvidenceCandidate(record.replayPayload), record.intervalId, record.sequence));
+                cursor.continue();
+              } catch (error) { reject(error); }
+            };
+          } catch (error) { reject(error); }
+        };
+      });
+    }
+    const searchBlocks = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks);
+    searchBlocks.clear();
+    await new Promise<void>((resolve, reject) => {
+      let pending: QueryProjection[] = [];
+      const flush = () => { appendSearchIndexBlocks(searchBlocks, pending); pending = []; };
+      const request = projections.openCursor();
+      request.onerror = () => reject(request.error ?? new Error("Find block migration failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        try {
+          if (!cursor) { flush(); resolve(); return; }
+          const projection = cursor.value as QueryProjection;
+          if (pending.length && indexBlockStart(pending[0]!.sequence) !== indexBlockStart(projection.sequence)) flush();
+          pending.push(projection);
+          cursor.continue();
+        } catch (error) { reject(error); }
+      };
+    });
+    await completed;
+  } catch (error) {
+    try { transaction.abort(); } catch { /* Migration may already have aborted. */ }
+    await completed.catch(() => undefined);
+    throw error;
   }
-  await transactionDone(transaction, `migrating query projections for ${panelSessionId}`);
 }
 
 type IndexedDbQueryOptions = Readonly<{
@@ -2520,7 +2541,8 @@ async function queryIndexedDb(
     AUTHORITATIVE_EVENT_STORE_NAMES.evidence,
     AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings,
     AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections,
-    AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates
+    AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates,
+    AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks
   ], "readonly");
   request.signal?.addEventListener("abort", () => {
     try { transaction.abort(); } catch { /* the readonly transaction may already be complete */ }
@@ -2637,6 +2659,7 @@ async function queryIndexedDb(
     const findResult = request.find === undefined
       ? null
       : (await readFindProjectionResult(
+        transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks),
         transaction.objectStore(options.projectionStore),
         interval.id,
         firstSequence,
@@ -2941,39 +2964,33 @@ function validateAggregateFacetPostings(
         return;
       }
       try {
-        const posting = cursor.value as FacetPostingRecord;
+        const block = cursor.value;
         telemetry.discoveryPostingValidationReads += 1;
-        if (posting.intervalId !== intervalId) {
-          const foreign = expected.get(typeof posting.facetIdentity === "string" ? posting.facetIdentity : "");
+        if (block.intervalId !== intervalId) {
+          const foreign = expected.get(typeof block.facetIdentity === "string" ? block.facetIdentity : "");
           if (foreign) foreign.foreignInterval = true;
           cursor.continue();
           return;
         }
-        assertExactKeys(posting, ["eventId", "facet", "facetIdentity", "intervalId", "sequence", "token"]);
-        if (posting.facet !== facet || typeof posting.eventId !== "string" || posting.eventId.length === 0
-          || typeof posting.facetIdentity !== "string" || facetFromIdentity(posting.facetIdentity) !== facet
-          || posting.token !== facetPostingToken(posting.facetIdentity)
-          || !Number.isSafeInteger(posting.sequence) || posting.sequence < currentFirst || posting.sequence > currentLast) {
-          throw new Error("A facet discovery posting is corrupt or outside the requested Evidence range.");
-        }
-        const identity = evidence.index("eventIdentity").getKey(posting.eventId);
-        identity.onerror = () => reject(identity.error ?? new Error("IndexedDB Evidence identity validation failed."));
-        identity.onsuccess = () => {
-          if (identity.result !== posting.sequence) {
-            reject(new Error("A facet discovery posting does not match its authoritative Evidence identity."));
-            return;
+        const postings = expandFacetPostingBlock(block);
+        const identities = postings.map(posting => {
+          if (posting.facet !== facet || posting.sequence < currentFirst || posting.sequence > currentLast) {
+            throw new Error("A facet discovery posting is corrupt or outside the current Evidence range.");
           }
-          telemetry.discoveryAggregateObservationReads += 1;
-          const aggregate = expected.get(posting.facetIdentity);
-          if (!aggregate || posting.sequence <= aggregate.lastSequence) {
-            reject(new Error("The facet discovery postings do not match the aggregate catalog."));
-            return;
+          return requestToPromise<IDBValidKey | undefined>(evidence.index("eventIdentity").getKey(posting.eventId), "validating facet Evidence identity");
+        });
+        void Promise.all(identities).then(keys => {
+          for (const [index, posting] of postings.entries()) {
+            if (keys[index] !== posting.sequence) throw new Error("A facet discovery posting does not match its authoritative Evidence identity.");
+            telemetry.discoveryAggregateObservationReads += 1;
+            const aggregate = expected.get(posting.facetIdentity);
+            if (!aggregate || posting.sequence <= aggregate.lastSequence) throw new Error("The facet discovery postings do not match the aggregate catalog.");
+            aggregate.currentCount += 1;
+            if (posting.sequence >= requestedFirst && posting.sequence <= requestedLast) aggregate.requestedCount += 1;
+            aggregate.lastSequence = posting.sequence;
           }
-          aggregate.currentCount += 1;
-          if (posting.sequence >= requestedFirst && posting.sequence <= requestedLast) aggregate.requestedCount += 1;
-          aggregate.lastSequence = posting.sequence;
           cursor.continue();
-        };
+        }).catch(reject);
       } catch (error) {
         reject(error);
       }
@@ -3078,9 +3095,11 @@ function countPostingToken(store: IDBObjectStore, token: string, intervalId: str
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) { resolve(count); return; }
-      const posting = cursor.value as FacetPostingRecord;
-      if (posting.intervalId === intervalId && posting.sequence >= first && posting.sequence <= last) count += 1;
-      cursor.continue();
+      try {
+        const block = readFacetPostingBlock(cursor.value);
+        if (block.intervalId === intervalId) count += block.observations.filter(([sequence]) => sequence >= first && sequence <= last).length;
+        cursor.continue();
+      } catch (error) { reject(error); }
     };
   });
 }
@@ -3100,26 +3119,19 @@ function readPostingToken(store: IDBObjectStore, token: string, intervalId: stri
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) { resolve(result); return; }
-      const posting = cursor.value as FacetPostingRecord;
-      assertExactKeys(posting, ["eventId", "facet", "facetIdentity", "intervalId", "sequence", "token"]);
-      if (posting.intervalId !== intervalId) {
+      try {
+        const block = readFacetPostingBlock(cursor.value);
+        if (block.token !== token) throw new Error("A facet posting token is corrupt.");
+        if (block.intervalId === intervalId) {
+          for (const [sequence, eventId] of block.observations) {
+            if (sequence < first || sequence > last) continue;
+            if (result.has(sequence)) throw new Error("A facet posting is duplicated.");
+            result.set(sequence, eventId);
+            telemetry.postingCandidates += 1;
+          }
+        }
         cursor.continue();
-        return;
-      }
-      if (typeof posting.eventId !== "string" || posting.eventId.length === 0
-        || typeof posting.facet !== "string" || typeof posting.facetIdentity !== "string"
-        || facetFromIdentity(posting.facetIdentity) !== posting.facet
-        || posting.token !== facetPostingToken(posting.facetIdentity)
-        || !Number.isSafeInteger(posting.sequence) || posting.sequence < 1
-        || posting.sequence < first || posting.sequence > last) {
-        reject(new Error("A facet posting is corrupt or outside the requested Evidence range."));
-        return;
-      }
-      if (posting.intervalId === intervalId && posting.sequence >= first && posting.sequence <= last) {
-        result.set(posting.sequence, posting.eventId);
-        telemetry.postingCandidates += 1;
-      }
-      cursor.continue();
+      } catch (error) { reject(error); }
     };
   });
 }
@@ -3163,7 +3175,8 @@ async function readDiscoveryAccounting(
       || typeof candidate.type !== "string" || typeof candidate.value !== "string" || typeof candidate.label !== "string") return;
     if (candidate.facet !== facet) throw new Error("The query projection facet identity is corrupt.");
     const token = facetPostingToken(candidate.identity);
-    const posting = await requestToPromise<FacetPostingRecord | undefined>(postingStore.get([token, projection.sequence]), "validating discovery facet posting");
+    const block = await requestToPromise<unknown>(postingStore.get([token, indexBlockStart(projection.sequence)]), "validating discovery facet posting");
+    const posting = block === undefined ? undefined : expandFacetPostingBlock(block).find(entry => entry.sequence === projection.sequence);
     telemetry.discoveryPostingValidationReads += 1;
     if (!posting) throw new Error("Facet discovery postings are incomplete or corrupt.");
     assertExactKeys(posting, ["eventId", "facet", "facetIdentity", "intervalId", "sequence", "token"]);
@@ -3307,28 +3320,6 @@ function matchesProjectionFilter(
   return evaluation.matches && isInAround({ identity: identityOfProjection(projection, intervalId), timestamp: projection.timestamp }, around);
 }
 
-function readQueryProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, candidates: Set<number> | null, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
-  const result: QueryProjection[] = [];
-  if (last < first) return Promise.resolve(result);
-  return new Promise((resolve, reject) => {
-    const range = queryBoundRange(first, last);
-    if (range === undefined) telemetry.fullRetainedScan = true;
-    const request = store.openCursor(range);
-    const state = { reads: 0, bound: telemetry.cursorWorkBound };
-    request.onerror = () => reject(request.error ?? new Error("Evidence projection cursor failed."));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) { resolve(result); return; }
-      const sequence = Number(cursor.key);
-      if (sequence < first || sequence > last) { resolve(result); return; }
-      try { recordProjectionCursorRead(telemetry, state, "range"); } catch (error) { reject(error); return; }
-      const projection = cursor.value as QueryProjection;
-      validateQueryProjection(projection, intervalId, sequence);
-      if (!isTopologyCheckpointProjection(projection) && projection.intervalId === intervalId && (candidates === null || candidates.has(projection.sequence))) result.push(projection);
-      cursor.continue();
-    };
-  });
-}
 
 function readCandidateProjections(store: IDBObjectStore, candidates: Set<number>, intervalId: string, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
   if (candidates.size > telemetry.cursorWorkBound) throw new Error("Indexed query candidate work exceeded the latched retained-count bound.");
@@ -3504,24 +3495,34 @@ function readProjectionByIdentity(store: IDBObjectStore, identity: EvidenceIdent
   });
 }
 
-function readSearchProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, find: NonNullable<EvidenceQueryRequest["find"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
-  const normalized = normalizeEvidenceSearchText(find.text);
-  if (!normalized || last < first) return Promise.resolve([]);
-  const codePoints = Array.from(normalized);
-  const residual = (values: QueryProjection[]): QueryProjection[] => values.filter((value) =>
-    value.sequence >= first && value.sequence <= last && normalizeEvidenceSearchText(value.searchText).includes(normalized));
-  if (codePoints.length < 3) {
+async function findSearchBlocks(
+  store: IDBObjectStore, intervalId: string, first: number, last: number,
+  normalized: string, telemetry: QueryTelemetryMutable
+): Promise<SearchIndexBlock[]> {
+  const firstBlock = indexBlockStart(first);
+  const lastBlock = indexBlockStart(last);
+  const expected = (lastBlock - firstBlock) / EVENT_INDEX_BLOCK_SIZE + 1;
+  const count = await requestToPromise<number>(store.count(queryBoundRange(firstBlock, lastBlock)), "validating Find block coverage");
+  if (count !== expected) throw new Error("Find index blocks are missing.");
+  // Fixed-size block filters avoid an IndexedDB multi-entry row for every
+  // word/trigram in every event. At 100k records this reads under 1 MiB.
+  const blocks = await requestToPromise<unknown[]>(store.getAll(queryBoundRange(firstBlock, lastBlock), expected), "reading Find block filters");
+  if (blocks.length !== expected) throw new Error("Find index blocks are missing.");
+  const candidates: SearchIndexBlock[] = [];
+  for (const [index, value] of blocks.entries()) {
+    const block = readSearchIndexBlock(value);
+    if (block.intervalId !== intervalId || block.sequence !== firstBlock + index * EVENT_INDEX_BLOCK_SIZE
+      || block.firstSequence > Math.max(first, block.sequence) || block.lastSequence < Math.min(last, block.sequence + EVENT_INDEX_BLOCK_SIZE - 1)) {
+      throw new Error("Find block coverage is incomplete.");
+    }
+    if (searchBlockMayContain(block, normalized)) candidates.push(block);
+  }
+  if (Array.from(normalized).length < 3) {
     telemetry.shortFindFallback = true;
     telemetry.fullRetainedScan = true;
-    return readQueryProjections(store, intervalId, first, last, null, telemetry).then(residual);
   }
-  const index = store.index("searchTokens");
-  return rarestFindSearchToken(index, normalized)
-    .then(({ token, count: rarestCount }) => {
-      telemetry.findCursorBound = rarestCount;
-      return readProjectionCursor(index, queryOnlyRange(token), intervalId, telemetry, rarestCount, "Find");
-    })
-    .then((values) => residual(values.filter((value) => value.sequence >= first && value.sequence <= last)));
+  telemetry.findCursorBound = candidates.reduce((total, block) => total + Math.min(last, block.sequence + EVENT_INDEX_BLOCK_SIZE - 1) - Math.max(first, block.sequence) + 1, 0);
+  return candidates;
 }
 
 type FindProjectionScan = Readonly<{
@@ -3531,6 +3532,7 @@ type FindProjectionScan = Readonly<{
 /** Finds exact totals and neighbors while retaining only compact identities
  * near the requested current match. Replay payloads are never read here. */
 async function readFindProjectionResult(
+  searchBlocks: IDBObjectStore,
   store: IDBObjectStore,
   intervalId: string,
   first: number,
@@ -3582,54 +3584,23 @@ async function readFindProjectionResult(
     if (firstMatches.length < 1_000) firstMatches.push(identityOf(projection));
     keepNearby(projection);
   };
-  const codePoints = Array.from(normalized);
-  const searchIndex = store.index("searchTokens");
-  // A projection with the partial marker deliberately omits some trigrams.
-  // Do not let a rare retained token make the result incomplete: the exact
-  // projection scan is still bounded by the latched retained range.
-  const partialProjectionCount = codePoints.length < 3
-    ? 0
-    : await requestToPromise<number>(searchIndex.count(queryOnlyRange(SEARCH_TOKEN_PARTIAL_MARKER)), "checking partial Find index coverage");
-  if (codePoints.length < 3 || partialProjectionCount > 0) {
-    telemetry.shortFindFallback = codePoints.length < 3;
-    telemetry.fullRetainedScan = true;
-    if (partialProjectionCount > 0) telemetry.findCursorBound = telemetry.cursorWorkBound;
-    const state = { reads: 0, bound: telemetry.cursorWorkBound };
-    await new Promise<void>((resolve, reject) => {
-      const request = store.openCursor(queryBoundRange(first, last));
-      request.onerror = () => reject(request.error ?? new Error("Find projection scan failed."));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor) { resolve(); return; }
-        try {
-          recordProjectionCursorRead(telemetry, state, "Find");
-          const projection = cursor.value as QueryProjection;
-          validateQueryProjection(projection, intervalId, Number(cursor.key));
-          consume(projection);
-          cursor.continue();
-        } catch (error) { reject(error); }
-      };
-    });
-  } else {
-    const { token, count } = await rarestFindSearchToken(searchIndex, normalized);
-    telemetry.findCursorBound = count;
-    await new Promise<void>((resolve, reject) => {
-      const request = searchIndex.openCursor(queryOnlyRange(token));
-      const state = { reads: 0, bound: count };
-      request.onerror = () => reject(request.error ?? new Error("Find search-token scan failed."));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor) { resolve(); return; }
-        try {
-          recordProjectionCursorRead(telemetry, state, "Find");
-          telemetry.findCursorReads += 1;
-          const projection = cursor.value as QueryProjection;
-          validateQueryProjection(projection, intervalId, Number(cursor.primaryKey));
-          if (projection.sequence >= first && projection.sequence <= last) consume(projection);
-          cursor.continue();
-        } catch (error) { reject(error); }
-      };
-    });
+  const candidates = await findSearchBlocks(searchBlocks, intervalId, first, last, normalized, telemetry);
+  for (const block of candidates) {
+    if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+    const sequence = block.sequence;
+    const lower = Math.max(first, sequence);
+    const upper = Math.min(last, sequence + EVENT_INDEX_BLOCK_SIZE - 1);
+    if (block.intervalId !== intervalId || block.firstSequence > lower || block.lastSequence < upper) throw new Error("Find index coverage is incomplete.");
+    // One bounded bulk read replaces one browser/database round trip per row.
+    const projections = await requestToPromise<QueryProjection[]>(store.getAll(queryBoundRange(lower, upper), EVENT_INDEX_BLOCK_SIZE), "reading Find block projections");
+    if (projections.length !== upper - lower + 1) throw new Error("Find projection coverage is incomplete.");
+    const state = { reads: 0, bound: upper - lower + 1 };
+    for (const [index, projection] of projections.entries()) {
+      recordProjectionCursorRead(telemetry, state, "Find");
+      telemetry.findCursorReads += 1;
+      validateQueryProjection(projection, intervalId, lower + index);
+      consume(projection);
+    }
   }
   let exact: QueryProjection | null = null;
   if (current !== undefined) {
@@ -3666,57 +3637,6 @@ async function readFindProjectionResult(
   };
 }
 
-async function rarestFindSearchToken(index: IDBIndex, normalized: string): Promise<Readonly<{ token: string; count: number }>> {
-  const tokens = [...new Set([
-    normalized,
-    ...queryTrigrams(normalized)
-  ])];
-  const counts = await Promise.all(tokens.map(async (token) => ({
-    token,
-    count: await requestToPromise<number>(index.count(queryOnlyRange(token)), "counting Find search-token candidates")
-  })));
-  const positiveCounts = counts.filter(({ count }) => count > 0);
-  return (positiveCounts.length > 0 ? positiveCounts : counts)
-    .sort((left, right) => left.count - right.count || left.token.localeCompare(right.token))[0] ?? { token: normalized, count: 0 };
-}
-
-/**
- * A renderer-scoped Find needs bounded context around the active and next
- * matches, not only the postings that matched the search text. Keep the
- * candidate search indexed, then hydrate at most two 100-record windows so
- * the public Find window remains useful without turning every Find into a
- * full retained scan.
- */
-async function readFindProjectionContext(
-  store: IDBObjectStore,
-  intervalId: string,
-  first: number,
-  last: number,
-  matches: readonly QueryProjection[],
-  find: NonNullable<EvidenceQueryRequest["find"]>,
-  telemetry: QueryTelemetryMutable
-): Promise<QueryProjection[]> {
-  if (matches.length === 0 || last < first) return [];
-  const ordered = [...matches].sort((left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId));
-  const currentIndex = find.current === undefined
-    ? -1
-    : ordered.findIndex((projection) => projection.sequence === find.current!.sequence && projection.eventId === find.current!.eventId && projection.intervalId === find.current!.intervalId);
-  let activeIndex = currentIndex;
-  if (activeIndex < 0 && find.current !== undefined) {
-    activeIndex = ordered.reduce((best, projection, index) => {
-      const bestDistance = Math.abs(ordered[best]!.sequence - find.current!.sequence);
-      const distance = Math.abs(projection.sequence - find.current!.sequence);
-      return distance < bestDistance || (distance === bestDistance && projection.sequence < ordered[best]!.sequence) ? index : best;
-    }, 0);
-  }
-  if (activeIndex < 0) activeIndex = 0;
-  const targetSequences = [ordered[activeIndex]!.sequence];
-  if (activeIndex + 1 < ordered.length) targetSequences.push(ordered[activeIndex + 1]!.sequence);
-  const windows = await Promise.all(targetSequences.map((sequence) => readFindProjectionWindow(store, intervalId, first, last, sequence, telemetry)));
-  const result = new Map<number, QueryProjection>();
-  for (const projection of [...matches, ...windows.flat()]) result.set(projection.sequence, projection);
-  return [...result.values()].sort((left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId));
-}
 
 function readFindProjectionWindow(store: IDBObjectStore, intervalId: string, first: number, last: number, sequence: number, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
   const lower = Math.max(first, sequence - 50);
@@ -3740,25 +3660,6 @@ function readFindProjectionWindow(store: IDBObjectStore, intervalId: string, fir
   });
 }
 
-function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | IDBValidKey | undefined, intervalId: string, telemetry: QueryTelemetryMutable, bound: number, operation: "Around" | "Find"): Promise<QueryProjection[]> {
-  const result: QueryProjection[] = [];
-  if (range === undefined) telemetry.fullRetainedScan = true;
-  return new Promise((resolve, reject) => {
-    const request = index.openCursor(range);
-    const state = { reads: 0, bound };
-    request.onerror = () => reject(request.error ?? new Error("Indexed query projection cursor failed."));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) { resolve(result); return; }
-      try { recordProjectionCursorRead(telemetry, state, "index"); } catch (error) { reject(error); return; }
-      const projection = cursor.value as QueryProjection;
-      try { validateQueryProjection(projection, intervalId, Number(cursor.primaryKey)); } catch (error) { reject(error); return; }
-      if (operation === "Find") telemetry.findCursorReads += 1;
-      if (!isTopologyCheckpointProjection(projection) && projection.intervalId === intervalId) result.push(projection);
-      cursor.continue();
-    };
-  });
-}
 
 function queryOnlyRange(value: IDBValidKey): IDBKeyRange | IDBValidKey {
   const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
@@ -3820,7 +3721,7 @@ function deterministicQueryRecord(entry: CommittedEvidence, interval: HistoryInt
   return Object.freeze({ identity, timestamp: entry.candidate.timestamp, summary: entry.candidate.kind, searchText: canonicalEvidenceSearchText(entry.candidate, context), facets: Object.freeze(extractEvidenceFacets(entry.candidate, context).facets) });
 }
 
-function prepareEvidence(entry: CommittedEvidence, serialized: ReturnType<typeof serializeJournalEvidenceCandidate>, boundedSearchIndex = false): PreparedEvidence {
+function prepareEvidence(entry: CommittedEvidence, serialized: ReturnType<typeof serializeJournalEvidenceCandidate>): PreparedEvidence {
   if (entry.candidate.kind === "topology-checkpoint") {
     return {
       evidence: entry,
@@ -3837,7 +3738,7 @@ function prepareEvidence(entry: CommittedEvidence, serialized: ReturnType<typeof
   return {
     evidence: entry,
     serialized,
-    projection: queryProjectionWithExtraction(candidate, entry.intervalId, entry.sequence, context, extracted, boundedSearchIndex),
+    projection: queryProjectionWithExtraction(candidate, entry.intervalId, entry.sequence, context, extracted),
     postings: facetPostingsFromExtraction(extracted, candidate.id, entry.intervalId, entry.sequence),
     aggregateValues: extracted.selectableValues.slice(0, EVIDENCE_FACET_COUNT).map((value) => ({
       facet: value.facet,
@@ -3854,7 +3755,7 @@ function queryProjection(candidate: EvidenceCandidate, intervalId: string, seque
   const identity: EvidenceIdentity = { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence, eventId: candidate.id };
   if (candidate.kind === "topology-checkpoint") {
     const searchText = journalCandidateSearchText(candidate);
-    return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText, searchTokens: querySearchTokens(searchText), facets: {} };
+    return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText, searchTokens: [], facets: {} };
   }
   const context = { identity, pageId: intervalId, listenerOwner: identity.ownerId, summary: candidate.kind };
   return queryProjectionWithExtraction(candidate, intervalId, sequence, context, extractEvidenceFacets(candidate, context));
@@ -3865,8 +3766,7 @@ function queryProjectionWithExtraction(
   intervalId: string,
   sequence: number,
   context: { identity: EvidenceIdentity; pageId: string; listenerOwner: string; summary: string },
-  extracted: EvidenceFacetExtraction,
-  boundedSearchIndex = false
+  extracted: EvidenceFacetExtraction
 ): QueryProjection {
   const searchText = canonicalEvidenceSearchTextWithExtraction(candidate, context, extracted);
   return {
@@ -3874,37 +3774,9 @@ function queryProjectionWithExtraction(
     timestamp: candidate.timestamp,
     summary: candidate.kind,
     searchText,
-    searchTokens: querySearchTokens(searchText, boundedSearchIndex),
+    searchTokens: [],
     facets: extracted.facets
   };
-}
-
-function querySearchTokens(value: string, boundedSearchIndex = false): string[] {
-  const normalized = normalizeEvidenceSearchText(value);
-  // Qualified facet identities are opaque ownership keys, not user-facing
-  // search terms. Keep their exact words for residual matching, but avoid
-  // indexing their nested page/session identity trigrams.
-  const identityTokens = boundedSearchIndex ? normalized.split(/\s+/u).filter((token) => token.includes('["owner-v1"')) : [];
-  const indexText = boundedSearchIndex ? normalized.split(/\s+/u).filter((token) => !token.includes('["owner-v1"')).join(" ") : normalized;
-  const words = [...new Set(normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean))];
-  const trigramWords = [...new Set(indexText.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean))].filter(searchTokenSupportsTrigrams);
-  const partial = boundedSearchIndex && (identityTokens.length > 0 || trigramWords.length !== words.length);
-  return [...new Set([
-    ...words,
-    ...(partial ? [SEARCH_TOKEN_PARTIAL_MARKER] : []),
-    ...trigramWords.flatMap(queryTrigrams)
-  ])];
-}
-
-function searchTokenSupportsTrigrams(word: string): boolean {
-  if (word.length <= SEARCH_TOKEN_TRIGRAM_WORD_MAX_LENGTH) return true;
-  return word.length <= SEARCH_TOKEN_TRIGRAM_IDENTIFIER_MAX_LENGTH && /[-\d]/u.test(word);
-}
-
-function queryTrigrams(value: string): string[] {
-  const codePoints = Array.from(value);
-  if (codePoints.length < 3) return [];
-  return codePoints.slice(0, -2).map((_, index) => codePoints.slice(index, index + 3).join(""));
 }
 
 function queryProjectionFromPayload(record: EvidenceRecord, interval: HistoryInterval): SelectionRecord {
@@ -3976,84 +3848,6 @@ function planCachedRetentionTrim(
   };
 }
 
-async function planJournalRetentionTrim(
-  database: AuthoritativeEventDatabase,
-  interval: HistoryInterval,
-  durableRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }>,
-  retainedCount: number,
-  retainedCapacityBytes: number,
-  targetCount: number,
-  targetCapacityBytes: number,
-  capacityBytesBySequence: ReadonlyMap<number, number>
-): Promise<RetentionTrimPlan> {
-  if (retainedCount <= targetCount && retainedCapacityBytes <= targetCapacityBytes) {
-    return {
-      cutoffSequence: durableRange.first.sequence - 1,
-      evictedCount: 0,
-      evictedReplayPayloadBytes: 0,
-      evictedAccountedBytes: 0,
-      evictedCapacityBytes: 0,
-      firstEvicted: null,
-      lastEvicted: null,
-      firstRetained: durableRange.first
-    };
-  }
-  const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
-  const completed = transactionDone(transaction, "planning Event History retention");
-  const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
-  let remainingCount = retainedCount;
-  let remainingCapacityBytes = retainedCapacityBytes;
-  let cutoffSequence = durableRange.first.sequence - 1;
-  let evictedCount = 0;
-  let evictedReplayPayloadBytes = 0;
-  let evictedAccountedBytes = 0;
-  let evictedCapacityBytes = 0;
-  let firstEvicted: EvidenceRef | null = null;
-  let lastEvicted: EvidenceRef | null = null;
-  const plan = await new Promise<RetentionTrimPlan>((resolve, reject) => {
-    const request = store.openCursor(queryBoundRange(durableRange.first.sequence, durableRange.last.sequence));
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB retention planning failed."));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) {
-        resolve({ cutoffSequence, evictedCount, evictedReplayPayloadBytes, evictedAccountedBytes, evictedCapacityBytes, firstEvicted, lastEvicted, firstRetained: null });
-        return;
-      }
-      const record = cursor.value as EvidenceRecord;
-      if (record.intervalId !== interval.id) {
-        reject(new Error("IndexedDB retention planning crossed a History Interval boundary."));
-        return;
-      }
-      if (remainingCount <= targetCount && remainingCapacityBytes <= targetCapacityBytes) {
-        resolve({
-          cutoffSequence,
-          evictedCount,
-          evictedReplayPayloadBytes,
-          evictedAccountedBytes,
-          evictedCapacityBytes,
-          firstEvicted,
-          lastEvicted,
-          firstRetained: evidenceRef(record)
-        });
-        return;
-      }
-      const capacityBytes = capacityBytesBySequence.get(record.sequence) ?? record.accountedBytes;
-      remainingCount -= 1;
-      remainingCapacityBytes = Math.max(0, remainingCapacityBytes - capacityBytes);
-      cutoffSequence = record.sequence;
-      evictedCount += 1;
-      evictedReplayPayloadBytes += record.serializedBytes;
-      evictedAccountedBytes += record.accountedBytes;
-      evictedCapacityBytes += capacityBytes;
-      firstEvicted ??= evidenceRef(record);
-      lastEvicted = evidenceRef(record);
-      cursor.continue();
-    };
-  });
-  await completed;
-  return plan;
-}
-
 async function applyJournalRetentionTrim(
   database: AuthoritativeEventDatabase,
   panelSessionId: string,
@@ -4077,68 +3871,62 @@ async function applyJournalRetentionTrim(
   if (!prefix) throw new Error("IndexedDB retention requires bounded key ranges.");
   evidenceStore.delete(prefix);
   projectionStore.delete(prefix);
-  aggregateStore.clear();
+  const blockPrefix = queryBoundRange(1, indexBlockStart(cutoffSequence));
+  const searchCleanup = new Promise<void>((resolve, reject) => {
+    const request = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).openCursor(blockPrefix);
+    request.onerror = () => reject(request.error ?? new Error("Find block retention failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(); return; }
+      try {
+        const block = readSearchIndexBlock(cursor.value);
+        if (block.intervalId !== interval.id) throw new Error("Find block retention crossed a History Interval.");
+        if (block.lastSequence <= cutoffSequence) cursor.delete();
+        else if (block.firstSequence <= cutoffSequence) cursor.update({ ...block, firstSequence: cutoffSequence + 1 });
+        cursor.continue();
+      } catch (error) { reject(error); }
+    };
+  });
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(
     createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, range, retainedCount, replayPayloadBytes, accountedBytes)
   );
-
-  await Promise.all([
-    new Promise<void>((resolve, reject) => {
-      const request = postingStore.openCursor();
-      request.onerror = () => reject(request.error ?? new Error("IndexedDB retention posting cleanup failed."));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor) { resolve(); return; }
-        const posting = cursor.value as FacetPostingRecord;
-        if (posting.sequence <= cutoffSequence) cursor.delete();
+  const postingCleanup = new Promise<void>((resolve, reject) => {
+    const affectedIdentities = new Map<string, string>();
+    const request = postingStore.index("sequence").openCursor(blockPrefix);
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB retention posting cleanup failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        // Catalog metadata is immutable for a typed identity. Only remove an
+        // identity whose last observation expired; never replay the surviving
+        // history to rebuild the catalog on every retention advance.
+        const checks = [...affectedIdentities].map(([token, identity]) => {
+          const remaining = postingStore.getKey(queryBoundRange([token, indexBlockStart(cutoffSequence + 1)], [token, Number.MAX_SAFE_INTEGER])!);
+          return requestToPromise<IDBValidKey | undefined>(remaining, "checking retained facet identity").then(key => {
+            if (key === undefined) aggregateStore.delete([interval.id, identity]);
+          });
+        });
+        void Promise.all(checks).then(() => resolve(), reject);
+        return;
+      }
+      try {
+        const block = readFacetPostingBlock(cursor.value);
+        if (block.intervalId !== interval.id) throw new Error("Facet block retention crossed a History Interval.");
+        const observations = block.observations.filter(([sequence]) => sequence > cutoffSequence);
+        if (observations.length !== block.observations.length) affectedIdentities.set(block.token, block.facetIdentity);
+        if (observations.length === 0) cursor.delete();
+        else if (observations.length !== block.observations.length) cursor.update({ ...block, observations });
         cursor.continue();
-      };
-    }),
-    new Promise<void>((resolve, reject) => {
-      const aggregates = new Map<string, AuthoritativeFacetAggregateRecord>();
-      const request = evidenceStore.openCursor();
-      request.onerror = () => reject(request.error ?? new Error("IndexedDB retention aggregate rebuild failed."));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor) {
-          for (const aggregate of aggregates.values()) aggregateStore.add(aggregate);
-          resolve();
-          return;
-        }
-        const record = cursor.value as EvidenceRecord;
-        if (record.intervalId === interval.id && record.sequence > cutoffSequence) {
-          const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
-          if (candidate.kind !== "topology-checkpoint") {
-            const identity: EvidenceIdentity = {
-              intervalId: record.intervalId,
-              pageId: record.intervalId,
-              ownerId: "memory-event-history",
-              sequence: record.sequence,
-              eventId: record.eventId
-            };
-            const extracted = extractEvidenceFacets(candidate, {
-              identity,
-              pageId: record.intervalId,
-              listenerOwner: identity.ownerId,
-              summary: candidate.kind
-            });
-            for (const value of extracted.selectableValues.slice(0, EVIDENCE_FACET_COUNT)) {
-              aggregates.set(value.identity, {
-                intervalId: record.intervalId,
-                facet: value.facet,
-                facetIdentity: value.identity,
-                type: value.type,
-                value: value.value,
-                label: value.label
-              });
-            }
-          }
-        }
-        cursor.continue();
-      };
-    })
-  ]);
-  await completed;
+      } catch (error) { reject(error); }
+    };
+  });
+  try {
+    await Promise.all([searchCleanup, postingCleanup, completed]);
+  } catch (error) {
+    try { transaction.abort(); } catch { /* The transaction may already have aborted. */ }
+    await completed.catch(() => undefined);
+    throw error;
+  }
 }
 
 async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, preparedBatch: readonly PreparedEvidence[], aggregateCache: FacetAggregateCache, replayPayloadBytes: number, accountedBytes: number, phase: "RUNNING" | "DRAINING_TO_STOP", terminal: HistoryTerminalDiagnostic | null): Promise<void> {
@@ -4162,9 +3950,6 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
     const entry = prepared.evidence;
     store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: recordAccountedBytes, facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
     projectionStore.add(prepared.projection);
-    for (const posting of prepared.postings) {
-      postingStore.add(posting);
-    }
     for (const value of prepared.aggregateValues) {
       const key = JSON.stringify([entry.intervalId, value.facetIdentity]);
       const existing = aggregateDeltas.get(key);
@@ -4175,6 +3960,8 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
       });
     }
   }
+  appendFacetPostingBlocks(postingStore, preparedBatch.flatMap(prepared => prepared.postings));
+  appendSearchIndexBlocks(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks), preparedBatch.map(prepared => prepared.projection));
   if (replayPayloadBytes < serializedBatchBytes || accountedBytes < accountedBatchBytes) throw new Error("The journal commit totals are incoherent.");
   const evidence = preparedBatch.map((prepared) => prepared.evidence);
   const applyAggregateUpdate = (
@@ -4284,6 +4071,7 @@ async function clearJournalRecords(
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections).clear();
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, null, 0, 0, 0));
   await transactionDone(transaction, "clearing Event History", timeoutMs);
@@ -4423,12 +4211,14 @@ function validateFacetPostingRecords(
         return;
       }
       try {
-        const posting = validateFacetPostingRecord(cursor.value as FacetPostingRecord, panelSessionId, control.interval.id, evidenceBySequence);
-        const count = (postingsBySequence.get(posting.sequence) ?? 0) + 1;
-        if (count > EVIDENCE_FACET_COUNT) throw new Error("An Evidence record exceeds the facet posting bound.");
-        postingsBySequence.set(posting.sequence, count);
-        const identities = identitiesBySequence.get(posting.sequence);
-        if (!identities?.delete(posting.facetIdentity)) throw new Error("A facet posting is duplicated or unexpected.");
+        for (const record of expandFacetPostingBlock(cursor.value)) {
+          const posting = validateFacetPostingRecord(record, panelSessionId, control.interval.id, evidenceBySequence);
+          const count = (postingsBySequence.get(posting.sequence) ?? 0) + 1;
+          if (count > EVIDENCE_FACET_COUNT) throw new Error("An Evidence record exceeds the facet posting bound.");
+          postingsBySequence.set(posting.sequence, count);
+          const identities = identitiesBySequence.get(posting.sequence);
+          if (!identities?.delete(posting.facetIdentity)) throw new Error("A facet posting is duplicated or unexpected.");
+        }
         cursor.continue();
       } catch (error) {
         reject(error);
@@ -5072,25 +4862,10 @@ function exactFacets(candidate: EvidenceCandidate): string[] {
   ];
 }
 
-function facetPostingToken(facetIdentity: string): string {
-  return JSON.stringify([AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE, facetIdentity]);
-}
-
 function facetFromIdentity(facetIdentity: string): string | null {
   return facetIdentityParts(facetIdentity)?.facet ?? null;
 }
 
-function facetIdentityParts(facetIdentity: string): { facet: string; type: string; value: string } | null {
-  try {
-    const parsed = JSON.parse(facetIdentity) as unknown;
-    return Array.isArray(parsed) && parsed.length === 4 && parsed[0] === "v1" && typeof parsed[1] === "string"
-      && typeof parsed[2] === "string" && typeof parsed[3] === "string"
-      ? { facet: parsed[1], type: parsed[2], value: parsed[3] }
-      : null;
-  } catch {
-    return null;
-  }
-}
 
 function facetPostings(candidate: EvidenceCandidate, intervalId: string, sequence: number): FacetPostingRecord[] {
   if (candidate.kind === "topology-checkpoint") return [];
