@@ -7,14 +7,14 @@ Status: **Variant C approved on 2026-08-29**. The production change is classifie
 Run:
 
 ```sh
-npm run prototype:scope-evidence-readability
+npm run prototype:serve
 ```
 
 Open:
 
-- `http://127.0.0.1:4181/?variant=A&frame=normal`
-- `http://127.0.0.1:4181/?variant=B&frame=normal`
-- `http://127.0.0.1:4181/?variant=C&frame=normal`
+- `http://127.0.0.1:4175/workbench-ui-12/?variant=A&frame=normal`
+- `http://127.0.0.1:4175/workbench-ui-12/?variant=B&frame=normal`
+- `http://127.0.0.1:4175/workbench-ui-12/?variant=C&frame=normal`
 
 Use the fixed switcher, or Left/Right arrow keys, to compare variants. Change **Frame** to Compact to pressure-test the narrow-pane behavior that motivated this work.
 

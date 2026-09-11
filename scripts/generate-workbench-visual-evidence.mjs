@@ -152,11 +152,11 @@ try {
     contactSheets,
     review: !grep && results.length === allScenarios.length ? {
       classification: "Material UI",
-      changedWorkflow: "The integrated Workbench matrix covers the approved Variant C Scope priority blocks and Ordered Evidence order rail, the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, protected Server Injection through LightstreamerClient.sendMessage, diagnostics, and compact operating actions in the shipped panel shell.",
+      changedWorkflow: "The integrated Workbench matrix covers the approved Scope priority blocks and full-key JSON Evidence stream, the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, protected Server Injection through LightstreamerClient.sendMessage, diagnostics, and compact operating actions in the shipped panel shell.",
       acceptanceCriteria: [
         "Scope rows present object type and lifecycle first, identity on its own primary line with the exact value programmatically available and reachable, and facts as a secondary line across populated normal and compact pane pressure.",
-        "Ordered Evidence presents authoritative retained History sequence separately from exact Evidence identity, then semantic meaning, timestamp/provenance/phase, COMMAND operation, object, and key in that reading order.",
-        "The 58px Scope and 52px Evidence rows preserve complete-row geometry, one scroll owner per pane, tree virtualization, and one-viewport Page Up/Down movement.",
+        "Ordered Evidence presents compact historical Op codes, complete single-line Key / item and Data. Only Op is pinned horizontally; keys and data scroll together without key truncation or wrapping. Codes explains TLCP and Workbench lifecycle meanings; Readable marks decoded JSON strings and Raw fields preserves captured types. Exact identities, chronology, provenance and injection boundaries remain available in Context.",
+        "The 58px Scope and 30px Evidence rows preserve complete-row geometry, one scroll owner per pane, tree virtualization, and one-viewport Page Up/Down movement.",
         "One shared SERVER/LOCAL timeline belongs above Evidence, uses elapsed time since the first retained timestamped event, and preserves exact range and captured-event routes without a separate Activity page.",
         "One collapsed Activity summary in Context retains exact SERVER/LOCAL counts, bounded SERVER busiest identities and captured facts, including 10,000-record, limited and memory-fallback states.",
         "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
@@ -451,6 +451,15 @@ async function createContactSheets(runningBrowser, results) {
     ["reference", "current", "diff"],
     "contact-sheets/affected-reference-current-diff.png"
   );
+  output.pages = [];
+  for (let start = 0; start < affected.length; start += 4) {
+    output.pages.push(await writeContactSheet(
+      runningBrowser,
+      affected.slice(start, start + 4),
+      ["reference", "current", "diff"],
+      `contact-sheets/affected-page-${String(output.pages.length + 1).padStart(2, "0")}.png`
+    ));
+  }
   return output;
 }
 

@@ -5,7 +5,7 @@ Question: do established developer-tool patterns reveal a better Local Injection
 Run:
 
 ```sh
-npm run prototype:local-injection
+npm run prototype:serve
 ```
 
 Open:

@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below is the analytics candidate draft. Publish it only with the matching package and privacy disclosures. The versioned release records later in this file describe their original packages.
+The description below accompanies the 2.0.4 release candidate. Publish it only with the matching package and privacy disclosures. The versioned release records later in this file describe their original packages.
 
 ```text
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
@@ -56,7 +56,9 @@ It captures clients, Sessions, Subscriptions, listeners, Item Updates, snapshots
 Key features:
 
 - Select the page, client, Session, Subscription, item, or listener in Runtime Scope. You can inspect retired objects, but you cannot use them as Local Injection targets.
-- Read events in retained order. Each row shows its event number, time, Source, phase, operation, object, and key.
+- Read compact operation codes, complete single-line keys, and captured data in retained order. Op stays pinned while keys and data scroll horizontally. Open Codes for the Lightstreamer and Workbench lifecycle reference.
+- Read JSON string fields in a clearly marked readable view, or use Raw fields to preserve captured types. Complete data and exact event metadata remain in Context.
+- Use a consistent Off / Include / Exclude control for Evidence and notification filters. Workbench uses dark mode in every system appearance.
 - Use Find, Filter, selection, Capture, Coverage, and Live or Frozen independently.
 - Select an event to inspect its Fields, raw Evidence, Source, COMMAND details, and limits in Context.
 - Capture outbound Client Messages and their normal listener outcomes as ordered Evidence.
@@ -70,7 +72,7 @@ Key features:
 - Review every LightstreamerClient.sendMessage argument, then send the Client Message once through the inspected application's normal client-to-server path.
 - Treat Processed as a Lightstreamer message outcome, not proof of an application business effect or later Server Update. Workbench never retries an Unknown outcome automatically.
 - Use WebSocket/TLCP fallback diagnostics when the primary Web Client instrumentation is not available.
-- Keep one temporary Event History for each Panel Session. IndexedDB can keep 100,000 records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB.
+- Keep one temporary Event History for each Panel Session. IndexedDB can keep 100,000 records or 256 MiB. The memory fallback can keep 25,000 records or 128 MiB.
 - Use the Committed Evidence Boundary to find the end of complete History. Retention removes the oldest accepted prefix while Capture continues and reports the resulting Evidence Gap explicitly.
 - A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
 - Usage analytics helps improve feature adoption and reliability. It sends fixed feature names, engagement time, coarse outcomes, and a random installation identifier to Google Analytics. It is on by default and can be turned off in More actions → Help & resources → Usage analytics. Captured data, inspected URLs, and typed text stay local.
@@ -120,26 +122,26 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.3
+2.0.4
 ```
 
 What's new:
 
 ```text
-Client Messages, Server Injection, and privacy-controlled usage analytics.
+Full-key JSON Evidence stream and capture reliability improvements.
 
-- Captures outbound Client Messages and their normal listener outcomes as ordered Evidence.
-- Adds Server Injection for cloning or authoring one Client Message, reviewing its exact sendMessage arguments, and sending it once through the page-owned client's current Session.
-- Supports optional application-owned Message Recipes without adding application-specific schemas to Workbench.
-- Adds limited Google Analytics usage measurement with a persistent off switch under More actions → Help & resources → Usage analytics.
-- Keeps captured Evidence, payloads, inspected URLs, search text, Drafts, raw errors, and exports out of analytics.
-- Adds storage permission for the analytics preference and random installation identifier, plus access to Google's collection endpoint. No remote script is loaded.
+- Compact historical operation codes with a Codes reference panel.
+- Complete single-line keys and horizontally scrollable data; only Op stays pinned.
+- Readable JSON and Raw fields with preserved captured types and bounded inline previews.
+- Consistent Off / Include / Exclude filters and dark-only appearance.
+- Improved IndexedDB commit throughput, larger memory fallback, and clearer storage diagnostics.
+- Correct grouped COMMAND edit validation and clean content-bridge retirement after extension reloads.
 ```
 
 ## Privacy Practices Draft
 
 ```text
-Lightstreamer Workbench processes inspected-page Lightstreamer event data in the browser extension context. Each Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 5,000 records or 32 MiB. Workbench does not change the storage type during the Panel Session. The extension does not send captured Evidence to the maintainers, an analytics service, or another external service.
+Lightstreamer Workbench processes inspected-page Lightstreamer event data in the browser extension context. Each Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 25,000 records or 128 MiB. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session and reports the storage change and failure reason. The extension does not send captured Evidence to the maintainers, an analytics service, or another external service.
 
 Complete History ends at the current History Interval's Committed Evidence Boundary. Retention removes the oldest accepted prefix while Capture continues and reports the resulting Evidence Gap explicitly. Clear makes an exact History Interval cut. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
 
@@ -197,7 +199,7 @@ No account is required. Open DevTools on a page using the official Lightstreamer
 - [x] Confirm the support URL is `https://imom39a.github.io/lightstreamer-workbench-extension/support/`.
 - [ ] Confirm the homepage URL is `https://imom39a.github.io/lightstreamer-workbench-extension/` and staged publishing remains enabled.
 
-## Version 2.0.3 Preparation Checklist
+## Version 2.0.3 Preparation Checklist (historical)
 
 - [x] Confirm `public/manifest.json`, `package.json`, and the package lock use version `2.0.3`.
 - [x] Run `npm run analytics:validate` with the dedicated production measurement configuration and confirm the DebugView probes.
@@ -211,3 +213,18 @@ No account is required. Open DevTools on a page using the official Lightstreamer
 - [x] Confirm the homepage, support, and privacy policy URLs.
 - [ ] Confirm staged publishing during the later Store review submission.
 - [x] Obtain the Material UI visual-QA disposition; maintainer approval is still required before Store review submission.
+
+## Version 2.0.4 Preparation Checklist
+
+- [x] Include all maintainer-authorized pending changes and the prior capture reliability, filter and dark-mode fixes.
+- [x] Confirm package, lockfile and manifest version `2.0.4`, with unchanged permissions.
+- [x] Regenerate and independently review all five 1280×800 screenshots from the production component.
+- [x] Prepare the matching description and release notes above.
+- [x] Verify the full unit suite, official-client journeys, extension reload and 100,500-event rolling-capacity proof.
+- [x] Build and audit `release/lightstreamer-workbench-v2.0.4.zip`: 467,424 bytes; ZIP integrity passes.
+- [x] Record SHA-256: `ba105d4cf2319ebd787b7a168a025cdb26d712a083fc08693fe9fb61cf896433`.
+- [ ] Upload the package through the existing Chrome publisher session.
+- [ ] Replace the description and five screenshots, save, and submit for Store review.
+- [ ] Verify the Store's actual review/publication status.
+
+The maintainer explicitly authorized this release. The Chrome session currently requires the Mac to be unlocked; version 2.0.4 has not been uploaded or submitted. Detailed verification is recorded in [`key-json-stream-evidence.md`](../docs/agents/key-json-stream-evidence.md).

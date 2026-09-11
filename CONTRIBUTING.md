@@ -163,7 +163,7 @@ npm run test:ui:extension         # Shipped unpacked DevTools panel
 npm run fixture:test:browser      # Official-client Local Injection proof
 npm run build                      # Production build and extension audit
 npm run release:package           # Chrome Store package audit
-npm run docs:check                # Documented-command integrity
+npm run docs:check                # Documented-command and local-link integrity
 ```
 
 ## UI Definition of Done

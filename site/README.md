@@ -12,7 +12,7 @@ The build writes only public routes and required local assets to ignored `site-d
 
 ## Social card
 
-`site/assets/og.png` is the release-current social card copied into the public artifact. `npm run store:assets` composes it from the maintained brand artwork, project logo, and latest generated Workbench screenshot, then writes the same image to `docs/assets/github-social-preview.png` for repository use.
+`site/assets/og.png` is the release-current social card copied into the public artifact. `npm run store:assets` composes it from the maintained brand artwork, project logo, and latest generated Workbench screenshot.
 
 The final card remains exactly `1280x640`; `npm run site:check` enforces that dimension.
 

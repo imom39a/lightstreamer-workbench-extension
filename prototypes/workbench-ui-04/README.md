@@ -9,14 +9,14 @@ Status: reviewed. The accepted architecture is the [Scoped Evidence Workspace](.
 Run it with:
 
 ```sh
-npm run prototype:workbench-ui
+npm run prototype:serve
 ```
 
 Then open one of:
 
-- `http://127.0.0.1:4174/?variant=A`
-- `http://127.0.0.1:4174/?variant=B`
-- `http://127.0.0.1:4174/?variant=C`
+- `http://127.0.0.1:4175/workbench-ui-04/?variant=A`
+- `http://127.0.0.1:4175/workbench-ui-04/?variant=B`
+- `http://127.0.0.1:4175/workbench-ui-04/?variant=C`
 
 Use the fixed switcher or the Left and Right arrow keys to move between variants. Arrow-key switching is disabled while a form field has focus.
 

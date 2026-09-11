@@ -39,23 +39,16 @@ First, select a Scope that contains the complete sequence. Then make the Scope s
 
 ### 4. Read an Evidence row
 
-Each Ordered Evidence row separates:
+Each row presents **Op**, the complete **Key / item**, and **Data**. Only Op stays pinned; keys and data remain on one line and scroll horizontally together. **Codes** explains historical codes such as `U`, `EOS`, and `SUBOK`. `ADD` and `DELETE` annotate COMMAND updates, `S` marks snapshots, and **LOCAL** distinguishes Local Injected Updates. Runtime and Workbench activity use `R` and `W`.
 
-- retained **Event** order;
-- Evidence meaning;
-- timestamp, Source, and snapshot/live phase;
-- COMMAND operation;
-- runtime object;
-- COMMAND key when available.
-
-The event number and timestamp have separate positions. Workbench always shows **SERVER**, **LOCAL**, **RUNTIME**, or **WORKBENCH** as text.
+**Readable** displays captured JSON object and array strings as structured values, with a **JSON string** marker. **Raw fields** preserves their original types. Large inline previews are bounded and explicitly marked; Context retains the complete payload and exact event identity, timestamp, retained sequence, Source, and phase.
 
 ### 5. Inspect one event in Context
 
 Select a row. Context shows its update Fields first. Open a supporting section only when you need it:
 
 - **Activity summary** for scoped counts, delivery totals, snapshot/live breakdown, and busiest identities;
-- **Filter selected Evidence** for typed Include, Exclude, and Around actions;
+- **Filter selected Evidence** for one Off / Include / Exclude control per value, plus Around actions;
 - **Evidence metadata** for Source, phase, identities, observation path, COMMAND details, and limitations.
 
 If no Evidence is selected, Context shows information about the current runtime object. At compact width, **Back to Evidence** returns to the selected row.

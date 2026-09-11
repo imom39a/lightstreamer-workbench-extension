@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { chromium } from "@playwright/test";
 import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -35,7 +36,7 @@ const screenshots = [
     file: "05-server-injection.png",
     scene: "server-injection"
   }
-];
+].filter(({ scene }) => !process.env.STORE_SCENE || scene === process.env.STORE_SCENE);
 
 if (!chromePath) {
   fail("Chrome executable not found. Set CHROME_PATH or install Google Chrome.");
@@ -101,7 +102,7 @@ import { getWorkbenchScenario } from ${source("tests/support/workbench-scenarios
 const scene = new URLSearchParams(window.location.search).get("scene") ?? "workspace-context";
 const scenarioId = {
   "workspace-context": "live-selected",
-  "timeline-detail": "raw-evidence",
+  "timeline-detail": "local-injection-json",
   "local-injection": "local-injection-large",
   "notifications": "diagnostics-stress",
   "server-injection": "server-injection-review"
@@ -176,14 +177,24 @@ if (scene === "local-injection") {
   }
 }
 if (scene === "server-injection") {
+  const deadline = performance.now() + 5_000;
+  while (performance.now() < deadline) {
+    const availability = runtime.getSnapshot().serverInjection?.availability?.cloneSelected;
+    if (availability?.available === true) break;
+    await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+  }
   runtime.dispatch({ type: "begin-server-injection-from-selection" });
   runtime.dispatch({ type: "set-server-injection-message", message: scenario.serverInjection?.message ?? "publish/order/42 status=ready" });
   runtime.dispatch({ type: "review-server-injection" });
-  if (runtime.getSnapshot().serverInjection?.phase !== "review") {
-    throw new Error("Store-listing Server Injection review did not open.");
+  if (runtime.getSnapshot().serverInjection?.draft?.phase !== "review") {
+    const serverState = runtime.getSnapshot().serverInjection;
+    throw new Error("Store-listing Server Injection review did not open: " + JSON.stringify(serverState));
   }
 }
 await new Promise((resolveReady) => setTimeout(resolveReady, 160));
+if (scene === "workspace-context") {
+  await waitForEvidenceStream();
+}
 if (scene === "notifications") {
   const notifications = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim().startsWith("Notifications"));
   if (!(notifications instanceof HTMLButtonElement)) throw new Error("Store-listing Notifications control did not render.");
@@ -191,6 +202,17 @@ if (scene === "notifications") {
   await new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame)));
 }
 document.documentElement.dataset.sceneReady = "true";
+async function waitForEvidenceStream() {
+  const deadline = performance.now() + 5_000;
+  while (performance.now() < deadline) {
+    const toolbar = document.querySelector(".workbench-react__evidence-stream-toolbar");
+    const rows = document.querySelectorAll(".workbench-react__evidence-row");
+    const keys = document.querySelectorAll(".workbench-react__evidence-key");
+    if (toolbar instanceof HTMLElement && rows.length > 0 && keys.length === rows.length) return;
+    await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+  }
+  throw new Error("Store-listing workspace scene did not render the production Evidence stream toolbar and rows.");
+}
 window.addEventListener("pagehide", () => {
   reactRoot.unmount();
   runtime.dispose();
@@ -356,13 +378,11 @@ async function generateRealAppPreviewAssets() {
     screenshots: sourceScreenshots.map((screenshot) => screenshot.output),
     outputPath: resolve(docsAssetsDir, "real-app-gallery.png")
   });
-  const socialPreviewPath = resolve(docsAssetsDir, "github-social-preview.png");
+  const siteSocialCardPath = resolve(projectRoot, "site/assets/og.png");
   await generateGitHubSocialPreviewAsset({
     screenshot: sourceScreenshots[0].output,
-    outputPath: socialPreviewPath
+    outputPath: siteSocialCardPath
   });
-  const siteSocialCardPath = resolve(projectRoot, "site/assets/og.png");
-  await copyFile(socialPreviewPath, siteSocialCardPath);
   console.log(`Wrote ${siteSocialCardPath}`);
 }
 
@@ -505,51 +525,27 @@ async function runImageMagick(args, options = {}) {
 
 async function runChromeScreenshot(url, outputPath) {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-chrome-profile-"));
+  let context;
   try {
-    await new Promise((resolveRun, rejectRun) => {
-      let timedOut = false;
-      const child = spawn(chromePath, [
-        ...chromeTestArguments({
-          profile: profileDir,
-          headless: true,
-          disableNativeOcclusion: true,
-          additional: [
-            "--disable-gpu",
-            "--force-device-scale-factor=1",
-            "--run-all-compositor-stages-before-draw",
-            "--window-size=1280,800",
-            "--virtual-time-budget=2000",
-            `--screenshot=${outputPath}`
-          ]
-        }),
-        url
-      ], {
-        stdio: "pipe"
-      });
-
-      let stderr = "";
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-      }, 15000);
-
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.on("error", (error) => {
-        clearTimeout(timeout);
-        rejectRun(error);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timeout);
-        if (code === 0 || (timedOut && existsSync(outputPath))) {
-          resolveRun();
-        } else {
-          rejectRun(new Error(`Chrome screenshot failed for ${url} with exit ${code}:\n${stderr}`));
-        }
-      });
+    context = await chromium.launchPersistentContext(profileDir, {
+      executablePath: chromePath,
+      headless: true,
+      args: chromeTestArguments({
+        headless: true,
+        disableNativeOcclusion: true,
+        additional: ["--disable-gpu", "--force-device-scale-factor=1", "--run-all-compositor-stages-before-draw"]
+      })
     });
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error));
+    await page.goto(url, { waitUntil: "load" });
+    await page.locator('html[data-scene-ready="true"]').waitFor({ state: "attached", timeout: 15_000 });
+    if (pageErrors.length > 0) throw new Error(`Store-listing scene emitted a page error: ${pageErrors[0].message}`);
+    await page.screenshot({ path: outputPath, animations: "disabled" });
   } finally {
+    await context?.close();
     await rm(profileDir, { recursive: true, force: true });
   }
 }

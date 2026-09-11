@@ -12,7 +12,7 @@ Lightstreamer Workbench is an open-source Chrome DevTools extension. Use it to i
 
 Version `2.0.2` is the current public release. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf). You can also build the source and load `dist/` as an unpacked extension.
 
-This repository contains the `2.0.3` release candidate. A build or package does not publish the release. Version `2.0.2` stays public until a maintainer completes the Chrome Web Store release process.
+This repository contains the `2.0.4` release candidate. Version `2.0.3` is currently published; the new package becomes available after Chrome Web Store review and publication.
 
 Version 2 inspects the current Panel Session for the selected tab. Scope, Ordered Evidence, and Context are in one workspace. The public [roadmap](https://imom39a.github.io/lightstreamer-workbench-extension/roadmap/) lists planned work without release dates.
 

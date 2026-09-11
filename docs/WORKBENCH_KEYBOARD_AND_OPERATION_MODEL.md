@@ -2,7 +2,7 @@
 
 Status: accepted product direction, 2026-08-04
 
-This document defines the keyboard, focus, selection, filtering, contextual-action, and pointer behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md), [Elastic Triad layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md), and [single-event Local Injection editor](../prototypes/workbench-ui-05/COMPARISON.md). Production implementation follows as separate work.
+This document defines the keyboard, focus, selection, filtering, contextual-action, and pointer behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md), [Elastic Triad layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md), and [single-event Local Injection editor](../prototypes/workbench-ui-05/COMPARISON.md). The production panel implements this model; the [UI Standard](WORKBENCH_UI_STANDARD.md) and later accepted amendments govern any differences.
 
 ## Decision
 
@@ -51,6 +51,8 @@ Evidence is an interactive grid or list composite with stable event identities a
 - If cell-level horizontal navigation is introduced, it must not silently change the selected event.
 
 Selecting Evidence updates visible Context without moving focus. At wide, normal, and shallow geometry, Enter transfers focus into the existing Context lens. At compact geometry, Enter performs the explicit Evidence-to-Context surface replacement. Selection alone never replaces compact Evidence.
+
+The compact stream preserves horizontal position when keyboard selection, Find or Context navigation changes the active row. Op stays visible while Left/Right or the native scrollbar reveals the single-line key and data. The **Codes** reference is a bounded transient: Escape closes that topmost reference and restores its exact trigger. Readable/Raw fields changes only presentation and preserves investigation state.
 
 ### Integrated Activity in Evidence
 

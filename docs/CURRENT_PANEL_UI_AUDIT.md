@@ -6,8 +6,9 @@ Scope: the shipped Lightstreamer Workbench Chrome DevTools panel before the
 `workbench-ui` redesign. This document records evidence and constraints; it
 does not choose the replacement information architecture.
 
-Historical note: this audit describes the pre-2.0 panel, including the optional
-analytics control that version 2 later retired.
+Historical note: this audit describes the pre-2.0 panel, including its optional
+analytics control. Version 2.0.0 retired that control; the 2.0.3 candidate later
+introduced the separate limited analytics design recorded in ADR 0015.
 
 ## Executive assessment
 
@@ -45,19 +46,21 @@ audit: 20 of 20 Playwright tests, including sustained memory and IndexedDB
 Timeline streams, Topology, high-cardinality COMMAND evidence, export,
 keyboard behavior, serious/critical axe checks, and visual regression.
 
-The following deterministic screenshots were inspected:
+The following deterministic legacy scenarios were inspected. Their screenshot
+baselines were removed after the React workspace cutover; the scenario record
+remains here as historical design evidence.
 
-| Working shape | Scenario | Evidence |
-| --- | --- | --- |
-| Normal, 900×700, Dark | Timeline following sustained Capture | [Timeline Live](../tests/ui/visual-regression.spec.ts-snapshots/timeline-live-dark-900x700.png) |
-| Normal, 900×700, Light | Frozen filtered Timeline with selected detail | [Timeline Frozen](../tests/ui/visual-regression.spec.ts-snapshots/timeline-frozen-light-900x700.png) |
-| Wide, 1280×800, Dark | Expanded structural Topology | [Topology expanded](../tests/ui/visual-regression.spec.ts-snapshots/topology-expanded-dark-1280x800.png) |
-| Wide, 1280×800, Light | Collapsed structural Topology | [Topology collapsed](../tests/ui/visual-regression.spec.ts-snapshots/topology-collapsed-light-1280x800.png) |
-| Wide, 1440×900, Dark | High-cardinality COMMAND evidence in Topology | [Topology COMMAND evidence](../tests/ui/visual-regression.spec.ts-snapshots/topology-command-evidence-dark-1440x900.png) |
-| Compact, 563×137, Light | Open Topology export | [Compact Export](../tests/ui/visual-regression.spec.ts-snapshots/export-open-light-563x137.png) |
-| Wide, 1280×800, Auto | Selected Timeline event and Local Injection entry | [Timeline detail](../tests/ui/panel.spec.ts-snapshots/timeline-detail-auto-1280x800.png) |
-| Wide, 1280×800, Auto | COMMAND key lifecycle and selected detail | [COMMAND State](../tests/ui/panel.spec.ts-snapshots/command-state-auto-1280x800.png) |
-| Wide, 1280×800, Auto | Authored COMMAND Local Injection draft | [New COMMAND update](../tests/ui/panel.spec.ts-snapshots/new-command-auto-1280x800.png) |
+| Working shape | Scenario |
+| --- | --- |
+| Normal, 900×700, Dark | Timeline following sustained Capture |
+| Normal, 900×700, Light | Frozen filtered Timeline with selected detail |
+| Wide, 1280×800, Dark | Expanded structural Topology |
+| Wide, 1280×800, Light | Collapsed structural Topology |
+| Wide, 1440×900, Dark | High-cardinality COMMAND evidence in Topology |
+| Compact, 563×137, Light | Open Topology export |
+| Wide, 1280×800, Auto | Selected Timeline event and Local Injection entry |
+| Wide, 1280×800, Auto | COMMAND key lifecycle and selected detail |
+| Wide, 1280×800, Auto | Authored COMMAND Local Injection draft |
 
 Additional deterministic renders were inspected locally at 563×700 and
 900×700 for Timeline detail, COMMAND State, and the new COMMAND draft, in Dark

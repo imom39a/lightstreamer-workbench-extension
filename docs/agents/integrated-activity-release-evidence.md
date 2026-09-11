@@ -1,6 +1,6 @@
 # Integrated Activity production evidence
 
-Status: verified for maintainer review on the feature branch; not merged or published.
+Status: verified and merged to `main`; release publication is tracked separately in the public release notes.
 
 ## Scope
 

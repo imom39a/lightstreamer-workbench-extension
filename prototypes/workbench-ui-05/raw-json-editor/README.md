@@ -5,7 +5,7 @@ Question: can Local Injection editing become a minimal, raw-JSON-first developer
 Run:
 
 ```sh
-npm run prototype:local-injection
+npm run prototype:serve
 ```
 
 Open:

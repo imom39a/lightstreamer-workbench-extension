@@ -41,7 +41,7 @@ const playwrightBin = join(
 );
 const playwrightArgs = ["test", ...forwardedArgs];
 if (updateSnapshots) {
-  playwrightArgs.push("--update-snapshots");
+  playwrightArgs.push("--update-snapshots=all");
 }
 
 await runProcess(playwrightBin, playwrightArgs);

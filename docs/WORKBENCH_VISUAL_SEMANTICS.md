@@ -2,7 +2,7 @@
 
 Status: accepted product direction, amended 2026-08-29
 
-This document records the selected visual language for status, provenance, diagnostics, COMMAND evidence, and Local Injection outcomes in the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md), [Elastic Triad layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md), and [Roving Instrument interaction model](WORKBENCH_KEYBOARD_AND_OPERATION_MODEL.md). Production implementation follows as a separate effort.
+This document records the selected visual language for status, provenance, diagnostics, COMMAND evidence, and Local Injection outcomes in the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md), [Elastic Triad layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md), and [Roving Instrument interaction model](WORKBENCH_KEYBOARD_AND_OPERATION_MODEL.md). The production panel implements this model; the [UI Standard](WORKBENCH_UI_STANDARD.md) and later accepted amendments govern any differences.
 
 ## Decision
 
@@ -36,8 +36,8 @@ Combining independent axes is a correctness defect. The following contracts appl
 | Observation coverage | `Coverage USEFUL`, `LIMITED`, or `UNAVAILABLE`, plus reason when limited | `!`, warning treatment | Folding coverage into Capture operation |
 | Evidence view | `View FOLLOW LIVE` or `FROZEN`, with newer count | Stable operating-strip position | Treating Frozen as stopped Capture |
 | Runtime lifecycle | Connected, recovering, stalled, disconnected, active, inactive, retired, or unknown | Information/warning marker when interpretation is affected | Using provenance color as lifecycle |
-| Provenance | `SERVER`, `LOCAL`, `RUNTIME`, or `WORKBENCH` | Stable Source column or property | Color-only provenance or Local-as-success |
-| Phase | `SNAPSHOT`, `LIVE`, `END OF SNAPSHOT`, or `UNKNOWN` | Stable Phase column | Inferring phase from provenance |
+| Provenance | `SERVER`, `LOCAL`, `RUNTIME`, or `WORKBENCH` | Compact stream annotation with exact Source in Context and accessible labels | Color-only provenance or Local-as-success |
+| Phase | `SNAPSHOT`, `LIVE`, `END OF SNAPSHOT`, or `UNKNOWN` | Snapshot annotation with exact Phase in Context and accessible labels | Inferring phase from provenance |
 | COMMAND operation | `ADD`, `UPDATE`, or `DELETE` | Monospace or weight | Traffic-light severity colors |
 | Diagnostic severity | `Information`, `Warning`, or `Error`, with consequence | `i`, `!`, or `×` and matching color | Applying severity to neutral protocol verbs |
 | Injection readiness | `READY` or `BLOCKED`, with target and reason | Warning/error marker | Hiding the block behind a disabled button |
@@ -83,16 +83,11 @@ Coverage limitations name the affected observation and provide a nearby diagnost
 
 ## Ordered Evidence ledger
 
-Normal, wide, and compact Evidence use four stable semantic columns:
+The 2026-09-11 amendment replaces the Order / Evidence / Command / Object layout with **Op / Key or item / Data**. Rows remain neutral chronological records with a fixed 30px rhythm. Op is the sole horizontally pinned column. Exact keys occupy one line, without wrapping or ellipsis; their full content and captured data share horizontal scrolling inside the ledger.
 
-- **Order** labels the authoritative retained History sequence while preserving exact Evidence identity independently;
-- **Evidence** leads with event meaning, then presents timestamp, textual Source, and Phase as secondary context;
-- **Command** presents the neutral COMMAND operation when applicable;
-- **Object** leads with the Lightstreamer object identity and presents the exact captured COMMAND key beneath it, otherwise an em dash.
+The historical codes distinguish TLCP notifications from Workbench capture lifecycle in the Codes reference. U always means Item Update; separate neutral command/snapshot/Local annotations qualify it. Exact provenance, command, time, sequence and identity remain in accessible labels and Context. Local is visibly marked and never treated as success. Newer event kinds have explicit Workbench meanings rather than fabricated wire tokens.
 
-Rows do not accumulate pills or badge necklaces. Common neutral values remain compact text. A low-frequency explanation belongs in Context.
-
-The Order rail is an ordering aid, not a provenance, lifecycle, diagnostic, or outcome symbol. Event meaning and object identity use primary lines; timestamp/provenance/phase and COMMAND key use secondary lines. Compact geometry rebalances widths without changing that grammar. Changed-field detail remains in selected Context and complete raw Evidence. A complete value that is visually truncated remains available programmatically and in Context. Inherently two-dimensional evidence may own bounded horizontal scrolling; the panel shell never does.
+Readable data shows application field values and explicitly identifies decoded JSON strings. Raw fields preserves captured types. Large inline previews are marked as incomplete and full values remain in Context. Neither formatting nor syntax styling changes captured evidence. Selection and focus keep their independent established treatments. The panel shell never scrolls horizontally.
 
 Use an em dash only for not applicable. Use the literal word `unknown` when Workbench cannot determine a value, and name `unavailable`, `redacted`, or `inferred` where those are the actual evidence conditions.
 
@@ -176,11 +171,11 @@ These rules follow the repository's accepted [WCAG 2.2 AA baseline](research/chr
 
 ### B — Signal Rail
 
-Rejected. A fixed provenance/phase/COMMAND/lifecycle/diagnostic/outcome gutter improves experienced scanning, but consumes permanent width and creates a private vocabulary that every contributor must maintain. The approved 2026-08-29 Order rail is a narrow exception: it contains explicit text and canonical retained History sequence only, and carries none of those semantic states.
+Rejected. A fixed provenance/phase/COMMAND/lifecycle/diagnostic/outcome gutter improves experienced scanning, but consumes permanent width and creates a private vocabulary that every contributor must maintain. The former 2026-08-29 Order rail was superseded by the 2026-09-11 Op/key/data amendment; historical codes use the explicit Codes reference.
 
 ### C — Evidence Blocks
 
-Rejected as the earlier variable-row universal ledger grammar. The approved 2026-08-29 four-column Evidence row keeps one fixed 52px rhythm and ordinary chronological rows; it does not create grouped sequence boundaries or another investigation taxonomy.
+Rejected as the earlier variable-row universal ledger grammar. The approved 2026-09-11 Evidence stream keeps one fixed 30px rhythm and ordinary chronological rows; it does not create grouped sequence boundaries or another investigation taxonomy.
 
 ## Verification evidence
 

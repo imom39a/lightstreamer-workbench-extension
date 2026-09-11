@@ -2,7 +2,7 @@
 
 Status: accepted product direction, 2026-08-03; readability amendment accepted 2026-08-29
 
-This document records the selected density, pane, resizing, overflow, and docked-size behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md) and [Local Injection interaction model](../prototypes/workbench-ui-05/COMPARISON.md). Production implementation follows as a separate effort.
+This document records the selected density, pane, resizing, overflow, and docked-size behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md) and [Local Injection interaction model](../prototypes/workbench-ui-05/COMPARISON.md). The production panel implements this model; the [UI Standard](WORKBENCH_UI_STANDARD.md) and later accepted amendments govern any differences.
 
 ## Decision
 
@@ -48,22 +48,15 @@ When capacity falls, Workbench reduces in this order:
 2. Move Context from beside Evidence to below it.
 3. Replace simultaneous panes with one explicitly focused surface.
 4. Move low-frequency actions into labelled overflow.
-5. Rebalance the persistent two-line Evidence grammar for the compact surface.
+5. Preserve single-line Evidence rows and horizontal scrolling inside the ledger.
 
 Wide layouts expose more identity width and context. They do not add padding, cards, metric tiles, or decorative empty space.
 
 ### Scope and Evidence readability amendment
 
-The product owner approved Variant C from the `workbench-ui-12` readability prototype on 2026-08-29. It amends the earlier row-density guidance without changing Elastic Triad, scroll ownership, selection, focus, or the underlying Evidence model:
+The 2026-08-29 Variant C approval still governs structural Scope priority blocks: type and lifecycle, complete identity, and captured facts. The 2026-09-11 [single-line stream amendment](WORKBENCH_UI_STANDARD.md#single-line-key-and-json-stream-amendment--2026-09-11) supersedes that proposal's Evidence row grammar.
 
-- every structural Scope row is a priority block: object type and lifecycle share the first line, the complete identity owns the primary line, and captured facts own the secondary line;
-- every Ordered Evidence row uses four stable semantic columns: **Order**, **Evidence**, **Command**, and **Object**;
-- the Order rail labels and anchors authoritative retained History sequence independently from timestamp and exact Evidence identity;
-- Evidence meaning leads; timestamp, textual provenance, and phase share its secondary line;
-- object identity leads its block and the captured COMMAND key remains directly visible on the secondary line;
-- compact geometry retains the same meaning and order, while column widths rebalance and the redundant header may be hidden.
-
-This is a deliberate readability trade: fewer rows are visible at once, but long identities no longer compete with lifecycle, counters, timestamp, and event identity on one clipped line. High-volume navigation remains bounded and virtualized.
+Ordered Evidence uses **Op / Key or item / Data** with one 30px row per retained event. Only Op remains pinned horizontally. The complete key occupies one line without wrapping or ellipsis; the key and captured data scroll together. Column width follows content within the bounded window. Long keys may move data beyond the initial viewport, but never make the row taller or hide key suffixes. Exact metadata remains in Context and accessible labels. Scope, chronological order, selection, focus and high-volume windowing are unchanged.
 
 ## Information that cannot be reduced away
 
@@ -110,7 +103,7 @@ Visible labels may shorten in compact geometry, but their complete value remains
 
 - Exactly one primary surface is visible: Scope picker, Evidence, Context detail, raw evidence, diagnostics, export, or Local Injection.
 - Selecting an evidence row does not automatically replace Evidence. Enter or an explicit Open action transitions to Context.
-- Compact evidence retains the stable Order / Evidence / Command / Object grammar, including event identity, timestamp, semantic type, primitive identity, COMMAND key, operation, phase, and textual provenance.
+- Compact Evidence retains Op / Key or item / Data with full single-line identities and ledger-owned horizontal scrolling. Exact metadata stays in Context and accessible labels; Codes explains concise annotations.
 - Back restores the exact originating row or control, virtual-list anchor, scope, Filter, Find, Live/Frozen state, and focus.
 - Compact behavior is ordinary master/detail restoration, not an investigation stack.
 
@@ -170,7 +163,7 @@ The [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#workspace) b
 - Bottom status/action strip: approximately `24–32px` high.
 - Independent controls and selectable rows: at least `24×24px`, following compact developer-tool ergonomics rather than consumer-web touch sizing.
 - Structural Scope priority rows: approximately `58px` with type/state, identity, and facts lines.
-- Evidence rows at every geometry: approximately `52px` with paired primary and secondary lines.
+- Evidence rows at every geometry: `30px`, with a single-line key and data.
 - Noninteractive JSON and diff lines: approximately `18–20px`.
 
 Focused Compact and shallow surfaces keep Back, current state, and the consequential action fixed and reachable. Fixed strips cannot cover focused content. `563×137` must preserve emergency operation and download/action reachability but is not a supported comfortable JSON-editing size.

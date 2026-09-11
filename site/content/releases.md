@@ -1,14 +1,22 @@
-## 2.0.3 candidate — Client Messages, Server Injection, and usage analytics
+## 2.0.4 candidate — Full-key JSON stream and capture reliability
 
-The 2.0.3 candidate captures outbound Client Messages and their listener outcomes. Server Injection can clone a captured message or author one for an exact live client and Session, optionally using an application-owned Message Recipe. Review shows every `LightstreamerClient.sendMessage` argument before one deliberate send. Workbench does not automatically retry an Unknown outcome, and Processed does not prove a later Server Update or business effect.
+The Evidence stream now leads with compact operation codes, complete keys and readable captured data. Keys stay on one line without truncation, and scroll horizontally with the data while Op stays pinned. The Codes reference restores the earlier Lightstreamer and Workbench lifecycle notation. Readable JSON identifies encoded JSON strings; Raw fields preserves captured types. Large inline previews are bounded, with complete data available in Context.
 
-The candidate also adds Google Analytics 4 measurement for Workbench feature use, foreground engagement, investigation journeys, and coarse failure categories. Analytics is on by default in configured builds, with an off switch under **More actions → Help & resources → Usage analytics**. Captured Lightstreamer data, inspected URLs, search text, Drafts, and raw errors stay local. Turning analytics off removes the saved analytics identifier.
+This release also includes the IndexedDB history throughput and memory-fallback improvements, grouped COMMAND edit validation fixes, and retirement of stale content bridges after extension reloads. Evidence and notification filters use consistent Off / Include / Exclude controls. Workbench now supports dark mode only, including when the operating system requests a light high-contrast palette.
 
-This candidate adds `storage` permission for analytics preferences and identity, plus access to Google's collection host. It does not load remote scripts. The website and offline exports remain free of analytics. The [Privacy policy]({{site}}privacy/) describes the data boundary. This entry does not mean the candidate is published.
+The release package is a candidate until Chrome Web Store review and publication complete. Capture remains observational; Local Injection and reviewed Server Injection retain their existing boundaries.
 
-## 2.0.2 — current release
+## 2.0.3 — Client Messages, Server Injection, and usage analytics
 
-Version 2.0.2 is the current Chrome Web Store release. Check Chrome extension details to see your installed version.
+Version 2.0.3 captures outbound Client Messages and their listener outcomes. Server Injection can clone a captured message or author one for an exact live client and Session, optionally using an application-owned Message Recipe. Review shows every `LightstreamerClient.sendMessage` argument before one deliberate send. Workbench does not automatically retry an Unknown outcome, and Processed does not prove a later Server Update or business effect.
+
+Version 2.0.3 also adds Google Analytics 4 measurement for Workbench feature use, foreground engagement, investigation journeys, and coarse failure categories. Analytics is on by default in configured builds, with an off switch under **More actions → Help & resources → Usage analytics**. Captured Lightstreamer data, inspected URLs, search text, Drafts, and raw errors stay local. Turning analytics off removes the saved analytics identifier.
+
+Version 2.0.3 adds `storage` permission for analytics preferences and identity, plus access to Google's collection host. It does not load remote scripts. The website and offline exports remain free of analytics. The [Privacy policy]({{site}}privacy/) describes the data boundary. Publication of 2.0.3 was verified in the developer dashboard on September 11, 2026.
+
+## 2.0.2 — Scenarios and workspace improvements
+
+Version 2.0.2 introduced Local Injection Scenarios and workspace refinements. Check Chrome extension details to see your installed version.
 
 - Adds Local Injection Scenarios for ordered multi-event tests. Each Scenario uses one target, immutable reviewed Runs, serial controls, per-Step outcomes, and Workbench Checkpoints.
 - Adds diagnostic Checkpoints after Review. These Checkpoints use normalized diagnostic data, active-time periods, bounded references, and explicit Clear or unavailable results.
@@ -21,7 +29,6 @@ Version 2.0.2 is the current Chrome Web Store release. Check Chrome extension de
 - Keeps the same Manifest V3 permissions, local-only data handling, Panel Session-owned temporary Event History, and Local Injection boundaries.
 - Updates the product site, screenshots, and developer guide.
 
-The maintainer controls the staged release process. A candidate package or source commit does not prove that version 2.0.3 is available.
 
 ## 2.0.0 — unified workspace foundation
 

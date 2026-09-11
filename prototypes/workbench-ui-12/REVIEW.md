@@ -35,7 +35,7 @@ Screenshots:
 Validation commands:
 
 ```sh
-npm run prototype:scope-evidence-readability
+npm run prototype:serve
 node --check prototypes/workbench-ui-12/prototype.js
 git diff --check
 ```

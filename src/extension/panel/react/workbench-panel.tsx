@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { lazy, memo, Suspense, useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import {
   type WorkbenchCommand,
@@ -25,6 +25,7 @@ import {
   type TypedFilterValue
 } from "../../../core/filter-algebra";
 import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filter-actions";
+import type { LightstreamerEventEnvelope } from "../../../core/event-envelope";
 import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { UNAVAILABLE_ANALYTICS, type AnalyticsClient } from "../../analytics/client";
@@ -35,6 +36,7 @@ import { NotificationsDocument } from "./notifications-document";
 import { activityRangeLabel } from "./activity-timeline-format";
 import type { TimelineEvidenceAnchor } from "./activity-timeline-events";
 import { FilterValueControl, type FilterValueState } from "./filter-value-control";
+import { EVIDENCE_CODE_DEFINITIONS, evidenceStreamPresentation } from "../evidence-stream-presentation";
 
 import "./workbench-panel.css";
 
@@ -334,20 +336,82 @@ const ScopeTree = memo(function ScopeTree({
 
 type EvidenceRowActions = { select(eventId: string): void };
 
+type EvidencePayloadMode = "readable" | "raw";
+
+const evidenceCodeDefinitionByCode = new Map(EVIDENCE_CODE_DEFINITIONS.map((definition) => [definition.code, definition]));
+
+function EvidenceCodes({
+  open,
+  onOpenChange
+}: Readonly<{
+  open: boolean;
+  onOpenChange(open: boolean): void;
+}>): JSX.Element {
+  const trigger = useRef<HTMLElement>(null);
+  const close = () => {
+    onOpenChange(false);
+    window.requestAnimationFrame(() => trigger.current?.focus());
+  };
+  const definitionsFor = (family: "tlcp" | "workbench") => EVIDENCE_CODE_DEFINITIONS.filter((definition) => definition.family === family);
+  return <details
+    className="workbench-react__evidence-codes"
+    open={open}
+    onToggle={(event) => onOpenChange(event.currentTarget.open)}
+    onKeyDown={(event) => {
+      if (event.key !== "Escape" || !open) return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    }}
+  >
+    <summary ref={trigger} aria-label="Codes">Codes</summary>
+    <section role="dialog" aria-label="Evidence codes" aria-modal="false">
+      <header><strong>Evidence codes</strong><button type="button" onClick={close}>Close</button></header>
+      <p>Operations shown in the Evidence stream.</p>
+      {(["tlcp", "workbench"] as const).map((family) => <section key={family} aria-label={family === "tlcp" ? "Lightstreamer TLCP" : "Workbench capture lifecycle"}>
+        <h3>{family === "tlcp" ? "Lightstreamer TLCP" : "Workbench capture lifecycle"}</h3>
+        <dl>{definitionsFor(family).map((definition) => <div key={definition.code}>
+          <dt>{definition.code}</dt><dd><strong>{definition.label}</strong> · {definition.description}</dd>
+        </div>)}</dl>
+      </section>)}
+      <p className="workbench-react__evidence-code-notes"><code>U</code> marks an update; <code>ADD</code> and <code>DELETE</code> mark COMMAND operations; <code>S</code> marks a snapshot. <strong>LOCAL</strong> is a Local injection; <code>R</code> is runtime Evidence and <code>W</code> is Workbench Evidence.</p>
+    </section>
+  </details>;
+}
+
 const EvidenceRow = memo(function EvidenceRow({
   event,
   selected,
   findPosition,
   rowRefs,
-  actionsRef
+  actionsRef,
+  payloadMode
 }: {
   event: WorkbenchSnapshot["evidence"]["events"][number];
   selected: boolean;
   findPosition: string | null;
   rowRefs: { current: Map<string, HTMLButtonElement> };
   actionsRef: { current: EvidenceRowActions };
+  payloadMode: EvidencePayloadMode;
 }): JSX.Element {
-  const orderLabel = evidenceOrderLabel(event.sequence);
+  // Retained Evidence is canonical in production. Recovery envelopes can be incomplete;
+  // render those honestly as an unknown operation instead of inventing an Item Update.
+  const presentationEvent = typeof event.raw?.kind === "string"
+    ? event
+    : { ...event, raw: { ...event.raw, kind: "__unknown__" as LightstreamerEventEnvelope["kind"] } };
+  const presentation = evidenceStreamPresentation(presentationEvent, payloadMode);
+  const definition = evidenceCodeDefinitionByCode.get(presentation.code);
+  const identity = presentation.identity ?? event.object;
+  const qualifiers = [
+    event.command === "ADD" || event.command === "DELETE" ? event.command : null,
+    event.phase === "SNAPSHOT" ? "S" : null
+  ].filter((value): value is string => value !== null);
+  const provenance = event.source === "LOCAL" ? "LOCAL" : event.source === "RUNTIME" ? "R" : event.source === "WORKBENCH" ? "W" : null;
+  const sequence = event.sequence === null ? "No retained sequence" : `retained sequence ${event.sequence}`;
+  const dataSummary = presentation.previewTruncated
+    ? "payload preview truncated; complete payload is in Context"
+    : Object.keys(presentation.data.fields).length ? `payload fields ${Object.keys(presentation.data.fields).join(", ")}` : "no payload fields";
+  const ariaLabel = `${event.id}; ${presentation.code}${definition ? ` ${definition.label}` : ""}; ${event.command ?? "no COMMAND operation"}; ${identity}; ${dataSummary}; ${event.source} Evidence; ${event.phase} phase; ${event.time}; ${sequence}.`;
   return (
     <button
       type="button"
@@ -355,10 +419,13 @@ const EvidenceRow = memo(function EvidenceRow({
       role="row"
       data-evidence-id={event.id}
       data-evidence-sequence={event.sequence ?? undefined}
+      data-evidence-source={event.source}
+      data-evidence-code={presentation.code}
       data-find-current={findPosition ? true : undefined}
       aria-selected={selected}
       aria-current={findPosition ? "true" : undefined}
-      title={`${event.id} — ${event.kind} — ${event.object} — ${event.commandKey ?? "No COMMAND key"}`}
+      aria-label={ariaLabel}
+      title={`${event.id} · ${event.kind} · ${event.source} · ${event.phase} · ${event.time} · ${sequence}`}
       tabIndex={-1}
       ref={(element) => {
         if (element) rowRefs.current.set(event.id, element);
@@ -366,19 +433,14 @@ const EvidenceRow = memo(function EvidenceRow({
       }}
       onClick={() => actionsRef.current.select(event.id)}
     >
-      <span className="workbench-react__evidence-order" role="gridcell" aria-label={`History sequence ${orderLabel}; Evidence identity ${event.id}`}>
-        <small>Event</small>
-        <strong title={event.id}>{orderLabel}</strong>
+      <span className="workbench-react__evidence-op" role="gridcell" title={definition?.description ?? presentation.code}>
+        <b>{presentation.code}</b>{qualifiers.map((qualifier) => <small key={qualifier}>{qualifier}</small>)}{provenance ? <em>{provenance}</em> : null}
+      </span>
+      <span className="workbench-react__evidence-key" role="gridcell" title={identity}>{identity}</span>
+      <span className="workbench-react__evidence-data" role="gridcell" title={presentation.jsonString}>
+        {presentation.data.decodedJsonFields.length ? <span className="workbench-react__json-string-marker">JSON string</span> : null}
+        <code>{presentation.jsonString}</code>{presentation.previewTruncated ? <small>Preview truncated · complete payload in Context</small> : null}
         {findPosition ? <small className="workbench-react__find-match">{findPosition}</small> : null}
-      </span>
-      <span className="workbench-react__evidence-meaning" role="gridcell">
-        <strong>{event.kind}</strong>
-        <small><time>{event.time}</time> · {event.source} · {event.phase}</small>
-      </span>
-      <b className="workbench-react__evidence-command" role="gridcell">{event.command ?? "—"}</b>
-      <span className="workbench-react__evidence-object" role="gridcell">
-        <strong title={event.object}>{event.object}</strong>
-        <small title={event.commandKey ?? "No COMMAND key"}>Key {event.commandKey ?? "—"}</small>
       </span>
     </button>
   );
@@ -390,10 +452,6 @@ function dispatch(runtime: WorkbenchRuntime, command: WorkbenchCommand): void {
 
 function uppercase(value: string | undefined, fallback: string): string {
   return (value ?? fallback).replaceAll("-", "_").toUpperCase();
-}
-
-function evidenceOrderLabel(sequence: number | null): string {
-  return sequence === null ? "—" : String(sequence);
 }
 
 type FilterComposerStep = "composer" | "facets" | "explorer";
@@ -510,7 +568,7 @@ const SHALLOW_MIN_WIDTH = EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE
 const WIDE_MIN_WIDTH = Math.max(1120, SCOPE_MIN_WIDTH + EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE * 2);
 const GEOMETRY_HYSTERESIS = 32;
 const SCOPE_NODE_HEIGHT = 58;
-const EVIDENCE_ROW_HEIGHT = 52;
+const EVIDENCE_ROW_HEIGHT = 30;
 const SCOPE_WINDOW_OVERSCAN = 8;
 const SCOPE_FALLBACK_VIEWPORT_ROWS = 48;
 const SCOPE_MAX_WINDOW_SIZE = 127;
@@ -567,6 +625,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
   const evidenceRows = useRef(new Map<string, HTMLButtonElement>());
   const evidenceRowActions = useRef<EvidenceRowActions>({ select: () => undefined });
   const evidenceLedger = useRef<HTMLDivElement | null>(null);
+  const preservedEvidenceScrollLeft = useRef<number | null>(null);
   const contextBody = useRef<HTMLDivElement | null>(null);
   const visibleFrame = useRef<number | null>(null);
   const latestCommittedEvidenceBoundary = useRef(snapshot.renderedEvidenceBoundary);
@@ -627,6 +686,8 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
   const scopedCopyTrigger = useRef<HTMLButtonElement | null>(null);
   const exportTrigger = useRef<HTMLButtonElement | null>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const [evidencePayloadMode, setEvidencePayloadMode] = useState<EvidencePayloadMode>("readable");
+  const [evidenceCodesOpen, setEvidenceCodesOpen] = useState(false);
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
   const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
   const [geometry, setGeometry] = useState<WorkbenchGeometry>(() => decideGeometry(window.innerWidth, window.innerHeight));
@@ -976,12 +1037,27 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
     return () => window.removeEventListener("resize", updateGeometry);
   }, []);
 
+  const preserveEvidenceHorizontalScroll = () => {
+    preservedEvidenceScrollLeft.current = evidenceLedger.current?.scrollLeft ?? null;
+  };
+
+  const restoreEvidenceHorizontalScroll = () => {
+    const horizontalOffset = preservedEvidenceScrollLeft.current;
+    if (horizontalOffset === null || !evidenceLedger.current) return;
+    evidenceLedger.current.scrollLeft = horizontalOffset;
+    window.requestAnimationFrame(() => {
+      if (evidenceLedger.current) evidenceLedger.current.scrollLeft = horizontalOffset;
+    });
+  };
+
   const moveEvidence = (offset: number) => {
+    preserveEvidenceHorizontalScroll();
     const currentIndex = Math.max(0, events.findIndex((event) => event.id === focusedEventId));
     const next = events[Math.min(Math.max(currentIndex + offset, 0), events.length - 1)];
     if (next) {
       pendingEvidenceFocus.current = next.id;
       dispatch(runtime, { type: "focus-evidence", eventId: next.id });
+      restoreEvidenceHorizontalScroll();
     }
   };
 
@@ -1592,7 +1668,9 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
     const restore = () => {
       const row = evidenceRows.current.get(eventId);
       if (!row) return;
-      row.focus();
+      const horizontalOffset = evidenceLedger.current?.scrollLeft;
+      row.focus({ preventScroll: true });
+      if (evidenceLedger.current && horizontalOffset !== undefined) evidenceLedger.current.scrollLeft = horizontalOffset;
       if (document.activeElement === row) pendingEvidenceFocus.current = null;
     };
     restore();
@@ -1628,21 +1706,32 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
     dispatch(runtime, { type: "select-evidence", eventId: target.id });
   }, [events, evidence.visibleStart, evidence.visibleEnd, total]);
 
+  const revealEvidenceRowWithoutHorizontalJump = useCallback((row: HTMLButtonElement) => {
+    const ledger = evidenceLedger.current;
+    const horizontalOffset = ledger?.scrollLeft;
+    row.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    if (ledger && horizontalOffset !== undefined) ledger.scrollLeft = horizontalOffset;
+  }, []);
+
+  useLayoutEffect(() => {
+    restoreEvidenceHorizontalScroll();
+  }, [focusedEventId, evidencePayloadMode]);
+
   useLayoutEffect(() => {
     const eventId = findState.currentEventId;
     if (!eventId) return;
     const row = evidenceRows.current.get(eventId);
-    if (typeof row?.scrollIntoView === "function") row.scrollIntoView({ block: "nearest" });
-  }, [findState.currentEventId]);
+    if (row) revealEvidenceRowWithoutHorizontalJump(row);
+  }, [findState.currentEventId, revealEvidenceRowWithoutHorizontalJump]);
 
   useLayoutEffect(() => {
     const eventId = pendingTimelineReveal.current;
     if (!eventId || (geometry === "compact" && snapshot.contextId)) return;
     const row = evidenceRows.current.get(eventId);
     if (!row) return;
-    row.scrollIntoView?.({ block: "nearest" });
+    revealEvidenceRowWithoutHorizontalJump(row);
     pendingTimelineReveal.current = null;
-  }, [snapshot.version, geometry, snapshot.contextId]);
+  }, [snapshot.version, geometry, snapshot.contextId, revealEvidenceRowWithoutHorizontalJump]);
 
   useLayoutEffect(() => {
     const nodeId = pendingScopeFocus.current;
@@ -1989,8 +2078,8 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
           {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : <button type="button" disabled aria-label="Reveal selected Evidence unavailable">Reveal selected Evidence · Unavailable</button>}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div>{hiddenSelection.revealUnavailableReason ? <small>{hiddenSelection.revealUnavailableReason}</small> : null}</div> : null}
           <div className="workbench-react__evidence-window" data-complete-window={!evidence.hasOlder && !evidence.hasNewer || undefined} aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}
-          {evidence.loading ? <div className="workbench-react__empty" role="status" aria-live="polite"><strong>Loading Evidence…</strong><span>Resolving the current Scope and Filter.</span></div> : events.length ? <div className="workbench-react__ledger" role="grid" aria-label="Ordered Lightstreamer Evidence" tabIndex={0} ref={evidenceLedger} onKeyDown={handleEvidenceKey}>
-            <div className="workbench-react__ledger-header" role="row"><span role="columnheader">Order</span><span role="columnheader">Evidence</span><span role="columnheader">Command</span><span role="columnheader">Object</span></div>
+          {evidence.loading ? <div className="workbench-react__empty" role="status" aria-live="polite"><strong>Loading Evidence…</strong><span>Resolving the current Scope and Filter.</span></div> : events.length ? <><div className="workbench-react__evidence-stream-toolbar"><EvidenceCodes open={evidenceCodesOpen} onOpenChange={setEvidenceCodesOpen} /><div role="group" aria-label="Evidence payload presentation"><button type="button" aria-pressed={evidencePayloadMode === "readable"} onClick={() => { preserveEvidenceHorizontalScroll(); setEvidencePayloadMode("readable"); }}>Readable</button><button type="button" aria-pressed={evidencePayloadMode === "raw"} onClick={() => { preserveEvidenceHorizontalScroll(); setEvidencePayloadMode("raw"); }}>Raw fields</button></div></div><div className="workbench-react__ledger" role="grid" aria-label="Ordered Lightstreamer Evidence" tabIndex={0} ref={evidenceLedger} onKeyDown={handleEvidenceKey}>
+            <div className="workbench-react__ledger-header" role="row"><span role="columnheader">Op</span><span role="columnheader">Key / item</span><span role="columnheader">Data</span></div>
             {events.map((event) => {
               const isSelected = event.id === selectedEventId;
               const isFindCurrent = event.id === findState.currentEventId;
@@ -2001,9 +2090,10 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
                 findPosition={isFindCurrent ? `Find ${findState.currentIndex + 1} of ${findState.matchCount}` : null}
                 rowRefs={evidenceRows}
                 actionsRef={evidenceRowActions}
+                payloadMode={evidencePayloadMode}
               />;
             })}
-          </div> : <div className="workbench-react__empty"><strong>No Evidence in the current Scope.</strong><span>Capture {captureOperation.toLowerCase()} with Coverage {coverage.toLowerCase()}.</span><button type="button" onClick={(event) => openScope(event.currentTarget)}>Change Scope</button></div>}
+          </div></> : <div className="workbench-react__empty"><strong>No Evidence in the current Scope.</strong><span>Capture {captureOperation.toLowerCase()} with Coverage {coverage.toLowerCase()}.</span><button type="button" onClick={(event) => openScope(event.currentTarget)}>Change Scope</button></div>}
         </section>
         <div ref={contextSplitter} className="workbench-react__splitter workbench-react__splitter--context" role="separator" aria-label="Resize Context" aria-orientation={isNormalGeometry() ? "horizontal" : "vertical"} aria-valuemin={contextMinimum} aria-valuemax={Math.min(CONTEXT_MAX_SIZE, contextMaximum)} aria-valuenow={contextSize} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("context", event)} onPointerDown={(event) => startResize("context", event)} />
         <aside className="workbench-react__pane workbench-react__context" id="workbench-context" aria-label="Context">
@@ -2130,13 +2220,15 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
             >Dismiss</button> : null}
             {geometry === "shallow" ? <details className="workbench-react__status-disclosure">
               <summary>Diagnostic details</summary>
-              <span className="workbench-react__status-detail">{diagnostic.detail}</span>
-              {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
-              {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
-              {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
-              {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
-                ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
-                : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
+              <div className="workbench-react__status-disclosure-content">
+                <span className="workbench-react__status-detail">{diagnostic.detail}</span>
+                {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
+                {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
+                {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
+                {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
+                  ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
+                  : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
+              </div>
             </details> : <>
               <span className="workbench-react__status-detail">{diagnostic.detail}</span>
               {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}

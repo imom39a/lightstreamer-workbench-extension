@@ -138,7 +138,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
           kind: "Item Update",
           object: "order-1042",
           summary: "qty, status",
-          raw: {} as LightstreamerEventEnvelope
+          raw: { id: "raw-evt-1", timestamp: 1, direction: "inbound", source: "server", synthetic: false, kind: "item-update", item: { name: "order-1042" }, update: { key: "order-1042", fields: { qty: 4, status: "GREEN" } } }
         },
         {
           id: "evt-2",
@@ -151,7 +151,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
           kind: "Item Update",
           object: "order-1042",
           summary: "qty, status",
-          raw: {} as LightstreamerEventEnvelope
+          raw: { id: "raw-evt-2", timestamp: 2, direction: "inbound", source: "server", synthetic: false, kind: "item-update", item: { name: "order-1042" }, update: { key: "order-1042", fields: { qty: 5, status: "GREEN" } } }
         }
       ]
     },
@@ -449,7 +449,16 @@ describe("React Workbench Diagnose panel", () => {
   it("keeps captured Evidence ordered, selected, and distinct from keyboard focus", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
-    const runtime = createTestRuntime(snapshot());
+    const base = snapshot();
+    const runtime = createTestRuntime({
+      ...base,
+      evidence: {
+        ...base.evidence,
+        events: base.evidence.events.map((event) => event.id === "evt-2"
+          ? { ...event, raw: { kind: "item-update", item: { name: "order-1042" }, update: { key: "order-1042", fields: { qty: 5, status: "GREEN" } } } as unknown as LightstreamerEventEnvelope }
+          : event)
+      }
+    });
     const root = createRoot(document.querySelector("#app")!);
 
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
@@ -694,10 +703,19 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("groups Ordered Evidence by order, meaning, command, and object", async () => {
+  it("renders Ordered Evidence as a key-first stream with explicit operation provenance", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
-    const runtime = createTestRuntime(snapshot());
+    const base = snapshot();
+    const runtime = createTestRuntime({
+      ...base,
+      evidence: {
+        ...base.evidence,
+        events: base.evidence.events.map((event) => event.id === "evt-2"
+          ? { ...event, raw: { kind: "item-update", item: { name: "order-1042" }, update: { key: "order-1042", fields: { qty: 5, status: "GREEN" } } } as unknown as LightstreamerEventEnvelope }
+          : { ...event, raw: {} as LightstreamerEventEnvelope })
+      }
+    });
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
@@ -705,18 +723,18 @@ describe("React Workbench Diagnose panel", () => {
     const selectedRow = document.querySelector<HTMLElement>('[data-evidence-id="evt-2"]');
     const cells = selectedRow?.querySelectorAll<HTMLElement>('[role="gridcell"]');
 
-    expect(headers).toEqual(["Order", "Evidence", "Command", "Object"]);
-    expect(cells).toHaveLength(4);
-    expect(cells?.[0]?.querySelector("small")?.textContent).toBe("Event");
-    expect(cells?.[0]?.querySelector("strong")?.textContent).toBe("14789");
-    expect(cells?.[0]?.querySelector("strong")?.getAttribute("title")).toBe("evt-2");
-    expect(cells?.[1]?.querySelector("strong")?.textContent).toBe("Item Update");
-    expect(cells?.[1]?.querySelector("small")?.textContent).toBe("14:08:41.238 · SERVER · LIVE");
-    expect(cells?.[2]?.textContent).toBe("UPDATE");
-    expect(cells?.[3]?.querySelector("strong")?.textContent).toBe("order-1042");
-    expect(cells?.[3]?.querySelector("small")?.textContent).toBe("Key order-1042");
-    expect(cells?.[3]?.querySelector("small")?.getAttribute("title")).toBe("order-1042");
-    expect(rootElement.textContent).toContain("COMMAND operation");
+    expect(headers).toEqual(["Op", "Key / item", "Data"]);
+    expect(cells).toHaveLength(3);
+    expect(selectedRow?.getAttribute("data-evidence-sequence")).toBe("14789");
+    expect(selectedRow?.getAttribute("data-evidence-source")).toBe("SERVER");
+    expect(cells?.[0]?.textContent).toContain("U");
+    expect(document.querySelector('[data-evidence-id="evt-1"] .workbench-react__evidence-op')?.textContent).toContain("?");
+    expect(cells?.[1]?.textContent).toBe("order-1042");
+    expect(cells?.[1]?.getAttribute("title")).toBe("order-1042");
+    expect(cells?.[2]?.textContent).toContain("qty");
+    expect(selectedRow?.getAttribute("aria-label")).toContain("SERVER Evidence");
+    expect(rootElement.querySelector('[aria-label="Codes"]')).toBeTruthy();
+    expect(rootElement.textContent).toContain("Raw fields");
 
     await act(async () => root.unmount());
   });
@@ -911,7 +929,7 @@ describe("React Workbench Diagnose panel", () => {
     );
     await act(async () => copy?.click());
 
-    expect(writeText).toHaveBeenCalledWith("{}");
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("\"raw-evt-2\""));
     expect(rootElement.querySelector('[role="status"]')?.textContent).toBe("Copied raw Evidence evt-2.");
 
     await act(async () => root.unmount());
@@ -1658,7 +1676,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("moves Evidence by one 52px-row viewport with Page Up and Page Down without clamping", async () => {
+  it("moves Evidence by one 30px-row viewport with Page Up and Page Down without clamping", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const base = snapshot();
@@ -1689,9 +1707,9 @@ describe("React Workbench Diagnose panel", () => {
     Object.defineProperty(ledger, "clientHeight", { configurable: true, value: 260 });
     const row = document.querySelector<HTMLButtonElement>(`[data-evidence-id="${focusedEventId}"]`);
     await act(async () => row?.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true })));
-    expect(runtime.commands).toContainEqual({ type: "focus-evidence", eventId: events[14]!.id });
+    expect(runtime.commands).toContainEqual({ type: "focus-evidence", eventId: events[17]!.id });
     await act(async () => row?.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true })));
-    expect(runtime.commands).toContainEqual({ type: "focus-evidence", eventId: events[4]!.id });
+    expect(runtime.commands).toContainEqual({ type: "focus-evidence", eventId: events[1]!.id });
 
     await act(async () => root.unmount());
   });

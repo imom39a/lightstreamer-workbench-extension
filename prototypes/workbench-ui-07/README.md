@@ -15,14 +15,14 @@ The product owner selected **A — Roving Instrument** as the operating model an
 Run:
 
 ```sh
-npm run prototype:keyboard-model
+npm run prototype:serve
 ```
 
 Open:
 
-- `http://127.0.0.1:4177/workbench-ui-07/?variant=A`
-- `http://127.0.0.1:4177/workbench-ui-07/?variant=B`
-- `http://127.0.0.1:4177/workbench-ui-07/?variant=C`
+- `http://127.0.0.1:4175/workbench-ui-07/?variant=A`
+- `http://127.0.0.1:4175/workbench-ui-07/?variant=B`
+- `http://127.0.0.1:4175/workbench-ui-07/?variant=C`
 
 The floating prototype controls exercise Live, Frozen, Empty, high-volume, object-menu, Local Injection, and invalid-draft states at actual, compact, normal, shallow, and wide geometry. The Focus inspector exposes the active surface, selected evidence, owned transient layer, and last keyboard transition.
 

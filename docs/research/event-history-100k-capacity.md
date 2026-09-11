@@ -1,11 +1,11 @@
 # Event History capacity at 100,000 events
 
-Status: decision-ready research, 2026-08-13. Change class: **Non-UI**. This note proposes an implementation and verification boundary; it does not itself change runtime behavior.
+Status: historical pre-implementation research, 2026-08-13. Change class: **Non-UI**. Present-tense implementation claims below describe the repository at the time of the investigation, not the current runtime.
 
 Implementation note, 2026-08-29: [ADR 0014](../adr/0014-continue-event-history-with-rolling-retention.md)
-supersedes the stop-at-capacity behavior described here. The 100,000-record /
-256 MiB normal and 5,000-record / 32 MiB memory values now bound rolling retained
-Evidence while Capture continues.
+and the current source supersede this note's proposed and stop-at-capacity behavior.
+The 100,000-record / 256 MiB normal and 5,000-record / 32 MiB memory values now
+bound rolling retained Evidence while Capture continues.
 
 ## Executive decision
 
@@ -35,15 +35,15 @@ Therefore:
 - A session containing many large JSON-rich updates can stop well below 100,000, with the existing exact terminal reason and first-missing-event semantics.
 - The panel should communicate both count and bytes; it must not advertise 100,000 as unconditional payload coverage.
 
-## Current mechanics
+## Mechanics at the time of research
 
-The normal tier currently stops at **10,000 records / 64 MiB**, warns at 80%, and the lower tier stops at **5,000 / 32 MiB** ([capacity defaults](../../src/core/event-history-capacity.ts#L74-L95)). Admission includes retained and pending count/bytes, while backlog protection separately stops at 32 MiB pending or excessive pending age ([capacity admission](../../src/core/event-history-capacity.ts#L135-L177)). Those pending limits should not automatically rise with retained capacity.
+At the start of this investigation, the normal tier stopped at **10,000 records / 64 MiB**, warned at 80%, and the lower tier stopped at **5,000 / 32 MiB**. The [current capacity defaults](../../src/core/event-history-capacity.ts) now use the implemented rolling limits recorded above. Pending backlog protection remains a separate boundary.
 
 IndexedDB commits replay-complete records in bounded batches of at most 256 records and a soft 2 MiB serialized payload ([batch bounds](../../src/core/event-history-indexeddb.ts#L61-L63), [commit loop](../../src/core/event-history-indexeddb.ts#L773-L815)). Each record stores its canonical replay payload, byte accounting, event identity, and exact facets; the control record persists the committed boundary and totals ([record schema](../../src/core/event-history-indexeddb.ts#L68-L92), [commit](../../src/core/event-history-indexeddb.ts#L1215-L1237)). `QuotaExceededError` is already classified as a terminal journal failure and capture remains fail-closed ([commit failure](../../src/core/event-history-indexeddb.ts#L816-L833)). Preserve that behavior.
 
 IndexedDB is an appropriate authority: the platform defines records, indexes, transactions, key ranges, and directional cursors for indexed lookup and iteration ([W3C IndexedDB 3.0](https://www.w3.org/TR/IndexedDB/)). Nothing in IndexedDB itself imposes a 10,000-record limit; Workbench's limit is its own admission and performance contract.
 
-## Blockers before the capacity switch
+## Historical blockers before the capacity switch
 
 ### 1. Find and live refresh materialize the interval
 
@@ -75,7 +75,7 @@ The current gate retains complete expected, published, and retained identifier a
 
 ## Quota and permission policy
 
-Chrome says extension web storage is subject to normal quota restrictions by default, `navigator.storage.estimate()` reports the extension origin's current estimate, and storage may rarely be evicted under pressure. It also says `unlimitedStorage` exempts extension and web storage, including IndexedDB, from quota restrictions and eviction ([Chrome: Storage and cookies](https://developer.chrome.com/docs/extensions/develop/concepts/storage-and-cookies)). Chrome's permission reference confirms that `unlimitedStorage` applies to IndexedDB, Cache Storage, OPFS, and `chrome.storage.local` ([Chrome: permissions list](https://developer.chrome.com/docs/extensions/reference/permissions-list)). The current manifest declares no permissions ([manifest](../../public/manifest.json#L1-L28)).
+Chrome says extension web storage is subject to normal quota restrictions by default, `navigator.storage.estimate()` reports the extension origin's current estimate, and storage may rarely be evicted under pressure. It also says `unlimitedStorage` exempts extension and web storage, including IndexedDB, from quota restrictions and eviction ([Chrome: Storage and cookies](https://developer.chrome.com/docs/extensions/develop/concepts/storage-and-cookies)). Chrome's permission reference confirms that `unlimitedStorage` applies to IndexedDB, Cache Storage, OPFS, and `chrome.storage.local` ([Chrome: permissions list](https://developer.chrome.com/docs/extensions/reference/permissions-list)). At the time of this research, the [manifest](../../public/manifest.json) declared no permissions; later analytics permissions do not change the Event History storage contract.
 
 Policy for the first 100k release:
 
@@ -85,7 +85,7 @@ Policy for the first 100k release:
 - Continue canonical byte admission regardless of the estimate, and continue to stop exactly and fail closed if the write itself raises `QuotaExceededError`.
 - If the low-quota matrix proves that normal target environments cannot reliably hold the measured 100k envelope, make `unlimitedStorage` a separate explicit product/privacy decision with release notes and tests; do not silently add it as an implementation detail.
 
-## Staged implementation
+## Historical staged implementation
 
 1. **Define the candidate contract without shipping it.** Add 100,000 / 256 MiB as a named benchmark/test profile with 80% warnings; leave production defaults, pending limits, and lower-tier limits unchanged.
 2. **Bound query memory.** Implement keyset/range-based Evidence and Find navigation, the compact metadata/payload split, streaming single-driver facet filtering, and cancellable exact counts.
@@ -94,11 +94,11 @@ Policy for the first 100k release:
 5. **Add quota telemetry without changing admission truth.** Record estimates before capture and near 80%/90% canonical pressure; test write-time quota failure and abnormal-cleanup residue behavior.
 6. **Run the 100k Chrome gate.** Only after it passes should the production normal defaults and product documentation change to the conditional 100k/256 MiB contract.
 
-## Consequence for Build 2
+## Historical consequence for Build 2
 
 Treat this as **capacity hardening inside the Build 2 dependency**, not as an unrelated later feature. Contextual facets require exact shown/total counts and responsive navigation; the current JavaScript set intersection happens to be tolerable at 10k but should not become the permanent 100k query contract. Implement the metadata/payload split, keyset page API, bounded facet plan, and cancellation semantics before completing the faceted-filter UI. The existing Scope/Filter/Find separation and committed-boundary semantics remain unchanged.
 
-## Required 100k Chrome gate
+## Historical 100k Chrome gate
 
 Run in visible pinned Chrome through the production React panel and real IndexedDB, following the existing fail-closed procedure ([manual workflow](../reference/event-history-performance-manual-workflow.md#L1-L51)). The new gate must cover small, ordinary, large, and the current 50/40/10 representative mix, with at least three independent samples where practical, and prove:
 
@@ -116,7 +116,7 @@ Keep the current absolute responsiveness limits as upper bounds, and add time-to
 
 ## Explicitly deferred
 
-- **Rolling retention/eviction:** changes Complete History into a retained-window contract. It is not required for the 100k increase, but it is the follow-up design decision if the product goal becomes “Capture must continue indefinitely” rather than “retain at least 100k before a fail-closed stop.”
+- **Rolling retention/eviction:** subsequently adopted by ADR 0014, replacing the stop-at-capacity proposal in this research.
 - **Compression:** complicates synchronous admission accounting, query/search, corruption diagnosis, and CPU behavior. Measure after bounded queries are complete.
 - **OPFS:** does not remove the need for indexes, transactional metadata, quota handling, and bounded projections. IndexedDB already matches the access model.
 - **512 MiB normal tier:** reserve until real workload measurements demonstrate that 256 MiB excludes a common valuable mix and the Chrome gate proves the larger footprint.

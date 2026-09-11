@@ -177,12 +177,12 @@ test("Workbench keeps selected Evidence focused without COMMAND projection UI", 
 
   const initialRow = page.locator('[data-evidence-id="scenario-event-3"]');
   const normalRowHeight = await initialRow.evaluate((row) => row.getBoundingClientRect().height);
-  expect(normalRowHeight).toBe(52);
-  const eventOrder = initialRow.locator('[role="gridcell"]').first();
-  await expect(eventOrder.locator("small").first()).toHaveText("Event");
-  await expect(eventOrder.locator("strong")).toHaveText("3");
-  await expect(eventOrder.locator("strong")).toHaveAttribute("title", "scenario-event-3");
-  expect(await eventOrder.locator("strong").evaluate((identity) => identity.scrollWidth <= identity.clientWidth)).toBe(true);
+  expect(normalRowHeight).toBe(30);
+  const operation = initialRow.locator('[role="gridcell"]').first();
+  await expect(operation.locator("b")).toHaveText("U");
+  await expect(initialRow.locator(".workbench-react__evidence-key")).toHaveText("alpha");
+  await expect(initialRow).toHaveAttribute("data-evidence-sequence", "3");
+  await expect(initialRow).toHaveAccessibleName(/scenario-event-3; U Update; UPDATE; alpha;.*retained sequence 3/);
   await expect(initialRow).toHaveAttribute("aria-selected", "true");
   await initialRow.focus();
   await page.keyboard.press("ArrowDown");
@@ -746,45 +746,26 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   const missingKey = page.locator(`[data-evidence-id="${highVolumeEventId(3_969)}"]`);
   const nonUpdate = page.locator(`[data-evidence-id="${highVolumeEventId(3_968)}"]`);
   const assertCommandKeyContract = async () => {
-    const headers = await page.locator('[role="columnheader"]').allTextContents();
-    expect(headers).toEqual(["Order", "Evidence", "Command", "Object"]);
-    await expect(selected.locator('[role="gridcell"]').nth(3).locator("small")).toHaveText(`Key ${longKey}`);
-    await expect(selected.locator('[role="gridcell"]').nth(3).locator("small")).toHaveAttribute("title", longKey);
-    await expect(missingKey.locator('[role="gridcell"]').nth(3).locator("small")).toHaveText("Key —");
-    await expect(missingKey.locator('[role="gridcell"]').nth(3).locator("small")).toHaveAttribute("title", "No COMMAND key");
-    await expect(missingKey).not.toContainText("field-only-key-must-not-be-inferred");
-    await expect(nonUpdate.locator('[role="gridcell"]').nth(2)).toHaveText("—");
-    await expect(nonUpdate.locator('[role="gridcell"]').nth(3).locator("small")).toHaveText("Key —");
+    expect(await page.locator('[role="columnheader"]').allTextContents()).toEqual(["Op", "Key / item", "Data"]);
+    const key = selected.locator('.workbench-react__evidence-key');
+    await expect(key).toHaveText(longKey);
+    await expect(key).toHaveAttribute("title", longKey);
+    await expect(missingKey.locator('.workbench-react__evidence-key')).toHaveText(longItem);
+    await expect(missingKey.locator('.workbench-react__evidence-key')).not.toContainText("field-only-key-must-not-be-inferred");
+    await expect(nonUpdate.locator('.workbench-react__evidence-key')).not.toHaveText("—");
+    expect(await key.evaluate((element) => ({
+      whiteSpace: getComputedStyle(element).whiteSpace,
+      textOverflow: getComputedStyle(element).textOverflow,
+      fits: element.scrollWidth <= element.clientWidth + 1
+    }))).toEqual({ whiteSpace: "nowrap", textOverflow: "clip", fits: true });
   };
   await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
   await expect(selected).toHaveAttribute("title", new RegExp(selectedIdentity));
-  await expect(selected.locator('[role="gridcell"]').nth(3).locator("strong")).toHaveAttribute("title", longItem);
+  await expect(selected).toHaveAttribute("data-evidence-sequence", "3970");
   const compactHeights = await page.locator(".workbench-react__evidence-row").evaluateAll((rows) =>
     [...new Set(rows.map((row) => row.getBoundingClientRect().height))]
   );
-  expect(compactHeights).toHaveLength(1);
-  expect(compactHeights[0]).toBeGreaterThanOrEqual(48);
-  expect(compactHeights[0]).toBeLessThanOrEqual(54);
-  const priorityRow = await selected.evaluate((row) => {
-    const order = row.querySelector<HTMLElement>(".workbench-react__evidence-order")!;
-    const meaning = row.querySelector<HTMLElement>(".workbench-react__evidence-meaning")!;
-    const object = row.querySelector<HTMLElement>(".workbench-react__evidence-object")!;
-    const orderParts = order.querySelectorAll<HTMLElement>("small, strong");
-    return {
-      orderLabel: orderParts[0]?.textContent,
-      orderValue: orderParts[1]?.textContent,
-      orderTitle: order.querySelector("strong")?.title,
-      meaningPrimaryTop: meaning.querySelector("strong")!.getBoundingClientRect().top,
-      meaningSecondaryTop: meaning.querySelector("small")!.getBoundingClientRect().top,
-      objectPrimaryTop: object.querySelector("strong")!.getBoundingClientRect().top,
-      objectSecondaryTop: object.querySelector("small")!.getBoundingClientRect().top
-    };
-  });
-  expect(priorityRow.orderLabel).toBe("Event");
-  expect(priorityRow.orderValue).toBe("3970");
-  expect(priorityRow.orderTitle).toBe(selectedIdentity);
-  expect(priorityRow.meaningSecondaryTop).toBeGreaterThan(priorityRow.meaningPrimaryTop);
-  expect(priorityRow.objectSecondaryTop).toBeGreaterThan(priorityRow.objectPrimaryTop);
+  expect(compactHeights).toEqual([30]);
   await assertCommandKeyContract();
 
   const operatingTop = await page.locator(".workbench-react__operating").evaluate((element) => element.getBoundingClientRect().top);
@@ -801,13 +782,13 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
     await page.setViewportSize(viewport);
     await expect(shell).toHaveAttribute("data-geometry", viewport.geometry);
     await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
-    await expect(selected).toHaveCSS("height", "52px");
+    await expect(selected).toHaveCSS("height", "30px");
     if (viewport.geometry === "normal" || viewport.geometry === "wide") {
       const columnWidths = await selected.locator('[role="gridcell"]').evaluateAll((cells) =>
         cells.map((cell) => cell.getBoundingClientRect().width)
       );
-      expect(columnWidths).toHaveLength(4);
-      expect(columnWidths.every((width) => width >= 64)).toBe(true);
+      expect(columnWidths).toHaveLength(3);
+      expect(columnWidths.every((width) => width > 0)).toBe(true);
     }
     if (viewport.geometry === "normal" || viewport.geometry === "wide") {
       await assertCommandKeyContract();
@@ -1219,36 +1200,33 @@ test("Workbench preserves structural selection contrast in forced colors", async
   const selected = page.locator('[data-evidence-id="scenario-event-3"]');
   const unselected = page.locator('[data-evidence-id="scenario-event-4"]');
   await expect(selected).toHaveAttribute("aria-selected", "true");
-  const selectedUnfocused = await selected.evaluate((row) => {
+  const selectionStyle = (row: Element) => {
     const style = getComputedStyle(row);
-    return { backgroundColor: style.backgroundColor, markerColor: style.borderLeftColor, markerWidth: style.borderLeftWidth, outlineStyle: style.outlineStyle };
-  });
+    const op = getComputedStyle(row.querySelector(".workbench-react__evidence-op")!);
+    return { backgroundColor: style.backgroundColor, opBackground: op.backgroundColor, marker: op.boxShadow, outlineStyle: style.outlineStyle };
+  };
+  const selectedUnfocused = await selected.evaluate(selectionStyle);
   expect(selectedUnfocused.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
-  expect(selectedUnfocused.markerColor).not.toBe("rgba(0, 0, 0, 0)");
-  expect(selectedUnfocused.markerColor).not.toBe(selectedUnfocused.backgroundColor);
-  expect(Number.parseFloat(selectedUnfocused.markerWidth)).toBeGreaterThan(0);
+  expect(selectedUnfocused.opBackground).not.toBe("rgba(0, 0, 0, 0)");
+  expect(selectedUnfocused.marker).toContain("inset");
+  expect(selectedUnfocused.marker).toContain("3px");
   expect(selectedUnfocused.outlineStyle).toBe("none");
-  await expect(selected.locator(".workbench-react__evidence-order")).toHaveCSS("background-color", "rgb(34, 37, 42)");
+  await expect(selected.locator(".workbench-react__evidence-op")).toHaveCSS("background-color", "rgb(35, 59, 87)");
 
   await selected.focus();
-  const selectedFocused = await selected.evaluate((row) => {
-    const style = getComputedStyle(row);
-    return { backgroundColor: style.backgroundColor, markerColor: style.borderLeftColor, markerWidth: style.borderLeftWidth, outlineStyle: style.outlineStyle };
-  });
+  const selectedFocused = await selected.evaluate(selectionStyle);
   expect(selectedFocused.backgroundColor).toBe(selectedUnfocused.backgroundColor);
-  expect(selectedFocused.markerColor).toBe(selectedUnfocused.markerColor);
-  expect(selectedFocused.markerWidth).toBe(selectedUnfocused.markerWidth);
+  expect(selectedFocused.marker).toBe(selectedUnfocused.marker);
   expect(selectedFocused.outlineStyle).toBe("solid");
 
   await unselected.focus();
-  const unselectedFocused = await unselected.evaluate((row) => {
-    const style = getComputedStyle(row);
-    return { backgroundColor: style.backgroundColor, markerColor: style.borderLeftColor, markerWidth: style.borderLeftWidth, outlineStyle: style.outlineStyle };
-  });
+  const unselectedFocused = await unselected.evaluate(selectionStyle);
   expect(unselectedFocused.backgroundColor).not.toBe(selectedFocused.backgroundColor);
-  expect(unselectedFocused.markerColor).not.toBe(selectedFocused.markerColor);
+  expect(unselectedFocused.opBackground).not.toBe(selectedFocused.opBackground);
+  expect(unselectedFocused.marker).toBe("none");
   expect(unselectedFocused.outlineStyle).toBe("solid");
   await expect(page.getByRole("button", { name: "Scope", exact: true })).toBeVisible();
+  await attachNamedScenarioScreenshot(page, testInfo, "forced-colors-stream-selection");
 
   await openScenario(page, "local-injection-captured", { width: 900, height: 700 }, "dark");
   await page.getByRole("button", { name: "Create Local Injection Draft" }).click();
@@ -1853,6 +1831,74 @@ test("Workbench renders one typed history condition across geometry, theme, and 
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
+test("Workbench keeps opened shallow forced-color history details reachable", async ({ page }, testInfo) => {
+  await page.emulateMedia({ colorScheme: "dark", forcedColors: "active" });
+  await openScenario(page, "history-evidence-gap", { width: 900, height: 320 }, "dark");
+  const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  const diagnosticList = diagnostics.getByLabel("Workbench diagnostic entries");
+  const disclosure = diagnostics.locator(".workbench-react__status-disclosure");
+  const summary = disclosure.getByText("Diagnostic details", { exact: true });
+  await summary.click();
+  await expect(disclosure).toHaveAttribute("open", "");
+  const expandedWidth = await diagnostics.locator(".workbench-react__status-disclosure-content").evaluate((content) => {
+    const owner = content.closest(".workbench-react__status-diagnostic");
+    if (!(owner instanceof HTMLElement)) return null;
+    const ownerStyle = getComputedStyle(owner);
+    const contentRect = content.getBoundingClientRect();
+    const availableWidth = owner.clientWidth - Number.parseFloat(ownerStyle.paddingLeft) - Number.parseFloat(ownerStyle.paddingRight);
+    return { contentWidth: contentRect.width, availableWidth };
+  });
+  expect(expandedWidth).not.toBeNull();
+  expect(expandedWidth!.contentWidth).toBeGreaterThanOrEqual(expandedWidth!.availableWidth - 1);
+  const firstEvidenceRow = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" }).locator(".workbench-react__evidence-row").first();
+  expect(await firstEvidenceRow.evaluate((row) => {
+    const viewport = row.parentElement;
+    if (!(viewport instanceof HTMLElement)) return false;
+    const rowRect = row.getBoundingClientRect();
+    const viewportRect = viewport.getBoundingClientRect();
+    return rowRect.height === 30 && rowRect.top >= viewportRect.top - 1 && rowRect.bottom <= viewportRect.bottom + 1;
+  })).toBe(true);
+  const summaryVisibility = await summary.evaluate((element) => {
+    const owner = element.closest(".workbench-react__status-diagnostics");
+    if (!(owner instanceof HTMLElement)) return null;
+    const summaryRect = element.getBoundingClientRect();
+    const ownerRect = owner.getBoundingClientRect();
+    return {
+      top: summaryRect.top,
+      bottom: summaryRect.bottom,
+      ownerTop: ownerRect.top,
+      ownerBottom: ownerRect.bottom
+    };
+  });
+  expect(summaryVisibility).not.toBeNull();
+  expect(summaryVisibility!.top).toBeGreaterThanOrEqual(summaryVisibility!.ownerTop - 1);
+  expect(summaryVisibility!.bottom).toBeLessThanOrEqual(summaryVisibility!.ownerBottom + 1);
+  await diagnosticList.focus();
+  await page.keyboard.press("End");
+  await expect.poll(() => diagnosticList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  const recovery = diagnostics.locator(".workbench-react__status-recovery");
+  await expect(recovery).toContainText("Inspect the gap in Notifications");
+  expect(await recovery.evaluate((element) => {
+    const owner = element.closest(".workbench-react__status-diagnostics");
+    if (!(owner instanceof HTMLElement)) return false;
+    const detailRect = element.getBoundingClientRect();
+    const ownerRect = owner.getBoundingClientRect();
+    return detailRect.bottom <= ownerRect.bottom + 1 && detailRect.bottom > ownerRect.top;
+  })).toBe(true);
+  await diagnosticList.focus();
+  await page.keyboard.press("Home");
+  const dismiss = diagnostics.getByRole("button", { name: /Dismiss History has an Evidence gap/ });
+  await expect(dismiss).toBeVisible();
+  expect(await dismiss.evaluate((button) => {
+    const rect = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return hit === button || button.contains(hit);
+  })).toBe(true);
+  await dismiss.click();
+  await expect(dismiss).toHaveCount(0);
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
 test("Workbench keeps mixed-size footer diagnostics readable and bounded across geometry", async ({
   page
 }, testInfo) => {
@@ -2171,8 +2217,8 @@ test("Workbench marks and navigates Find results without changing selected Evide
   await expect.poll(() => page.locator('[data-find-current="true"]').getAttribute("data-evidence-id")).not.toBe(before);
   await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toHaveAttribute("aria-selected", "true");
   const findCurrent = page.locator('[data-find-current="true"]');
-  const findIdentityCell = findCurrent.locator('[role="gridcell"]').first();
-  expect(await findIdentityCell.evaluate((cell) => {
+  const findDataCell = findCurrent.locator(".workbench-react__evidence-data");
+  expect(await findDataCell.evaluate((cell) => {
     const match = cell.querySelector<HTMLElement>(".workbench-react__find-match");
     if (!match) return false;
     const cellRect = cell.getBoundingClientRect();

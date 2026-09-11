@@ -113,7 +113,7 @@ async function runOfficialClientPanelJourney(
     pageCdp = await CdpClient.connect(inspectedTarget?.webSocketDebuggerUrl ?? "");
     await pageCdp.request("Page.enable");
     await pageCdp.request("Runtime.enable");
-    await pageCdp.request("Page.navigate", {
+    const navigation = await pageCdp.request("Page.navigate", {
       url: scenario === "high-volume-loading"
         ? highVolumeFixtureUrl
         : scenario === "issue-16" || scenario === "issue-16-scope"
@@ -122,8 +122,17 @@ async function runOfficialClientPanelJourney(
             ? serverInjectionFixtureUrl
             : scenario === "server-injection-recipe"
               ? serverInjectionRecipeFixtureUrl
-            : authoredFixtureUrl
-    });
+              : authoredFixtureUrl
+    }) as { errorText?: string };
+    if (navigation.errorText) throw new Error(`Fixture navigation failed for ${scenario}: ${navigation.errorText}`);
+    if (scenario === "server-injection-recipe") {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const navigatedUrl = await evaluateByValue<string>(pageCdp, "location.href");
+      if (navigatedUrl === "about:blank") {
+        const retry = await pageCdp.request("Page.navigate", { url: serverInjectionRecipeFixtureUrl }) as { errorText?: string };
+        if (retry.errorText) throw new Error(`Recipe fixture retry navigation failed: ${retry.errorText}`);
+      }
+    }
     if (scenario === "issue-16-scope") {
       await waitForCondition(
         pageCdp,
@@ -153,7 +162,7 @@ async function runOfficialClientPanelJourney(
         pageCdp,
         `document.querySelector("#connection-state")?.textContent === "SUBSCRIBED" &&
           Number(document.querySelector("#update-count")?.textContent) === 2 &&
-          document.querySelector("#message-text")?.textContent === "beta qty 20" &&
+          (() => { try { const model = JSON.parse(document.querySelector("#rendered-model")?.textContent ?? ""); return model.key === "beta" && /^\\d+$/.test(model.qty) && /^\\d+$/.test(model.version); } catch { return false; } })() &&
           globalThis.__LSEW_CLIENT_MESSAGE_RECIPE_ADAPTER__?.version === 1`,
         "the recipe fixture to receive beta and expose its Message Recipe adapter"
       );
@@ -459,22 +468,23 @@ async function runOfficialClientPanelJourney(
         `
 document.querySelector(".workbench-react__operating strong")?.textContent === "Capture RUNNING" &&
           [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-            .some((row) => row.textContent?.includes("scenario.mutate-reinject"))
+            .some((row) => row.textContent?.includes("fixture-message.TICKER"))
         `,
         "React Evidence to display the official-client COMMAND update"
       );
       const serverEvidenceProof = await evaluateByValue<string>(
         panelCdp,
         `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-          .find((candidate) => candidate.textContent?.includes("scenario.mutate-reinject"))?.textContent ?? ""`
+          .find((candidate) => candidate.textContent?.includes("fixture-message.TICKER"))?.textContent ?? ""`
       );
-      expect(serverEvidenceProof).toContain("SERVER");
       expect(serverEvidenceProof).toContain("ADD");
+      expect(await evaluateByValue<string>(panelCdp, `(() => [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+        .find((candidate) => candidate.textContent?.includes("fixture-message.TICKER"))?.getAttribute("data-evidence-source") ?? "")()`)).toBe("SERVER");
       await clickVisiblePanelElement(
         panelCdp,
-        `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-          .find((candidate) => candidate.textContent?.includes("scenario.mutate-reinject"))`,
-        "the rendered official-client Evidence row"
+        `(() => [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+          .find((candidate) => candidate.textContent?.includes("fixture-message.TICKER"))?.querySelector(".workbench-react__evidence-op"))()`,
+        "the rendered official-client Evidence operation"
       );
       await waitForCondition(
         panelCdp,
@@ -645,7 +655,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         panelCdp,
         `
           [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-            .some((row) => row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · LOCAL · ")) &&
+            .some((row) => row.getAttribute("data-evidence-source") === "LOCAL") &&
           !document.querySelector('[aria-label="COMMAND projection summary"]') &&
           ![...document.querySelectorAll("button")].some(
             (button) => button.textContent?.includes("COMMAND projections")
@@ -656,7 +666,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       const localEvidenceProof = await evaluateByValue<string>(
         panelCdp,
         `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-          .find((row) => row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · LOCAL · "))?.textContent ?? ""`
+          .find((row) => row.getAttribute("data-evidence-source") === "LOCAL")?.textContent ?? ""`
       );
       expect(localEvidenceProof).toContain("LOCAL");
       expect(localEvidenceProof).toContain("UPDATE");
@@ -740,7 +750,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         panelCdp,
         `(() => {
           const localRows = [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-            .filter((row) => row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · LOCAL · "));
+            .filter((row) => row.getAttribute("data-evidence-source") === "LOCAL");
           return localRows.length === 2;
         })()`,
         "the authored Local Evidence"
@@ -748,6 +758,16 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
   } catch (error) {
     const logTail = chromeLogs.join("").slice(-4_000);
+    const pageState = pageCdp
+      ? await evaluateByValue(pageCdp, `({
+          url: location.href,
+          readyState: document.readyState,
+          connection: document.querySelector("#connection-state")?.textContent ?? null,
+          count: document.querySelector("#update-count")?.textContent ?? null,
+          message: document.querySelector("#message-text")?.textContent ?? null,
+          recipeAdapter: Boolean(globalThis.__LSEW_CLIENT_MESSAGE_RECIPE_ADAPTER__)
+        })`).catch(() => null)
+      : null;
     const panelState = panelCdp
       ? await evaluateByValue(panelCdp, `({
           diagnostics: document.querySelector('[aria-label="Workbench diagnostic entries"]')?.textContent ?? null,
@@ -756,7 +776,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         })`).catch(() => null)
       : null;
     throw new Error(
-      `${error instanceof Error ? error.message : String(error)}\nObserved targets: ${formatTargets(
+      `${error instanceof Error ? error.message : String(error)}\nPage state: ${pageState ? JSON.stringify(pageState) : "unavailable"}\nObserved targets: ${formatTargets(
         latestTargets
       )}${panelState ? `\nPanel state:\n${JSON.stringify(panelState)}` : ""}${logTail ? `\nChrome log tail:\n${logTail}` : ""}`
     );
@@ -797,16 +817,27 @@ async function runOfficialClientServerInjectionRecipeJourney(
   pageCdp: CdpClient,
   panelCdp: CdpClient
 ): Promise<void> {
+  const baseline = await evaluateByValue<{ key: string; qty: string; version: string }>(pageCdp, `(() => {
+    const model = JSON.parse(document.querySelector("#rendered-model")?.textContent ?? "{}");
+    if (model.key !== "beta" || !/^\\d+$/.test(model.qty) || !/^\\d+$/.test(model.version)) {
+      throw new Error("Recipe fixture baseline must expose numeric beta qty and version.");
+    }
+    return { key: model.key, qty: model.qty, version: model.version };
+  })()`);
+  const baselineQty = Number(baseline.qty);
+  const baselineVersion = Number(baseline.version);
+  const nextQty = baselineQty + 5;
+  const nextVersion = baselineVersion + 1;
   await waitForCondition(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .some((row) => row.textContent?.includes("scenario.snapshot-basic") && row.textContent?.includes("beta"))`,
+      .some((row) => row.textContent?.includes("beta") && row.getAttribute("data-evidence-source") === "SERVER")`,
     "the beta snapshot Evidence used to author a Client Message"
   );
   await clickVisiblePanelElement(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .find((row) => row.textContent?.includes("scenario.snapshot-basic") && row.textContent?.includes("beta"))`,
+      .find((row) => row.textContent?.includes("beta") && row.getAttribute("data-evidence-source") === "SERVER")`,
     "the beta snapshot Evidence"
   );
   await pressVisiblePanelButton(panelCdp, "Author Client Message");
@@ -819,17 +850,25 @@ async function runOfficialClientServerInjectionRecipeJourney(
   await clickPanelButton(panelCdp, "Use Update fields for beta");
   await waitForCondition(
     panelCdp,
-    `document.querySelector('#workbench-server-message')?.value.includes('"expectedVersion": "1"') &&
-      document.querySelector('#workbench-server-sequence')?.value === "LSEW_FIXTURE_FIELD_UPDATES"`,
+    `(() => {
+      try {
+        const recipe = JSON.parse(document.querySelector('#workbench-server-message')?.value ?? "{}");
+        return recipe.expectedVersion === ${JSON.stringify(baseline.version)} &&
+          recipe.fields?.qty === ${JSON.stringify(baseline.qty)} &&
+          document.querySelector('#workbench-server-sequence')?.value === "LSEW_FIXTURE_FIELD_UPDATES";
+      } catch { return false; }
+    })()`,
     "the exact recipe body and sequence to be applied"
   );
   await evaluateByValue<boolean>(panelCdp, `(() => {
     const editor = document.querySelector('#workbench-server-message');
     if (!(editor instanceof HTMLTextAreaElement)) return false;
-    const next = editor.value.replace('"qty": "20"', '"qty": "25"');
+    const recipe = JSON.parse(editor.value);
+    recipe.fields.qty = ${JSON.stringify(String(nextQty))};
+    const next = JSON.stringify(recipe, null, 2);
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
     setter?.call(editor, next);
-    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "25" }));
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ${JSON.stringify(String(nextQty))} }));
     return true;
   })()`);
   await waitForCondition(
@@ -843,10 +882,14 @@ async function runOfficialClientServerInjectionRecipeJourney(
   await clickPanelButton(panelCdp, "Send Client Message once");
   await waitForCondition(
     pageCdp,
-    `Number(document.querySelector("#update-count")?.textContent) === 3 &&
-      document.querySelector("#message-text")?.textContent === "beta qty 25" &&
-      document.querySelector("#rendered-model")?.textContent?.includes('"version": "2"')`,
-    "the Metadata Adapter to accept the message and Data Adapter to publish qty 25"
+    `(() => {
+      if (Number(document.querySelector("#update-count")?.textContent) !== 3) return false;
+      try {
+        const model = JSON.parse(document.querySelector("#rendered-model")?.textContent ?? "{}");
+        return model.key === "beta" && model.qty === ${JSON.stringify(String(nextQty))} && model.version === ${JSON.stringify(String(nextVersion))};
+      } catch { return false; }
+    })()`,
+    "the Metadata Adapter to accept the edited recipe and Data Adapter to publish the next beta version"
   );
   await waitForCondition(
     panelCdp,
@@ -886,13 +929,13 @@ async function runOfficialClientServerInjectionJourney(
   await waitForCondition(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .some((row) => row.textContent?.includes("scenario.server-injection"))`,
+      .some((row) => row.textContent?.includes("fixture-message.TICKER") && row.getAttribute("data-evidence-source") === "SERVER")`,
     "the deterministic Server Evidence used to choose the current client Session"
   );
   await clickVisiblePanelElement(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .find((row) => row.textContent?.includes("scenario.server-injection"))`,
+      .find((row) => row.textContent?.includes("fixture-message.TICKER") && row.getAttribute("data-evidence-source") === "SERVER")`,
     "the deterministic Server Evidence"
   );
   await waitForCondition(
@@ -948,15 +991,15 @@ async function runOfficialClientServerInjectionJourney(
   await waitForCondition(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-        .some((row) => row.textContent?.includes("Client Message Sent") && row.textContent?.includes("WORKBENCH")) &&
+        .some((row) => row.getAttribute("data-evidence-code") === "M+" && row.getAttribute("data-evidence-source") === "WORKBENCH") &&
       [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-        .some((row) => row.textContent?.includes("Client Message Processed") && row.textContent?.includes("WORKBENCH"))`,
+        .some((row) => row.getAttribute("data-evidence-code") === "M✓" && row.getAttribute("data-evidence-source") === "WORKBENCH")`,
     "the correlated outbound Workbench Evidence"
   );
   await clickVisiblePanelElement(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .find((row) => row.textContent?.includes("Client Message Sent") && row.textContent?.includes("WORKBENCH"))`,
+      .find((row) => row.getAttribute("data-evidence-code") === "M+" && row.getAttribute("data-evidence-source") === "WORKBENCH")`,
     "the captured outbound Client Message"
   );
   await waitForCondition(
@@ -1010,7 +1053,7 @@ async function runOfficialClientScenarioJourney(
   await clickVisiblePanelElement(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .find((candidate) => candidate.textContent?.includes("scenario.mutate-reinject"))`,
+      .find((candidate) => candidate.textContent?.includes("fixture-message.TICKER") && candidate.getAttribute("data-evidence-source") === "SERVER")`,
     "the deterministic Server ADD used to anchor the Scenario target"
   );
   await waitForCondition(

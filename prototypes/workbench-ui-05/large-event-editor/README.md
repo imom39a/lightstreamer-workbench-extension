@@ -11,7 +11,7 @@ Three editor models are mounted inside the accepted Scoped Evidence Workspace an
 Run the existing prototype command:
 
 ```sh
-npm run prototype:local-injection
+npm run prototype:serve
 ```
 
 Then open:

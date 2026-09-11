@@ -13,14 +13,14 @@ Three radically different models are switchable with `?variant=`:
 Run:
 
 ```sh
-npm run prototype:visual-semantics
+npm run prototype:serve
 ```
 
 Open:
 
-- `http://127.0.0.1:4178/workbench-ui-08/?variant=A`
-- `http://127.0.0.1:4178/workbench-ui-08/?variant=B`
-- `http://127.0.0.1:4178/workbench-ui-08/?variant=C`
+- `http://127.0.0.1:4175/workbench-ui-08/?variant=A`
+- `http://127.0.0.1:4175/workbench-ui-08/?variant=B`
+- `http://127.0.0.1:4175/workbench-ui-08/?variant=C`
 
 The prototype controls exercise mixed Evidence, degraded Capture, Frozen high volume, COMMAND projection comparison, raw Server evidence, empty Evidence, and ready/invalid/stale/delivered/failed Local Injection states at compact, normal, shallow, and wide geometries in Dark and Light themes. `presentation=1` hides prototype controls for screenshots.
 

@@ -2,17 +2,17 @@
 
 **Lightstreamer Workbench**
 
-Lightstreamer Workbench is a Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It currently captures Lightstreamer clients, sessions, subscriptions, item updates, snapshots, and COMMAND-mode key lifecycles, then lets developers inspect, search, and create deliberate Local Injections. Planned Server Injection adds capture and deliberate submission of Client Messages through the inspected client's normal message path.
+Lightstreamer Workbench is a Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures Lightstreamer clients, Sessions, Subscriptions, Item Updates, snapshots, COMMAND-mode key lifecycles, and outbound Client Messages. Developers can inspect and search that Evidence, create deliberate Local Injections, and send reviewed Client Messages through Server Injection.
 
 The tool is generic developer infrastructure, not an application-specific debugger. Application teams can later add optional interpretation rules, but the core product models Lightstreamer primitives: client, session, subscription, mode, item, field, key, command, update, snapshot, client message, injection, and delivery.
 
-**Core Value:** Developers can understand and reproduce Lightstreamer COMMAND subscription behavior without waiting for production event sequences, using backend-free Local Injection today and the application's normal client-to-server message flow for planned Server Injection.
+**Core Value:** Developers can understand and reproduce Lightstreamer COMMAND Subscription behavior without waiting for production event sequences, using backend-free Local Injection and the application's normal client-to-server message flow for Server Injection.
 
 ### Constraints
 
 - **Runtime target**: Chrome extension with a DevTools panel - debugging should live next to the inspected page's runtime state.
 - **Lightstreamer target**: Official Lightstreamer Web Client only for v2 - client API instrumentation is more reliable than generic WebSocket inference.
-- **Injection boundary**: v2 supports backend-free Local Injection. Planned Server Injection sends a Client Message through the inspected Lightstreamer client's normal `sendMessage` path in the context of its current Session; it does not directly introduce an inbound update into the server stream.
+- **Injection boundary**: v2 supports backend-free Local Injection and reviewed Server Injection. Server Injection sends a Client Message through the inspected Lightstreamer client's normal `sendMessage` path in the context of its current Session; it does not directly introduce an inbound update into the server stream.
 - **Capture semantics**: Capture is observational - Workbench never alters or suppresses the application's original Item Update or Client Message. Mutation applies to a separate Injection Draft.
 - **COMMAND state projections**: Observed Server COMMAND State uses captured Server Updates only. Local Effective COMMAND State additionally applies successful Local Injected Updates for the Subscription.
 - **Storage**: One Panel Session owns one temporary rolling Event History. Normal retention is 100,000 records or 256 MiB of canonical accounted bytes; memory-backed retention is 25,000 records or 128 MiB. Retention advances remove the oldest accepted prefix without stopping Capture. Bounded commit recovery and explicit Evidence Gaps keep storage failure separate from Observation Coverage. Controlled Close attempts erasure and reports the outcome; abnormal cleanup may leave residual data until an ownership-safe guarded sweep. Versioned Topology exports are deliberate user downloads, not persistent application state.

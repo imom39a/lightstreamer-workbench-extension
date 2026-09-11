@@ -38,7 +38,7 @@ describe("Workbench visual-evidence runner", () => {
   });
 
   it("describes the selected integrated matrix without stale batch-only baseline proof", () => {
-    expect(runnerSource).toContain('changedWorkflow: "The integrated Workbench matrix covers the approved Variant C Scope priority blocks and Ordered Evidence order rail, the main Evidence timeline');
+    expect(runnerSource).toContain('changedWorkflow: "The integrated Workbench matrix covers the approved Scope priority blocks and full-key JSON Evidence stream, the main Evidence timeline');
     expect(runnerSource).toContain('result: "Run separately and record the exact Playwright result with this packet."');
     expect(runnerSource).not.toContain('visual baseline: scenario-checkpoint');
     expect(runnerSource).not.toContain('result: "8/8 passed"');

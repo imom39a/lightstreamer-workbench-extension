@@ -9,14 +9,14 @@ Status: **Variant A — Elastic Triad selected during live human review. The com
 Run it with:
 
 ```sh
-npm run prototype:panel-density
+npm run prototype:serve
 ```
 
 Then open:
 
-- `http://127.0.0.1:4176/workbench-ui-06/?variant=A`
-- `http://127.0.0.1:4176/workbench-ui-06/?variant=B`
-- `http://127.0.0.1:4176/workbench-ui-06/?variant=C`
+- `http://127.0.0.1:4175/workbench-ui-06/?variant=A`
+- `http://127.0.0.1:4175/workbench-ui-06/?variant=B`
+- `http://127.0.0.1:4175/workbench-ui-06/?variant=C`
 
 Add `&presentation=1` to hide the disposable prototype controls when capturing the Workbench surface itself.
 

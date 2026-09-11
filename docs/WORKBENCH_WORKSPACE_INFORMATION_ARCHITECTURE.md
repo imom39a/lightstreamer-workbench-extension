@@ -2,7 +2,7 @@
 
 Status: accepted product direction, 2026-08-03
 
-This document records the selected workspace model for the Lightstreamer Workbench Chrome DevTools panel. It applies the [canonical developer journeys](CANONICAL_DEVELOPER_JOURNEYS.md), the [current-panel audit](CURRENT_PANEL_UI_AUDIT.md), and the [Chrome DevTools interaction research](research/chrome-devtools-interaction-conventions.md). Detailed Local Injection, density, keyboard, and visual-semantic decisions remain assigned to their downstream Wayfinder tickets.
+This document records the selected workspace model for the Lightstreamer Workbench Chrome DevTools panel. It applies the [canonical developer journeys](CANONICAL_DEVELOPER_JOURNEYS.md), the historical [current-panel audit](CURRENT_PANEL_UI_AUDIT.md), and the [Chrome DevTools interaction research](research/chrome-devtools-interaction-conventions.md). The [UI Standard](WORKBENCH_UI_STANDARD.md) and its linked contracts govern Local Injection, density, keyboard, and visual semantics.
 
 ## Decision
 
@@ -68,14 +68,7 @@ preserving chronological order. The ledger never presents an Evidence Gap as
 Complete History; later retained Evidence remains ordered and inspectable beyond
 the exact gap boundary.
 
-Its stable scanning grammar uses four semantic columns:
-
-- **Order**: a labelled rail anchored by authoritative retained History sequence, with exact Evidence identity preserved independently;
-- **Evidence**: semantic evidence type first, with timestamp, textual provenance, and Snapshot/Live phase beneath it;
-- **Command**: neutral COMMAND operation, or an explicit unavailable mark;
-- **Object**: Lightstreamer primitive identity first, with the captured COMMAND key beneath it when applicable.
-
-Concise changed-field and lifecycle summaries remain in Context rather than competing with the row's scanning anchors. Server versus local provenance is always text, not color alone.
+The approved 2026-09-11 scanning grammar is **Op / Key or item / Data**. Op uses the historical compact codes with a grouped Codes reference. Exact keys lead the data, occupy one line without truncation, and scroll horizontally with captured field values; only Op stays pinned. The existing bounded window preserves chronological order. Event identity, authoritative sequence, timestamp and full semantics remain in Context and accessible labels. Readable JSON strings are identified as such; Raw fields preserves captured types. Local Injection remains explicitly annotated. No permanent peer destination is introduced.
 
 Scope, Filter, and Find remain distinct:
 

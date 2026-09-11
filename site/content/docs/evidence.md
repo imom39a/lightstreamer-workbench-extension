@@ -9,7 +9,9 @@ Workbench keeps these states independent. If a Filter hides the selected event, 
 
 ## Read an Evidence row
 
-The left rail shows the retained Event order. The timestamp has a separate position. The rest of the row shows the Evidence meaning, Source, phase, COMMAND operation, runtime object, and key.
+Rows start with a compact **Op**, followed by the complete **Key / item** and **Data**. Only Op stays pinned when you scroll horizontally; the key and data stay on one line and scroll together. Keys are never shortened. **Codes** explains update and lifecycle codes such as `U`, `EOS`, and `SUBOK`.
+
+**Readable** displays captured JSON object and array strings as structured values and marks them **JSON string**. **Raw fields** preserves the captured field types. Large payload previews are bounded; select a row to inspect its complete payload in Context. Exact Evidence identity, timestamp, retained sequence, Source, and phase remain available in Context.
 
 ## Use Filter
 
@@ -25,7 +27,7 @@ Live or Frozen does not start or stop Capture. Capture does not delete history o
 
 One Panel Session owns one temporary Event History. IndexedDB can retain up to 100,000 Evidence records or 256 MiB. The memory fallback can retain up to 25,000 records or 128 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session. The footer shows the current storage mode, and Notifications records the failure reason. Use **Oldest**, **Older**, **Newer**, and **Newest** to move through retained Evidence.
 
-Complete History ends at the current History Interval's Committed Evidence Boundary. A journal failure or History Capacity limit stops the admission of new Evidence at this boundary. A refused or failed event does not become Evidence. It also does not change derived COMMAND state. Capture, Coverage, History Capacity, and Live or Frozen remain independent.
+Complete History ends at the current History Interval's Committed Evidence Boundary. Pending writes advance that boundary only after acceptance. Refused or failed candidates create explicit Evidence Gaps and do not change derived COMMAND state; they do not prevent later valid activity from becoming Evidence. Capture, Coverage, History Capacity, and Live or Frozen remain independent.
 
 **Clear retained Evidence** ends the current History Interval. Scope and Filter do not change this boundary. Workbench requires confirmation before it clears the Evidence. Clear cannot restart Capture after a terminal stop.
 
@@ -33,7 +35,7 @@ A controlled Close tries to erase the Event History. An abnormal stop can preven
 
 ## Evidence provenance
 
-Workbench shows `SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` as text. It does not show a Local Injected Update as a Server Update. `ADD`, `UPDATE`, and `DELETE` are COMMAND operations, not result or severity values.
+The Op column labels Local Injected Updates **LOCAL**, runtime activity `R`, and Workbench activity `W`; unmarked updates are from the server. `S` marks a snapshot. Context retains the full `SERVER`, `LOCAL`, `RUNTIME`, or `WORKBENCH` Source. `ADD` and `DELETE` annotate COMMAND updates; an ordinary update uses `U`. These operations are not result or severity values.
 
 Outbound Client Message Evidence records the page-owned or Workbench-owned `sendMessage` submission and any available terminal listener outcome. An application message is `RUNTIME`; a Server Injection is `WORKBENCH`. A Processed message is not proof of a later Server Update or business effect.
 

@@ -55,7 +55,7 @@ baseline updates in the pull request or the related internal Project ticket.
 For the complete maintained Material UI gate, also run `npm run test:ui:extension`
 for the shipped DevTools panel, `npm run fixture:test:browser` for the official
 Lightstreamer-client path, `npm run release:package` for the package audit,
-and `npm run docs:check` to validate documented command names.
+and `npm run docs:check` to validate documented command names and local Markdown targets.
 
 ## Independent visual QA
 

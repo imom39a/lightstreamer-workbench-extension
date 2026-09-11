@@ -14,13 +14,13 @@ Critically, Variant B does **not** add a duplicate normalized envelope to Contex
 Run:
 
 ```sh
-npm run prototype:json-console
+npm run prototype:serve
 ```
 
 Open:
 
-- `http://127.0.0.1:4180/workbench-ui-11/?variant=A&frame=wide&theme=dark`
-- `http://127.0.0.1:4180/workbench-ui-11/?variant=B&frame=wide&theme=dark`
+- `http://127.0.0.1:4175/workbench-ui-11/?variant=A&frame=wide&theme=dark`
+- `http://127.0.0.1:4175/workbench-ui-11/?variant=B&frame=wide&theme=dark`
 
 The floating arrows switch variants. The external prototype strip switches only the test frame; Workbench’s existing Theme control remains in its current operating-strip position. URL parameters preserve variant, frame, theme, selection, Find, Filter, and compact surface.
 

@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { findMissingMarkdownLinks } from "./check-docs-links.mjs";
 
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const documents = [
@@ -51,4 +55,23 @@ for (const command of requiredCommands) {
   }
 }
 
-console.log(`Documentation command check passed for ${documents.length} documents and ${requiredCommands.length} maintained commands.`);
+const markdownDocuments = execFileSync(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard", "--", "*.md"],
+  { cwd: rootDir, encoding: "utf8" }
+).trim().split("\n").filter(Boolean);
+const existingMarkdownDocuments = markdownDocuments.filter((document) =>
+  existsSync(resolve(rootDir, document))
+);
+const missingLinks = await findMissingMarkdownLinks(rootDir, existingMarkdownDocuments);
+if (missingLinks.length > 0) {
+  const details = missingLinks.map(({ document, line, target }) =>
+    `- ${document}:${line} -> ${target}`
+  ).join("\n");
+  throw new Error(`Missing local Markdown link targets:\n${details}`);
+}
+
+console.log(
+  `Documentation checks passed for ${documents.length} command guides, `
+  + `${requiredCommands.length} maintained commands, and ${existingMarkdownDocuments.length} Markdown files.`
+);

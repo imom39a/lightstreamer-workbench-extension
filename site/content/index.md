@@ -1,6 +1,6 @@
 <section class="hero">
   <div class="hero__copy">
-    <span class="eyebrow">2.0.3 release candidate · Chrome DevTools</span>
+    <span class="eyebrow">2.0.4 release candidate · Chrome DevTools</span>
     <h1>Debug Lightstreamer in Chrome DevTools.</h1>
     <p class="lede">Inspect clients, Sessions, Subscriptions, Item Updates, snapshots, COMMAND lifecycles, and outbound Client Messages. Test an update locally or send one reviewed Client Message through the page's current Session.</p>
     <div class="hero__actions">
@@ -10,7 +10,7 @@
     <p class="hero__note"><span>Captured data stays local</span><span>No account</span><span>Analytics control</span><span>Open source</span></p>
   </div>
   <figure class="product-frame product-frame--hero">
-    <figcaption><span></span><span></span><span></span><strong>2.0.3 candidate Workbench</strong></figcaption>
+    <figcaption><span></span><span></span><span></span><strong>2.0.4 candidate Workbench</strong></figcaption>
     <img src="{{site}}assets/app-workspace-context.png" alt="Lightstreamer Workbench showing Runtime Scope, Ordered Evidence, and selected Evidence Context in one Chrome DevTools workspace." width="960" height="600" fetchpriority="high">
   </figure>
 </section>
@@ -23,7 +23,7 @@
 
 <section class="section" id="capabilities">
   <header class="section__header">
-    <span class="eyebrow">2.0.3 candidate capabilities</span>
+    <span class="eyebrow">2.0.4 candidate capabilities</span>
     <h2>Inspect Lightstreamer activity.</h2>
     <p>Workbench runs in Chrome DevTools. Each result links to captured Evidence or to an Injection that you deliberately created.</p>
   </header>
@@ -109,7 +109,7 @@
     <h2>Workbench keeps temporary Evidence in the browser.</h2>
   </div>
   <ul class="check-list">
-    <li>One Panel Session owns one temporary Event History: up to 100,000 records or 256 MiB with normal IndexedDB storage; 5,000 records or 32 MiB in startup memory fallback.</li>
+    <li>One Panel Session owns one temporary Event History: up to 100,000 records or 256 MiB with normal IndexedDB storage; 25,000 records or 128 MiB in memory fallback.</li>
     <li>Captured data stays in the browser extension context. Configured production builds send fixed usage events and a random installation identifier to Google Analytics; the control is under <strong>More actions → Help &amp; resources → Usage analytics</strong>.</li>
     <li>Workbench has no account, advertising, remote error logging, or maintainer-operated collection backend. Turning analytics off removes its saved identifier and session.</li>
     <li>Workbench creates a versioned JSON or offline HTML export only when you request it. Each export excludes credentials.</li>
@@ -121,6 +121,6 @@
 <section class="final-cta">
   <span class="eyebrow">Get started</span>
   <h2>Install Lightstreamer Workbench.</h2>
-  <p>The Chrome Web Store currently serves 2.0.2. Version 2.0.3 remains a release candidate until Store review and publication complete.</p>
+  <p>The Chrome Web Store currently serves 2.0.3. Version 2.0.4 remains a release candidate until Store review and publication complete.</p>
   <div class="inline-actions"><a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Install current 2.0.2</a><a class="button button--secondary" href="{{site}}docs/developer-guide/">Open the developer guide</a></div>
 </section>

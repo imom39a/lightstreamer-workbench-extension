@@ -7,7 +7,7 @@ This is disposable UI for resolving `workbench-ui-05 — Choose the Local Inject
 Run it with:
 
 ```sh
-npm run prototype:local-injection
+npm run prototype:serve
 ```
 
 Or open the variants directly after starting the command:

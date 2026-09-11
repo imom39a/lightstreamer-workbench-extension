@@ -57,7 +57,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 
 - Use **Elastic Triad**: Wide Triad, Normal Stack, Shallow Side, then Focused Compact as available width and height change.
 - Geometry may relocate or park Scope and Context; it never changes semantic state or reconstructs an investigation.
-- Reduce in the accepted order: unpin Scope, relocate Context, focus one surface, overflow low-frequency actions, then rebalance the persistent two-line Evidence grammar for compact width.
+- Reduce in the accepted order: unpin Scope, relocate Context, focus one surface, overflow low-frequency actions, then preserve the single-line Evidence stream with horizontal scrolling inside its ledger.
 - Every visible pane owns at most one content scroll. The Workbench shell and whole panel never scroll horizontally.
 - Use bounded horizontal scrolling only for inherently two-dimensional Evidence or raw documents.
 - In selected-Evidence Context, keep Activity summary, Filter selected Evidence, and Evidence metadata as stable collapsed native disclosures ahead of Selected update. Fields remain visible by default; each supporting section stays one interaction away. Keep selected provenance visible outside the disclosures, and keep an unavailable Filter disclosure mounted when no typed action can be offered.
@@ -88,9 +88,9 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 ### Visual semantics and text
 
 - Use **Plain Ledger**: explicit text first, stable placement second, typography and limited shape third, and color only as reinforcement.
-- Render structural Scope rows as type/state, identity, and captured-facts priority blocks. Render Ordered Evidence as stable Order / Evidence / Command / Object columns, with event identity independent from timestamp and semantic meaning before secondary provenance and phase.
+- Render structural Scope rows as type/state, identity, and captured-facts priority blocks. Render Ordered Evidence as Op / Key or item / Data. Only Op is pinned horizontally; exact keys are single-line and never truncated, and keys plus data share the ledger scroll. Retained order and event identity remain independent in metadata and accessible labels.
 - Keep Capture operation, observation Coverage, retained/accepted Evidence and storage tier, Live/Frozen position, runtime lifecycle, provenance, Snapshot/Live phase, COMMAND operation, diagnostics, Injection readiness/outcome, and interaction state independent. Keep the compact History status in the existing footer status line so every Capture, Coverage, and View label stays complete without increasing operating-strip height.
-- Keep `SERVER`, `LOCAL`, `RUNTIME`, and `WORKBENCH` textual at every density. Do not use provenance colors or treat Local as success, except the explicit shape-and-text-reinforced LOCAL mark within the [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#narrow-provenance-amendment).
+- Keep provenance textual and explicit at every density. In the approved compact Evidence stream, concise annotations may accompany Op instead of repeating full provenance and phase columns; their exact meanings remain in Codes, accessible row labels, and selected Context. Local Injection must retain an explicit visible Local annotation. Do not use provenance colors or treat Local as success, except the explicit shape-and-text-reinforced LOCAL mark within the [integrated Activity timeline](WORKBENCH_INTEGRATED_ACTIVITY.md#narrow-provenance-amendment).
 - Keep `ADD`, `UPDATE`, and `DELETE` neutral. A COMMAND verb is not diagnostic severity.
 - Reserve generic selection fill plus a leading marker for selection and an independent outline for focus.
 - Pair every material diagnostic with severity text, affected Evidence or object, consequence, and one relevant inspection or recovery route.
@@ -242,3 +242,13 @@ The product owner explicitly approved, one decision at a time:
 4. the scoped exception and amendment process;
 5. the destructive and consequential action contract;
 6. this complete policy as the shared understanding for future Workbench UI changes.
+
+## Single-line key and JSON stream amendment — 2026-09-11
+
+The primary maintainer selected the key-first Variant A prototype, requested the historical Codes reference and operation mapping, then explicitly approved production implementation after requiring complete, single-line, horizontally scrollable keys. This supersedes the 2026-08-29 four-column/two-line **Evidence** grammar; the structural Scope priority blocks remain accepted.
+
+The stream uses Op / Key or item / Data with a fixed 30px row rhythm. Only Op is pinned horizontally. Exact COMMAND keys, or the applicable item/subscription/client identity, size their column to content; they never wrap or use ellipsis. The key and captured data scroll together within the existing bounded Evidence window. No event number or repeated Item Update column returns. Exact retained sequence, event identity, timestamp, provenance, phase, and command remain inspectable through accessible labels and Context.
+
+The historical TLCP and Workbench capture codes remain distinct in a bounded **Codes** reference. U means Item Update regardless of COMMAND ADD/UPDATE/DELETE; command, snapshot and Local annotations do not redefine U. Newer Workbench evidence receives explicit additional meanings, without implying literal wire capture. **Readable** shows application field values and labels decoded JSON strings; **Raw fields** preserves captured types. Large previews are explicitly bounded with full evidence available in Context. Captured values, injection boundaries, chronology, Find, Filter, Scope and selection are unchanged.
+
+This is a Material UI change, approved by the maintainer in Codex thread `01a08ba4-a8cb-7e00-91e4-c44ab0337388`. Dark-only including forced colors remains the preceding explicit theme decision. Production evidence and independent review are recorded in [key/JSON stream verification](agents/key-json-stream-evidence.md). The disposable prototype stays on `prototype/evidence-density-proposals`; production adopts the decision, not its renderer.

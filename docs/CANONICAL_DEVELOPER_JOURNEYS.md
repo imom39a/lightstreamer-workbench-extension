@@ -2,7 +2,7 @@
 
 Status: accepted product direction, 2026-08-03
 
-This document defines the developer journeys that the Lightstreamer Workbench UI must optimize. It is an input to information-architecture and interaction prototypes, not a screen specification. The journeys preserve the domain language in [CONTEXT.md](../CONTEXT.md), the constraints identified by the [current-panel audit](CURRENT_PANEL_UI_AUDIT.md), and the behavioral guidance in the [Chrome DevTools conventions research](research/chrome-devtools-interaction-conventions.md).
+This document defines the developer journeys that the Lightstreamer Workbench UI must optimize. It governs production and future UI work without prescribing a screen. The journeys preserve the domain language in [CONTEXT.md](../CONTEXT.md), the constraints identified by the historical [current-panel audit](CURRENT_PANEL_UI_AUDIT.md), and the behavioral guidance in the [Chrome DevTools conventions research](research/chrome-devtools-interaction-conventions.md).
 
 ## Product outcome
 

@@ -214,24 +214,36 @@ async function latestFixtureCapture(
 }
 
 async function waitForPanelEvidence(cdp: CdpClient, previousCount = 0): Promise<number> {
-  await waitForCondition(
-    cdp,
-    `
-      document.querySelector(".workbench-react__operating strong")?.textContent === "Capture RUNNING" &&
-      [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-        .filter((row) =>
-          row.textContent?.includes("scenario.mutate-reinject") &&
-          row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · SERVER · ")
-        ).length > ${previousCount}
-    `,
-    "the production Evidence workspace to show the fixture Item Update"
-  );
+  try {
+    await waitForCondition(
+      cdp,
+      `
+        document.querySelector(".workbench-react__operating strong")?.textContent === "Capture RUNNING" &&
+        [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+          .filter((row) =>
+            row.textContent?.includes("fixture-message.TICKER") &&
+            row.getAttribute("data-evidence-source") === "SERVER"
+          ).length > ${previousCount}
+      `,
+      "the production Evidence workspace to show the fixture Item Update"
+    );
+  } catch (error) {
+    const diagnostic = await evaluateByValue<unknown>(cdp, `(() => ({
+      operating: document.querySelector(".workbench-react__operating")?.textContent ?? null,
+      rows: [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')].slice(-12).map((row) => ({
+        text: row.textContent,
+        source: row.getAttribute("data-evidence-source"),
+        id: row.getAttribute("data-evidence-id")
+      }))
+    }))()`);
+    throw new Error(`${error instanceof Error ? error.message : String(error)}; diagnostic=${JSON.stringify(diagnostic)}`);
+  }
   return evaluateByValue<number>(
     cdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
       .filter((row) =>
-        row.textContent?.includes("scenario.mutate-reinject") &&
-        row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · SERVER · ")
+        row.textContent?.includes("fixture-message.TICKER") &&
+        row.getAttribute("data-evidence-source") === "SERVER"
       ).length`
   );
 }
@@ -241,8 +253,8 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
     const rows = [...document.querySelectorAll(
       '[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]'
     )].filter((row) =>
-      row.textContent?.includes("scenario.mutate-reinject") &&
-      row.querySelector(".workbench-react__evidence-meaning small")?.textContent?.includes(" · SERVER · ")
+      row.textContent?.includes("fixture-message.TICKER") &&
+      row.getAttribute("data-evidence-source") === "SERVER"
     );
     return rows.at(-1);
   })()`;
@@ -268,8 +280,8 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
   }
   await clickVisiblePanelElement(
     cdp,
-    latestServerEvidence,
-    "latest visible fixture SERVER Evidence"
+    `(() => ${latestServerEvidence}?.querySelector(".workbench-react__evidence-op"))()`,
+    "latest visible fixture SERVER Evidence operation"
   );
   try {
     await waitForCondition(

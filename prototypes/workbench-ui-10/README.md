@@ -13,14 +13,14 @@ The design decisions are already closed, so the prototype switcher exercises thr
 Run:
 
 ```sh
-npm run prototype:integrated-ui
+npm run prototype:serve
 ```
 
 Open:
 
-- `http://127.0.0.1:4179/workbench-ui-10/?variant=A`
-- `http://127.0.0.1:4179/workbench-ui-10/?variant=B`
-- `http://127.0.0.1:4179/workbench-ui-10/?variant=C`
+- `http://127.0.0.1:4175/workbench-ui-10/?variant=A`
+- `http://127.0.0.1:4175/workbench-ui-10/?variant=B`
+- `http://127.0.0.1:4175/workbench-ui-10/?variant=C`
 
 Use `state=`, `frame=auto|compact|normal|shallow|wide`, `theme=dark|light`, and `presentation=1`. The floating switcher changes journeys, scenario states, frames, and theme; left/right arrows outside the Workbench surface cycle journeys.
 

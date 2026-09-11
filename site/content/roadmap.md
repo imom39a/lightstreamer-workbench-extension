@@ -16,7 +16,7 @@ Connect related recovery events, Session epochs, snapshots, Subscription setting
 
 ### Client Messages and Server Injection release
 
-The 2.0.3 repository candidate captures `LightstreamerClient.sendMessage` calls and listener outcomes as outbound Evidence. A reviewed Server Injection sends one Client Message through the inspected client's normal message path. It does not create an inbound Item Update, claim an application result, or retry an Unknown result automatically. Chrome Web Store review and release publication remain separate gates.
+Version 2.0.3 captures `LightstreamerClient.sendMessage` calls and listener outcomes as outbound Evidence. A reviewed Server Injection sends one Client Message through the inspected client's normal message path. It does not create an inbound Item Update, claim an application result, or retry an Unknown result automatically. Chrome Web Store review and release publication remain separate gates.
 
 ### Local Injection Scenario release
 
