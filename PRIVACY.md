@@ -32,6 +32,32 @@ Workbench does not send captured Evidence to the maintainers or an analytics ser
 
 ## Local storage and exports
 
+### Optional Agent access (source candidate)
+
+Agent access is off by default and must be explicitly connected in each Panel
+Session. The local MCP companion lets an agent request retained Evidence,
+normalized diagnostics, runtime Scope and Draft/Scenario outcomes. Choose either
+inspection-only or inspection plus Local Injection. The latter invokes the
+application's local listeners; those listeners can themselves cause application
+effects. Server Injection is not exposed to agents.
+
+Requested data leaves the extension for a local process and may then reach the
+agent's configured model provider under that provider's policies. The companion
+does not persist Evidence or log payloads. The interface omits raw transport
+text, redacts Client Message bodies and outcome text, and removes recognized
+credential-named fields, including in parseable JSON values. This is not a
+general secret detector: other Item Update values, identifiers, diagnostics,
+and the inspected URL's origin/path can remain private application data. URL
+query strings and fragments are not included in the page descriptor.
+
+The grant applies to connected local clients running as your OS user, not to a
+verified individual agent identity. Disconnect revokes access and pauses an
+agent Scenario, but cannot undo an update already sent. Closing the panel loses
+the temporary operation ledger; unknown delivery is never automatically retried.
+Setup creates an explicit native-host registration and launcher. A private local
+temporary directory holds only a socket, access token and startup lock. Removal
+instructions are in the [companion guide](agent/README.md).
+
 Version 2 stores current Panel Session Evidence in one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 5,000 records or 32 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. Workbench does not change the storage type during a Panel Session.
 
 A controlled Close stops intake and commits accepted work. It then tries to erase retained and pending data. Workbench reports whether it confirmed erasure and cleanup. A crash, renderer stop, extension reload, or blocked cleanup can prevent erasure. Residual data can remain until a later safe cleanup. Cleanup removes only recognized unused Workbench data. It does not read, export, derive state from, or load this Evidence. A new Panel Session starts empty.
@@ -53,6 +79,10 @@ In the repository candidate, Server Injection is an explicit inspected-page netw
 Workbench requests page access to observe the official Lightstreamer Web Client before the application creates clients or Subscriptions. Workbench uses this access for developer-controlled inspection in Chrome DevTools.
 
 The analytics candidate adds the `storage` permission for the usage preference and random identifier, and host access to `https://www.google-analytics.com/*` for event submission. Analytics is not added to content scripts or the inspected page. It does not require browser history or account access.
+
+The Agent access candidate adds `nativeMessaging` to connect the explicitly
+installed local companion. The companion registration permits the exact installed
+extension id, not arbitrary web origins. No broad local HTTP listener is added.
 
 Document each permission change in the pull request and release notes. Chrome Web Store review includes extension permissions.
 

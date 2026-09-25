@@ -692,7 +692,7 @@ function scrubCredentialQuery(value: string): string {
   return `${base}${safeQuery ? `?${safeQuery}` : ""}${hash}`;
 }
 
-function cloneCredentialSafe(value: unknown): unknown {
+export function cloneCredentialSafe(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(cloneCredentialSafe);
   }

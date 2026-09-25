@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import { createAgentConnection, type AgentConnection } from "./agent-connection";
 import { createAnalyticsClient, type AnalyticsClient } from "../analytics/client";
 import { observeWorkbenchAnalytics } from "../analytics/observer";
 
@@ -61,6 +62,7 @@ export function mountWorkbenchPanel(
   let history: EventHistory | null = null;
   let runtime: WorkbenchRuntime | null = null;
   let bridge: PanelBridgeConnection | null = null;
+  let agentConnection: AgentConnection | null = null;
   let reactRoot: ReturnType<typeof createRoot> | null = null;
   const analytics = options.analytics ?? createAnalyticsClient();
   let analyticsObserver: ReturnType<typeof observeWorkbenchAnalytics> | null = null;
@@ -80,6 +82,7 @@ export function mountWorkbenchPanel(
       return;
     }
     disposed = true;
+    agentConnection?.dispose();
     analyticsObserver?.dispose();
     analytics.dispose();
     window.removeEventListener("message", onVisibilityMessage);
@@ -175,8 +178,9 @@ export function mountWorkbenchPanel(
     });
     analyticsObserver = observeWorkbenchAnalytics(runtime, analytics, window);
     const presentationRuntime = bindRuntime(runtime, themeManager, analyticsObserver);
+    agentConnection = createAgentConnection(runtime, panelSessionId);
     reactRoot = createRoot(root);
-    reactRoot.render(<WorkbenchPanel runtime={presentationRuntime} analytics={analytics} />);
+    reactRoot.render(<WorkbenchPanel runtime={presentationRuntime} analytics={analytics} agentConnection={agentConnection} />);
     bridge = connectBridgeClient({
       onStatusChange(status) {
         document.documentElement.dataset.lsewPanelBridgeStatus = status;

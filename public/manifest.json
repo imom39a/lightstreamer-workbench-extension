@@ -9,7 +9,7 @@
     "128": "icons/icon-128.png"
   },
   "devtools_page": "devtools.html",
-  "permissions": ["storage"],
+  "permissions": ["storage", "nativeMessaging"],
   "host_permissions": ["https://www.google-analytics.com/*"],
   "background": {
     "service_worker": "extension/background.js",

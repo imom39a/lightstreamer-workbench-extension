@@ -5,6 +5,7 @@ import type {
   ScenarioCommittedBoundaryFeed,
   ScenarioCommittedBoundarySnapshot
 } from "../../core/local-injection-scenario-checkpoint";
+import type { AgentRuntime, AgentDraftInput } from "./agent-runtime";
 import {
   toBulkShareableEventEnvelope,
   type LightstreamerEventEnvelope
@@ -801,6 +802,7 @@ export type WorkbenchCommand =
  * the runtime implementation.
  */
 export interface WorkbenchRuntime {
+  readonly agent?: AgentRuntime;
   getSnapshot(): WorkbenchSnapshot;
   subscribe(listener: () => void): () => void;
   dispatch(command: WorkbenchCommand): void;
@@ -1026,6 +1028,110 @@ export function createWorkbenchRuntime(options: WorkbenchRuntimeOptions = {}): W
 }
 
 class Runtime implements WorkbenchRuntime {
+  readonly agent: AgentRuntime = {
+    status: () => ({ pageEpoch: this.currentPageEpoch, visible: this.visible, captureStatus: this.captureStatus, capture: this.captureSnapshot(), history: this.history.status() }),
+    scopes: (offset, limit) => {
+      const scope = this.scopeSnapshot();
+      return { total: scope.structure.length, offset, nodes: scope.structure.slice(offset, offset + limit).map(node => scope.resolveNode(node.id)) };
+    },
+    scope: (id) => {
+      const scope = this.scopeSnapshot();
+      const node = scope.resolveNode(id);
+      if (!node) throw new Error("Scope is unavailable in this Panel Session.");
+      const candidate = authoredDraftFromScope(findTopologySelection(this.topologyProjection.snapshot(), id), this.currentPageEpoch);
+      return { node, pageEpoch: this.currentPageEpoch, localInjection: candidate ? { anchor: candidate.anchor, document: createLocalInjectionDocumentFromDraft(candidate.draft), diagnostics: this.validateLocalInjectionTarget(candidate.anchor) } : { unavailable: "Authoring requires a live COMMAND item with a captured delivery context. Use captured Evidence for other supported modes." } };
+    },
+    query: async (input) => {
+      const target = input.scopeId ? findTopologySelection(this.topologyProjection.snapshot(), input.scopeId) : null;
+      if (input.scopeId && !target) throw new Error("Scope is unavailable.");
+      const result = await this.evidenceQuery.query({
+        at: input.at, scope: input.scopeId ? structuralEvidenceScope(target) : { kind: "PAGE" },
+        filter: { ...createFilter(), text: input.text ?? "" },
+        page: { order: "OLDEST_FIRST", size: input.size, ...(input.cursor ? { cursor: input.cursor } : {}) },
+        discover: [], includePayload: input.includePayload,
+        ...(input.lookup ? { lookup: input.lookup } : {})
+      });
+      if (!result.ok) throw new Error(`${result.problem.code}: ${result.problem.message}`);
+      return result.value;
+    },
+    diagnostics: async (after) => {
+      await this.diagnosticObservationSettlement;
+      return this.diagnosticObservations.query({ after, through: this.diagnosticObservations.currentBoundary() });
+    },
+    prepare: (steps, scenario, pageEpoch, stillAuthorized) => this.prepareAgentDrafts(steps, scenario, pageEpoch, stillAuthorized),
+    edit: (document, stepId) => {
+      if (this.scenarioState) {
+        if (!stepId || !this.scenarioState.scenario.steps.some(step => step.id === stepId)) throw new Error("Choose an exact Scenario Step.");
+        this.dispatch({ type: "edit-scenario" });
+        this.setScenarioStepJson(stepId, document);
+        this.reviewCurrentScenario();
+      } else this.setLocalInjectionJson(document);
+    },
+    local: () => this.localInjectionSnapshot(),
+    scenario: () => this.scenarioState ? {
+      phase: this.scenarioState.phase, scenario: this.scenarioState.scenario,
+      run: this.scenarioState.run, runner: this.scenarioState.runnerSnapshot,
+      membershipError: this.scenarioState.membershipError
+    } : null,
+    execute: () => this.executeLocalInjection(),
+    control: (action) => {
+      const types = { step: "step-next-scenario", play: "play-scenario", pause: "pause-scenario", stop: "stop-scenario", "re-review": "re-review-scenario" } as const;
+      this.dispatch({ type: types[action] });
+    },
+    finish: () => this.scenarioState ? this.finishScenario() : this.finishLocalInjection()
+  };
+
+  private async prepareAgentDrafts(inputs: AgentDraftInput[], scenario: boolean, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
+    const available = () => {
+      if (!stillAuthorized()) throw new Error("Agent access was revoked while preparing the document.");
+      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("Page changed or panel is hidden/closed. Inspect the current target again.");
+      if (this.localInjectionDraft || this.scenarioState || this.serverInjectionDraft) throw new Error("A protected Draft or Scenario already exists. Finish it in Workbench before creating another.");
+    };
+    available();
+    const candidates: LocalInjectionDraftState[] = [];
+    for (const input of inputs) {
+      if (Boolean(input.scopeId) === Boolean(input.evidence)) throw new Error("Choose exactly one Scope or Evidence source for each Step.");
+      let source: LightstreamerEventEnvelope | undefined;
+      if (input.evidence) {
+        const identity = input.evidence;
+        const result = await this.agent.query({ at: "LATEST_COMMITTED", size: 1, includePayload: true, lookup: identity });
+        if (result.lookup?.state !== "RETAINED") throw new Error("Source Evidence is no longer retained.");
+        source = lightstreamerPayload(result.lookup.evidence.payload) ?? undefined;
+        if (!source) throw new Error("Source has no complete Item Update payload.");
+      }
+      available();
+      const candidate = this.createLocalInjectionCandidate(input.evidence ? { kind: "selected-event", eventId: input.evidence.eventId } : { kind: "scope-author", scopeId: input.scopeId! }, source);
+      if (!candidate) throw new Error(this.localInjectionEntryError ?? "Local Injection target is unavailable.");
+      if (input.document !== undefined) {
+        candidate.rawText = input.document;
+        // Match ordinary editor semantics: only concrete user-supplied replacements become executable.
+        this.refreshLocalInjectionValidation(candidate);
+      }
+      candidate.relativeDelayMs = input.delayMs ?? 0;
+      candidates.push(candidate);
+    }
+    available();
+    if (scenario) {
+      // Validate membership and capacity before publishing any document.
+      let definition = createScenarioFromDraft(this.scenarioDraftInput(candidates[0]!), { scenarioId: `local-injection-scenario-${++this.localInjectionSequence}` });
+      for (const candidate of candidates.slice(1)) {
+        const added = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: 0 });
+        if (!added.ok) throw new Error(added.reason);
+        definition = added.scenario;
+      }
+      this.localInjectionDraft = candidates[0]!;
+      this.convertLocalInjectionToScenario();
+      const state = this.scenarioState!;
+      state.scenario = definition;
+      state.drafts = new Map(definition.steps.map((step, index) => [step.id, candidates[index]!]));
+      state.focusedStepId = definition.steps[0]!.id;
+      state.focusedMemberId = state.focusedStepId;
+      this.reviewCurrentScenario();
+    } else {
+      this.localInjectionDraft = candidates[0]!;
+      this.publish();
+    }
+  }
   private readonly history: EventHistory;
   private readonly evidencePipeline: CommittedEvidencePipeline;
   private readonly scheduler: WorkbenchRuntimeScheduler;
@@ -3983,12 +4089,13 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private createLocalInjectionCandidate(
-    intent: LocalInjectionEntryIntent
+    intent: LocalInjectionEntryIntent,
+    sourceOverride?: LightstreamerEventEnvelope
   ): LocalInjectionDraftState | null {
     const sourceEvent = intent.kind === "selected-event"
-      ? this.selectedEventEnvelope?.id === intent.eventId
+      ? sourceOverride ?? (this.selectedEventEnvelope?.id === intent.eventId
         ? this.selectedEventEnvelope
-        : this.displayedEvidence().events.find(({ id }) => id === intent.eventId) ?? null
+        : this.displayedEvidence().events.find(({ id }) => id === intent.eventId) ?? null)
       : null;
     let baseDraft: ReinjectionDraft | null = null;
     let anchor: WorkbenchLocalInjectionAnchor | null = null;

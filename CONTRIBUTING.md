@@ -5,7 +5,7 @@ Thank you for helping improve Lightstreamer Workbench. This project is a Chrome 
 ## Ground Rules
 
 - Keep the core model Lightstreamer-native. Do not add app-specific business objects to core capture, normalization, or COMMAND state modules.
-- Preserve the captured-data privacy boundary. Inspected URLs, Lightstreamer addresses, captured values/identifiers, search text, Injection Drafts, and raw errors must stay local. Product analytics, remote logging, account sign-in, or any other off-device upload require an explicit design decision, policy update, and maintainer approval before implementation.
+- Preserve the captured-data privacy boundary. Captured Evidence stays local unless the user deliberately exports it or grants the documented Agent access. Requested agent data may reach the agent's model provider. Additional analytics, remote logging, account sign-in, or other off-device upload require an explicit design decision, policy update, and maintainer approval before implementation.
 - Treat Local Injection as local delivery through a captured listener or captured WebSocket. Do not imply that either path injects data into the real Lightstreamer Server stream.
 - Respect the official distribution boundary. Source forks are allowed under the project license, but the official Chrome Web Store item is published by maintainers only.
 - Prefer focused pull requests with clear user impact and test coverage.
@@ -90,6 +90,12 @@ Then load the extension:
 If the target page created Lightstreamer clients before the extension was loaded, refresh the page with DevTools open so instrumentation can attach early.
 
 ## Lightstreamer Fixture
+
+For the agent interface, run `npm run agent:build` and `npm run agent:test:browser`.
+The latter adds real MCP stdio and Chrome Native Messaging to the complete
+official-client browser proof, with registration contained in its disposable
+test profile. It never changes the user's agent configuration. See the
+[companion guide](agent/README.md) and [agent-access ADR](docs/adr/0016-panel-owned-agent-access.md).
 
 The fixture path requires a project-supported Node.js release (`20.19+` or `22.12+`), Docker Desktop/Engine, Maven on `PATH`, and Chrome for Testing or Chromium. Install the dedicated test browser once with the cross-platform Puppeteer installer:
 

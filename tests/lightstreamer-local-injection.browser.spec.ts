@@ -19,6 +19,7 @@ import {
   waitForExtensionPanelTarget
 } from "./support/chrome-extension-cdp";
 import { waitForWorkbenchPanel } from "./support/devtools-panel";
+import { proveAgentFixture } from "./support/workbench-agent-proof";
 
 type CaptureMessage = {
   kind?: string;
@@ -162,6 +163,8 @@ async function runBrowserProof(): Promise<void> {
     const listenerFallbackMessage = "Listener Local Injection with acknowledged fallback feedback.";
     await injectFromLatestServerEvidence(panelCdp, listenerFallbackMessage);
     await waitForRenderedMessage(pageCdp, listenerFallbackMessage, 2);
+
+    if (process.env.LSEW_AGENT_BROWSER_PROOF === "1") await proveAgentFixture(rootDir, profileDir, panelCdp, pageCdp);
 
     console.log(
       "Local Injection transport proof passed: wire direct + message-channel fallback + listener fallback."

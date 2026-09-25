@@ -1,0 +1,10 @@
+{
+  "name": "@lightstreamer-workbench/agent",
+  "version": "0.1.0",
+  "description": "Local MCP and Chrome Native Messaging companion for Lightstreamer Workbench",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22.12.0" },
+  "bin": { "lightstreamer-workbench-agent": "dist/cli.mjs" },
+  "files": ["dist", "skills", "README.md", "LICENSE"]
+}

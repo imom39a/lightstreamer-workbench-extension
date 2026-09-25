@@ -51,7 +51,7 @@ only deliberate History Interval reset.
 
 ## What It Does Not Do
 
-- It does not send inspected URLs, Lightstreamer addresses, captured values, search text, Injection Drafts, or raw error details to this project, the maintainers, analytics services, or any external backend.
+- It does not send inspected-page Evidence to this project, the maintainers, or analytics services. Optional Agent access deliberately shares requested data with your local agent and its configured model provider.
 - It does not intentionally keep captured events after the current Panel Session. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
 - It does not inject an arbitrary Item Update into the real Lightstreamer server stream. Server Injection sends a Client Message through `LightstreamerClient.sendMessage`; only the server-side application decides what that message does.
 - It does not automatically retry Server Injection. An Unknown outcome remains terminal until you deliberately prepare a separate Repeat, which may duplicate server-side effects.
@@ -72,6 +72,25 @@ Use this extension to:
 - Test a Lightstreamer integration in Chrome DevTools.
 
 This is not a generic WebSocket inspector and is not a replacement for a Lightstreamer server, Data Adapter, or backend test harness.
+
+## Agent access (source candidate)
+
+The [local MCP companion](agent/README.md) lets agents inspect connected Panel
+Sessions, query retained Evidence and diagnostics, and prepare and execute Local
+Injections or single-target Scenarios. It uses Chrome Native Messaging; WebMCP
+flags and a remote debugging port are not required for this connection.
+
+Build with `npm run agent:build`, follow the companion setup, then explicitly
+connect **More actions → Agent access** in the inspected tab's Workbench panel.
+Inspection-only is the default grant. Local Injection is a separate choice;
+Server Injection and arbitrary page evaluation are not exposed. Access ends
+with the Panel Session. Requested application data can reach your model provider.
+
+The [agent skill](.agents/skills/lightstreamer-workbench/SKILL.md) teaches target
+selection, Evidence limits, deliberate reproduction, timeout recovery and
+verification of the app through separately connected browser tools. The companion
+currently supports macOS and Linux with Node 22.12+. This source implementation
+does not imply Chrome Web Store publication.
 
 ## Open Source And Contributions
 

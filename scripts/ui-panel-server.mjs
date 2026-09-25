@@ -59,6 +59,7 @@ import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-r
 import { createAnalyticsClient } from ${source("src/extension/analytics/client.ts")};
 import { observeWorkbenchAnalytics } from ${source("src/extension/analytics/observer.ts")};
 import { getWorkbenchScenario, isWorkbenchScenarioId } from ${source("tests/support/workbench-scenarios.ts")};
+import { agentConnectionFixture } from ${source("tests/support/agent-connection-fixture.ts")};
 
 const params = new URLSearchParams(window.location.search);
 const scenarioId = params.get("scenario") ?? "live-selected";
@@ -225,7 +226,8 @@ const presentationRuntime = {
   reportVisibleFrame: runtime.reportVisibleFrame?.bind(runtime),
   reportPanelPerformanceEvent: runtime.reportPanelPerformanceEvent?.bind(runtime)
 };
-reactRoot.render(createElement(WorkbenchPanel, { runtime: presentationRuntime, analytics }));
+const agentConnection = params.has("agent") ? agentConnectionFixture(params.get("agent") === "error") : undefined;
+reactRoot.render(createElement(WorkbenchPanel, { runtime: presentationRuntime, analytics, agentConnection }));
 window.__analyticsEvents = () => analyticsEvents;
 window.addEventListener("pagehide", () => { analyticsObserver.dispose(); analytics.dispose(); }, { once: true });
 

@@ -8,6 +8,10 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
+    "agent:build": "node scripts/build-agent.mjs",
+    "agent:install": "node agent/dist/cli.mjs install",
+    "agent:mcp": "node agent/dist/cli.mjs mcp",
+    "agent:test:browser": "node scripts/test-agent-browser.mjs",
     "build": "node scripts/build-extension.mjs",
     "analytics:validate": "node scripts/validate-analytics.mjs",
     "site:build": "node scripts/build-site.mjs",
@@ -50,6 +54,7 @@
     "docs:check": "node scripts/check-docs.mjs"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "@playwright/test": "^1.55.0",
     "@puppeteer/browsers": "^2.10.10",
     "@types/chrome": "^0.0.316",

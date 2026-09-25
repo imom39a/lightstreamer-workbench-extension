@@ -30,6 +30,8 @@ import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { UNAVAILABLE_ANALYTICS, type AnalyticsClient } from "../../analytics/client";
 import { UsageAnalytics } from "./usage-analytics";
+import { AgentAccess } from "./agent-access";
+import type { AgentConnection } from "../agent-connection";
 import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
 import { NotificationsDocument } from "./notifications-document";
@@ -53,7 +55,7 @@ const LazyServerInjectionDocument = lazy(async () => {
   return { default: module.ServerInjectionDocument };
 });
 
-export type WorkbenchPanelProps = { runtime: WorkbenchRuntime; analytics?: AnalyticsClient };
+export type WorkbenchPanelProps = { runtime: WorkbenchRuntime; analytics?: AnalyticsClient; agentConnection?: AgentConnection };
 
 type ScopeNode = WorkbenchSnapshot["scope"]["nodes"][number];
 type ScopeTreeEntry = { node: ScopeNode; index: number };
@@ -612,7 +614,7 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 /** React presentation for the Slice 1 read-only Scoped Evidence Workspace. */
-export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: WorkbenchPanelProps): JSX.Element {
+export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, agentConnection }: WorkbenchPanelProps): JSX.Element {
   const subscribe = useMemo(() => (listener: () => void) => {
     runtime.reportPanelPerformanceEvent?.({ type: "subscription-active", active: true });
     const unsubscribe = runtime.subscribe(listener);
@@ -2100,6 +2102,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS }: W
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? `Selected Evidence · ${selected.source}` : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div>{contextMode !== "actions" ? <button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button> : null}{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
           <div className="workbench-react__context-body" ref={contextBody}>
             {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
+              <AgentAccess connection={agentConnection} />
               <p>The current Panel Session owns one temporary Event History using <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong>. Closing attempts controlled erasure; abnormal termination relies on guarded cleanup, and residual data may remain until the extension next runs.</p>
               <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}). Client Message bodies and outcome text are always redacted from this bulk copy.</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading retained Evidence: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy retained scoped Evidence</button>}</section>
               <section className="workbench-react__operations-danger"><h3>Clear retained Evidence</h3><p>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>{snapshot.retention.clearState === "confirming" ? <div className="workbench-react__confirmation"><strong>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button className="workbench-react__confirmation-primary" type="button" onClick={() => dispatch(runtime, { type: "confirm-clear-history" })}>Clear retained events</button><button type="button" onClick={() => dispatch(runtime, { type: "cancel-clear-history" })}>Keep Evidence</button></div></div> : <button type="button" onClick={() => dispatch(runtime, { type: "request-clear-history" })}>Clear retained Evidence…</button>}</section>

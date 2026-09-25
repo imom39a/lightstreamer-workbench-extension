@@ -77,7 +77,7 @@ Architecture not yet mapped. Follow existing patterns found in the codebase.
 
 ## Project Skills
 
-No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/` with a `SKILL.md` index file.
+Use [lightstreamer-workbench](.agents/skills/lightstreamer-workbench/SKILL.md) when investigating a connected Workbench Panel Session, reproducing Item Updates through the agent interface, or verifying the inspected app's response.
 
 ## Agent skills
 
