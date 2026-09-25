@@ -160,4 +160,19 @@ Evidence collected:
   shared workspace during final packaging; they are excluded from this change,
   and the pushed commit receives clean-checkout platform verification below.
 
-Windows/Linux CI results will be recorded after completion.
+### Clean-checkout Windows and Linux acceptance
+
+[Portable companion CI run 36164813139](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36164813139)
+passed on **windows-latest and ubuntu-latest** for commit
+`8b4a37401e77fa8386e66eceea12eecfa0203eff`, using Node 22.12.0. Both jobs
+passed type checking, all 30 focused agent tests and real loaded-Chrome proofs
+for authentication off and optional authentication, including inspected-page
+identity, Evidence queries and revocation without native registration. Windows
+also passed the documented PowerShell setup checks: no credential in the default
+configuration, a credential in opt-in configuration and the Windows guide in the
+companion package. These clean checkouts exclude the concurrent workspace edits.
+
+Internal tracking: `agent-auth-01 — Make standalone companion authentication optional`
+in [Lightstreamer Workbench Project #2](https://github.com/users/imom39a/projects/2).
+This verification does not publish a release or modify an installed user's MCP
+configuration; existing setups use the migration instructions in `agent/WINDOWS.md`.
