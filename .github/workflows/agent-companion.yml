@@ -36,7 +36,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Prove portable pairing, security, process startup and MCP routing
+      - name: Prove direct connection, optional authentication, process startup and MCP routing
         run: npx vitest run tests/agent-portable.test.ts tests/agent-connection.test.ts tests/agent-runtime.test.ts --maxWorkers=1
       - name: Check documented Windows setup and packaged guide
         if: runner.os == 'Windows'
@@ -50,7 +50,9 @@ jobs:
           $workbenchSetup = & $workbenchNode $workbenchCli setup --extension-id $workbenchExtensionId | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Setup failed.' }
           $entry = $workbenchSetup.mcpServers.'lightstreamer-workbench'
-          if ($entry.command -ne $workbenchNode -or $entry.args[0] -ne $workbenchCli -or $entry.env.LSEW_AGENT_CONNECTION -notmatch '^wb1:24817:[a-f0-9]{64}$') { throw 'Unexpected generated configuration.' }
+          if ($entry.command -ne $workbenchNode -or $entry.args[0] -ne $workbenchCli -or $entry.env -or $workbenchSetup.auth -ne 'off') { throw 'Default setup must not require credentials.' }
+          $authenticatedSetup = & $workbenchNode $workbenchCli setup --auth required --extension-id $workbenchExtensionId | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $authenticatedSetup.mcpServers.'lightstreamer-workbench'.env.LSEW_AGENT_CONNECTION -notmatch '^wb1:24817:[a-f0-9]{64}$') { throw 'Optional authentication configuration failed.' }
           $package = npm.cmd pack ./agent --dry-run --json | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Package inspection failed.' }
           if ('WINDOWS.md' -notin $package[0].files.path) { throw 'Windows guide missing from package.' }

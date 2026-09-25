@@ -49,22 +49,31 @@ Use the [Support page](https://imom39a.github.io/lightstreamer-workbench-extensi
 Optional Agent access deliberately transfers requested data to a local MCP
 client and potentially its model provider. It starts off per Panel Session,
 uses explicit read or Local Injection grants, exact runtime targets, bounded
-messages and transport authentication. Standalone mode binds only `127.0.0.1`,
-checks the exact Host/path and configured extension Origin, rejects website
-origins, and mutually authenticates agent clients with role-bound HMAC-SHA-256
+messages and optional transport authentication. Standalone authentication is
+off by default at the maintainer's request to simplify local setup. Any local
+process can use a connected panel's grant or impersonate the companion; this
+mode does not isolate OS users or agents. Standalone mode still binds only
+`127.0.0.1`, checks exact Host/path and configured extension Origin, and rejects
+ordinary website origins. Those checks are not local-process authentication:
+a local program can spoof an Origin. Use a trusted development host or opt in
+with `setup --auth required` and **Require authentication** in the panel.
+
+Optional authenticated mode mutually authenticates agent clients with HMAC-SHA-256
 challenges and fresh nonces. The generated 256-bit credential stays out of URLs
 and network messages; it lives in the agent client's configuration, never a
 Workbench input field. Panel connections derive a short comparison code from
 fresh committed ECDH keys and a connection-bound transcript. The user compares
 the code shown by Workbench and the agent, then approves in Workbench; the
-authenticated agent must confirm the same request before any Evidence access.
+authenticated agent must confirm the same request before Evidence access in this mode.
 Requests expire after two minutes and cancellation discards them. The displayed
 code is not the private MCP credential. Local traffic is not encrypted.
 Possession of the MCP credential plus local access can use an approved panel's
 grant; this is not an individual-agent identity
 or a defense against a compromised browser, local administrator or local agent.
 No native installer, registry mutation or persistent companion credential file
-is needed. Stop clients and disconnect panels before rotating pairing configuration.
+is needed. Stop clients and disconnect panels before changing authentication
+modes or rotating credentials. A credential-bearing MCP configuration continues
+to require authentication; neither side silently downgrades after a failed handshake.
 
 The optional native path retains its private per-user Unix socket and exact
 native-host origin allowlist; it trusts processes running as the same OS user.

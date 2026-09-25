@@ -7,7 +7,7 @@ export interface BrokerPeer {
   close(): void;
 }
 
-/** Transports authenticate peers before joining. Routing never owns Capture or grants. */
+/** Transports enforce their configured connection policy before joining. Routing never owns Capture or grants. */
 export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Message): unknown }) {
   const panels = new Map<string, { peer: BrokerPeer; session: Message }>();
   const pending = new Map<string, { client: BrokerPeer; panel: BrokerPeer; id: string; timer: NodeJS.Timeout }>();
@@ -40,7 +40,7 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
             if (message.name === "list_panel_sessions") { send(peer, { id: message.id, result: [...panels.values()].map(panel => panel.session) }); return; }
             if (message.name === "get_pairing_requests") { send(peer, { id: message.id, result: pairing?.list() ?? [] }); return; }
             if (message.name === "confirm_pairing") {
-              if (!pairing) throw new Error("Pairing approval is only used by the standalone companion.");
+              if (!pairing) throw new Error("Pairing approval is only used when standalone authentication is required. Use list_panel_sessions for connected panels.");
               const id = message.id;
               void Promise.resolve(pairing.confirm(message.args as Message)).then(
                 result => send(peer, { id, result }),

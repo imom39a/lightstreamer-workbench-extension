@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentConnection } from "../src/extension/panel/agent-connection";
 import type { WorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
 import type { AgentRuntime } from "../src/extension/panel/agent-runtime";
-import type { CompanionChannel } from "../src/agent/portable-channel";
+import { connectPortable, type CompanionChannel } from "../src/agent/portable-channel";
 import { beginPanelPairing } from "../src/agent/panel-pairing";
 
 vi.mock("../src/agent/panel-pairing", () => ({ beginPanelPairing: vi.fn() }));
+vi.mock("../src/agent/portable-channel", () => ({ connectPortable: vi.fn() }));
 
 afterEach(() => vi.unstubAllGlobals());
 function fixture() {
@@ -20,6 +21,21 @@ function fixture() {
   return { connection, port, agent, connectNative, unsubscribe, receive: (value: unknown) => receive.forEach(callback => callback(value)), closed: () => disconnect.forEach(callback => callback()) };
 }
 describe("per-panel agent grants", () => {
+  it("defaults to standalone without authentication and keeps access off until the broker is ready", async () => {
+    const f = fixture(); let read!: (message: Record<string, unknown>) => void;
+    const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: callback => { read = callback; }, onClose: vi.fn() };
+    vi.mocked(connectPortable).mockResolvedValueOnce(channel);
+    f.connection.connect("read");
+    expect(f.connection.getSnapshot().permission).toBe("off");
+    await vi.waitFor(() => expect(channel.send).toHaveBeenCalled());
+    expect(connectPortable).toHaveBeenCalledWith({ auth: "off", port: 24817 }, "panel");
+    expect(f.connectNative).not.toHaveBeenCalled();
+    read({ type: "ready" });
+    expect(f.connection.getSnapshot()).toMatchObject({ status: "connected", permission: "read", auth: "off" });
+    f.connection.disconnect(); expect(channel.close).toHaveBeenCalledOnce();
+    read({ type: "ready" }); expect(f.connection.getSnapshot().permission).toBe("off");
+    f.connection.dispose();
+  });
   it("uses the portable channel without contacting a native host and revokes on connection loss", async () => {
     const f = fixture(); let read!: (message: Record<string, unknown>) => void; let closed!: () => void;
     const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: callback => { read = callback; }, onClose: callback => { closed = callback; } };
@@ -29,7 +45,7 @@ describe("per-panel agent grants", () => {
       queueMicrotask(() => showCode({ requestId: "pending", code: "1234 5678", expiresAt: Date.now() + 120000 }));
       return { ready: new Promise(resolve => { complete = resolve; }), approve, close: vi.fn() };
     });
-    f.connection.connect("local", { transport: "portable" });
+    f.connection.connect("local", { transport: "portable", auth: "required" });
     await vi.waitFor(() => expect(f.connection.getSnapshot().status).toBe("pairing"));
     expect(f.connection.getSnapshot().permission).toBe("off");
     f.connection.approvePairing(); expect(approve).toHaveBeenCalledOnce();
@@ -42,10 +58,12 @@ describe("per-panel agent grants", () => {
     expect(f.connection.getSnapshot().detail).not.toContain("private-test-code");
     f.connection.dispose();
   });
-  it("cannot restore a grant when pairing resolves after the user disconnects", async () => {
+  it.each(["off", "required"] as const)("cannot restore a grant when auth %s connection resolves after the user disconnects", async auth => {
     const f = fixture(); let resolve!: (channel: CompanionChannel) => void;
-    vi.mocked(beginPanelPairing).mockReturnValueOnce({ ready: new Promise(done => { resolve = done; }), approve: vi.fn(), close: vi.fn() });
-    f.connection.connect("local", { transport: "portable" });
+    const ready = new Promise<CompanionChannel>(done => { resolve = done; });
+    if (auth === "required") vi.mocked(beginPanelPairing).mockReturnValueOnce({ ready, approve: vi.fn(), close: vi.fn() });
+    else vi.mocked(connectPortable).mockReturnValueOnce(ready);
+    f.connection.connect("local", { transport: "portable", auth });
     f.connection.disconnect();
     const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: vi.fn(), onClose: vi.fn() };
     resolve(channel);
@@ -56,7 +74,7 @@ describe("per-panel agent grants", () => {
   it("starts off, shares exact page identity only after connect, and closes with the panel", async () => {
     const f = fixture();
     expect(f.connectNative).not.toHaveBeenCalled();
-    f.connection.connect("read");
+    f.connection.connect("read", { transport: "native" });
     expect(f.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ panelSessionId: "panel-1", permission: "read", tabId: 7 }));
     f.receive({ type: "ready" });
     f.receive({ id: "status", name: "get_status", args: { panelSessionId: "panel-1" } });
@@ -67,7 +85,7 @@ describe("per-panel agent grants", () => {
   it("drops delayed replies when the native connection is revoked", async () => {
     const f = fixture(); let release!: (value: unknown) => void;
     f.agent.diagnostics = () => new Promise(resolve => { release = resolve as (value: unknown) => void; });
-    f.connection.connect("read"); f.receive({ type: "ready" });
+    f.connection.connect("read", { transport: "native" }); f.receive({ type: "ready" });
     f.receive({ id: "old-read", name: "query_diagnostics", args: { panelSessionId: "panel-1" } });
     f.connection.disconnect();
     release({ observations: [] });

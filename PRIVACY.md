@@ -50,22 +50,26 @@ general secret detector: other Item Update values, identifiers, diagnostics,
 and the inspected URL's origin/path can remain private application data. URL
 query strings and fragments are not included in the page descriptor.
 
-The grant applies to paired local clients, not to a verified individual agent
-identity. In standalone mode, anyone with the private MCP credential and local
-access can use the grant. Disconnect revokes access and pauses an
+The grant does not identify an individual agent. Standalone authentication is
+off by default: any local process can use a connected panel's grant or impersonate
+the companion. Loopback/Origin checks do not isolate local processes or OS users.
+Use a trusted development machine or opt into authentication. Disconnect revokes access and pauses an
 agent Scenario, but cannot undo an update already sent. Closing the panel loses
 the temporary operation ledger; unknown delivery is never automatically retried.
-Standalone setup only prints private MCP configuration; it writes no files or
-registry entries. The agent client stores the generated credential in its own
-configuration; Workbench never asks for or stores it. Workbench displays a fresh
-short comparison code instead. Compare it with the agent's code and click
-Approve; the agent must also confirm that exact request before access is granted.
-Codes expire after two minutes, and cancellation grants no access. The companion
-binds exclusively to `127.0.0.1`; the MCP credential is used for mutual agent
-challenge-response authentication, never sent over the socket or included in a
-URL. Requested data then crosses a local, unencrypted WebSocket. There is no
-remote listener or HTTP tool endpoint. Keep the private MCP configuration secret;
-the temporary comparison code is intended to be displayed to you by the agent.
+Standalone setup only prints MCP configuration; it writes no files or registry
+entries. The default output requires no credential or approval exchange.
+The companion binds exclusively to `127.0.0.1`; requested data crosses a local,
+unencrypted WebSocket. There is no remote listener or HTTP tool endpoint.
+
+Authentication remains available with `setup --auth required` and the panel's
+**Require authentication** option. In that mode, the agent client stores a private
+credential in its configuration; Workbench never asks for or stores it. Agent
+authentication uses challenge-response without putting the credential in a URL
+or socket message. Compare Workbench's short code with the agent's code and
+click Approve; the agent must confirm that exact request before access. Requests
+expire after two minutes. Keep the private credential secret; possession plus
+local access can use a connected panel's grant. Existing credential-bearing
+configurations remain authenticated until explicitly changed.
 
 Optional native installation on macOS/Linux creates a native-host registration
 and launcher, with a private temporary socket, access token and startup lock.
@@ -96,8 +100,8 @@ The analytics candidate adds the `storage` permission for the usage preference a
 
 The Agent access candidate retains `nativeMessaging` for the optional installed
 native host. The standalone path does not use that permission or register a host.
-Its loopback WebSocket accepts the configured extension origin and authenticated
-local agents, not ordinary website origins. Both paths require the exact extension
+Its loopback WebSocket accepts the configured extension origin and local agents,
+not ordinary website origins; agent authentication is optional. Both paths require the exact extension
 id; neither exposes a remote debugging port.
 
 Document each permission change in the pull request and release notes. Chrome Web Store review includes extension permissions.

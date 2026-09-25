@@ -5,8 +5,13 @@ No Workbench installer, native messaging registration, registry changes, Windows
 service, administrator terminal, WebMCP flag or remote-debugging port is needed.
 The companion is an MCP tool server; your existing coding agent supplies the model.
 
-After one-time setup, the daily flow is **Connect → compare the displayed codes
-→ Approve**. You never type or paste a code into Workbench.
+After one-time MCP setup, the daily flow is **Connect agent**. Authentication is
+off by default: no credential, code comparison or approval exchange is required.
+Any local process can use a connected panel's grant. Use this default on a trusted
+development machine; optional authentication remains available below.
+
+Already configured the older authenticated version? Jump to
+[Switch an existing setup to auth off](#switch-an-existing-setup-to-auth-off).
 
 ## 1. Prepare Node and the extension
 
@@ -69,7 +74,7 @@ The companion tarball does not contain the Chrome extension. An older Store
 extension without that control cannot use it. Source availability does not
 imply that this feature has been published to the Chrome Web Store or npm.
 
-## 2. Generate your private MCP configuration
+## 2. Generate your MCP configuration
 
 Copy the exact extension ID shown on its `chrome://extensions` card. Unpacked
 builds may have a different ID from the Store extension.
@@ -80,20 +85,15 @@ $workbenchSetup = & $workbenchNode $workbenchCli setup --extension-id $workbench
 if ($LASTEXITCODE -ne 0) { throw 'Workbench setup failed; check the extension ID and paths.' }
 ```
 
-This captures the generated configuration in memory. To view it privately:
+Show the generated configuration:
 
 ```powershell
 $workbenchSetup | ConvertTo-Json -Depth 6
 ```
 
-`setup` prints configuration; it does not edit agent settings, write a credential
-file or start a service. Run it once for this connection. Each new invocation
-generates a different credential, so do not regenerate it during ordinary reconnects.
-
-The long `LSEW_AGENT_CONNECTION` value is a **private machine credential**, not
-the short comparison code. Keep it out of Git, shared screenshots, logs and chat.
-Workbench never asks you to enter it. Keep the Node and companion files at their
-configured paths, including after extracting an update.
+`setup` prints configuration; it does not edit agent settings or start a service.
+The default output has only a command and arguments—no credential or environment
+entry. Keep Node and the companion at these paths after extracting updates.
 
 ## 3. Configure your agent
 
@@ -104,9 +104,9 @@ Choose **stdio/local command**, not HTTP, SSE or a WebSocket URL. The agent star
 ### Clients using JSON MCP settings
 
 Merge the generated **`mcpServers` entry** into your client's existing settings,
-preserving its other servers. Do not paste the outer `port` or `next` fields.
+preserving its other servers. Do not paste the outer `port`, `auth` or `next` fields.
 Some clients use a different root key; adapt the wrapper, preserving `command`,
-`args` and `env`. A source-build example has this shape:
+`args`. A source-build example has this shape:
 
 ```json
 {
@@ -115,11 +115,9 @@ Some clients use a different root key; adapt the wrapper, preserving `command`,
       "command": "C:\\Tools\\node\\node.exe",
       "args": [
         "C:\\work\\lightstreamer-workbench-extension\\agent\\dist\\cli.mjs",
-        "mcp", "--extension-id", "YOUR_ACTUAL_EXTENSION_ID"
-      ],
-      "env": {
-        "LSEW_AGENT_CONNECTION": "COPY_THE_GENERATED_PRIVATE_VALUE_FROM_SETUP"
-      }
+        "mcp", "--extension-id", "YOUR_ACTUAL_EXTENSION_ID",
+        "--auth", "off", "--port", "24817"
+      ]
     }
   }
 }
@@ -140,10 +138,7 @@ backslashes literal. See [Codex MCP configuration](https://learn.chatgpt.com/doc
 ```toml
 [mcp_servers.lightstreamer-workbench]
 command = 'C:\Tools\node\node.exe'
-args = ['C:\work\lightstreamer-workbench-extension\agent\dist\cli.mjs', 'mcp', '--extension-id', 'YOUR_ACTUAL_EXTENSION_ID']
-
-[mcp_servers.lightstreamer-workbench.env]
-LSEW_AGENT_CONNECTION = 'COPY_THE_GENERATED_PRIVATE_VALUE_FROM_SETUP'
+args = ['C:\work\lightstreamer-workbench-extension\agent\dist\cli.mjs', 'mcp', '--extension-id', 'YOUR_ACTUAL_EXTENSION_ID', '--auth', 'off', '--port', '24817']
 ```
 
 Restart/reconnect the MCP server in your client after saving. With Codex CLI,
@@ -173,7 +168,7 @@ The skill teaches target selection, bounded Evidence queries, deliberate Local
 Injection, Scenarios, timeout recovery and separate browser verification. It does
 not configure MCP, grant browser permissions or approve a connection for you.
 
-## 5. Connect and approve
+## 5. Connect
 
 1. Open the application tab you intend to inspect. Open Chrome DevTools and
    select **Lightstreamer Workbench**. Reload the app if it created its
@@ -181,25 +176,17 @@ not configure MCP, grant browser permissions or approve a connection for you.
 2. Open **More actions → Agent access**. Keep **Standalone companion (no
    installation)** selected. Choose **Inspect Evidence** initially, or explicitly
    choose **Inspect and inject locally** when you intend to reproduce updates.
-3. Click **Connect agent**. Workbench shows an eight-digit comparison code.
-4. Ask your agent: “Use Lightstreamer Workbench. Show the pending connection code
-   from `get_pairing_requests` and wait for my approval.”
-5. Compare the entire code shown by the agent with the one in Workbench. Only
-   when they match, click **Approve connection** in Workbench. Nothing is entered.
-6. The agent reads the approved request and calls `confirm_pairing` with that
-   exact request ID and code, then calls `list_panel_sessions` and `get_status`
-   to identify your tab. **Connected · inspection only** or **Connected ·
+3. Click **Connect agent**. Leave **Require authentication** unchecked under
+   Connection options. No code or additional approval is needed.
+4. Ask your agent to call `list_panel_sessions` and `get_status` to identify
+   your tab. **Connected · inspection only** or **Connected ·
    inspection and Local Injection allowed** is the completion signal.
 
-No Evidence or inspected-page identity is shared before approval and confirmation
-complete. A code expires after two minutes. If it expires, is cancelled or does
-not match, start a fresh attempt and compare again. The agent must leave your
-Approve click to you. The short display code is safe to show in this exchange;
-it is not the long credential stored in MCP settings.
-
-Several agents using the same private configuration can access a granted Panel
-Session. The grant is not an individual-agent identity. Each panel has its own
-grant, and **Disconnect agent** revokes that panel's access.
+Connecting shares that panel's selected grant with local clients. Authentication
+off does not identify agents or the companion: another local process could use
+the grant or impersonate the companion. Loopback and extension-Origin checks
+still block remote connections and ordinary websites, but are not local-process
+authentication. Each panel has its own grant; **Disconnect agent** revokes it.
 
 ## 6. Inspect and reproduce
 
@@ -209,8 +196,8 @@ Start read-only:
 > Capture/Coverage and retention limits, and inspect the recent COMMAND updates
 > for the subscription I select. Do not inject anything yet.
 
-To reproduce, disconnect, select **Inspect and inject locally**, reconnect and
-approve the fresh code. Then give a bounded experiment, for example:
+To reproduce, disconnect, select **Inspect and inject locally**, and reconnect.
+Then give a bounded experiment, for example:
 
 > On this local test app, use the selected COMMAND subscription's real schema
 > to prepare an ADD followed by UPDATE for a test key. Show the target and changed
@@ -227,6 +214,63 @@ Requested Evidence can reach your agent's model provider. Recognized credentials
 and Client Message bodies are omitted, but arbitrary Item Update fields may still
 contain private data. Use data you are authorized to share.
 
+## Switch an existing setup to auth off
+
+An existing MCP entry containing `LSEW_AGENT_CONNECTION` remains authenticated;
+upgrading does not silently discard an explicit credential. To switch:
+
+1. Disconnect Workbench panels and stop only the matching Workbench MCP servers
+   in your agent clients. Allow 30 seconds with no connections for the old broker
+   to exit before starting the new configuration.
+2. Update/rebuild the extension and companion together. Run `setup` again
+   without `--auth required`, using the exact extension ID.
+3. Replace only the Workbench MCP entry with the new command and arguments.
+   Remove its old `LSEW_AGENT_CONNECTION` environment setting, including the
+   old `[mcp_servers.lightstreamer-workbench.env]` TOML table if that table
+   contains only that setting. If you manually exported the same variable,
+   clear it from the MCP process environment too.
+4. Restart the MCP server, reload the updated extension and open Workbench.
+   Leave **Require authentication** unchecked, then **Connect agent**.
+
+The two modes cannot share one port. A mode mismatch fails instead of silently
+downgrading authentication. You can use a different unused port for the new
+configuration if the old broker is still in use.
+
+## Optional: enable authentication
+
+This is not required for the default setup. To opt in, disconnect panels and
+stop matching clients, allow the old broker to exit, then generate configuration:
+
+```powershell
+$workbenchSetup = & $workbenchNode $workbenchCli setup --auth required --extension-id $workbenchExtensionId | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'Authenticated setup failed.' }
+$workbenchSetup | ConvertTo-Json -Depth 6
+```
+
+Preserve its generated `env.LSEW_AGENT_CONNECTION` in JSON clients. For Codex,
+use the generated command/arguments (including `--auth required`) and add:
+
+```toml
+[mcp_servers.lightstreamer-workbench.env]
+LSEW_AGENT_CONNECTION = 'COPY_THE_GENERATED_PRIVATE_VALUE_FROM_SETUP'
+```
+
+This long value is private: keep it out of Git, screenshots and chat. Each
+authenticated setup invocation generates a new credential; reuse the existing
+configuration for ordinary reconnects.
+
+In **Connection options**, enable **Require authentication**, then connect:
+
+1. Ask the agent to show `get_pairing_requests`.
+2. Compare its short code with Workbench's code and click **Approve connection**
+   only if they match. Nothing is typed. The agent must not click for you.
+3. The agent calls `confirm_pairing` with that exact approved request ID and
+   code, then discovers the panel. No Evidence is shared before both steps.
+
+Requests expire after two minutes. Cancelled, expired or mismatched requests need
+a fresh connection and comparison. Credential possession plus local access can
+use a connected panel's grant; this still is not individual-agent identity.
+
 ## Troubleshooting
 
 | Symptom | Check / recovery |
@@ -234,12 +278,12 @@ contain private data. Use data you are authorized to share.
 | `node.exe` not found or startup fails | Verify the absolute executable and `cli.mjs` paths. The Node ZIP may contain an extra directory. Check `--version` and companion `--help` independently. |
 | PowerShell blocks `npm.ps1` | Use the explicit `npm.cmd` commands above. No execution-policy change is required. |
 | No Agent access control | Load/reload a matching extension build, select its DevTools panel and confirm its ID. Older Store builds may not have the feature. |
-| Companion unavailable / no code | Confirm the MCP server is started, uses Windows Node on this host and has the generated environment entry. Confirm the exact extension ID and port. |
-| Identity/authentication failure after running setup again | A previous broker may still use the old credential. Disconnect panels and stop matching MCP clients, wait at least 30 seconds for the idle broker to exit, then restart using one matching configuration. Do not kill an unrelated process. |
-| Port 24817 is occupied | Choose another unused port with `setup --port 24818 --extension-id ...`, update the MCP configuration, and set the same port under Workbench's **Connection options**. Regenerating setup also rotates the private credential. |
-| `get_pairing_requests` is empty | Click Connect in the intended panel while the MCP server is running. Check that the request has not expired and the extension ID/port match. No active request does not prove the app lacks Lightstreamer. |
-| Waiting for agent / No access yet | Ask the agent to re-read pending requests and confirm the exact approved request and matching code. If expired, reconnect and compare the new code. |
-| `list_panel_sessions` is empty | Finish both approval steps. An installed/configured MCP server alone does not grant access. Keep the intended DevTools panel open. |
+| Companion unavailable | Confirm the MCP server is started with Windows Node on this host. Match the extension ID, port and authentication mode. Default mode has no environment entry or comparison code. |
+| Authentication error after changing modes | Follow the migration steps above. An old broker may still occupy the port. Do not kill an unrelated process. |
+| Port 24817 is occupied | Use `setup --port 24818 --extension-id ...`, update the MCP entry and set the same port in Workbench's **Connection options**. |
+| `get_pairing_requests` is empty | Expected with authentication off. Use `list_panel_sessions` instead. In optional authenticated mode, connect in Workbench and check expiry, ID and port. |
+| Waiting for agent / No access yet | Optional authenticated mode only: ask the agent to confirm the exact approved request and matching code. If expired, reconnect and compare again. |
+| `list_panel_sessions` is empty | Click Connect in the intended panel and keep it open. Only authenticated mode needs the additional code approval. An MCP configuration alone does not grant panel access. |
 | Local Injection is refused | Confirm the panel's Local Injection grant, current page/target, valid Draft and absence of conflicting human edits. Reconnect with the intended grant if necessary. |
 | A Scenario pauses or a call times out | Keep the panel visible and inspect its original operation/Run trace. A lost reply does not prove non-delivery; do not repeat with a new request ID automatically. |
 | Organization security software blocks loopback | Follow your organization's policy for this local process. Do not disable the firewall, add a public listener or bypass endpoint protection. |
@@ -252,19 +296,19 @@ Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 24817 -State Listen -Err
 ```
 
 A listener proves only that something occupies the port, not that it is the
-authenticated Workbench companion. `doctor` and `install` are for the optional
+Workbench companion. `doctor` and `install` are for the optional
 macOS/Linux native host and are not Windows setup or repair commands.
 
 ## Reconnect, update and remove
 
 Keep the same MCP configuration for normal reconnects. Closing/reloading a panel
 ends its Panel Session and temporary operation ledger; reconnecting cannot prove
-what an old unknown Injection did. Reopening requires fresh approval.
+what an old unknown Injection did. Reopening requires clicking Connect again.
 
 Before an update, disconnect panels and stop matching MCP clients. Update the
 companion and extension together, preserve their configured paths (or update the
-MCP entry), reload the extension and reconnect. To rotate credentials, wait for
-the old broker to exit, run setup and replace the private MCP entry.
+MCP entry), reload the extension and reconnect. Optional authenticated mode uses
+`setup --auth required` to rotate its credential after the old broker exits.
 
 To remove agent access, disconnect panels, remove its MCP entry and stop its
 matching clients. The broker exits after 30 seconds with no connections. Remove

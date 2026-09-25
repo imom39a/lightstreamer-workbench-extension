@@ -85,8 +85,10 @@ configuration, skill installation and troubleshooting.
 
 Build with `npm run agent:build`, follow the companion setup, then explicitly
 connect **More actions → Agent access** in the inspected tab's Workbench panel.
-Compare the code displayed by Workbench and your agent, then click **Approve
-connection**—there is no code to type or paste.
+Click **Connect agent**—authentication is off by default, with no credential,
+comparison code or approval exchange. Any local process can use a connected
+panel's grant. Authentication remains available through `setup --auth required`
+and the panel's **Connection options**.
 Inspection-only is the default grant. Local Injection is a separate choice;
 Server Injection and arbitrary page evaluation are not exposed. Access ends
 with the Panel Session. Requested application data can reach your model provider.

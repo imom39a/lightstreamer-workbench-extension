@@ -32,7 +32,7 @@ describe("local companion", () => {
     const panel = await client(location.path);
     send(panel.socket, { role: "panel", token: location.token, protocolVersion: 1, panelSessionId: "stdio-panel", permission: "read" }); await panel.next();
     const mcp = new Client({ name: "agent-test", version: "1" });
-    await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [cli, "mcp", "--directory", directory], stderr: "pipe" }));
+    await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [cli, "mcp", "--transport", "native", "--directory", directory], stderr: "pipe" }));
     cleanups.push(() => mcp.close());
     expect((await mcp.listTools()).tools.map(tool => tool.name)).toContain("prepare_scenario");
     const listed = await mcp.callTool({ name: "list_panel_sessions", arguments: {} });

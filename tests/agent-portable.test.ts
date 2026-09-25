@@ -76,6 +76,37 @@ async function beginApproval(code: string) {
 }
 
 describe("installer-free companion", () => {
+  it("connects without credentials or pairing when authentication is off, retaining exact panel grants", async () => {
+    const port = await freePort();
+    const broker = await startPortableBroker({ auth: "off", port }, extensionId); cleanups.push(() => broker.close());
+    const channel = await connectPortable({ auth: "off", port }, "agent"); cleanups.push(() => channel.close());
+    const replies: Record<string, unknown>[] = [];
+    channel.onMessage(value => replies.push(value)); channel.send({ role: "agent" });
+    await vi.waitFor(() => expect(replies.shift()).toEqual({ type: "ready" }));
+    channel.send({ id: "empty", name: "list_panel_sessions", args: {} });
+    await vi.waitFor(() => expect(replies.shift()).toMatchObject({ id: "empty", result: [] }));
+    const panel = await peer(port, { Origin: origin });
+    panel.send({ type: "connect", auth: "off", role: "panel" }); expect(await panel.next()).toEqual({ type: "connected", auth: "off" });
+    panel.send({ role: "panel", protocolVersion: 1, panelSessionId: "direct", permission: "read" }); await panel.next();
+    channel.send({ id: "visible", name: "list_panel_sessions", args: {} });
+    await vi.waitFor(() => expect(replies.shift()).toMatchObject({ result: [expect.objectContaining({ panelSessionId: "direct", permission: "read" })] }));
+    channel.send({ id: "pairing", name: "get_pairing_requests", args: {} });
+    await vi.waitFor(() => expect(replies.shift()).toMatchObject({ result: [] }));
+    const revoked = once(panel.socket, "close"); panel.socket.close(); await revoked;
+    await expect.poll(async () => {
+      channel.send({ id: "revoked", name: "list_panel_sessions", args: {} });
+      await vi.waitFor(() => expect(replies.length).toBe(1)); return replies.shift()?.result;
+    }).toEqual([]);
+  });
+  it("never falls back across authentication modes or accepts a no-Origin panel", async () => {
+    const { port } = await start();
+    await expect(connectPortable({ auth: "off", port }, "agent")).rejects.toThrow();
+    const directPort = await freePort();
+    const broker = await startPortableBroker({ auth: "off", port: directPort }, extensionId); cleanups.push(() => broker.close());
+    await expect(connectPortable(`wb1:${directPort}:${randomNonce()}`, "agent")).rejects.toThrow();
+    const impostor = await peer(directPort), closed = once(impostor.socket, "close");
+    impostor.send({ type: "connect", auth: "off", role: "panel" }); await closed;
+  });
   it("grants no access before a matching code, panel approval and authenticated agent confirmation", async () => {
     const { code } = await start(), pending = await beginApproval(code);
     const agent = await authenticate(code, "agent"); agent.send({ role: "agent" }); await agent.next();
@@ -153,8 +184,9 @@ describe("installer-free companion", () => {
     a.send({ id: "remaining", name: "list_panel_sessions", args: {} }); expect((await a.next()).result).toHaveLength(1);
   });
 
-  it("rejects website origins, wrong extension origins, rebinding hosts and URL credentials", async () => {
-    const { port } = await start();
+  it.each(["off", "required"] as const)("rejects website origins, wrong extension origins, rebinding hosts and URL credentials with auth %s", async auth => {
+    const port = await freePort();
+    const broker = await startPortableBroker(auth === "off" ? { auth, port } : `wb1:${port}:${randomNonce()}`, extensionId); cleanups.push(() => broker.close());
     for (const [path, headers] of [["/workbench", { Origin: "https://hostile.test" }], ["/workbench", { Origin: "null" }], ["/workbench", { Origin: `chrome-extension://${"b".repeat(32)}` }], ["/workbench", { Host: `attacker.test:${port}` }], ["/workbench?token=secret", {}]] as const) {
       const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers }); socket.on("error", () => {});
       const closed = new Promise<void>(resolve => socket.once("close", () => resolve()));
@@ -210,21 +242,30 @@ describe("installer-free companion", () => {
     expect(received.every(value => value.panelSessionId === undefined && value.permission === undefined)).toBe(true);
   });
 
-  it("runs the bundled Node CLI with spaces in its path and starts a shared portable broker", async () => {
+  it.each(["off", "required"] as const)("runs the bundled Node CLI with spaces in its path and a shared broker with auth %s", async auth => {
     const directory = await mkdtemp(join(tmpdir(), "lsew portable ")); cleanups.push(() => rm(directory, { recursive: true, force: true }));
     const cli = join(directory, "companion cli.mjs");
     await build({ entryPoints: [fileURLToPath(new URL("../src/agent/companion/cli.ts", import.meta.url))], outfile: cli, bundle: true, platform: "node", format: "esm", target: "node22", banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
     const port = await freePort();
-    const setup = JSON.parse(execFileSync(process.execPath, [cli, "setup", "--port", String(port), "--extension-id", extensionId], { encoding: "utf8" }));
+    const setup = JSON.parse(execFileSync(process.execPath, [cli, "setup", "--port", String(port), "--extension-id", extensionId, ...(auth === "required" ? ["--auth", "required"] : [])], { encoding: "utf8" }));
     const config = setup.mcpServers["lightstreamer-workbench"];
-    const credential = config.env[PAIRING_ENV];
-    expect(parsePairingCode(credential).port).toBe(port); expect(setup.port).toBe(port);
+    const credential = config.env?.[PAIRING_ENV];
+    if (auth === "required") expect(parsePairingCode(credential).port).toBe(port);
+    else expect(config.env).toBeUndefined();
+    expect(setup.port).toBe(port);
     expect(setup.pairingCode).toBeUndefined();
+    const invoke = (args: string[], value = "") => execFileSync(process.execPath, [cli, ...args], { env: { ...process.env, [PAIRING_ENV]: value }, stdio: "pipe" });
+    expect(() => invoke(["setup", "--auth", "optional"])).toThrow();
+    expect(() => invoke(["setup", "--port", "65536"])).toThrow();
+    expect(() => invoke(["mcp", "--auth", "required"])).toThrow();
+    expect(() => invoke(["mcp", "--auth", "off"], `wb1:${port}:${randomNonce()}`)).toThrow();
+    expect(() => invoke(["mcp", "--port", String(port === 24817 ? 24818 : 24817)], `wb1:${port}:${randomNonce()}`)).toThrow();
     const clients = [new Client({ name: "portable-a", version: "1" }), new Client({ name: "portable-b", version: "1" })];
     for (const client of clients) cleanups.push(() => client.close());
     await Promise.all(clients.map(client => client.connect(new StdioClientTransport({ ...config, stderr: "pipe" }))));
     expect((await clients[0]!.listTools()).tools.map(tool => tool.name)).toContain("prepare_scenario");
-    const panel = await authenticate(credential, "panel");
+    const panel = auth === "required" ? await authenticate(credential, "panel") : await peer(port, { Origin: origin });
+    if (auth === "off") { panel.send({ type: "connect", auth, role: "panel" }); expect(await panel.next()).toEqual({ type: "connected", auth }); }
     panel.send({ role: "panel", protocolVersion: 1, panelSessionId: "portable-cli", permission: "local" }); await panel.next();
     for (const client of clients) expect(JSON.stringify(await client.callTool({ name: "list_panel_sessions", arguments: {} }))).toContain("portable-cli");
     const reply = clients[1]!.callTool({ name: "get_status", arguments: { panelSessionId: "portable-cli" } });

@@ -6,10 +6,11 @@ import { AGENT_TOOLS } from "../protocol";
 import { connectBroker, messages, send } from "./ipc";
 import { connectPortableBroker } from "./portable-broker";
 import type { CompanionChannel } from "../portable-channel";
+import type { PortableConfig } from "../portable-config";
 
-export async function runMcp(cli: string, directory?: string, portable?: { code: string; extensionId: string }) {
+export async function runMcp(cli: string, directory?: string, portable?: { config: PortableConfig; extensionId: string }) {
   let channel: CompanionChannel;
-  if (portable) channel = await connectPortableBroker(cli, portable.code, portable.extensionId);
+  if (portable) channel = await connectPortableBroker(cli, portable.config, portable.extensionId);
   else {
     const { socket, token } = await connectBroker(cli, directory);
     channel = { send: value => send(socket, value), onMessage: callback => messages(socket, callback), onClose: callback => { socket.on("close", callback); }, close: () => socket.end() };
