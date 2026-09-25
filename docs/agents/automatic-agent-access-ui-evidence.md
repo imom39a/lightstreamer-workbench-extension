@@ -75,14 +75,24 @@ screenshots still showing the old header; those were then explicitly regenerated
 and passed the 25-test supplemental comparison on both Darwin and Linux. The next
 full run passed 270 tests and encountered one existing asynchronous wheel timing
 failure in `workbench.spec.ts:253` (pre-wheel scroll 1688 versus post-wheel 1448).
-A fresh full 276-test comparison includes the five transition regressions.
+The next full run passed 272 tests and failed the two 800px pressure expectations
+described above; those expectations were retained and the layout was corrected.
+Final complete verification passed **276/276** in 4.6 minutes:
+
+```text
+LSEW_UI_PORT=4200 npm run test:ui -- --workers=2 --output=test-results/automatic-agent-verified-ui
+```
+
+This includes all five transition regressions, unchanged pressure expectations,
+the previously flaky wheel check and all committed screenshot comparisons.
 
 Independent visual QA inspected all 243 reference/current/diff triplets and
 native-size workflow images. It independently found the transition overlap,
-then reviewed all three replacements and closed the blocker: PASS, no remaining
-material findings. All 33 main Agent workflow screenshots remained byte-identical
-after the transition-only fix. Review was read-only; no baseline changes were
-made by the reviewer.
+then reviewed the replacements and the final five-width spacing revision and
+closed the blocker: PASS, no remaining material findings. The 760px two-row /
+761px one-row boundary is clear. All 33 main Agent workflow screenshots remained
+byte-identical after the transition-only fix. Review was read-only; no baseline
+changes were made by the reviewer.
 
 ## Runtime, packaging and documentation
 
@@ -109,7 +119,9 @@ made by the reviewer.
 The [first branch Windows/Linux run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36170608374)
 passed on `e5d8d64`, including 34 focused tests per platform, Windows PowerShell
 setup/package checks, and real Chrome automatic discovery, companion restart,
-revocation and optional authentication. Final complete browser and post-spacing
-Windows/Linux CI results pending.
+revocation and optional authentication. The [final-code Windows/Linux run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36170952836)
+also passed all checks on `cf7ae88`, after the spacing refinement. The final
+follow-up commit changes this verification record only; the tested runtime,
+styles, tests, skill and setup documentation are unchanged.
 No release publication or changes to a user's installed MCP configuration are
 implied by this source-branch verification.
