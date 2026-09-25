@@ -72,9 +72,24 @@ when rerun separately. The initial broad extension suite also timed out in its
 compact manual-injection journey; the agent round trip itself passed. The
 complete browser command passed when rerun separately, including that journey.
 
-Windows execution is not claimed from these macOS/Linux results. The new
-`.github/workflows/agent-companion.yml` matrix runs focused transport tests and
-the actual loaded-extension proof on Windows and Linux, plus the documented
-PowerShell setup and packaged Windows guide. The maintainer authorized the push;
-the remote result will be recorded after that run. No native host was installed into the user's browser.
-This record does not imply Chrome Web Store publication or approval to publish.
+## Windows and Linux CI acceptance
+
+The maintainer authorized the push. [Portable companion CI run 36156906857](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36156906857)
+passed on **windows-latest and ubuntu-latest** for commit
+`dbba04b07505a5d625807994334db43483b2e3be`, using Node 22.12.0 and Chrome for Testing 151.
+Both jobs passed type checking, all 24 focused agent tests, and the real loaded
+Chrome panel's code comparison, approval, Evidence query, inspected-page identity
+and revocation proof without native registration. Windows additionally passed
+the documented PowerShell setup/configuration checks and verified that
+`WINDOWS.md` ships in the companion package.
+
+The first Windows run exposed a test-ordering assumption: a client socket's close
+event does not establish that the broker's separate close callback has executed.
+The test now waits for the observable pending-request cleanup with a bounded
+assertion, then verifies that confirming the cancelled request fails. No runtime
+authentication or cancellation requirement was weakened.
+
+The official Lightstreamer app/Local Injection/Scenario DOM proof above was run
+locally on macOS; the Windows/Linux CI browser proof covers the portable
+connection and Evidence boundary. No native host was installed into the user's
+browser. This record does not imply Chrome Web Store publication or approval to publish.
