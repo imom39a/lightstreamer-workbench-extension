@@ -16,11 +16,23 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   const addButton = useRef<HTMLButtonElement | null>(null);
   const previousPicker = useRef(false);
   const openedScenarioId = useRef<string | null>(null);
+  const wasParked = useRef(false);
+  const discardTrigger = useRef<HTMLButtonElement | null>(null);
+  const discardDialog = useRef<HTMLElement | null>(null);
+  const previousDiscardConfirmation = useRef(false);
   const focusIntent = useRef<"play" | "pause" | "resume" | "resume-or-run-again" | "stop-or-run-again" | "edit" | null>(null);
   const recoverTerminalFocus = useRef(false);
   useLayoutEffect(() => {
     if (!state) return;
-    if (!previousPicker.current && state.pickerOpen) {
+    if (state.parked) {
+      wasParked.current = true;
+      previousPicker.current = false;
+      return;
+    }
+    if (wasParked.current) {
+      heading.current?.focus();
+      wasParked.current = false;
+    } else if (!previousPicker.current && state.pickerOpen) {
       document.querySelector<HTMLElement>('[aria-label="Scenario Evidence picker"] button:not(:disabled)')?.focus();
     } else if (previousPicker.current && !state.pickerOpen) {
       (addButton.current ?? heading.current)?.focus();
@@ -29,7 +41,13 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       openedScenarioId.current = state.scenario.id;
     }
     previousPicker.current = state.pickerOpen;
-  }, [state?.scenario.id, state?.pickerOpen]);
+  }, [state?.scenario.id, state?.pickerOpen, state?.parked]);
+  useLayoutEffect(() => {
+    if (!state || state.parked) return;
+    if (!previousDiscardConfirmation.current && state.discardConfirmation) discardDialog.current?.focus();
+    else if (previousDiscardConfirmation.current && !state.discardConfirmation) discardTrigger.current?.focus();
+    previousDiscardConfirmation.current = state.discardConfirmation;
+  }, [state?.discardConfirmation, state?.parked]);
   useLayoutEffect(() => {
     const intent = focusIntent.current;
     if (!state || !intent) return;
@@ -71,7 +89,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   const nextMember = state.runner?.cursor.members[state.runner.cursor.index] ?? (run ? run.members[run.nextMemberIndex] : null) ?? null;
   const nextStep = nextMember?.kind === "step" ? nextMember : null;
   const nextMemberLabel = nextMember?.kind === "checkpoint" ? `Checkpoint ${nextMember.name}` : nextStep ? `Step ${nextStep.ordinal}` : "—";
-  return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase} onFocusCapture={(event) => {
+  return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase} hidden={state.parked} onFocusCapture={(event) => {
     const control = (event.target as HTMLElement).dataset.scenarioControl;
     recoverTerminalFocus.current = control === "pause" || control === "stop";
   }} onBlurCapture={(event) => {
@@ -80,8 +98,14 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   }}>
     <header className="workbench-react__scenario-header">
       <div><span className="workbench-react__eyebrow">Temporary promoted document</span><h1 tabIndex={-1} ref={heading}>Local Injection Scenario</h1><span>{state.scenario.id} · revision {state.scenario.revision}</span></div>
-      <strong>{(state.runner?.phase ?? state.phase).toUpperCase()}</strong>
+      <div className="workbench-react__scenario-header-actions"><strong>{(state.runner?.phase ?? state.phase).toUpperCase()}</strong><button type="button" disabled={state.phase === "running" || state.discardConfirmation} aria-describedby={state.phase === "running" ? "scenario-navigation-reason" : undefined} onClick={() => runtime.dispatch({ type: "park-scenario" })}>Back to Evidence</button><button type="button" ref={discardTrigger} disabled={state.phase === "running"} aria-describedby={state.phase === "running" ? "scenario-navigation-reason" : undefined} onClick={() => runtime.dispatch({ type: "request-discard-scenario" })}>Discard Scenario</button>{state.phase === "running" ? <span id="scenario-navigation-reason">Stop the Run before leaving or discarding.</span> : null}</div>
     </header>
+    {state.discardConfirmation ? <section className="workbench-react__local-confirmation workbench-react__scenario-discard-confirmation" role="alertdialog" aria-label="Discard Local Injection Scenario" tabIndex={-1} ref={discardDialog} onKeyDown={(event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      runtime.dispatch({ type: "cancel-discard-scenario" });
+    }}><strong>Discard this Scenario?</strong><span>Steps, edits, and Run ledgers cannot be recovered. Discarding sends no further Injection.</span><div className="workbench-react__scenario-discard-actions"><button type="button" onClick={() => runtime.dispatch({ type: "cancel-discard-scenario" })}>Keep Scenario</button><button type="button" onClick={() => runtime.dispatch({ type: "confirm-discard-scenario" })}>Confirm discard Scenario</button></div></section> : null}
     <dl className="workbench-react__local-boundary" aria-label="Protected Scenario target and execution boundary">
       <div><dt>Target</dt><dd>{state.scenario.target.subscriptionId} · Session {state.scenario.target.sessionId ?? "Unknown"}</dd></div>
       <div><dt>Delivery</dt><dd>{state.scenario.target.deliveryPath.toUpperCase()} · exact shared Subscription target</dd></div>

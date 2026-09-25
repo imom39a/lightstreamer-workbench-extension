@@ -597,6 +597,8 @@ export type WorkbenchServerInjectionSnapshot = Readonly<{
 
 export type WorkbenchScenarioSnapshot = Readonly<{
   phase: "edit" | "review" | "running" | "paused" | "complete" | "stopped";
+  parked: boolean;
+  discardConfirmation: boolean;
   scenario: LocalInjectionScenario;
   run: ScenarioRun | null;
   membershipError: string | null;
@@ -755,6 +757,11 @@ export type WorkbenchCommand =
   | { type: "stop-scenario" }
   | { type: "step-next-scenario" }
   | { type: "run-scenario-again" }
+  | { type: "park-scenario" }
+  | { type: "resume-scenario" }
+  | { type: "request-discard-scenario" }
+  | { type: "cancel-discard-scenario" }
+  | { type: "confirm-discard-scenario" }
   | { type: "finish-scenario" }
   | { type: "set-scenario-step-json"; stepId: string; text: string }
   | { type: "set-scenario-step-compare"; stepId: string; open: boolean }
@@ -963,6 +970,8 @@ type ServerInjectionDraftState = {
 
 type ScenarioState = {
   phase: "edit" | "review" | "running" | "paused" | "complete" | "stopped";
+  parked: boolean;
+  discardConfirmation: boolean;
   scenario: LocalInjectionScenario;
   drafts: Map<string, LocalInjectionDraftState>;
   run: ScenarioRun | null;
@@ -2241,8 +2250,34 @@ class Runtime implements WorkbenchRuntime {
       case "run-scenario-again":
         this.runScenarioAgain();
         return;
-      case "finish-scenario":
+      case "park-scenario":
+        if (!this.scenarioState || this.scenarioState.phase === "running" || this.scenarioState.discardConfirmation) return;
+        this.scenarioState.parked = true;
+        this.scenarioState.pickerOpen = false;
+        this.publish();
+        return;
+      case "resume-scenario":
+        if (!this.scenarioState || !this.scenarioState.parked || this.scenarioState.discardConfirmation) return;
+        this.scenarioState.parked = false;
+        this.localInjectionEntryError = null;
+        this.publish();
+        return;
+      case "request-discard-scenario":
+        if (!this.scenarioState || this.scenarioState.phase === "running") return;
+        this.scenarioState.discardConfirmation = true;
+        this.publish();
+        return;
+      case "cancel-discard-scenario":
+        if (!this.scenarioState || !this.scenarioState.discardConfirmation) return;
+        this.scenarioState.discardConfirmation = false;
+        this.publish();
+        return;
+      case "confirm-discard-scenario":
+        if (!this.scenarioState?.discardConfirmation || this.scenarioState.phase === "running") return;
         this.finishScenario();
+        return;
+      case "finish-scenario":
+        if (this.scenarioState?.phase === "complete" || this.scenarioState?.phase === "stopped") this.finishScenario();
         return;
       case "set-scenario-step-json":
         this.setScenarioStepJson(command.stepId, command.text);
@@ -4017,6 +4052,11 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private beginLocalInjectionFromSelection(): void {
+    if (this.scenarioState) {
+      this.localInjectionEntryError = "Resume or discard the active Local Injection Scenario before creating another Draft.";
+      this.publish();
+      return;
+    }
     const eventId = this.selectionEventId;
     if (!eventId) {
       this.localInjectionEntryError = "Select one captured Item Update before creating a Local Injection draft.";
@@ -4063,6 +4103,11 @@ class Runtime implements WorkbenchRuntime {
 
   private enterLocalInjection(intent: LocalInjectionEntryIntent): void {
     this.localInjectionEntryError = null;
+    if (this.scenarioState) {
+      this.localInjectionEntryError = "Resume or discard the active Local Injection Scenario before creating another Draft.";
+      this.publish();
+      return;
+    }
     if (this.serverInjectionDraft) {
       this.localInjectionEntryError = "Finish or discard the active Server Injection Draft before starting Local Injection.";
       this.publish();
@@ -4492,6 +4537,8 @@ class Runtime implements WorkbenchRuntime {
     }
     this.scenarioState = {
       phase: "edit",
+      parked: false,
+      discardConfirmation: false,
       scenario,
       drafts: new Map([[scenario.steps[0]!.id, draft]]),
       run: null,
@@ -5024,13 +5071,17 @@ class Runtime implements WorkbenchRuntime {
   private finishScenario(): void {
     const state = this.scenarioState;
     if (!state || state.phase === "running") return;
+    state.runner?.dispose();
     const origin = state.scenario.restorationOrigin;
     this.scenarioState = null;
     this.localInjectionDraft = null;
-    this.scopeId = origin.scopeId;
-    this.selectionEventId = origin.selectionEventId;
-    this.focusedEventId = origin.focusedEventId;
-    this.contextId = origin.contextId;
+    this.localInjectionEntryError = null;
+    if (!state.parked) {
+      this.scopeId = origin.scopeId;
+      this.selectionEventId = origin.selectionEventId;
+      this.focusedEventId = origin.focusedEventId;
+      this.contextId = origin.contextId;
+    }
     this.publish();
   }
 
@@ -5740,6 +5791,8 @@ class Runtime implements WorkbenchRuntime {
       scenario: this.scenarioState
         ? Object.freeze({
             phase: this.scenarioState.phase,
+            parked: this.scenarioState.parked,
+            discardConfirmation: this.scenarioState.discardConfirmation,
             scenario: this.scenarioState.scenario,
             run: this.scenarioState.run,
             membershipError: this.scenarioState.membershipError,
@@ -6320,6 +6373,10 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private localInjectionAvailability(): WorkbenchLocalInjectionSnapshot["availability"] {
+    if (this.scenarioState) {
+      const unavailable = Object.freeze({ available: false, reason: "Resume or discard the active Local Injection Scenario before creating another Draft." });
+      return Object.freeze({ selectedUpdate: unavailable, commandScope: unavailable });
+    }
     const selectedEvent = this.selectionEventId
       ? this.selectedEventEnvelope?.id === this.selectionEventId
         ? this.selectedEventEnvelope

@@ -755,6 +755,10 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   const previousServerInjectionDraft = useRef<NonNullable<WorkbenchSnapshot["serverInjection"]>["draft"]>(null);
   const previousScenario = useRef<WorkbenchSnapshot["scenario"]>(null);
   const previousParkedDiscardConfirmation = useRef(false);
+  const parkedScenarioDiscardTrigger = useRef<HTMLButtonElement | null>(null);
+  const parkedScenarioDiscardDialog = useRef<HTMLElement | null>(null);
+  const restoreParkedScenarioDiscardFocus = useRef(false);
+  const previousParkedScenarioDiscardConfirmation = useRef(false);
   const scopeCollapse = useRef<HTMLButtonElement | null>(null);
   const contextCollapse = useRef<HTMLButtonElement | null>(null);
   const paneRestoreDestination = useRef<{ scope: "splitter" | "collapse"; context: "splitter" | "collapse" }>({ scope: "splitter", context: "splitter" });
@@ -931,13 +935,14 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
       : null;
   const localInjection = snapshot.localInjection;
   const localInjectionDraft = localInjection.draft;
-  const notificationsPresented = notificationsOpen && !localInjectionDraft?.open && !snapshot.scenario && !serverInjectionDraft;
+  const scenarioOpen = Boolean(snapshot.scenario && !snapshot.scenario.parked);
+  const notificationsPresented = notificationsOpen && !localInjectionDraft?.open && !scenarioOpen && !serverInjectionDraft;
   const contextMode = snapshot.contextId === "context:actions"
     ? "actions"
     : snapshot.contextId === "context:export"
       ? "export"
       : "inspect";
-  const workspaceAvailable = !localInjectionDraft?.open && !snapshot.scenario && !serverInjectionDraft && !rawEvidence && !notificationsOpen;
+  const workspaceAvailable = !localInjectionDraft?.open && !scenarioOpen && !serverInjectionDraft && !rawEvidence && !notificationsOpen;
   const scopeIsPresented = geometry === "wide"
     ? !scopeCollapsed
     : geometry === "compact"
@@ -1857,18 +1862,33 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   useLayoutEffect(() => {
     const previous = previousScenario.current;
     const current = snapshot.scenario;
-    if (previous && !current) {
+    if (previous && (!current || (!previous.parked && current.parked))) {
       const origin = previous.scenario.restorationOrigin;
-      const eventId = origin.focusedEventId ?? origin.selectionEventId;
+      const keepCurrentInvestigation = previous.parked && !current;
+      const eventId = keepCurrentInvestigation
+        ? snapshot.evidence.focusedEventId ?? snapshot.selectionEventId
+        : origin.focusedEventId ?? origin.selectionEventId;
+      const contextId = keepCurrentInvestigation ? snapshot.contextId : origin.contextId;
       window.requestAnimationFrame(() => {
         const target = eventId ? evidenceRows.current.get(eventId) : null;
         if (target?.isConnected) target.focus({ preventScroll: true });
-        else if (origin.contextId) contextLens.current?.focus({ preventScroll: true });
+        else if (contextId) contextLens.current?.focus({ preventScroll: true });
         else scopeTrigger.current?.focus({ preventScroll: true });
       });
     }
     previousScenario.current = current;
   }, [snapshot.scenario]);
+
+  useLayoutEffect(() => {
+    const confirmation = Boolean(snapshot.scenario?.parked && snapshot.scenario.discardConfirmation);
+    if (!previousParkedScenarioDiscardConfirmation.current && confirmation) {
+      parkedScenarioDiscardDialog.current?.focus();
+    } else if (previousParkedScenarioDiscardConfirmation.current && !confirmation && restoreParkedScenarioDiscardFocus.current) {
+      restoreParkedScenarioDiscardFocus.current = false;
+      parkedScenarioDiscardTrigger.current?.focus();
+    }
+    previousParkedScenarioDiscardConfirmation.current = confirmation;
+  }, [snapshot.scenario?.parked, snapshot.scenario?.discardConfirmation]);
 
   useLayoutEffect(() => {
     const confirmation = !!localInjectionDraft?.parked && localInjection.discardConfirmation;
@@ -1969,7 +1989,26 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
       </nav>
       {localInjection.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Local Injection unavailable</strong><span>{localInjection.entryError}</span></div> : null}
       {serverInjection?.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Server Injection unavailable</strong><span>{serverInjection.entryError}</span></div> : null}
-      {snapshot.scenario ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection Scenario…</div>}><LazyLocalInjectionScenarioDocument runtime={runtime} snapshot={snapshot} /></Suspense> : null}
+      {snapshot.scenario ? <Suspense fallback={scenarioOpen ? <div className="workbench-react__local-loading" role="status">Loading Local Injection Scenario…</div> : null}><LazyLocalInjectionScenarioDocument runtime={runtime} snapshot={snapshot} /></Suspense> : null}
+      {snapshot.scenario?.parked ? <section className="workbench-react__local-parked workbench-react__scenario-parked" aria-label="Parked Local Injection Scenario">
+        <div><span className="workbench-react__eyebrow">Parked Local Injection Scenario</span><strong>{snapshot.scenario.scenario.target.subscriptionId} · revision {snapshot.scenario.scenario.revision}</strong></div>
+        <span>{snapshot.scenario.scenario.steps.length} explicit Steps · {snapshot.scenario.phase.toUpperCase()} · edits preserved</span>
+        <button type="button" disabled={snapshot.scenario.discardConfirmation} onClick={() => {
+          if (notificationsOpen) dispatch(runtime, { type: "close-notifications" });
+          dispatch(runtime, { type: "resume-scenario" });
+        }}>Resume Scenario</button>
+        <button type="button" ref={parkedScenarioDiscardTrigger} onClick={() => dispatch(runtime, { type: "request-discard-scenario" })}>Discard Scenario</button>
+      </section> : null}
+      {snapshot.scenario?.parked && snapshot.scenario.discardConfirmation ? <section className="workbench-react__local-confirmation workbench-react__local-confirmation--parked workbench-react__scenario-discard-confirmation" role="alertdialog" aria-label="Discard Local Injection Scenario" tabIndex={-1} ref={parkedScenarioDiscardDialog} onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        restoreParkedScenarioDiscardFocus.current = true;
+        dispatch(runtime, { type: "cancel-discard-scenario" });
+      }}><strong>Discard this Scenario?</strong><span>Steps, edits, and Run ledgers cannot be recovered. Discarding sends no further Injection.</span><div className="workbench-react__scenario-discard-actions"><button type="button" onClick={() => {
+        restoreParkedScenarioDiscardFocus.current = true;
+        dispatch(runtime, { type: "cancel-discard-scenario" });
+      }}>Keep Scenario</button><button type="button" onClick={() => dispatch(runtime, { type: "confirm-discard-scenario" })}>Confirm discard Scenario</button></div></section> : null}
       {localInjectionDraft && !snapshot.scenario ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection editor…</div>}><LazyLocalInjectionDocument
         runtime={runtime}
         localInjection={localInjection}
@@ -2008,7 +2047,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
         onCommand={(command) => dispatch(runtime, command)}
         onInspect={inspectNotification}
       />
-      {localInjectionDraft?.open || snapshot.scenario || serverInjectionDraft ? null : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
+      {localInjectionDraft?.open || scenarioOpen || serverInjectionDraft ? null : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
         <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Complete raw Evidence</span><strong>{rawEvidence.id} · immutable {rawEvidence.source} Evidence</strong></div><div className="workbench-react__document-actions"><button type="button" onClick={() => void copyRawEvidence()}>Copy raw Evidence</button><button type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
         <div className="workbench-react__document-boundary"><span>Source <strong>{rawEvidence.source}</strong></span><span>Phase <strong>{rawEvidence.phase}</strong></span><span>Mutable <strong>NO</strong></span></div>
         <p className="workbench-react__document-status" role="status">{copyStatus}</p>
@@ -2250,7 +2289,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
         >{historyStatus.retained.toLocaleString()}/{historyStatus.accepted.toLocaleString()} Evidence · {snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}</span><button
               ref={notificationsTrigger}
               type="button"
-              disabled={Boolean(localInjectionDraft?.open || snapshot.scenario || serverInjectionDraft || rawEvidence)}
+              disabled={Boolean(localInjectionDraft?.open || scenarioOpen || serverInjectionDraft || rawEvidence)}
               aria-expanded={notificationsPresented}
               aria-controls={notificationsPresented ? "workbench-notifications" : undefined}
               onClick={() => notificationsOpen ? dispatch(runtime, { type: "close-notifications" }) : openNotifications()}

@@ -10,7 +10,7 @@ type VisualCase = Readonly<{
   forcedColors?: boolean;
   visualEvidenceOnly?: boolean;
   prototype?: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "captured-draft-changed" | "authored-direct" | "server-injection" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
+  production: { scenario: string; setup: "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-parked" | "scenario-discard-confirmation" | "scenario-parked-discard-confirmation" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "captured-draft-changed" | "authored-direct" | "server-injection" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
 }>;
 const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
 
@@ -103,6 +103,26 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await page.evaluate(() => (window as unknown as { __setWorkbenchVisible(visible: boolean): void }).__setWorkbenchVisible(false));
       await page.evaluate(() => (window as unknown as { __setWorkbenchVisible(visible: boolean): void }).__setWorkbenchVisible(true));
       await expect(scenario.getByRole("button", { name: "Resume" })).toBeVisible();
+      return;
+    }
+    case "scenario-parked": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+      await scenario.getByRole("button", { name: "Back to Evidence" }).click();
+      await expect(page.getByRole("region", { name: "Parked Local Injection Scenario" })).toBeVisible();
+      return;
+    }
+    case "scenario-discard-confirmation": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+      await scenario.getByRole("button", { name: "Discard Scenario" }).click();
+      await expect(scenario.getByRole("alertdialog", { name: "Discard Local Injection Scenario" })).toBeFocused();
+      return;
+    }
+    case "scenario-parked-discard-confirmation": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+      await scenario.getByRole("button", { name: "Back to Evidence" }).click();
+      const parked = page.getByRole("region", { name: "Parked Local Injection Scenario" });
+      await parked.getByRole("button", { name: "Discard Scenario" }).click();
+      await expect(page.getByRole("alertdialog", { name: "Discard Local Injection Scenario" })).toBeFocused();
       return;
     }
     case "scenario-inflight-stop": {

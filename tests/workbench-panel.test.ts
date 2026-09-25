@@ -352,6 +352,8 @@ function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "pau
   };
   return {
     phase: runnerPhase === "paused" ? "review" : "running",
+    parked: false,
+    discardConfirmation: false,
     scenario,
     run,
     membershipError: null,

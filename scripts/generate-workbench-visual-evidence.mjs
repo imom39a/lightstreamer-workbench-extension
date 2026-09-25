@@ -242,6 +242,27 @@ try {
       },
       keyboardAndFocus: "Timeline, coincident-event chooser and Context disclosure controls retain visible, unobscured keyboard focus; the maintained Activity browser tests exercise range selection, Reset/Back and restoration.",
       baselineIntent: "Replace the five old Activity-page baselines with Context summaries and add four integrated Activity states; refresh other affected shell baselines separately with explicit base/current review."
+    } : results.some(({ id }) => id.startsWith("scenario-parked-") || id.startsWith("scenario-discard-confirmation-") || id.startsWith("scenario-parked-discard-confirmation-")) ? {
+      classification: "Material UI",
+      changedWorkflow: "An edited Local Injection Scenario can return to Evidence, resume with its Steps intact, or be discarded after inline confirmation.",
+      acceptanceCriteria: [
+        "Back to Evidence parks the temporary Scenario and restores the originating investigation without losing Step edits or Review state.",
+        "A visible parked Scenario route resumes the same document; competing protected Drafts stay blocked until the Scenario is finished or discarded.",
+        "Discard requires explicit inline confirmation in both the active and parked states, supports Escape and Keep, and restores investigation focus.",
+        "An active Run must be stopped before leaving or discarding; compact, normal, shallow, wide, Dark, Light, and forced-colors states keep controls reachable without serious or critical axe findings."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0),
+        shellOrDocumentOverflows: results.reduce((count, result) => count + Number(result.checks.horizontalOverflow.shell || result.checks.horizontalOverflow.document), 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: "The browser journey checks Scenario heading focus on Resume, origin focus on Back, the current Evidence focus after parked discard, and Escape/Keep restoration to the discard trigger.",
+      matrixRationale: "Existing Scenario states cover editing, Review, running, stopped, failures, Checkpoints, and high volume. New Light states cover normal editing, compact parked navigation, and active and parked discard confirmation.",
+      baselineIntent: "Update only affected Scenario baselines and add the four new navigation states on the current platform."
     } : results.some(({ id }) => id.startsWith("scenario-diagnostic-")) ? {
       classification: "Material UI",
       changedWorkflow: "A Scenario Diagnostic Observation Checkpoint authorizes a journal cursor, evaluates only later normalized observations, and preserves compact provenance without copying diagnostic messages.",
@@ -1090,6 +1111,26 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
 }
 
 async function prepareProductionState(page, setup, storageMode = "scenario") {
+  if (setup === "scenario-parked") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+    await scenario.getByRole("button", { name: "Back to Evidence" }).click();
+    await page.getByRole("region", { name: "Parked Local Injection Scenario" }).waitFor({ state: "visible" });
+    return;
+  }
+  if (setup === "scenario-discard-confirmation") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+    await scenario.getByRole("button", { name: "Discard Scenario" }).click();
+    await scenario.getByRole("alertdialog", { name: "Discard Local Injection Scenario" }).waitFor({ state: "visible" });
+    return;
+  }
+  if (setup === "scenario-parked-discard-confirmation") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+    await scenario.getByRole("button", { name: "Back to Evidence" }).click();
+    const parked = page.getByRole("region", { name: "Parked Local Injection Scenario" });
+    await parked.getByRole("button", { name: "Discard Scenario" }).click();
+    await page.getByRole("alertdialog", { name: "Discard Local Injection Scenario" }).waitFor({ state: "visible" });
+    return;
+  }
   if (setup === "scenario-checkpoint" || setup === "scenario-checkpoint-high-volume" || setup === "scenario-diagnostic-checkpoint") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await scenario.waitFor({ state: "visible" });

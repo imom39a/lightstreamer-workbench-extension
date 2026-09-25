@@ -209,6 +209,60 @@ class ScenarioTestClock implements ScenarioClock {
 }
 
 describe("WorkbenchRuntime Local Injection", () => {
+  it("parks an edited Scenario for Evidence, resumes the same Steps, and confirms discard", async () => {
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "add-authored-scenario-step" });
+    const stepIds = runtime.getSnapshot().scenario!.scenario.steps.map(({ id }) => id);
+    const originalRevision = runtime.getSnapshot().scenario!.scenario.revision;
+
+    runtime.dispatch({ type: "park-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ parked: true, phase: "edit" });
+    expect(runtime.getSnapshot().scenario!.scenario.steps.map(({ id }) => id)).toEqual(stepIds);
+    expect(runtime.getSnapshot().localInjection.availability.selectedUpdate.available).toBe(false);
+    runtime.dispatch({ type: "begin-local-injection-from-selection" });
+    expect(runtime.getSnapshot().scenario?.parked).toBe(true);
+    expect(runtime.getSnapshot().localInjection.draft?.open).toBe(false);
+    runtime.dispatch({ type: "resume-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ parked: false, scenario: { revision: originalRevision } });
+
+    runtime.dispatch({ type: "request-discard-scenario" });
+    expect(runtime.getSnapshot().scenario?.discardConfirmation).toBe(true);
+    runtime.dispatch({ type: "cancel-discard-scenario" });
+    expect(runtime.getSnapshot().scenario?.discardConfirmation).toBe(false);
+    runtime.dispatch({ type: "confirm-discard-scenario" });
+    expect(runtime.getSnapshot().scenario?.scenario.steps.map(({ id }) => id)).toEqual(stepIds);
+    runtime.dispatch({ type: "park-scenario" });
+    runtime.dispatch({ type: "select-evidence", eventId: "journey-5" });
+    runtime.dispatch({ type: "request-discard-scenario" });
+    runtime.dispatch({ type: "confirm-discard-scenario" });
+    expect(runtime.getSnapshot().scenario).toBeNull();
+    expect(runtime.getSnapshot().localInjection.draft).toBeNull();
+    expect(runtime.getSnapshot().selectionEventId).toBe("journey-5");
+    runtime.dispose();
+  });
+
+  it("keeps an active Run in view until Stop settles it", async () => {
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", scenarioClock: new ScenarioTestClock() });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    const stepId = runtime.getSnapshot().scenario!.scenario.steps[0]!.id;
+    runtime.dispatch({ type: "set-scenario-step-delay", stepId, delayMs: 100 });
+    runtime.dispatch({ type: "review-scenario" });
+    runtime.dispatch({ type: "play-scenario" });
+    expect(runtime.getSnapshot().scenario?.phase).toBe("running");
+    runtime.dispatch({ type: "park-scenario" });
+    runtime.dispatch({ type: "request-discard-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ parked: false, discardConfirmation: false });
+    runtime.dispatch({ type: "stop-scenario" });
+    expect(runtime.getSnapshot().scenario?.phase).toBe("stopped");
+    runtime.dispatch({ type: "park-scenario" });
+    expect(runtime.getSnapshot().scenario?.parked).toBe(true);
+    runtime.dispose();
+  });
   it("maps a pre-dispatch stale target to not-run without any Injection identity", () => {
     const settlement = settleScenarioCoordinatorExecution({
       kind: "terminal",

@@ -3278,6 +3278,61 @@ test("Draft conversion preserves CodeMirror undo history", async ({ page }) => {
   await expect.poll(() => converted.textContent()).toBe(`${original} `);
 });
 
+test("Scenario edits can return to Evidence, resume, and be discarded from the parked state", async ({ page }) => {
+  await openScenario(page, "local-injection-captured", { width: 900, height: 700 }, "dark");
+  const openContext = page.getByRole("button", { name: "Open selected Context" });
+  if (await openContext.isVisible()) await openContext.click();
+  await page.getByRole("button", { name: "Create Local Injection Draft" }).click();
+  await page.getByRole("button", { name: "Convert to Scenario" }).click();
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+  await scenario.getByRole("button", { name: "Add authored update" }).click();
+  await expect(scenario.getByRole("button", { name: "Step 2" })).toBeVisible();
+  const secondEditor = scenario.getByRole("textbox", { name: "Step 2 Local Injection JSON" });
+  const originalText = await secondEditor.textContent() ?? "";
+  await secondEditor.fill(`${originalText} `);
+  await scenario.getByRole("button", { name: "Back to Evidence" }).click();
+  await expect(scenario).toBeHidden();
+  const parked = page.getByRole("region", { name: "Parked Local Injection Scenario" });
+  await expect(parked).toContainText("2 explicit Steps");
+  await expect(page.locator('[data-evidence-id="event-5"]')).toBeFocused();
+  await expect(page.getByRole("button", { name: "Create Local Injection Draft · Unavailable" })).toBeDisabled();
+  await parked.getByRole("button", { name: "Resume Scenario" }).click();
+  await expect(scenario).toBeVisible();
+  await expect(scenario.getByRole("heading", { name: "Local Injection Scenario" })).toBeFocused();
+  await expect(scenario.getByRole("button", { name: "Step 2" })).toBeVisible();
+  await expect(secondEditor).toHaveText(`${originalText} `);
+  await secondEditor.focus();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(secondEditor).toHaveText(originalText);
+  await scenario.getByRole("button", { name: "Review Scenario" }).click();
+  await scenario.getByRole("button", { name: "Back to Evidence" }).click();
+  await expect(parked).toContainText("REVIEW");
+  await page.locator('[data-evidence-id="event-4"]').click();
+  await expect(page.locator('[data-evidence-id="event-4"]')).toHaveAttribute("aria-selected", "true");
+  await parked.getByRole("button", { name: "Discard Scenario" }).click();
+  const confirmation = page.getByRole("alertdialog", { name: "Discard Local Injection Scenario" });
+  await expect(confirmation).toBeVisible();
+  await confirmation.press("Escape");
+  await expect(confirmation).toHaveCount(0);
+  await expect(parked.getByRole("button", { name: "Discard Scenario" })).toBeFocused();
+  await parked.getByRole("button", { name: "Discard Scenario" }).click();
+  await confirmation.getByRole("button", { name: "Confirm discard Scenario" }).click();
+  await expect(parked).toHaveCount(0);
+  await expect(page.locator('[data-evidence-id="event-4"]')).toBeFocused();
+});
+
+test("Scenario discard confirmation returns to the editor at compact width", async ({ page }) => {
+  await openScenario(page, "local-injection-scenario-edit", { width: 563, height: 700 }, "light");
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+  await scenario.getByRole("button", { name: "Discard Scenario" }).click();
+  const confirmation = scenario.getByRole("alertdialog", { name: "Discard Local Injection Scenario" });
+  await expect(confirmation).toBeFocused();
+  await confirmation.getByRole("button", { name: "Keep Scenario" }).click();
+  await expect(scenario.getByRole("button", { name: "Discard Scenario" })).toBeFocused();
+  await expect(scenario.getByRole("button", { name: "Review Scenario" })).toBeVisible();
+  await expectShellFits(page);
+});
+
 async function expectProtectedBoundaryValues(draft: ReturnType<Page["getByRole"]>): Promise<void> {
   const values = await draft.locator(".workbench-react__local-boundary > div").evaluateAll((boundaries) =>
     boundaries.map((boundary) => {

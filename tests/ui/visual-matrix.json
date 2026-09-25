@@ -343,6 +343,34 @@
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario" }
   },
   {
+    "id": "scenario-edit-normal-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-parked-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-parked" }
+  },
+  {
+    "id": "scenario-discard-confirmation-normal-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-discard-confirmation" }
+  },
+  {
+    "id": "scenario-parked-discard-confirmation-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-parked-discard-confirmation" }
+  },
+  {
     "id": "scenario-review-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
