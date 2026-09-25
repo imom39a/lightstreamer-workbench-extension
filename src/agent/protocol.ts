@@ -12,6 +12,8 @@ const identity = object({ intervalId: text, pageId: text, ownerId: text, sequenc
 const source = object({ scopeId: text, evidence: identity, document: { type: "string", maxLength: 64 * 1024 } });
 export const AGENT_TOOLS = [
   tool("list_panel_sessions", "List explicitly connected Workbench Panel Sessions. Choose the exact browser tab; never infer that the first session is the intended target.", {}),
+  tool("get_pairing_requests", "List pending standalone connection requests and short comparison codes. Show the code to the user; ask them to compare it in Workbench and click Approve. This grants no access and returns no inspected-page data.", {}),
+  tool("confirm_pairing", "Confirm the exact comparison code after the user approves it in Workbench. Cannot approve on the user's behalf or connect a request the panel has not approved. Then use list_panel_sessions to identify the exact tab.", { requestId: text, code: { type: "string", minLength: 9, maxLength: 9 } }, ["requestId", "code"], true),
   tool("get_status", "Read capabilities, page epoch, Capture, Coverage, retention and committed Evidence boundary.", {}),
   tool("list_scope", "Read a bounded page of clients, Sessions, Subscriptions and items without changing UI selection.", { offset: integer(100000), limit: { ...integer(100), minimum: 1 } }),
   tool("get_scope", "Inspect one exact Scope and its Local Injection target, schema and availability.", { scopeId: text }, ["scopeId"]),
@@ -29,7 +31,8 @@ export const AGENT_TOOLS = [
 ] as const;
 
 function tool(name: string, description: string, properties: Record<string, Schema>, required: string[] = [], mutation = false) {
-  return { name, description, inputSchema: object(name === "list_panel_sessions" ? properties : { panelSessionId: text, ...properties }, name === "list_panel_sessions" ? required : ["panelSessionId", ...required]), annotations: { readOnlyHint: !mutation, destructiveHint: mutation, idempotentHint: !mutation, openWorldHint: false }, mutation };
+  const global = ["list_panel_sessions", "get_pairing_requests", "confirm_pairing"].includes(name);
+  return { name, description, inputSchema: object(global ? properties : { panelSessionId: text, ...properties }, global ? required : ["panelSessionId", ...required]), annotations: { readOnlyHint: !mutation, destructiveHint: mutation, idempotentHint: !mutation, openWorldHint: false }, mutation };
 }
 export function validateAgentCall(name: string, args: unknown): asserts args is AgentArguments {
   const definition = AGENT_TOOLS.find(tool => tool.name === name);

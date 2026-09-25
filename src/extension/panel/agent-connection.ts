@@ -1,21 +1,28 @@
 import { AGENT_PROTOCOL_VERSION, NATIVE_HOST_NAME, type AgentPermission } from "../../agent/protocol";
+import type { CompanionChannel } from "../../agent/portable-channel";
+import { beginPanelPairing, type PanelPairing, type PairingDisplay } from "../../agent/panel-pairing";
+import { DEFAULT_COMPANION_PORT } from "../../agent/pairing";
 import { createAgentService } from "./agent-service";
 import type { WorkbenchRuntime } from "./workbench-runtime";
 
-export type AgentConnectionState = Readonly<{ permission: AgentPermission; status: "off" | "connecting" | "connected" | "error"; detail: string }>;
+export type AgentConnectionState = Readonly<{ permission: AgentPermission; status: "off" | "connecting" | "pairing" | "awaiting-agent" | "connected" | "error"; detail: string; transport?: "native" | "portable"; requestedPermission?: "read" | "local"; pairing?: PairingDisplay }>;
+export type AgentConnectionOptions = { transport: "portable"; port?: number } | { transport: "native" };
 export interface AgentConnection {
   getSnapshot(): AgentConnectionState;
   subscribe(listener: () => void): () => void;
-  connect(permission: "read" | "local"): void;
+  connect(permission: "read" | "local", options?: AgentConnectionOptions): void;
+  approvePairing(): void;
   disconnect(): void;
   dispose(): void;
 }
 const unavailable: AgentConnectionState = { permission: "off", status: "off", detail: "Available in the installed DevTools panel after companion setup." };
-export const UNAVAILABLE_AGENT_CONNECTION: AgentConnection = { getSnapshot: () => unavailable, subscribe: () => () => {}, connect() {}, disconnect() {}, dispose() {} };
+export const UNAVAILABLE_AGENT_CONNECTION: AgentConnection = { getSnapshot: () => unavailable, subscribe: () => () => {}, connect() {}, approvePairing() {}, disconnect() {}, dispose() {} };
 
 export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId: string): AgentConnection {
   let state: AgentConnectionState = { permission: "off", status: "off", detail: "Agent access is off for this Panel Session." };
-  let port: chrome.runtime.Port | null = null;
+  let channel: CompanionChannel | null = null;
+  let pairingAttempt: PanelPairing | null = null;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   let generation = 0;
   let disposed = false;
   const listeners = new Set<() => void>();
@@ -23,57 +30,83 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
   const unsubscribe = runtime.subscribe(() => service?.refreshOperations());
   function publish(next: AgentConnectionState) { state = Object.freeze(next); listeners.forEach(listener => listener()); }
   function disconnect() {
-    generation++;
+    generation++; clearTimeout(deadline);
     publish({ permission: "off", status: "off", detail: "Agent access is off for this Panel Session." });
     service?.revoke();
-    const current = port; port = null; current?.disconnect();
+    const attempt = pairingAttempt; pairingAttempt = null; attempt?.close();
+    const current = channel; channel = null; current?.close();
   }
   return {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    connect(permission) {
+    connect(permission, options = { transport: "native" }) {
       disconnect();
-      if (disposed || !service || typeof chrome === "undefined" || !chrome.runtime?.connectNative || !chrome.devtools) {
+      if (disposed || !service || typeof chrome === "undefined" || !chrome.devtools) {
         publish({ permission: "off", status: "error", detail: "Agent access requires the installed DevTools panel and companion." }); return;
       }
       const epoch = generation;
-      publish({ permission, status: "connecting", detail: "Connecting to the local Workbench companion…" });
-      try {
-        const current = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-        port = current;
-        current.onMessage.addListener((message: unknown) => {
-          if (epoch !== generation || !message || typeof message !== "object") return;
-          const value = message as Record<string, unknown>;
+      const fail = () => {
+        if (epoch !== generation) return;
+        disconnect();
+        publish({ permission: "off", status: "error", detail: options.transport === "portable"
+          ? "Companion unavailable, cancelled or pairing expired. Check the running MCP server and connect again. Inspect any pending outcome first."
+          : "Companion unavailable. Complete native companion setup, then connect again. Inspect any pending outcome first." });
+      };
+      publish({ permission: "off", requestedPermission: permission, status: "connecting", transport: options.transport, detail: "Connecting to the local Workbench companion…" });
+      deadline = setTimeout(fail, 10000);
+      const attach = (current: CompanionChannel) => {
+        if (epoch !== generation) { current.close(); return; }
+        clearTimeout(deadline); deadline = setTimeout(fail, 10000);
+        channel = current;
+        current.onClose(fail);
+        const reply = (value: Record<string, unknown>) => { if (epoch === generation) { try { current.send(value); } catch { fail(); } } };
+        current.onMessage(value => {
+          if (epoch !== generation) return;
           if (value.type === "ready") {
-            publish({ permission, status: "connected", detail: permission === "local" ? "Connected · inspection and Local Injection allowed." : "Connected · inspection only." });
+            clearTimeout(deadline);
+            publish({ permission, status: "connected", transport: options.transport, detail: permission === "local" ? "Connected · inspection and Local Injection allowed." : "Connected · inspection only." });
             return;
           }
-          if (typeof value.id !== "string" || typeof value.name !== "string") return;
+          if (state.status !== "connected" || typeof value.id !== "string" || typeof value.name !== "string") return;
           const response = service.call(value.name, value.args).then(async result => {
             if (value.name !== "get_status") return result;
             const inspectedPage = await describeInspectedPage();
             if ((result as { pageEpoch: string }).pageEpoch !== (runtime.agent!.status() as { pageEpoch: string }).pageEpoch) throw new Error("The inspected page changed while resolving its identity. Query status again.");
             return { ...result as object, inspectedPage };
           });
-          void response.then(
-            result => { if (epoch === generation) current.postMessage({ id: value.id, result }); },
-            error => { if (epoch === generation) current.postMessage({ id: value.id, error: error instanceof Error ? error.message : "Workbench operation failed." }); }
-          );
+          void response.then(result => reply({ id: value.id, result }), error => reply({ id: value.id, error: error instanceof Error ? error.message : "Workbench operation failed." }));
         });
-        current.onDisconnect.addListener(() => {
-          const reason = chrome.runtime.lastError?.message;
-          if (epoch !== generation) return;
-          port = null; generation++;
-          publish({ permission: "off", status: "error", detail: reason ? "Companion unavailable. Complete companion setup, then connect again." : "Companion disconnected. Inspect any pending outcome before reconnecting." });
-          service.revoke();
-        });
-        current.postMessage({ type: "hello", protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, tabId: chrome.devtools.inspectedWindow.tabId, permission });
-      } catch {
-        publish({ permission: "off", status: "error", detail: "Companion unavailable. Complete companion setup, then connect again." });
-      }
+        reply({ type: "hello", role: "panel", protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, tabId: chrome.devtools.inspectedWindow.tabId, permission });
+      };
+      try {
+        if (options.transport === "portable") {
+          const attempt = beginPanelPairing(options.port ?? DEFAULT_COMPANION_PORT, chrome.runtime.getURL("").replace(/\/$/, ""), pairing => {
+            if (epoch !== generation) return;
+            clearTimeout(deadline);
+            publish({ permission: "off", requestedPermission: permission, transport: "portable", status: "pairing", pairing, detail: "No access yet. Compare this code with your agent, then approve the connection." });
+          });
+          pairingAttempt = attempt;
+          void attempt.ready.then(attach).catch(fail);
+        }
+        else attach(nativeChannel());
+      } catch { fail(); }
+    },
+    approvePairing() {
+      if (state.status !== "pairing" || !pairingAttempt || !state.pairing || state.pairing.expiresAt <= Date.now()) return;
+      pairingAttempt.approve();
+      publish({ ...state, status: "awaiting-agent", detail: "Approved here. Waiting for your agent to confirm the matching code. No access yet." });
     },
     disconnect,
     dispose() { disposed = true; disconnect(); unsubscribe(); listeners.clear(); }
+  };
+}
+
+function nativeChannel(): CompanionChannel {
+  const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  return {
+    send: value => port.postMessage(value), close: () => port.disconnect(),
+    onMessage: callback => port.onMessage.addListener(value => { if (value && typeof value === "object" && !Array.isArray(value)) callback(value); }),
+    onClose: callback => port.onDisconnect.addListener(() => { void chrome.runtime.lastError; callback(); })
   };
 }
 

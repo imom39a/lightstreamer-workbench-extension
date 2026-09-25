@@ -1,0 +1,64 @@
+name: Portable agent companion
+
+on:
+  pull_request:
+  push:
+    paths:
+      - ".github/workflows/agent-companion.yml"
+      - "package*.json"
+      - "agent/**"
+      - ".agents/skills/lightstreamer-workbench/**"
+      - "src/agent/**"
+      - "src/extension/panel/agent-*.ts"
+      - "src/extension/panel/react/agent-access.tsx"
+      - "scripts/*agent*.mjs"
+      - "tests/agent-*.test.ts"
+      - "tests/support/workbench-agent-proof.ts"
+      - "tests/extension-panel.browser.spec.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: Installer-free companion (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Prove portable pairing, security, process startup and MCP routing
+        run: npx vitest run tests/agent-portable.test.ts tests/agent-connection.test.ts tests/agent-runtime.test.ts --maxWorkers=1
+      - name: Check documented Windows setup and packaged guide
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npm.cmd run agent:build
+          if ($LASTEXITCODE -ne 0) { throw 'Companion build failed.' }
+          $workbenchNode = (Get-Command node.exe).Source
+          $workbenchCli = (Resolve-Path '.\agent\dist\cli.mjs').Path
+          $workbenchExtensionId = 'a' * 32
+          $workbenchSetup = & $workbenchNode $workbenchCli setup --extension-id $workbenchExtensionId | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Setup failed.' }
+          $entry = $workbenchSetup.mcpServers.'lightstreamer-workbench'
+          if ($entry.command -ne $workbenchNode -or $entry.args[0] -ne $workbenchCli -or $entry.env.LSEW_AGENT_CONNECTION -notmatch '^wb1:24817:[a-f0-9]{64}$') { throw 'Unexpected generated configuration.' }
+          $package = npm.cmd pack ./agent --dry-run --json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Package inspection failed.' }
+          if ('WINDOWS.md' -notin $package[0].files.path) { throw 'Windows guide missing from package.' }
+      - name: Cache Chrome for Testing
+        uses: actions/cache@v5
+        with:
+          path: .cache/lsew-browsers
+          key: chrome-for-testing-agent-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - run: npm run fixture:browser:install
+      - name: Prove the real Chrome connection without native registration
+        run: npm run agent:test:extension

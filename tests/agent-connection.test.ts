@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentConnection } from "../src/extension/panel/agent-connection";
 import type { WorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
 import type { AgentRuntime } from "../src/extension/panel/agent-runtime";
+import type { CompanionChannel } from "../src/agent/portable-channel";
+import { beginPanelPairing } from "../src/agent/panel-pairing";
+
+vi.mock("../src/agent/panel-pairing", () => ({ beginPanelPairing: vi.fn() }));
 
 afterEach(() => vi.unstubAllGlobals());
 function fixture() {
@@ -11,11 +15,44 @@ function fixture() {
   const unsubscribe = vi.fn();
   const runtime = { agent, subscribe: () => unsubscribe } as unknown as WorkbenchRuntime;
   const connectNative = vi.fn(() => port);
-  vi.stubGlobal("chrome", { runtime: { connectNative }, devtools: { inspectedWindow: { tabId: 7, eval: (_expression: string, callback: (value: string) => void) => callback("https://fixture.test/app") } } });
+  vi.stubGlobal("chrome", { runtime: { connectNative, getURL: () => `chrome-extension://${"a".repeat(32)}/` }, devtools: { inspectedWindow: { tabId: 7, eval: (_expression: string, callback: (value: string) => void) => callback("https://fixture.test/app") } } });
   const connection = createAgentConnection(runtime, "panel-1");
   return { connection, port, agent, connectNative, unsubscribe, receive: (value: unknown) => receive.forEach(callback => callback(value)), closed: () => disconnect.forEach(callback => callback()) };
 }
 describe("per-panel agent grants", () => {
+  it("uses the portable channel without contacting a native host and revokes on connection loss", async () => {
+    const f = fixture(); let read!: (message: Record<string, unknown>) => void; let closed!: () => void;
+    const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: callback => { read = callback; }, onClose: callback => { closed = callback; } };
+    let complete!: (value: CompanionChannel) => void;
+    const approve = vi.fn();
+    vi.mocked(beginPanelPairing).mockImplementationOnce((_port, _origin, showCode) => {
+      queueMicrotask(() => showCode({ requestId: "pending", code: "1234 5678", expiresAt: Date.now() + 120000 }));
+      return { ready: new Promise(resolve => { complete = resolve; }), approve, close: vi.fn() };
+    });
+    f.connection.connect("local", { transport: "portable" });
+    await vi.waitFor(() => expect(f.connection.getSnapshot().status).toBe("pairing"));
+    expect(f.connection.getSnapshot().permission).toBe("off");
+    f.connection.approvePairing(); expect(approve).toHaveBeenCalledOnce();
+    expect(f.connection.getSnapshot()).toMatchObject({ status: "awaiting-agent", permission: "off" });
+    complete(channel);
+    await vi.waitFor(() => expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({ role: "panel", permission: "local" })));
+    expect(f.connectNative).not.toHaveBeenCalled();
+    read({ type: "ready" }); expect(f.connection.getSnapshot()).toMatchObject({ status: "connected", transport: "portable", permission: "local" });
+    closed(); expect(f.connection.getSnapshot()).toMatchObject({ status: "error", permission: "off" });
+    expect(f.connection.getSnapshot().detail).not.toContain("private-test-code");
+    f.connection.dispose();
+  });
+  it("cannot restore a grant when pairing resolves after the user disconnects", async () => {
+    const f = fixture(); let resolve!: (channel: CompanionChannel) => void;
+    vi.mocked(beginPanelPairing).mockReturnValueOnce({ ready: new Promise(done => { resolve = done; }), approve: vi.fn(), close: vi.fn() });
+    f.connection.connect("local", { transport: "portable" });
+    f.connection.disconnect();
+    const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: vi.fn(), onClose: vi.fn() };
+    resolve(channel);
+    await vi.waitFor(() => expect(channel.close).toHaveBeenCalledOnce());
+    expect(channel.send).not.toHaveBeenCalled(); expect(f.connection.getSnapshot().permission).toBe("off");
+    f.connection.dispose();
+  });
   it("starts off, shares exact page identity only after connect, and closes with the panel", async () => {
     const f = fixture();
     expect(f.connectNative).not.toHaveBeenCalled();

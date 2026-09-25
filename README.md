@@ -77,11 +77,16 @@ This is not a generic WebSocket inspector and is not a replacement for a Lightst
 
 The [local MCP companion](agent/README.md) lets agents inspect connected Panel
 Sessions, query retained Evidence and diagnostics, and prepare and execute Local
-Injections or single-target Scenarios. It uses Chrome Native Messaging; WebMCP
-flags and a remote debugging port are not required for this connection.
+Injections or single-target Scenarios. Its standalone Node companion supports
+Windows, macOS and Linux without an installer, native-host registration or
+registry changes. WebMCP flags and a remote debugging port are not required.
+The [Windows walkthrough](agent/WINDOWS.md) covers PowerShell setup, MCP/Codex
+configuration, skill installation and troubleshooting.
 
 Build with `npm run agent:build`, follow the companion setup, then explicitly
 connect **More actions → Agent access** in the inspected tab's Workbench panel.
+Compare the code displayed by Workbench and your agent, then click **Approve
+connection**—there is no code to type or paste.
 Inspection-only is the default grant. Local Injection is a separate choice;
 Server Injection and arbitrary page evaluation are not exposed. Access ends
 with the Panel Session. Requested application data can reach your model provider.
@@ -89,7 +94,8 @@ with the Panel Session. Requested application data can reach your model provider
 The [agent skill](.agents/skills/lightstreamer-workbench/SKILL.md) teaches target
 selection, Evidence limits, deliberate reproduction, timeout recovery and
 verification of the app through separately connected browser tools. The companion
-currently supports macOS and Linux with Node 22.12+. This source implementation
+requires Node 22.12+. An optional native-host connection remains available on
+macOS/Linux. This source implementation
 does not imply Chrome Web Store publication.
 
 ## Open Source And Contributions

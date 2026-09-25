@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn } from "cross-spawn";
 
-for (const args of [["run", "agent:build"], ["run", "fixture:test:browser"]]) {
+const browserScript = process.argv.includes("--extension-only") ? "test:ui:extension" : "fixture:test:browser";
+for (const args of [["run", "agent:build"], ["run", browserScript]]) {
   await new Promise((resolve, reject) => {
     const child = spawn("npm", args, { stdio: "inherit", env: { ...process.env, LSEW_AGENT_BROWSER_PROOF: "1" } });
     child.once("error", reject);

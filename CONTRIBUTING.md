@@ -92,10 +92,15 @@ If the target page created Lightstreamer clients before the extension was loaded
 ## Lightstreamer Fixture
 
 For the agent interface, run `npm run agent:build` and `npm run agent:test:browser`.
-The latter adds real MCP stdio and Chrome Native Messaging to the complete
-official-client browser proof, with registration contained in its disposable
-test profile. It never changes the user's agent configuration. See the
+The latter adds real MCP stdio and installer-free loopback pairing to the complete
+official-client browser proof. `npm run agent:test:extension` proves the portable
+connection through the loaded Chrome panel without Docker or Lightstreamer Server,
+and runs in the Windows/Linux CI matrix. Native transport remains separately
+testable with `LSEW_AGENT_BROWSER_TRANSPORT=native` on macOS/Linux; registration is
+contained in the disposable test profile. Tests never change user agent settings. See the
 [companion guide](agent/README.md) and [agent-access ADR](docs/adr/0016-panel-owned-agent-access.md).
+The current [approval-flow verification record](docs/agents/agent-access-ui-evidence.md)
+lists the browser, accessibility and platform evidence and outstanding platform checks.
 
 The fixture path requires a project-supported Node.js release (`20.19+` or `22.12+`), Docker Desktop/Engine, Maven on `PATH`, and Chrome for Testing or Chromium. Install the dedicated test browser once with the cross-platform Puppeteer installer:
 

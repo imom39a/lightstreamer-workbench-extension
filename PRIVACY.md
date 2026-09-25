@@ -50,13 +50,27 @@ general secret detector: other Item Update values, identifiers, diagnostics,
 and the inspected URL's origin/path can remain private application data. URL
 query strings and fragments are not included in the page descriptor.
 
-The grant applies to connected local clients running as your OS user, not to a
-verified individual agent identity. Disconnect revokes access and pauses an
+The grant applies to paired local clients, not to a verified individual agent
+identity. In standalone mode, anyone with the private MCP credential and local
+access can use the grant. Disconnect revokes access and pauses an
 agent Scenario, but cannot undo an update already sent. Closing the panel loses
 the temporary operation ledger; unknown delivery is never automatically retried.
-Setup creates an explicit native-host registration and launcher. A private local
-temporary directory holds only a socket, access token and startup lock. Removal
-instructions are in the [companion guide](agent/README.md).
+Standalone setup only prints private MCP configuration; it writes no files or
+registry entries. The agent client stores the generated credential in its own
+configuration; Workbench never asks for or stores it. Workbench displays a fresh
+short comparison code instead. Compare it with the agent's code and click
+Approve; the agent must also confirm that exact request before access is granted.
+Codes expire after two minutes, and cancellation grants no access. The companion
+binds exclusively to `127.0.0.1`; the MCP credential is used for mutual agent
+challenge-response authentication, never sent over the socket or included in a
+URL. Requested data then crosses a local, unencrypted WebSocket. There is no
+remote listener or HTTP tool endpoint. Keep the private MCP configuration secret;
+the temporary comparison code is intended to be displayed to you by the agent.
+
+Optional native installation on macOS/Linux creates a native-host registration
+and launcher, with a private temporary socket, access token and startup lock.
+That path trusts the local OS-user boundary. Removal instructions for both
+paths are in the [companion guide](agent/README.md).
 
 Version 2 stores current Panel Session Evidence in one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 5,000 records or 32 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. Workbench does not change the storage type during a Panel Session.
 
@@ -80,9 +94,11 @@ Workbench requests page access to observe the official Lightstreamer Web Client 
 
 The analytics candidate adds the `storage` permission for the usage preference and random identifier, and host access to `https://www.google-analytics.com/*` for event submission. Analytics is not added to content scripts or the inspected page. It does not require browser history or account access.
 
-The Agent access candidate adds `nativeMessaging` to connect the explicitly
-installed local companion. The companion registration permits the exact installed
-extension id, not arbitrary web origins. No broad local HTTP listener is added.
+The Agent access candidate retains `nativeMessaging` for the optional installed
+native host. The standalone path does not use that permission or register a host.
+Its loopback WebSocket accepts the configured extension origin and authenticated
+local agents, not ordinary website origins. Both paths require the exact extension
+id; neither exposes a remote debugging port.
 
 Document each permission change in the pull request and release notes. Chrome Web Store review includes extension permissions.
 

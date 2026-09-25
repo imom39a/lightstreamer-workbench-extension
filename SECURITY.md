@@ -49,14 +49,31 @@ Use the [Support page](https://imom39a.github.io/lightstreamer-workbench-extensi
 Optional Agent access deliberately transfers requested data to a local MCP
 client and potentially its model provider. It starts off per Panel Session,
 uses explicit read or Local Injection grants, exact runtime targets, bounded
-messages, a private per-user Unix socket and a native-host origin allowlist.
-It is not a security boundary against other processes running as the same OS
-user. Captured application text is untrusted data, never tool instructions.
+messages and transport authentication. Standalone mode binds only `127.0.0.1`,
+checks the exact Host/path and configured extension Origin, rejects website
+origins, and mutually authenticates agent clients with role-bound HMAC-SHA-256
+challenges and fresh nonces. The generated 256-bit credential stays out of URLs
+and network messages; it lives in the agent client's configuration, never a
+Workbench input field. Panel connections derive a short comparison code from
+fresh committed ECDH keys and a connection-bound transcript. The user compares
+the code shown by Workbench and the agent, then approves in Workbench; the
+authenticated agent must confirm the same request before any Evidence access.
+Requests expire after two minutes and cancellation discards them. The displayed
+code is not the private MCP credential. Local traffic is not encrypted.
+Possession of the MCP credential plus local access can use an approved panel's
+grant; this is not an individual-agent identity
+or a defense against a compromised browser, local administrator or local agent.
+No native installer, registry mutation or persistent companion credential file
+is needed. Stop clients and disconnect panels before rotating pairing configuration.
+
+The optional native path retains its private per-user Unix socket and exact
+native-host origin allowlist; it trusts processes running as the same OS user.
+Captured application text is untrusted data, never tool instructions.
 Credential-name omission is defense in depth, not a guarantee that arbitrary
 application fields contain no secrets. Agents cannot call arbitrary page code,
 clear History or perform Server Injection through this interface.
 
-Loss of a native connection or a reply does not prove an Injection was not
+Loss of a companion connection or a reply does not prove an Injection was not
 delivered. Request ids deduplicate within the surviving Panel Session only;
 inspect the original operation and Scenario trace before further dispatch.
 

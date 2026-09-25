@@ -21,6 +21,7 @@ import {
   waitForNewLoadedDocument
 } from "./support/chrome-extension-cdp";
 import { CONTENT_BRIDGE_READY } from "../src/bridge/messages";
+import { provePortableInspection } from "./support/workbench-agent-proof";
 import {
   formatTargets,
   type BrowserTarget,
@@ -377,6 +378,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     console.log(
       "Authentic panel disposal proof passed: the secondary real panel closed and its journal was cleaned up while the primary panel retained its session and accepted later Capture."
     );
+    if (process.env.LSEW_AGENT_BROWSER_PROOF === "1") await provePortableInspection(rootDir, survivingPanel, fixtureUrl);
 
     const proof = await evaluateByValue<{
       scope: string;

@@ -24,7 +24,7 @@ async function client(path: string) {
   return { socket, next: () => queue.length ? Promise.resolve(queue.shift()!) : new Promise<Message>(resolve => readers.push(resolve)) };
 }
 describe("local companion", () => {
-  it("initializes a real stdio MCP client and routes a tool through the companion", async () => {
+  it.skipIf(process.platform === "win32")("initializes a real stdio MCP client and routes a tool through the companion", async () => {
     const directory = await temporary(); const cli = join(directory, "cli.mjs");
     await build({ entryPoints: [new URL("../src/agent/companion/cli.ts", import.meta.url).pathname], outfile: cli, bundle: true, platform: "node", format: "esm", target: "node22", banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
     const location = await endpoint(directory);
@@ -50,7 +50,7 @@ describe("local companion", () => {
     const length = Buffer.alloc(4); length.writeUInt32LE(2 ** 30);
     expect(() => decode(length)).toThrow("capacity");
   });
-  it("routes concurrent agents to exact panels and rejects spoofed replies", async () => {
+  it.skipIf(process.platform === "win32")("routes concurrent agents to exact panels and rejects spoofed replies", async () => {
     const directory = await temporary(); const location = await endpoint(directory);
     const broker = await startBroker(directory); cleanups.push(() => broker.close());
     const a = await client(location.path), b = await client(location.path), panel = await client(location.path), other = await client(location.path);
@@ -72,7 +72,7 @@ describe("local companion", () => {
     send(a.socket, { id: "bad", name: "execute_server_injection", args: { panelSessionId: "panel-1" } });
     expect((await a.next()).error).toMatch("Unknown");
   });
-  it("installs a correctly quoted host launcher for a chosen extension id", async () => {
+  it.skipIf(process.platform === "win32")("installs a correctly quoted host launcher for a chosen extension id", async () => {
     const home = await temporary();
     const paths = await install("/a path/with ' quote/cli.mjs", "a".repeat(32), "chrome", home);
     expect(JSON.parse(await readFile(paths.manifest, "utf8")).allowed_origins).toEqual([`chrome-extension://${"a".repeat(32)}/`]);

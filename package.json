@@ -12,6 +12,7 @@
     "agent:install": "node agent/dist/cli.mjs install",
     "agent:mcp": "node agent/dist/cli.mjs mcp",
     "agent:test:browser": "node scripts/test-agent-browser.mjs",
+    "agent:test:extension": "node scripts/test-agent-browser.mjs --extension-only",
     "build": "node scripts/build-extension.mjs",
     "analytics:validate": "node scripts/validate-analytics.mjs",
     "site:build": "node scripts/build-site.mjs",

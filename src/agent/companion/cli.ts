@@ -7,13 +7,31 @@ import { runMcp } from "./mcp";
 import { runNativeHost } from "./native-host";
 import { startBroker } from "./broker";
 import { install, installationPaths, OFFICIAL_EXTENSION_ID } from "./installer";
+import { DEFAULT_COMPANION_PORT, PAIRING_ENV, parsePairingCode, randomNonce } from "../pairing";
+import { startPortableBroker } from "./portable-broker";
 
 const cli = fileURLToPath(import.meta.url);
 const [mode = "mcp", ...args] = process.argv.slice(2);
 function option(name: string, fallback?: string) { const i = args.indexOf(name); if (i < 0) return fallback; if (!args[i + 1] || args[i + 1]!.startsWith("--")) throw new Error(`Missing value for ${name}.`); return args[i + 1]; }
 async function main() {
   const directory = option("--directory");
-  if (mode === "mcp") return runMcp(cli, directory);
+  if (mode === "setup") {
+    const extensionId = option("--extension-id", OFFICIAL_EXTENSION_ID)!;
+    if (!/^[a-p]{32}$/.test(extensionId)) throw new Error("Expected the exact 32-character Chrome extension id.");
+    const pairingCode = `wb1:${option("--port", String(DEFAULT_COMPANION_PORT))}:${randomNonce()}`;
+    parsePairingCode(pairingCode);
+    process.stdout.write(JSON.stringify({ port: parsePairingCode(pairingCode).port, mcpServers: { "lightstreamer-workbench": { command: process.execPath, args: [cli, "mcp", "--extension-id", extensionId], env: { [PAIRING_ENV]: pairingCode } } }, next: "Add this private MCP configuration to your agent and start it. In Workbench → More actions → Agent access, click Connect agent. Ask your agent to show get_pairing_requests, compare the displayed code, then click Approve connection. The agent finishes with confirm_pairing. Nothing is typed into Workbench; setup writes no files or registry entries." }, null, 2) + "\n"); return;
+  }
+  if (mode === "mcp") {
+    const code = process.env[PAIRING_ENV];
+    if (!code && process.platform === "win32") throw new Error("Run setup and configure the printed MCP environment for the installer-free Windows companion.");
+    return runMcp(cli, directory, code ? { code, extensionId: option("--extension-id", OFFICIAL_EXTENSION_ID)! } : undefined);
+  }
+  if (mode === "portable-broker") {
+    let input = "";
+    for await (const chunk of process.stdin) { input += chunk.toString(); if (input.length > 256) throw new Error("Invalid startup configuration."); }
+    await startPortableBroker(input, option("--extension-id", OFFICIAL_EXTENSION_ID)!); return;
+  }
   if (mode === "host") return runNativeHost(cli, args[0] ?? "", directory);
   if (mode === "broker") { await startBroker(directory); return; }
   if (mode === "install") {
@@ -28,8 +46,8 @@ async function main() {
       paths.manifest = join(userDataDir, "NativeMessagingHosts", `${NATIVE_HOST_NAME}.json`);
     }
     const manifest = JSON.parse(await readFile(paths.manifest, "utf8"));
-    process.stdout.write(JSON.stringify({ node: process.version, cli, manifest, next: "Open the installed Workbench panel, More actions → Agent access → Connect agent. The agent can then call list_panel_sessions." }, null, 2) + "\n"); return;
+    process.stdout.write(JSON.stringify({ node: process.version, cli, manifest, next: "Open Workbench → More actions → Agent access, select Installed native host (macOS/Linux), then Connect agent. The agent can then call list_panel_sessions." }, null, 2) + "\n"); return;
   }
-  process.stdout.write("Lightstreamer Workbench agent companion\n\nCommands:\n  install [--extension-id ID] [--browser chrome|chromium|chrome-for-testing] [--user-data-dir ABSOLUTE_PATH]\n  mcp       Run the stdio MCP server\n  doctor    Inspect the installed native host manifest\n\nInstallation supports macOS and Linux. Keep this package at its installed path.\n");
+  process.stdout.write("Lightstreamer Workbench agent companion\n\nCommands:\n  setup [--extension-id ID] [--port PORT]  Print installer-free MCP configuration\n  mcp       Run the stdio MCP server (portable when LSEW_AGENT_CONNECTION is configured)\n  install [--extension-id ID] [--browser chrome|chromium|chrome-for-testing] [--user-data-dir ABSOLUTE_PATH]\n  doctor    Inspect the optional installed native host manifest\n\nStandalone setup supports Windows, macOS and Linux with Node 22.12+. Native installation is optional and supports macOS/Linux only. Keep this package at its configured path.\n");
 }
 main().catch(error => { process.stderr.write(`Workbench companion: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
