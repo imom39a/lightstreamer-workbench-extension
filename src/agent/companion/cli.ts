@@ -27,9 +27,9 @@ async function main() {
     const port = companionPort(option("--port", String(DEFAULT_COMPANION_PORT)));
     const auth = authMode("off");
     const config = { command: process.execPath, args: [cli, "mcp", "--extension-id", extensionId, "--auth", auth, "--port", String(port)], ...(auth === "required" ? { env: { [PAIRING_ENV]: `wb1:${port}:${randomNonce()}` } } : {}) };
-    process.stdout.write(JSON.stringify({ port, auth, mcpServers: { "lightstreamer-workbench": config }, next: auth === "off"
-      ? "Add this MCP configuration to your agent and start it. In Workbench → More actions → Agent access, click Connect agent. No credential or pairing required. Authentication is off: any local process can use a connected panel's grant. Setup writes no files or registry entries."
-      : "Add this private MCP configuration to your agent and start it. In Workbench → More actions → Agent access → Connection options, enable Require authentication, then Connect agent. Ask your agent to show get_pairing_requests, compare the code and click Approve connection. The agent finishes with confirm_pairing." }, null, 2) + "\n"); return;
+    process.stdout.write(JSON.stringify({ port, auth, mcpServers: { "lightstreamer-workbench": config }, next: (auth === "off"
+      ? "Add this MCP configuration to your agent and start it. Open Workbench; agent access automatically enables inspection and Local Injection. No Connect click, credential or pairing is required. Use the header's Agent access On/Off switch to disable access. Authentication is off: any local process can use a connected panel's grant. Setup writes no files or registry entries."
+      : "Add this private MCP configuration to your agent and start it. In Workbench → More actions → Agent setup instructions → Advanced connection settings, enable Require authentication and Apply connection settings. Ask your agent to show get_pairing_requests, compare the code and click Approve connection. The agent finishes with confirm_pairing.") + (port === DEFAULT_COMPANION_PORT ? "" : ` This configuration uses custom port ${port}; apply the same Companion port under Agent setup instructions → Advanced connection settings in Workbench.`) }, null, 2) + "\n"); return;
   }
   if (mode === "mcp") {
     const code = process.env[PAIRING_ENV];
@@ -65,7 +65,7 @@ async function main() {
       paths.manifest = join(userDataDir, "NativeMessagingHosts", `${NATIVE_HOST_NAME}.json`);
     }
     const manifest = JSON.parse(await readFile(paths.manifest, "utf8"));
-    process.stdout.write(JSON.stringify({ node: process.version, cli, manifest, next: "Open Workbench → More actions → Agent access, select Installed native host (macOS/Linux), then Connect agent. The agent can then call list_panel_sessions." }, null, 2) + "\n"); return;
+    process.stdout.write(JSON.stringify({ node: process.version, cli, manifest, next: "Open Workbench → More actions → Agent setup instructions → Advanced connection settings, select Installed native host (macOS/Linux), then Apply connection settings. The agent can then call list_panel_sessions." }, null, 2) + "\n"); return;
   }
   process.stdout.write("Lightstreamer Workbench agent companion\n\nCommands:\n  setup [--extension-id ID] [--port PORT] [--auth off|required]  Print MCP configuration\n  mcp [--extension-id ID] [--port PORT] [--auth off|required]   Run standalone stdio MCP\n  mcp --transport native   Use the optional installed native host\n  install [--extension-id ID] [--browser chrome|chromium|chrome-for-testing] [--user-data-dir ABSOLUTE_PATH]\n  doctor    Inspect the optional installed native host manifest\n\nStandalone setup supports Windows, macOS and Linux with Node 22.12+. Authentication is off by default; any local process can use connected panel grants. Existing LSEW_AGENT_CONNECTION configurations still require authentication. Native installation is optional and supports macOS/Linux only. Keep this package at its configured path.\n");
 }

@@ -21,3 +21,6 @@ Classification: **Material UI** under `docs/WORKBENCH_UI_STANDARD.md`. This chan
 - Exact pre-change/current/diff triplets for all 64 affected Darwin and Linux baseline files are at `test-results/scenario-navigation-baseline-review/` (56 changed, 8 new). The author inspected representative compact, shallow, wide, and Linux pairs.
 
 The author inspected the active edit, parked, active and parked confirmation, shallow stopped, forced-colors, wide high-volume, and Linux confirmation images. The new actions remain visible, the parked strip leaves a useful Evidence workspace, and both confirmation actions remain reachable at compact width. Existing and new affected Scenario baselines were updated intentionally on Darwin and pinned Linux. Formal independent visual QA remains the merge gate under `docs/agents/ui-visual-qa.md`.
+
+The subsequent [Agent access integration review](agent-access-merge-evidence.md)
+completed that independent gate on the combined UI: PASS, no material findings.

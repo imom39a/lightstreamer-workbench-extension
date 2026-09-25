@@ -32,12 +32,17 @@ Workbench does not send captured Evidence to the maintainers or an analytics ser
 
 ## Local storage and exports
 
-### Optional Agent access (source candidate)
+### Agent access (source candidate)
 
-Agent access is off by default and must be explicitly connected in each Panel
-Session. The local MCP companion lets an agent request retained Evidence,
-normalized diagnostics, runtime Scope and Draft/Scenario outcomes. Choose either
-inspection-only or inspection plus Local Injection. The latter invokes the
+Agent access is on by default in each open Workbench Panel Session, with both
+inspection and Local Injection available through the configured local companion.
+The panel connects automatically and retries when the companion starts later.
+The header's **Agent access On/Off** switch disables access and retries for this
+Panel Session; a new panel uses the defaults. More actions contains setup guidance
+and optional read-only, authentication and port settings. No access preference or
+connection configuration is persisted by the panel.
+The local MCP companion lets an agent request retained Evidence,
+normalized diagnostics, runtime Scope and Draft/Scenario outcomes. Local Injection invokes the
 application's local listeners; those listeners can themselves cause application
 effects. Server Injection is not exposed to agents.
 
@@ -53,9 +58,10 @@ query strings and fragments are not included in the page descriptor.
 The grant does not identify an individual agent. Standalone authentication is
 off by default: any local process can use a connected panel's grant or impersonate
 the companion. Loopback/Origin checks do not isolate local processes or OS users.
-Use a trusted development machine or opt into authentication. Disconnect revokes access and pauses an
+Use a trusted development machine or opt into authentication. Turning access Off revokes access and pauses an
 agent Scenario, but cannot undo an update already sent. Closing the panel loses
-the temporary operation ledger; unknown delivery is never automatically retried.
+the temporary operation ledger; reconnecting never repeats an operation or resumes
+a Scenario, and unknown delivery is never automatically retried.
 Standalone setup only prints MCP configuration; it writes no files or registry
 entries. The default output requires no credential or approval exchange.
 The companion binds exclusively to `127.0.0.1`; requested data crosses a local,

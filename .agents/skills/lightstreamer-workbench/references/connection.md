@@ -6,7 +6,7 @@ macOS and Linux with Node 22.12+. Companion `setup` prints MCP configuration
 without changing files or the registry. Authentication is off by default; there
 is no credential, code comparison or approval handshake. Any local process can
 use a connected panel's grant or impersonate the companion. Authentication is
-optional, not a prerequisite for investigating an explicitly connected panel.
+optional, not a prerequisite for investigating an open panel with access enabled.
 The companion and Chrome must run on the same host; WSL/containers/remote agents
 need a host-side process and are not implicitly the same loopback connection.
 For Windows setup or recovery, use the companion package's `WINDOWS.md`
@@ -17,18 +17,22 @@ path uses `install`, `doctor` and `mcp --transport native`. Discover commands wi
 the companion's `--help`.
 Do not install or change agent-wide configuration merely to answer a diagnostic question.
 
-In the inspected tab's DevTools, open Lightstreamer Workbench, then **More actions →
-Agent access**. The user chooses **Inspect Evidence** or **Inspect and inject locally**
-and clicks **Connect agent**. In the default mode, call `list_panel_sessions`
-and identify the intended tab. An empty list means no panel is connected, not
-that the app lacks Lightstreamer. Check the running MCP server, extension ID,
-port and selected authentication mode. Do not open a separate profile and claim
-it is the original session.
+Open Lightstreamer Workbench in the intended tab's DevTools. Inspection and Local
+Injection are enabled automatically at port 24817; no Connect action is needed.
+Call `list_panel_sessions` and identify the intended tab. The header's **Agent
+access On/Off** switch expresses enabled access, not agent presence. An empty
+list means no panel is connected, not that the app lacks Lightstreamer. Check
+the running MCP server, extension ID, port and authentication mode. Startup order
+does not matter: auth-off connections retry with backoff capped at 15 seconds.
+If the user turned access Off, ask them to enable it; do not override that choice.
+Setup guidance and optional settings are under **More actions → Agent setup
+instructions**. Do not open a separate profile and claim it is the original session.
 
 ## Optional authenticated mode
 
 Use this branch only when the MCP configuration requires authentication and the
-panel has **Require authentication** enabled under **Connection options**.
+panel has **Require authentication** enabled under **Advanced connection settings**
+and **Apply connection settings** has been selected.
 The private `LSEW_AGENT_CONNECTION` value stays out of reports, screenshots and
 chat. It is not the short comparison code. For a pending authenticated connection:
 
@@ -57,13 +61,15 @@ unrelated process or weaken origin/authentication checks. Correct the matching
 configuration. Existing credential-bearing entries remain authenticated; switching
 off is a deliberate configuration change, not error recovery. Follow the Windows
 guide's migration steps only when requested. If setup uses a nondefault
-port, use the same nonsecret port in Workbench's **Connection options**.
+port, apply the same nonsecret port in Workbench's **Advanced connection settings**.
 
 Browser automation is a separate connection. Confirm it controls the same page
 and application state. If its identifiers cannot be mapped unambiguously to the
 Workbench connection, resolve that uncertainty before a reproduction.
 
-A remounted panel has a new Panel Session and empty history. Never reuse its old
+A remounted panel has a new Panel Session, default access and empty history. Never reuse its old
 execution tokens, cursors or mutation request ids. A disconnected or timed-out
 execution can be unknown: reconnect to the same surviving Panel Session and query
-the existing operation before deciding what happened.
+the existing operation before deciding what happened. Automatic reconnection
+never replays an operation or resumes a Scenario. Technical Local Injection
+access is not authorization to inject outside the user's requested task.
