@@ -35,10 +35,15 @@ record the new defaults, local-process trust and Panel Session lifetime.
   accessible On/Off state, no default connection controls, optional settings
   restoration, cancellation and zero serious/critical axe findings or overflow.
 - Additional 700/800/846px transition captures exposed overlapping header actions
-  at 700/800px. Left/center/right hit tests failed before the fix. Normal geometry
-  now puts secondary actions on a second row below 851px while retaining View /
-  Agent adjacency. The final agent suite passed all 22 tests, including physical
-  keyboard Off/focus checks, under `test-results/automatic-agent-ui-final`.
+  at 700/800px. Left/center/right hit tests failed before the fix. A first fix
+  wrapped actions below 851px, but full-suite pressure checks then found Context
+  demoted too early at 800×556/568. The final layout uses existing compact spacing
+  at 761–850px and a second action row below 761px, retaining View / Agent adjacency.
+  The 37-test agent/pressure comparison passed without changing pressure
+  expectations, under `test-results/automatic-agent-narrow-final`. All five
+  transition checks (700/760/761/800/846px) passed under
+  `test-results/automatic-agent-transition-final`, including physical keyboard
+  Off/focus checks. These boundaries bring the agent suite to 24 checks.
 - The header affects every maintained screenshot. Both Darwin and pinned-Linux
   baselines were intentionally regenerated: 84 integrated states, 12 filter-state
   states and 9 key/JSON-stream states, 210 images total. Normal verification does
@@ -70,7 +75,7 @@ screenshots still showing the old header; those were then explicitly regenerated
 and passed the 25-test supplemental comparison on both Darwin and Linux. The next
 full run passed 270 tests and encountered one existing asynchronous wheel timing
 failure in `workbench.spec.ts:253` (pre-wheel scroll 1688 versus post-wheel 1448).
-A fresh full 274-test comparison includes the three transition regressions.
+A fresh full 276-test comparison includes the five transition regressions.
 
 Independent visual QA inspected all 243 reference/current/diff triplets and
 native-size workflow images. It independently found the transition overlap,
@@ -98,9 +103,13 @@ made by the reviewer.
   companion build and package dry run passed. The companion package contains
   nine files including the Windows guide and skill.
 - `npm run release:package -- --skip-tests --out-dir test-results/automatic-agent-release-final`
-  passed build and package audits: 478,808-byte ZIP, below the one-megabyte limit.
+  passed build and package audits: 478,834-byte ZIP, below the one-megabyte limit.
   Tests were run separately as recorded above. No native host was installed.
 
-Final complete browser and Windows/Linux CI results pending.
+The [first branch Windows/Linux run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36170608374)
+passed on `e5d8d64`, including 34 focused tests per platform, Windows PowerShell
+setup/package checks, and real Chrome automatic discovery, companion restart,
+revocation and optional authentication. Final complete browser and post-spacing
+Windows/Linux CI results pending.
 No release publication or changes to a user's installed MCP configuration are
 implied by this source-branch verification.

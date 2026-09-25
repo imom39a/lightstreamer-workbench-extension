@@ -14,7 +14,7 @@ async function accessible(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
-for (const width of [700, 800, 846]) {
+for (const width of [700, 760, 761, 800, 846]) {
   test(`Header controls remain reachable at dock transition width ${width}`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 700 });
     await page.goto("/?scenario=live-selected&agent=ready");
