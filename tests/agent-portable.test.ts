@@ -96,7 +96,13 @@ describe("installer-free companion", () => {
     const { code } = await start(), pending = await beginApproval(code);
     const agent = await authenticate(code, "agent"); agent.send({ role: "agent" }); await agent.next();
     const closed = once(pending.client.socket, "close"); pending.client.socket.close(); await closed;
-    agent.send({ id: "cancelled", name: "get_pairing_requests", args: {} }); expect((await agent.next()).result).toEqual([]);
+    // The client close event does not establish that the server's close callback
+    // has run: these are separate sockets, with different scheduling on Windows.
+    await expect.poll(async () => {
+      agent.send({ id: "cancelled", name: "get_pairing_requests", args: {} }); return (await agent.next()).result;
+    }, { timeout: 2000 }).toEqual([]);
+    agent.send({ id: "cancelled-confirmation", name: "confirm_pairing", args: { requestId: pending.requestId, code: pending.code } });
+    expect((await agent.next()).error).toMatch("expired or disconnected");
     const expired = await beginApproval(code); await expired.approve();
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 120001);
     agent.send({ id: "expired", name: "confirm_pairing", args: { requestId: expired.requestId, code: expired.code } });
@@ -113,7 +119,9 @@ describe("installer-free companion", () => {
     const pending = await beginApproval(code), rejected = once(pending.client.socket, "close");
     pending.client.send({ type: "pairing-approve", proof: "0".repeat(64) }); await rejected;
     const agent = await authenticate(code, "agent"); agent.send({ role: "agent" }); await agent.next();
-    agent.send({ id: "empty", name: "get_pairing_requests", args: {} }); expect((await agent.next()).result).toEqual([]);
+    await expect.poll(async () => {
+      agent.send({ id: "empty", name: "get_pairing_requests", args: {} }); return (await agent.next()).result;
+    }, { timeout: 2000 }).toEqual([]);
     agent.send({ id: "no-access", name: "list_panel_sessions", args: {} }); expect((await agent.next()).result).toEqual([]);
   });
   it("accepts only loopback pairing codes and binds proofs to role and both fresh nonces", async () => {
