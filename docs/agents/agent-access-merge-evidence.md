@@ -61,7 +61,30 @@ This resolves 56 conflicts and refreshes eight additional images, 64 in total.
   read-only comparison using explicit `CHROME_PATH` to Chrome 153.0.8010.54;
   their accepted baselines were not changed. The final complete comparison uses
   that same Chrome 153 executable.
+- The complete Chrome 153 run passed 281 checks and exposed one existing
+  asynchronous wheel-test race (scroll read as 1688 before the wheel completed,
+  then 1448 afterward). A test-only follow-up waits for the wheel's scroll before
+  checking stability; it changes no Workbench code. The corrected test passed
+  **5/5 repeated runs**. All screenshot comparisons and Scenario navigation
+  checks passed. The 281 unchanged checks were not rerun after this test-only
+  synchronization change.
 
-Final full browser and merge CI
-results are recorded here after completion. No native installer, release
-publication or installed agent configuration change is part of this merge.
+Exact browser commands:
+
+```text
+CHROME_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' LSEW_UI_PORT=4223 npm run test:ui -- --workers=2 --output=test-results/agent-merge-matched-chrome-ui --reporter=line
+CHROME_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' LSEW_UI_PORT=4224 npm run test:ui -- tests/ui/workbench.spec.ts --grep 'keeps COMMAND projection UI out of selected high-volume' --repeat-each=5 --output=test-results/agent-merge-wheel-stable --reporter=line
+```
+
+## Merge and cross-platform CI
+
+Merge commit `dc0ad61` has parents `10a889b` and `49272a2` and is pushed to
+`codex/workbench-agent-access`. [Windows and Linux CI](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36173543097)
+passed on that merge, including automatic discovery/restart/revocation,
+optional authentication, and installer-free Windows setup/package checks.
+The follow-up changes only test synchronization and this record; tested
+production code is unchanged. Type checking and documentation checks passed
+again after the follow-up.
+
+No native installer, release publication or installed agent configuration
+change is part of this merge.

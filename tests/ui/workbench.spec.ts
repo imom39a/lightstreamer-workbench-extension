@@ -246,7 +246,10 @@ test("Workbench keeps COMMAND projection UI out of selected high-volume Evidence
   await focused.focus();
   await expect(focused).toBeFocused();
   await grid.hover();
+  const beforeWheel = await grid.evaluate((ledger) => ledger.scrollTop);
   await page.mouse.wheel(0, -240);
+  // Wheel dispatch returns before Chromium applies the resulting scroll.
+  await expect.poll(() => grid.evaluate((ledger) => ledger.scrollTop)).toBeLessThan(beforeWheel);
   const beforeScrollTop = await grid.evaluate((ledger) => ledger.scrollTop);
   expect(beforeScrollTop).toBeGreaterThan(0);
 
