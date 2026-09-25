@@ -226,7 +226,7 @@ const presentationRuntime = {
   reportVisibleFrame: runtime.reportVisibleFrame?.bind(runtime),
   reportPanelPerformanceEvent: runtime.reportPanelPerformanceEvent?.bind(runtime)
 };
-const agentConnection = params.has("agent") ? agentConnectionFixture(params.get("agent") === "error") : undefined;
+const agentConnection = agentConnectionFixture(params.get("agent") === "error");
 reactRoot.render(createElement(WorkbenchPanel, { runtime: presentationRuntime, analytics, agentConnection }));
 window.__analyticsEvents = () => analyticsEvents;
 window.addEventListener("pagehide", () => { analyticsObserver.dispose(); analytics.dispose(); }, { once: true });

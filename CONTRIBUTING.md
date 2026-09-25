@@ -5,7 +5,7 @@ Thank you for helping improve Lightstreamer Workbench. This project is a Chrome 
 ## Ground Rules
 
 - Keep the core model Lightstreamer-native. Do not add app-specific business objects to core capture, normalization, or COMMAND state modules.
-- Preserve the captured-data privacy boundary. Captured Evidence stays local unless the user deliberately exports it or grants the documented Agent access. Requested agent data may reach the agent's model provider. Additional analytics, remote logging, account sign-in, or other off-device upload require an explicit design decision, policy update, and maintainer approval before implementation.
+- Preserve the captured-data privacy boundary. Captured Evidence stays local unless the user exports it or it is requested through the documented Agent access, enabled by default in open panels and revocable from the header. Requested agent data may reach the agent's model provider. Additional analytics, remote logging, account sign-in, or other off-device upload require an explicit design decision, policy update, and maintainer approval before implementation.
 - Treat Local Injection as local delivery through a captured listener or captured WebSocket. Do not imply that either path injects data into the real Lightstreamer Server stream.
 - Respect the official distribution boundary. Source forks are allowed under the project license, but the official Chrome Web Store item is published by maintainers only.
 - Prefer focused pull requests with clear user impact and test coverage.

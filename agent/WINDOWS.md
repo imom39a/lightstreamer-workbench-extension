@@ -5,8 +5,10 @@ No Workbench installer, native messaging registration, registry changes, Windows
 service, administrator terminal, WebMCP flag or remote-debugging port is needed.
 The companion is an MCP tool server; your existing coding agent supplies the model.
 
-After one-time MCP setup, the daily flow is **Connect agent**. Authentication is
-off by default: no credential, code comparison or approval exchange is required.
+After one-time MCP setup, just open Workbench. Inspection and Local Injection
+connect automatically on port **24817**. The header's **Agent access On/Off**
+switch is on by default; there is no Connect step. Authentication is off by
+default: no credential, code comparison or approval exchange is required.
 Any local process can use a connected panel's grant. Use this default on a trusted
 development machine; optional authentication remains available below.
 
@@ -69,7 +71,7 @@ $workbenchCli = 'C:\Tools\workbench-agent\package\dist\cli.mjs'
 & $workbenchNode $workbenchCli --help
 ```
 
-You still need a matching extension build with **Agent access** in More actions.
+You still need a matching extension build with **Agent access On/Off** in the header.
 The companion tarball does not contain the Chrome extension. An older Store
 extension without that control cannot use it. Source availability does not
 imply that this feature has been published to the Chrome Web Store or npm.
@@ -168,25 +170,29 @@ The skill teaches target selection, bounded Evidence queries, deliberate Local
 Injection, Scenarios, timeout recovery and separate browser verification. It does
 not configure MCP, grant browser permissions or approve a connection for you.
 
-## 5. Connect
+## 5. Open Workbench
 
 1. Open the application tab you intend to inspect. Open Chrome DevTools and
    select **Lightstreamer Workbench**. Reload the app if it created its
    Lightstreamer clients before instrumentation became available.
-2. Open **More actions → Agent access**. Keep **Standalone companion (no
-   installation)** selected. Choose **Inspect Evidence** initially, or explicitly
-   choose **Inspect and inject locally** when you intend to reproduce updates.
-3. Click **Connect agent**. Leave **Require authentication** unchecked under
-   Connection options. No code or additional approval is needed.
-4. Ask your agent to call `list_panel_sessions` and `get_status` to identify
-   your tab. **Connected · inspection only** or **Connected ·
-   inspection and Local Injection allowed** is the completion signal.
+2. No extension setup click is needed. **Agent access On** appears beside View
+   in the header. It means access is enabled, not that an agent is connected.
+   Workbench waits for the companion and reconnects automatically with backoff
+   capped at 15 seconds. Start order does not matter.
+3. Ask your agent to call `list_panel_sessions` and `get_status` to identify
+   your exact tab. A matching session with `permission: "local"` confirms both
+   inspection and Local Injection are available.
 
 Connecting shares that panel's selected grant with local clients. Authentication
 off does not identify agents or the companion: another local process could use
 the grant or impersonate the companion. Loopback and extension-Origin checks
 still block remote connections and ordinary websites, but are not local-process
-authentication. Each panel has its own grant; **Disconnect agent** revokes it.
+authentication. Each panel has its own grant; toggle **Agent access On** to **Off**
+to revoke it and stop reconnecting. Closing the panel also ends access. A new
+panel uses the defaults. Connection retries never replay an injection or resume
+a Scenario. Setup help is under **More actions → Agent setup instructions**;
+its collapsed **Advanced connection settings** offers optional read-only access,
+authentication and custom ports. These options last for the current Panel Session.
 
 ## 6. Inspect and reproduce
 
@@ -196,8 +202,7 @@ Start read-only:
 > Capture/Coverage and retention limits, and inspect the recent COMMAND updates
 > for the subscription I select. Do not inject anything yet.
 
-To reproduce, disconnect, select **Inspect and inject locally**, and reconnect.
-Then give a bounded experiment, for example:
+No permission toggle is needed to reproduce. Give a bounded experiment, for example:
 
 > On this local test app, use the selected COMMAND subscription's real schema
 > to prepare an ADD followed by UPDATE for a test key. Show the target and changed
@@ -230,7 +235,7 @@ upgrading does not silently discard an explicit credential. To switch:
    contains only that setting. If you manually exported the same variable,
    clear it from the MCP process environment too.
 4. Restart the MCP server, reload the updated extension and open Workbench.
-   Leave **Require authentication** unchecked, then **Connect agent**.
+   Default access starts automatically; no extension-side Connect step is needed.
 
 The two modes cannot share one port. A mode mismatch fails instead of silently
 downgrading authentication. You can use a different unused port for the new
@@ -259,7 +264,8 @@ This long value is private: keep it out of Git, screenshots and chat. Each
 authenticated setup invocation generates a new credential; reuse the existing
 configuration for ordinary reconnects.
 
-In **Connection options**, enable **Require authentication**, then connect:
+In **More actions → Agent setup instructions → Advanced connection settings**,
+enable **Require authentication**, then **Apply connection settings**:
 
 1. Ask the agent to show `get_pairing_requests`.
 2. Compare its short code with Workbench's code and click **Approve connection**
@@ -268,7 +274,10 @@ In **Connection options**, enable **Require authentication**, then connect:
    code, then discovers the panel. No Evidence is shared before both steps.
 
 Requests expire after two minutes. Cancelled, expired or mismatched requests need
-a fresh connection and comparison. Credential possession plus local access can
+a fresh connection and comparison. Toggle access On again or apply settings;
+authenticated connections do not retry approval automatically. A new panel uses
+the default mode, so apply the authenticated option again. A required-auth broker
+rejects default auth-off connections rather than downgrading. Credential possession plus local access can
 use a connected panel's grant; this still is not individual-agent identity.
 
 ## Troubleshooting
@@ -277,14 +286,14 @@ use a connected panel's grant; this still is not individual-agent identity.
 | --- | --- |
 | `node.exe` not found or startup fails | Verify the absolute executable and `cli.mjs` paths. The Node ZIP may contain an extra directory. Check `--version` and companion `--help` independently. |
 | PowerShell blocks `npm.ps1` | Use the explicit `npm.cmd` commands above. No execution-policy change is required. |
-| No Agent access control | Load/reload a matching extension build, select its DevTools panel and confirm its ID. Older Store builds may not have the feature. |
-| Companion unavailable | Confirm the MCP server is started with Windows Node on this host. Match the extension ID, port and authentication mode. Default mode has no environment entry or comparison code. |
+| No Agent access header switch | Load/reload a matching extension build, select its DevTools panel and confirm its ID. Older Store builds may not have the feature. |
+| Agent access is On but no session is listed | On means enabled. Confirm the MCP server is started with Windows Node on this host. Match the extension ID, port and authentication mode; allow up to 15 seconds for the next retry. Default mode has no environment entry or comparison code. |
 | Authentication error after changing modes | Follow the migration steps above. An old broker may still occupy the port. Do not kill an unrelated process. |
-| Port 24817 is occupied | Use `setup --port 24818 --extension-id ...`, update the MCP entry and set the same port in Workbench's **Connection options**. |
+| Port 24817 is occupied | Use `setup --port 24818 --extension-id ...`, update the MCP entry and apply the same port in Workbench's **Advanced connection settings**. |
 | `get_pairing_requests` is empty | Expected with authentication off. Use `list_panel_sessions` instead. In optional authenticated mode, connect in Workbench and check expiry, ID and port. |
 | Waiting for agent / No access yet | Optional authenticated mode only: ask the agent to confirm the exact approved request and matching code. If expired, reconnect and compare again. |
-| `list_panel_sessions` is empty | Click Connect in the intended panel and keep it open. Only authenticated mode needs the additional code approval. An MCP configuration alone does not grant panel access. |
-| Local Injection is refused | Confirm the panel's Local Injection grant, current page/target, valid Draft and absence of conflicting human edits. Reconnect with the intended grant if necessary. |
+| `list_panel_sessions` is empty | Open Workbench for the intended tab and keep access On. Default discovery is automatic. Only authenticated mode needs code approval. Merely installing the extension without opening a Workbench panel does not create a Panel Session. |
+| Local Injection is refused | Confirm access is On, the current page/target, valid Draft and absence of conflicting human edits. If you selected read-only access in advanced settings, restore **Inspect and inject locally** and apply settings. |
 | A Scenario pauses or a call times out | Keep the panel visible and inspect its original operation/Run trace. A lost reply does not prove non-delivery; do not repeat with a new request ID automatically. |
 | Organization security software blocks loopback | Follow your organization's policy for this local process. Do not disable the firewall, add a public listener or bypass endpoint protection. |
 

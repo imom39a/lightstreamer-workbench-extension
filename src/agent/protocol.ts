@@ -11,7 +11,7 @@ const object = (properties: Record<string, Schema>, required: string[] = []): Sc
 const identity = object({ intervalId: text, pageId: text, ownerId: text, sequence: integer(Number.MAX_SAFE_INTEGER), eventId: text }, ["intervalId", "pageId", "ownerId", "sequence", "eventId"]);
 const source = object({ scopeId: text, evidence: identity, document: { type: "string", maxLength: 64 * 1024 } });
 export const AGENT_TOOLS = [
-  tool("list_panel_sessions", "List explicitly connected Workbench Panel Sessions. Choose the exact browser tab; never infer that the first session is the intended target.", {}),
+  tool("list_panel_sessions", "List available Workbench Panel Sessions. Open panels connect automatically by default with inspection and Local Injection access. Choose the exact browser tab; never infer that the first session is the intended target.", {}),
   tool("get_pairing_requests", "Optional authenticated mode only: list pending connections and short comparison codes. Default authentication-off connections need no pairing; use list_panel_sessions instead. For authenticated requests, show the code and ask the user to compare it in Workbench and click Approve. Returns no inspected-page data.", {}),
   tool("confirm_pairing", "Optional authenticated mode only: confirm the exact comparison code after the user approves it in Workbench. Cannot approve on the user's behalf. Default authentication-off connections skip this tool. Then use list_panel_sessions to identify the exact tab.", { requestId: text, code: { type: "string", minLength: 9, maxLength: 9 } }, ["requestId", "code"], true),
   tool("get_status", "Read capabilities, page epoch, Capture, Coverage, retention and committed Evidence boundary.", {}),

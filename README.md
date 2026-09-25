@@ -51,7 +51,7 @@ only deliberate History Interval reset.
 
 ## What It Does Not Do
 
-- It does not send inspected-page Evidence to this project, the maintainers, or analytics services. Optional Agent access deliberately shares requested data with your local agent and its configured model provider.
+- It does not send inspected-page Evidence to this project, the maintainers, or analytics services. Agent access is on by default in open panels and shares requested data with your local agent and its configured model provider.
 - It does not intentionally keep captured events after the current Panel Session. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
 - It does not inject an arbitrary Item Update into the real Lightstreamer server stream. Server Injection sends a Client Message through `LightstreamerClient.sendMessage`; only the server-side application decides what that message does.
 - It does not automatically retry Server Injection. An Unknown outcome remains terminal until you deliberately prepare a separate Repeat, which may duplicate server-side effects.
@@ -83,15 +83,15 @@ registry changes. WebMCP flags and a remote debugging port are not required.
 The [Windows walkthrough](agent/WINDOWS.md) covers PowerShell setup, MCP/Codex
 configuration, skill installation and troubleshooting.
 
-Build with `npm run agent:build`, follow the companion setup, then explicitly
-connect **More actions → Agent access** in the inspected tab's Workbench panel.
-Click **Connect agent**—authentication is off by default, with no credential,
+Build with `npm run agent:build`, follow the one-time companion setup, then open
+Workbench. Inspection and Local Injection connect automatically at the default
+local port. The header shows only **Agent access On/Off** beside View; Off disables
+access and connection retries. Authentication is off by default, with no credential,
 comparison code or approval exchange. Any local process can use a connected
-panel's grant. Authentication remains available through `setup --auth required`
-and the panel's **Connection options**.
-Inspection-only is the default grant. Local Injection is a separate choice;
+panel's grant. Setup guidance and optional authentication, read-only and custom-port
+settings live under **More actions → Agent setup instructions**.
 Server Injection and arbitrary page evaluation are not exposed. Access ends
-with the Panel Session. Requested application data can reach your model provider.
+with the Panel Session; a new panel uses the defaults. Requested application data can reach your model provider.
 
 The [agent skill](.agents/skills/lightstreamer-workbench/SKILL.md) teaches target
 selection, Evidence limits, deliberate reproduction, timeout recovery and

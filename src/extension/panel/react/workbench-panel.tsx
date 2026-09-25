@@ -30,7 +30,7 @@ import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { UNAVAILABLE_ANALYTICS, type AnalyticsClient } from "../../analytics/client";
 import { UsageAnalytics } from "./usage-analytics";
-import { AgentAccess } from "./agent-access";
+import { AgentAccess, AgentAccessToggle } from "./agent-access";
 import type { AgentConnection } from "../agent-connection";
 import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
@@ -1931,6 +1931,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
         <strong className="workbench-react__operating-capture">Capture {captureOperation}</strong>
         <span className="workbench-react__operating-coverage" data-condition={coverage.toLowerCase()}>Coverage {coverage}</span>
         <span className="workbench-react__operating-view">View {evidenceMode}{newerCount ? ` · ${newerCount.toLocaleString()} newer` : ""}</span>
+        <AgentAccessToggle connection={agentConnection} />
         <div className="workbench-react__operating-actions">
           <button type="button" aria-label="Back investigation" disabled={!snapshot.evidence.restoration.canBack} onClick={() => dispatch(runtime, { type: "back-investigation" })}>Back</button>
           <button type="button" aria-label="Forward investigation" disabled={!snapshot.evidence.restoration.canForward} onClick={() => dispatch(runtime, { type: "forward-investigation" })}>Forward</button>

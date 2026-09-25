@@ -1,6 +1,6 @@
 # Workbench agent companion
 
-The standalone Node companion exposes MCP tools for explicitly connected
+The standalone Node companion exposes MCP tools for open
 Lightstreamer Workbench Panel Sessions. It works on Windows, macOS and Linux
 with Node 22.12+, without a native installer, administrator access, registry
 changes or Chrome Native Messaging registration. No remote debugging port or
@@ -42,11 +42,9 @@ cannot use the companion.
 2. Start or reconnect that MCP server in your agent. It starts a loopback
    broker automatically; no extra terminal or background service installation
    is needed. Multiple agent processes with the same configuration share it.
-3. Open Workbench in the inspected tab, then **More actions → Agent access**.
-   Select **Standalone companion (no installation)**.
-4. Choose inspection or inspection plus Local Injection, then **Connect agent**.
-   Authentication is off by default; no code or approval exchange is needed.
-5. Ask your agent to call `list_panel_sessions` and identify the intended tab
+3. Open Workbench in the inspected tab. It connects automatically with inspection
+   and Local Injection enabled. No Connect click, code or approval is needed.
+4. Ask your agent to call `list_panel_sessions` and identify the intended tab
    with `get_status`.
 
 With authentication off, any local process can use a connected panel's grant or
@@ -57,16 +55,23 @@ use Windows Node for Windows Chrome. Remote listening is intentionally unsupport
 
 The default port is 24817. For an occupied port, generate configuration with
 `setup --port 24818 --extension-id YOUR_ACTUAL_EXTENSION_ID`, update the MCP entry,
-and set that port under **Connection options** in Workbench.
+and apply that port under **More actions → Agent setup instructions → Advanced connection settings** in Workbench.
 Connection fails if the authentication modes differ on that port. Keep the
 companion and Node at their configured paths or update the MCP
 entry after moving them.
 
 ## Grants and connection lifecycle
 
-Permissions are temporary and owned by the exact Panel Session. Inspection is
-the default; Local Injection is a separate choice. Disconnect revokes access
-and pauses an agent Scenario, but an already sent update can still settle.
+Permissions are temporary and owned by the exact Panel Session. Inspection and
+Local Injection are enabled by default. The compact **Agent access On/Off**
+header switch controls whether access is enabled, not whether an agent is
+currently connected. Off revokes access, stops connection retries and pauses an
+agent Scenario, but an already sent update can still settle. Connection failures
+retry with backoff capped at 15 seconds; reconnecting never replays an operation
+or resumes a Scenario. Setup guidance and optional read-only, authentication,
+native and port settings are under More actions. Settings apply only to this
+Panel Session; a new panel uses the defaults. Optional authenticated/native
+connection failures require deliberately enabling access again.
 Closing or reloading the panel loses its temporary operation ledger. Reconnect
 to the same surviving panel and inspect outstanding operations before another
 experiment; an unknown old request does not establish non-delivery.
@@ -87,7 +92,7 @@ is no longer wanted.
 Authentication is retained as an opt-in mode. Run `setup --auth required
 --extension-id YOUR_ACTUAL_EXTENSION_ID` on one line, preserve its private
 `LSEW_AGENT_CONNECTION` environment entry, and enable **Require authentication**
-under the panel's **Connection options**. Agent connections use mutual,
+under **Agent setup instructions → Advanced connection settings**, then **Apply connection settings**. Agent connections use mutual,
 role-bound HMAC challenges; panel connections retain committed ECDH comparison
 codes. Compare the code shown by the agent (`get_pairing_requests`) and Workbench,
 click **Approve connection**, then let the agent `confirm_pairing` the exact
@@ -99,7 +104,7 @@ Existing configurations with `LSEW_AGENT_CONNECTION` still require authenticatio
 To turn it off, disconnect panels, stop matching MCP clients and allow 30 seconds
 for the idle broker to exit. Replace the Workbench entry with default `setup`
 output and remove its old credential environment setting. Reload the matching
-extension build, leave **Require authentication** unchecked and reconnect.
+extension build; its default connection starts automatically.
 Never mix authentication modes on one port; neither side silently downgrades.
 The [Windows migration steps](WINDOWS.md#switch-an-existing-setup-to-auth-off)
 cover JSON and Codex TOML cleanup. To rotate an optional credential, follow the

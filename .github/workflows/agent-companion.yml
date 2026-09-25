@@ -11,6 +11,8 @@ on:
       - "src/agent/**"
       - "src/extension/panel/agent-*.ts"
       - "src/extension/panel/react/agent-access.tsx"
+      - "src/extension/panel/react/workbench-panel.tsx"
+      - "src/extension/panel/react/workbench-panel.css"
       - "scripts/*agent*.mjs"
       - "tests/agent-*.test.ts"
       - "tests/support/workbench-agent-proof.ts"
@@ -36,7 +38,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Prove direct connection, optional authentication, process startup and MCP routing
+      - name: Prove automatic connection, optional authentication, process startup and MCP routing
         run: npx vitest run tests/agent-portable.test.ts tests/agent-connection.test.ts tests/agent-runtime.test.ts --maxWorkers=1
       - name: Check documented Windows setup and packaged guide
         if: runner.os == 'Windows'
@@ -62,5 +64,5 @@ jobs:
           path: .cache/lsew-browsers
           key: chrome-for-testing-agent-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm run fixture:browser:install
-      - name: Prove the real Chrome connection without native registration
+      - name: Prove real Chrome automatic discovery, companion restart and revocation
         run: npm run agent:test:extension

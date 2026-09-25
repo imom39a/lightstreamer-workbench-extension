@@ -232,6 +232,17 @@ Update this standard and every directly affected contract in the same focused ch
 
 UI change class, permanent surface, shared component, visual-QA packet, exception, and amendment are product-process language rather than Lightstreamer domain concepts. No `CONTEXT.md` change is required. Existing Capture, Evidence, Injection, Injection Source, Injection Draft, Injection Outcome, Local Injection Target, Server Update, Injected Update, and internal COMMAND-state language remains authoritative.
 
+## Automatic Agent access amendment — 2026-09-25
+
+The maintainer explicitly requested friction-free automatic connection, selected
+inspection plus Local Injection as the default, and approved one compact
+**Agent access On/Off** control beside View in the operating header. On means
+access is enabled for this Panel Session, not that a particular agent is connected.
+Off revokes access and cancels automatic retries. Setup instructions and optional
+connection settings belong under More actions, not in the header or a separate
+connection workflow. Reconnection never repeats an Injection or resumes a Scenario;
+all exact-target, protected-document and delivery rules above remain unchanged.
+
 ## Acceptance record
 
 The product owner explicitly approved, one decision at a time:

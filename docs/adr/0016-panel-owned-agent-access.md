@@ -13,8 +13,12 @@ Native Messaging remains optional
 on macOS/Linux. No domain or execution semantics change with transport.
 
 Each mounted Panel Session owns its grant, connection, query cursors, prepared
-document and bounded operation ledger. Agent access starts off; the user grants
-inspection or inspection plus Local Injection. The broker routes exact sessions
+document and bounded operation ledger. Following the maintainer's explicit
+friction-free access decision, opening a panel automatically enables inspection
+and Local Injection. A compact On/Off control beside View in the header revokes
+access and cancels retries; On denotes enabled access, not connected-agent presence.
+Setup guidance and optional settings live under More actions. They apply to the
+current Panel Session; a new panel uses the defaults. The broker routes exact sessions
 and never retains Evidence. Default standalone access trusts local processes:
 any process with loopback access can use a connected panel's grant or impersonate
 the companion. Optional authenticated access additionally requires possession
@@ -38,7 +42,11 @@ The standalone transport binds only literal IPv4 loopback and checks exact Host,
 path and extension Origin in both modes. These checks reject ordinary websites
 but are not local-process authentication or per-OS-user isolation. Default
 connections use an explicit auth-off handshake and no comparison/approval step;
-the panel still starts disconnected with no grant. Optional authenticated
+the panel connects automatically at port 24817 and waits/retries if the companion
+starts later or restarts. Backoff is capped at 15 seconds. Loss revokes the active
+grant and pauses agent Scenarios; reconnecting never repeats an operation or
+resumes a Run. Optional authenticated/native failures require deliberate re-enabling,
+and neither mode silently falls back to auth off. Optional authenticated
 agent connections use mutual, role-bound nonce/HMAC
 proofs with a generated credential in MCP configuration. Panel connections use
 fresh P-256 ECDH keys: the panel commits its public key and nonce before the
@@ -59,7 +67,7 @@ Local WebSocket traffic
 is not encrypted; remote hosts and arbitrary website origins are not supported.
 Setup only prints configuration. Default setup emits command/arguments without
 a credential. `setup --auth required` enables the retained authenticated mode;
-the panel exposes it under Connection options. Existing credential-bearing MCP
+the panel exposes it under Advanced connection settings. Existing credential-bearing MCP
 entries continue to require authentication. Neither side falls back across
 modes, and switching requires disconnecting/restarting matching clients or a
 separate port. Runtime startup passes configuration to its local broker through

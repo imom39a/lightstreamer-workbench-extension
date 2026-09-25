@@ -46,9 +46,11 @@ Use the [Support page](https://imom39a.github.io/lightstreamer-workbench-extensi
 
 ## Data-handling reminder
 
-Optional Agent access deliberately transfers requested data to a local MCP
-client and potentially its model provider. It starts off per Panel Session,
-uses explicit read or Local Injection grants, exact runtime targets, bounded
+Agent access transfers requested data to a local MCP client and potentially its
+model provider. At the maintainer's request, open panels automatically enable
+inspection and Local Injection and connect on the default loopback port. The
+header's On/Off switch disables access and automatic retries for that Panel
+Session; a new panel uses the defaults. It retains exact runtime targets, bounded
 messages and optional transport authentication. Standalone authentication is
 off by default at the maintainer's request to simplify local setup. Any local
 process can use a connected panel's grant or impersonate the companion; this
@@ -83,7 +85,8 @@ application fields contain no secrets. Agents cannot call arbitrary page code,
 clear History or perform Server Injection through this interface.
 
 Loss of a companion connection or a reply does not prove an Injection was not
-delivered. Request ids deduplicate within the surviving Panel Session only;
+delivered. Connection retries never replay a request or resume a Scenario.
+Request ids deduplicate within the surviving Panel Session only;
 inspect the original operation and Scenario trace before further dispatch.
 
 Workbench processes Lightstreamer Evidence in one Panel Session. The Panel Session owns one temporary Event History. A controlled Close tries to erase this History. An abnormal stop can prevent erasure. Residual data can remain until Chrome runs the extension again. A new Panel Session does not load this data. Do not attach private production events, exports, or screenshots to public issues or pull requests.
