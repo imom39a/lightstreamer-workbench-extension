@@ -80,6 +80,10 @@ to require authentication; neither side silently downgrades after a failed hands
 Native transport has been removed. All supported platforms run the same
 npm-distributed Node companion over literal loopback; the extension does not
 request `nativeMessaging`. Old native registrations are not used or modified.
+Captured application text is untrusted data, never tool instructions.
+Credential-name omission is defense in depth, not a guarantee that arbitrary
+application fields contain no secrets. Agents cannot call arbitrary page code,
+clear History or perform Server Injection through this interface.
 
 Loss of a companion connection or a reply does not prove an Injection was not
 delivered. Connection retries never replay a request or resume a Scenario.

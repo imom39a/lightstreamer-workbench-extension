@@ -11,15 +11,13 @@ vi.mock("../src/agent/portable-channel", () => ({ connectPortable: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.clearAllMocks(); });
 function fixture(autoChannel?: CompanionChannel) {
   vi.mocked(connectPortable).mockImplementation(() => autoChannel ? Promise.resolve(autoChannel) : new Promise(() => {}));
-  const receive = new Set<(message: unknown) => void>(), disconnect = new Set<() => void>();
-  const port = { onMessage: { addListener: (callback: (message: unknown) => void) => receive.add(callback) }, onDisconnect: { addListener: (callback: () => void) => disconnect.add(callback) }, postMessage: vi.fn(), disconnect: vi.fn(() => disconnect.forEach(callback => callback())) };
   const agent = { status: () => ({ pageEpoch: "page-1", visible: true }), local: () => ({ draft: null }), scenario: () => null } as unknown as AgentRuntime;
   const unsubscribe = vi.fn();
   const runtime = { agent, subscribe: () => unsubscribe } as unknown as WorkbenchRuntime;
-  const connectNative = vi.fn(() => port);
+  const connectNative = vi.fn();
   vi.stubGlobal("chrome", { runtime: { connectNative, getURL: () => `chrome-extension://${"a".repeat(32)}/` }, devtools: { inspectedWindow: { tabId: 7, eval: (_expression: string, callback: (value: string) => void) => callback("https://fixture.test/app") } } });
   const connection = createAgentConnection(runtime, "panel-1");
-  return { connection, port, agent, connectNative, unsubscribe, receive: (value: unknown) => receive.forEach(callback => callback(value)), closed: () => disconnect.forEach(callback => callback()) };
+  return { connection, agent, connectNative, unsubscribe };
 }
 describe("per-panel agent grants", () => {
   it("automatically offers inspection and Local Injection at the default port without a UI action", async () => {

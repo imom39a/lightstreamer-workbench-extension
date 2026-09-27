@@ -8,7 +8,7 @@ import { DEFAULT_COMPANION_PORT, PAIRING_ENV, parsePairingCode, randomNonce } fr
 import { CdpClient, evaluateByValue, waitForCondition } from "./chrome-extension-cdp";
 
 /** Opt-in real Chrome proof. The same loopback runtime runs on every platform. */
-export async function proveAgentFixture(root: string, _profileDir: string, panel: CdpClient, page: CdpClient) {
+export async function proveAgentFixture(root: string, panel: CdpClient, page: CdpClient) {
   const cli = (process.env.LSEW_AGENT_TEST_CLI ?? join(root, "agent/dist/cli.mjs"));
   let broker: { close(): void } | undefined;
   const authenticated = process.env.LSEW_AGENT_BROWSER_AUTH === "required";

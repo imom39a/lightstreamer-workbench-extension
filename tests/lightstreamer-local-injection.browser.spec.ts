@@ -164,7 +164,7 @@ async function runBrowserProof(): Promise<void> {
     await injectFromLatestServerEvidence(panelCdp, listenerFallbackMessage);
     await waitForRenderedMessage(pageCdp, listenerFallbackMessage, 2);
 
-    if (process.env.LSEW_AGENT_BROWSER_PROOF === "1") await proveAgentFixture(rootDir, profileDir, panelCdp, pageCdp);
+    if (process.env.LSEW_AGENT_BROWSER_PROOF === "1") await proveAgentFixture(rootDir, panelCdp, pageCdp);
 
     console.log(
       "Local Injection transport proof passed: wire direct + message-channel fallback + listener fallback."
