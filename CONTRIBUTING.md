@@ -99,8 +99,9 @@ in both default authentication-off and optional authenticated modes, and runs in
 the Windows/macOS/Linux CI matrix. Both commands test the installed npm tarball
 through the same loopback runtime; native transport has been removed. Tests never change user agent settings. See the
 [companion guide](agent/README.md) and [agent-access ADR](docs/adr/0016-panel-owned-agent-access.md).
-The current [agent-access verification record](docs/agents/agent-access-ui-evidence.md)
-lists the browser, accessibility and platform evidence and outstanding platform checks.
+The current [unified npm companion verification record](docs/agents/unified-agent-mcp-evidence.md)
+lists the browser, accessibility and cross-platform package evidence, including
+the separate outstanding release gates.
 
 The fixture path requires a project-supported Node.js release (`20.19+` or `22.12+`), Docker Desktop/Engine, Maven on `PATH`, and Chrome for Testing or Chromium. Install the dedicated test browser once with the cross-platform Puppeteer installer:
 
