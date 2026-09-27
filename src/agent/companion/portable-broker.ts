@@ -8,7 +8,7 @@ import { pairingProof, proofText, randomNonce, verifyPairingProof, createPairing
 import { portableConfig, type PortableConfig } from "../portable-config";
 import { connectPortable } from "../portable-channel";
 import { createBrokerRouter } from "./router";
-import type { Message } from "./ipc";
+import type { Message } from "../protocol";
 
 /** Loopback only. No HTTP tool endpoint, remote address, filesystem credential or native host. */
 export async function startPortableBroker(config: PortableConfig, extensionId: string) {

@@ -75,30 +75,19 @@ This is not a generic WebSocket inspector and is not a replacement for a Lightst
 
 ## Agent access (source candidate)
 
-The [local MCP companion](agent/README.md) lets agents inspect connected Panel
-Sessions, query retained Evidence and diagnostics, and prepare and execute Local
-Injections or single-target Scenarios. Its standalone Node companion supports
-Windows, macOS and Linux without an installer, native-host registration or
-registry changes. WebMCP flags and a remote debugging port are not required.
-The [Windows walkthrough](agent/WINDOWS.md) covers PowerShell setup, MCP/Codex
-configuration, skill installation and troubleshooting.
+The MCP companion is one npm package and Node runtime for Windows, macOS and Linux.
+It connects to open Workbench panels over localhost without native registration.
+See the [common companion setup](agent/README.md) for npm configuration, local
+package testing and migration from the removed native connection. The package
+is prepared for publication; npm launch commands require its first publication.
 
-Build with `npm run agent:build`, follow the one-time companion setup, then open
-Workbench. Inspection and Local Injection connect automatically at the default
-local port. The header shows only **Agent access On/Off** beside View; Off disables
-access and connection retries. Authentication is off by default, with no credential,
-comparison code or approval exchange. Any local process can use a connected
-panel's grant. Setup guidance and optional authentication, read-only and custom-port
-settings live under **More actions → Agent setup instructions**.
-Server Injection and arbitrary page evaluation are not exposed. Access ends
-with the Panel Session; a new panel uses the defaults. Requested application data can reach your model provider.
-
-The [agent skill](.agents/skills/lightstreamer-workbench/SKILL.md) teaches target
-selection, Evidence limits, deliberate reproduction, timeout recovery and
-verification of the app through separately connected browser tools. The companion
-requires Node 22.12+. An optional native-host connection remains available on
-macOS/Linux. This source implementation
-does not imply Chrome Web Store publication.
+Agent access enables inspection and Local Injection automatically in each open
+Panel Session. The header's **Agent access On/Off** revokes that access and stops
+retries. Authentication is off by default: any local process can use a connected
+panel's grant or impersonate the companion. Requested Evidence can reach your
+agent's model provider. Optional authentication, read-only access and custom ports
+remain under **More actions → Agent setup instructions**. Server Injection is not
+available to agents. Node 22.12+ and the Agent-enabled extension are required.
 
 ## Open Source And Contributions
 

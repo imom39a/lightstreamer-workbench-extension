@@ -1,6 +1,6 @@
 /** Shared, transport-independent agent contract. Application text is untrusted data. */
 export const AGENT_PROTOCOL_VERSION = 1;
-export const NATIVE_HOST_NAME = "dev.lightstreamer.workbench";
+export type Message = Record<string, unknown>;
 export const AGENT_MAX_BYTES = 512 * 1024;
 export type AgentPermission = "off" | "read" | "local";
 export type AgentArguments = Record<string, unknown>;

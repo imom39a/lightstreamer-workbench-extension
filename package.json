@@ -9,7 +9,8 @@
   },
   "scripts": {
     "agent:build": "node scripts/build-agent.mjs",
-    "agent:install": "node agent/dist/cli.mjs install",
+    "agent:pack": "npm pack ./agent --pack-destination release",
+    "agent:test:package": "node scripts/test-agent-package.mjs",
     "agent:mcp": "node agent/dist/cli.mjs mcp",
     "agent:test:browser": "node scripts/test-agent-browser.mjs",
     "agent:test:extension": "node scripts/test-agent-browser.mjs --extension-only",

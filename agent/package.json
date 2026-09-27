@@ -1,10 +1,41 @@
 {
   "name": "@lightstreamer-workbench/agent",
   "version": "0.1.0",
-  "description": "Standalone local MCP companion for Lightstreamer Workbench on Windows, macOS and Linux",
+  "description": "MCP companion for Lightstreamer Workbench: one Node runtime for Windows, macOS and Linux",
   "type": "module",
   "license": "Apache-2.0",
-  "engines": { "node": ">=22.12.0" },
-  "bin": { "lightstreamer-workbench-agent": "dist/cli.mjs" },
-  "files": ["dist", "skills", "README.md", "WINDOWS.md", "LICENSE"]
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "bin": {
+    "lightstreamer-workbench-agent": "dist/cli.mjs"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "WINDOWS.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imom39a/lightstreamer-workbench-extension.git",
+    "directory": "agent"
+  },
+  "homepage": "https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent",
+  "bugs": {
+    "url": "https://github.com/imom39a/lightstreamer-workbench-extension/issues"
+  },
+  "keywords": [
+    "mcp",
+    "lightstreamer",
+    "chrome-devtools"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "prepack": "node ../scripts/build-agent.mjs"
+  }
 }

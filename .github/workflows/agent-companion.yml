@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -52,7 +52,7 @@ jobs:
           $workbenchSetup = & $workbenchNode $workbenchCli setup --extension-id $workbenchExtensionId | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Setup failed.' }
           $entry = $workbenchSetup.mcpServers.'lightstreamer-workbench'
-          if ($entry.command -ne $workbenchNode -or $entry.args[0] -ne $workbenchCli -or $entry.env -or $workbenchSetup.auth -ne 'off') { throw 'Default setup must not require credentials.' }
+          if ($entry.command -ne 'npx' -or $entry.args[0] -ne '--yes' -or $entry.args[1] -ne '@lightstreamer-workbench/agent@0.1.0' -or $entry.env -or $workbenchSetup.auth -ne 'off') { throw 'Default setup must not require credentials.' }
           $authenticatedSetup = & $workbenchNode $workbenchCli setup --auth required --extension-id $workbenchExtensionId | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $authenticatedSetup.mcpServers.'lightstreamer-workbench'.env.LSEW_AGENT_CONNECTION -notmatch '^wb1:24817:[a-f0-9]{64}$') { throw 'Optional authentication configuration failed.' }
           $package = npm.cmd pack ./agent --dry-run --json | ConvertFrom-Json
@@ -64,5 +64,5 @@ jobs:
           path: .cache/lsew-browsers
           key: chrome-for-testing-agent-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm run fixture:browser:install
-      - name: Prove real Chrome automatic discovery, companion restart and revocation
+      - name: Prove the installed npm package and real Chrome connection
         run: npm run agent:test:extension

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AGENT_PROTOCOL_VERSION, validateAgentCall } from "../protocol";
-import type { Message } from "./ipc";
+import type { Message } from "../protocol";
 
 export interface BrokerPeer {
   send(value: Message): void;

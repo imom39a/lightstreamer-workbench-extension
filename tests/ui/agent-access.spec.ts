@@ -122,20 +122,19 @@ test("Cancelling optional authentication leaves access off", async ({ page }) =>
   await expect(access.getByLabel("Connection comparison code")).toHaveCount(0);
 });
 
-test("Advanced native and port settings survive reopening instructions", async ({ page }) => {
+test("One npm companion connection retains port and permissions after reopening instructions", async ({ page }) => {
   await page.goto("/?scenario=live-selected&agent=ready");
-  for (const transport of ["portable", "native"]) {
-    const access = await openInstructions(page);
-    await access.locator("summary").filter({ hasText: "Advanced connection settings" }).click();
-    await access.getByRole("combobox", { name: "Agent transport" }).selectOption(transport);
-    if (transport === "portable") await access.getByLabel("Companion port").fill("24818");
-    await access.getByRole("button", { name: "Apply connection settings" }).click();
-    await expect(access.getByRole("status")).toContainText("Connected");
-    await page.getByRole("button", { name: "Back to prior investigation" }).click();
-    const restored = await openInstructions(page);
-    await restored.locator("summary").filter({ hasText: "Advanced connection settings" }).click();
-    await expect(restored.getByRole("combobox", { name: "Agent transport" })).toHaveValue(transport);
-    if (transport === "portable") await expect(restored.getByLabel("Companion port")).toHaveValue("24818");
-    await page.getByRole("button", { name: "Back to prior investigation" }).click();
-  }
+  const access = await openInstructions(page);
+  await access.locator("summary").filter({ hasText: "Advanced connection settings" }).click();
+  await expect(access.getByRole("combobox", { name: "Agent transport" })).toHaveCount(0);
+  await expect(access.getByRole("link", { name: "MCP companion setup guide" })).toHaveAttribute("href", "https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/agent/README.md");
+  await access.getByLabel("Companion port").fill("24818");
+  await access.getByRole("combobox", { name: "Agent permissions" }).selectOption("read");
+  await access.getByRole("button", { name: "Apply connection settings" }).click();
+  await expect(access.getByRole("status")).toContainText("Connected · inspection only.");
+  await page.getByRole("button", { name: "Back to prior investigation" }).click();
+  const restored = await openInstructions(page);
+  await restored.locator("summary").filter({ hasText: "Advanced connection settings" }).click();
+  await expect(restored.getByLabel("Companion port")).toHaveValue("24818");
+  await expect(restored.getByRole("combobox", { name: "Agent permissions" })).toHaveValue("read");
 });

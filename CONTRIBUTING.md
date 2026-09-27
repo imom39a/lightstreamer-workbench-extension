@@ -96,9 +96,8 @@ The latter adds real MCP stdio and installer-free loopback connection to the com
 official-client browser proof. `npm run agent:test:extension` proves the portable
 connection through the loaded Chrome panel without Docker or Lightstreamer Server,
 in both default authentication-off and optional authenticated modes, and runs in
-the Windows/Linux CI matrix. Native transport remains separately
-testable with `LSEW_AGENT_BROWSER_TRANSPORT=native` on macOS/Linux; registration is
-contained in the disposable test profile. Tests never change user agent settings. See the
+the Windows/macOS/Linux CI matrix. Both commands test the installed npm tarball
+through the same loopback runtime; native transport has been removed. Tests never change user agent settings. See the
 [companion guide](agent/README.md) and [agent-access ADR](docs/adr/0016-panel-owned-agent-access.md).
 The current [agent-access verification record](docs/agents/agent-access-ui-evidence.md)
 lists the browser, accessibility and platform evidence and outstanding platform checks.

@@ -111,7 +111,7 @@ describe("per-panel agent grants", () => {
       queueMicrotask(() => showCode({ requestId: "pending", code: "1234 5678", expiresAt: Date.now() + 120000 }));
       return { ready: new Promise(resolve => { complete = resolve; }), approve, close: vi.fn() };
     });
-    f.connection.connect("local", { transport: "portable", auth: "required" });
+    f.connection.connect("local", { auth: "required" });
     await vi.waitFor(() => expect(f.connection.getSnapshot().status).toBe("pairing"));
     expect(f.connection.getSnapshot().permission).toBe("off");
     f.connection.approvePairing(); expect(approve).toHaveBeenCalledOnce();
@@ -119,7 +119,7 @@ describe("per-panel agent grants", () => {
     complete(channel);
     await vi.waitFor(() => expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({ role: "panel", permission: "local" })));
     expect(f.connectNative).not.toHaveBeenCalled();
-    read({ type: "ready" }); expect(f.connection.getSnapshot()).toMatchObject({ status: "connected", transport: "portable", permission: "local" });
+    read({ type: "ready" }); expect(f.connection.getSnapshot()).toMatchObject({ status: "connected", permission: "local" });
     closed(); expect(f.connection.getSnapshot()).toMatchObject({ status: "error", permission: "off" });
     expect(f.connection.getSnapshot().detail).not.toContain("private-test-code");
     f.connection.dispose();
@@ -129,7 +129,7 @@ describe("per-panel agent grants", () => {
     const ready = new Promise<CompanionChannel>(done => { resolve = done; });
     if (auth === "required") vi.mocked(beginPanelPairing).mockReturnValueOnce({ ready, approve: vi.fn(), close: vi.fn() });
     else vi.mocked(connectPortable).mockReturnValueOnce(ready);
-    f.connection.connect("local", { transport: "portable", auth });
+    f.connection.connect("local", { auth });
     f.connection.disconnect();
     const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: vi.fn(), onClose: vi.fn() };
     resolve(channel);
@@ -137,26 +137,21 @@ describe("per-panel agent grants", () => {
     expect(channel.send).not.toHaveBeenCalled(); expect(f.connection.getSnapshot().permission).toBe("off");
     f.connection.dispose();
   });
-  it("uses native transport only when selected, shares exact page identity, and closes with the panel", async () => {
-    const f = fixture();
-    expect(f.connectNative).not.toHaveBeenCalled();
-    f.connection.connect("read", { transport: "native" });
-    expect(f.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ panelSessionId: "panel-1", permission: "read", tabId: 7 }));
-    f.receive({ type: "ready" });
-    f.receive({ id: "status", name: "get_status", args: { panelSessionId: "panel-1" } });
-    await vi.waitFor(() => expect(f.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: "status", result: expect.objectContaining({ inspectedPage: { chromeTabId: 7, urlWithoutQuery: "https://fixture.test/app" } }) })));
-    f.connection.dispose(); expect(f.connection.getSnapshot().permission).toBe("off");
-    expect(f.unsubscribe).toHaveBeenCalledOnce();
-  });
-  it("drops delayed replies when the native connection is revoked", async () => {
-    const f = fixture(); let release!: (value: unknown) => void;
+  it("shares exact page identity and drops delayed replies when the loopback connection is revoked", async () => {
+    let read!: (message: Record<string, unknown>) => void;
+    const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: callback => { read = callback; }, onClose: vi.fn() };
+    const f = fixture(channel);
+    await vi.waitFor(() => expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({ panelSessionId: "panel-1", tabId: 7 })));
+    read({ type: "ready" });
+    read({ id: "status", name: "get_status", args: { panelSessionId: "panel-1" } });
+    await vi.waitFor(() => expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({ id: "status", result: expect.objectContaining({ inspectedPage: { chromeTabId: 7, urlWithoutQuery: "https://fixture.test/app" } }) })));
+    let release!: (value: unknown) => void;
     f.agent.diagnostics = () => new Promise(resolve => { release = resolve as (value: unknown) => void; });
-    f.connection.connect("read", { transport: "native" }); f.receive({ type: "ready" });
-    f.receive({ id: "old-read", name: "query_diagnostics", args: { panelSessionId: "panel-1" } });
-    f.connection.disconnect();
-    release({ observations: [] });
+    read({ id: "old-read", name: "query_diagnostics", args: { panelSessionId: "panel-1" } });
+    f.connection.disconnect(); release({ observations: [] });
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.port.postMessage.mock.calls.some(([message]) => message.id === "old-read")).toBe(false);
-    f.connection.dispose();
+    expect(channel.send).not.toHaveBeenCalledWith(expect.objectContaining({ id: "old-read" }));
+    expect(f.connectNative).not.toHaveBeenCalled();
+    f.connection.dispose(); expect(f.unsubscribe).toHaveBeenCalledOnce();
   });
 });

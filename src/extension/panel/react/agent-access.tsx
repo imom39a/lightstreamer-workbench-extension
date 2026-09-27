@@ -16,7 +16,6 @@ export function AgentAccessToggle({ connection = UNAVAILABLE_AGENT_CONNECTION }:
 export function AgentAccess({ connection = UNAVAILABLE_AGENT_CONNECTION }: { connection?: AgentConnection }) {
   const state = useSyncExternalStore(connection.subscribe, connection.getSnapshot, connection.getSnapshot);
   const [permission, setPermission] = useState<"read" | "local">(state.requestedPermission ?? "local");
-  const [transport, setTransport] = useState<"portable" | "native">(state.transport ?? "portable");
   const [port, setPort] = useState(state.port ?? DEFAULT_COMPANION_PORT);
   const [requireAuth, setRequireAuth] = useState(state.auth === "required");
   const primaryAction = useRef<HTMLButtonElement>(null);
@@ -27,22 +26,16 @@ export function AgentAccess({ connection = UNAVAILABLE_AGENT_CONNECTION }: { con
   const pairing = state.status === "pairing" || state.status === "awaiting-agent";
   return <details className="workbench-react__usage-analytics">
     <summary>Agent setup instructions</summary>
-    <p>Configure the standalone Workbench companion as an MCP server once, then open this panel. Agent access is on by default for inspection and Local Injection. It connects automatically at 127.0.0.1:24817 and retries when the companion starts later.</p>
+    <p>Configure the npm Workbench companion as an MCP server once, then open this panel. Agent access is on by default for inspection and Local Injection. It connects automatically at 127.0.0.1:24817 and retries when the companion starts later.</p>
     <p>The header’s On/Off switch controls access for this Panel Session, not whether an agent is currently connected. Closing this panel ends access. A new panel uses the defaults.</p>
     <p>Authentication is off by default. Any local process can inspect or inject while connected. Requested Evidence is shared with your agent and its model provider. Local Injection invokes application listeners, which may cause other effects; it does not contact Lightstreamer Server. Keep this panel visible while running Scenarios.</p>
-    <p><a href="https://github.com/imom39a/lightstreamer-workbench-extension/blob/codex/automatic-agent-access/agent/WINDOWS.md" target="_blank" rel="noopener noreferrer">Windows and standalone setup guide</a></p>
+    <p><a href="https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/agent/README.md" target="_blank" rel="noopener noreferrer">MCP companion setup guide</a></p>
     <p role="status">{state.detail}</p>
     <details>
       <summary>Advanced connection settings</summary>
-      <label>Transport <select aria-label="Agent transport" value={transport} disabled={pairing} onChange={event => setTransport(event.currentTarget.value as "portable" | "native")}>
-        <option value="portable">Standalone companion (no installation)</option>
-        <option value="native">Installed native host (macOS/Linux)</option>
-      </select></label>
-      {transport === "portable" && <>
-        <label>Companion port <input aria-label="Companion port" type="number" min={1024} max={65535} value={port} disabled={pairing} onChange={event => setPort(Number(event.currentTarget.value))} /></label>
-        <label><input type="checkbox" checked={requireAuth} disabled={pairing} onChange={event => setRequireAuth(event.currentTarget.checked)} /> Require authentication</label>
-        <p>Optional: use companion setup with --auth required and enable this option. Both sides must use the same mode. Compare and approve each authenticated connection.</p>
-      </>}
+      <label>Companion port <input aria-label="Companion port" type="number" min={1024} max={65535} value={port} disabled={pairing} onChange={event => setPort(Number(event.currentTarget.value))} /></label>
+      <label><input type="checkbox" checked={requireAuth} disabled={pairing} onChange={event => setRequireAuth(event.currentTarget.checked)} /> Require authentication</label>
+      <p>Optional: use companion setup with --auth required and enable this option. Both sides must use the same mode. Compare and approve each authenticated connection.</p>
       <label>Agent permissions <select aria-label="Agent permissions" value={permission} disabled={pairing} onChange={event => setPermission(event.currentTarget.value as "read" | "local")}>
         <option value="local">Inspect and inject locally</option>
         <option value="read">Inspect Evidence</option>
@@ -52,7 +45,7 @@ export function AgentAccess({ connection = UNAVAILABLE_AGENT_CONNECTION }: { con
         <button ref={primaryAction} type="button" aria-disabled={state.status === "awaiting-agent" || undefined} onClick={() => {
           if (state.status === "awaiting-agent") return;
           if (state.status === "pairing") connection.approvePairing();
-          else connection.connect(permission, transport === "portable" ? { transport, port, auth: requireAuth ? "required" : "off" } : { transport });
+          else connection.connect(permission, { port, auth: requireAuth ? "required" : "off" });
         }}>{state.status === "pairing" ? "Approve connection" : state.status === "awaiting-agent" ? "Waiting for agent" : "Apply connection settings"}</button>
         {pairing && <button type="button" onClick={() => connection.disconnect()}>Cancel connection</button>}
       </div>

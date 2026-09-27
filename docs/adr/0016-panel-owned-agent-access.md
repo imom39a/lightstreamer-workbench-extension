@@ -9,8 +9,9 @@ Windows. The maintainer subsequently requested installer-free Windows support.
 The default connection is now a loopback WebSocket to a standalone
 Node companion on Windows, macOS and Linux. Authentication is retained but off
 by default following the maintainer's request to remove mandatory Windows pairing.
-Native Messaging remains optional
-on macOS/Linux. No domain or execution semantics change with transport.
+On 2026-09-27 the maintainer requested a single npm-distributed runtime and
+removed Native Messaging. Windows, macOS and Linux now use the same Node source
+and loopback connection. The extension no longer requests `nativeMessaging`.
 
 Each mounted Panel Session owns its grant, connection, query cursors, prepared
 document and bounded operation ledger. Following the maintainer's explicit
@@ -22,8 +23,7 @@ current Panel Session; a new panel uses the defaults. The broker routes exact se
 and never retains Evidence. Default standalone access trusts local processes:
 any process with loopback access can use a connected panel's grant or impersonate
 the companion. Optional authenticated access additionally requires possession
-of the private MCP credential, not a claimed agent name. Native access trusts
-the local OS-user boundary. Requested application data may reach the configured model provider,
+of the private MCP credential, not a claimed agent name. Requested application data may reach the configured model provider,
 so the permission UI and privacy policy disclose that transfer.
 
 Agent mutations reuse the protected Draft/Scenario, exact page and target
@@ -45,7 +45,7 @@ connections use an explicit auth-off handshake and no comparison/approval step;
 the panel connects automatically at port 24817 and waits/retries if the companion
 starts later or restarts. Backoff is capped at 15 seconds. Loss revokes the active
 grant and pauses agent Scenarios; reconnecting never repeats an operation or
-resumes a Run. Optional authenticated/native failures require deliberate re-enabling,
+resumes a Run. Optional authenticated failures require deliberate re-enabling,
 and neither mode silently falls back to auth off. Optional authenticated
 agent connections use mutual, role-bound nonce/HMAC
 proofs with a generated credential in MCP configuration. Panel connections use
@@ -74,3 +74,11 @@ separate port. Runtime startup passes configuration to its local broker through
 an anonymous pipe; no installer or registry entries are involved. The accepted
 tradeoff removes connection friction on trusted development machines at the cost
 of local-process authentication, not the Panel Session or Local Injection boundary.
+
+The npm package bundles its runtime dependencies and skill. Setup defaults to a
+version-pinned `npx` entry on all platforms; `--local` supports an installed
+artifact using absolute Node/package paths. Neither route requires a native
+host or changes agent settings. Legacy native commands fail with migration
+guidance rather than silently changing the connection boundary. Package tests
+install the tarball and exercise the npm executable, MCP and loaded extension
+on Windows, macOS and Linux before publication.

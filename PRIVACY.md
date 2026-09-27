@@ -77,10 +77,10 @@ expire after two minutes. Keep the private credential secret; possession plus
 local access can use a connected panel's grant. Existing credential-bearing
 configurations remain authenticated until explicitly changed.
 
-Optional native installation on macOS/Linux creates a native-host registration
-and launcher, with a private temporary socket, access token and startup lock.
-That path trusts the local OS-user boundary. Removal instructions for both
-paths are in the [companion guide](agent/README.md).
+The same npm-distributed Node companion runs on Windows, macOS and Linux.
+It creates no native-host registration, launcher, persistent credential file or
+OS service. Removing its MCP entry disables the agent-side connection; npm's
+package cache contains code, not Evidence. Native transport has been removed.
 
 Version 2 stores current Panel Session Evidence in one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 5,000 records or 32 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. Workbench does not change the storage type during a Panel Session.
 
@@ -104,11 +104,11 @@ Workbench requests page access to observe the official Lightstreamer Web Client 
 
 The analytics candidate adds the `storage` permission for the usage preference and random identifier, and host access to `https://www.google-analytics.com/*` for event submission. Analytics is not added to content scripts or the inspected page. It does not require browser history or account access.
 
-The Agent access candidate retains `nativeMessaging` for the optional installed
-native host. The standalone path does not use that permission or register a host.
-Its loopback WebSocket accepts the configured extension origin and local agents,
-not ordinary website origins; agent authentication is optional. Both paths require the exact extension
-id; neither exposes a remote debugging port.
+Agent access uses a local loopback WebSocket and requires no additional manifest
+permission. The extension no longer requests `nativeMessaging`. The companion
+accepts the configured extension origin and local agents, not ordinary website
+origins; authentication is optional. Setup names the exact extension ID and does
+not expose a remote debugging port.
 
 Document each permission change in the pull request and release notes. Chrome Web Store review includes extension permissions.
 

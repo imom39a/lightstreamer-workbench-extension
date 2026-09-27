@@ -77,12 +77,9 @@ is needed. Stop clients and disconnect panels before changing authentication
 modes or rotating credentials. A credential-bearing MCP configuration continues
 to require authentication; neither side silently downgrades after a failed handshake.
 
-The optional native path retains its private per-user Unix socket and exact
-native-host origin allowlist; it trusts processes running as the same OS user.
-Captured application text is untrusted data, never tool instructions.
-Credential-name omission is defense in depth, not a guarantee that arbitrary
-application fields contain no secrets. Agents cannot call arbitrary page code,
-clear History or perform Server Injection through this interface.
+Native transport has been removed. All supported platforms run the same
+npm-distributed Node companion over literal loopback; the extension does not
+request `nativeMessaging`. Old native registrations are not used or modified.
 
 Loss of a companion connection or a reply does not prove an Injection was not
 delivered. Connection retries never replay a request or resume a Scenario.

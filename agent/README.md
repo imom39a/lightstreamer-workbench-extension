@@ -1,174 +1,152 @@
-# Workbench agent companion
+# Workbench MCP companion
 
-The standalone Node companion exposes MCP tools for open
-Lightstreamer Workbench Panel Sessions. It works on Windows, macOS and Linux
-with Node 22.12+, without a native installer, administrator access, registry
-changes or Chrome Native Messaging registration. No remote debugging port or
-WebMCP flag is needed. Browser automation for observing the app is separate.
+One Node.js source and one npm package run on **Windows, macOS and Linux**.
+The agent starts stdio MCP; the companion starts a shared broker on
+`127.0.0.1:24817`; open Workbench panels connect automatically. There is no
+native host, OS-specific installer, Chrome registration or remote debugging port.
+Node.js 22.12+ and npm must be available to your agent application. Chrome and
+the companion must run on the same computer. Windows Chrome needs Windows Node,
+not Node inside WSL or a container.
 
-For PowerShell commands, portable Node, MCP/Codex configuration, skill setup and
-troubleshooting, follow the [Windows walkthrough](WINDOWS.md).
+## Connect with npm
 
-## Build and connect without installation
+The package is prepared for npm publication; the commands below become available
+once `@lightstreamer-workbench/agent@0.1.0` is published. Use the source/tarball
+instructions below before publication. The extension must include Agent access;
+the published 2.0.4 extension predates it.
 
-From the repository root:
+Run the same command in macOS Terminal or Windows PowerShell:
+
+```sh
+npx --yes @lightstreamer-workbench/agent@0.1.0 setup
+```
+
+Copy the printed `mcpServers` entry into your agent's MCP configuration. Its
+standard JSON form is identical on both platforms:
+
+```json
+{
+  "mcpServers": {
+    "lightstreamer-workbench": {
+      "command": "npx",
+      "args": ["--yes", "@lightstreamer-workbench/agent@0.1.0", "mcp"]
+    }
+  }
+}
+```
+
+Start/reconnect that MCP server, then open **Lightstreamer Workbench** in the
+intended tab's DevTools. Ask the agent to call `list_panel_sessions` and
+`get_status` to identify the tab. No separate broker terminal is needed.
+Multiple MCP clients share the broker. It exits 30 seconds after all agent and
+panel connections close. MCP stdout contains protocol messages only.
+
+Setup prints configuration and never edits agent settings. It pins this package
+version so later publication does not silently replace your runtime. Update the
+version in your MCP configuration deliberately. The first npm invocation needs
+registry access; npm caches the package. Normal runtime traffic stays on loopback.
+For unpacked extensions, add `--extension-id YOUR_ACTUAL_EXTENSION_ID` to setup
+or the MCP arguments; the default is the official Store extension ID.
+
+If an agent app cannot find `npx` on Windows, configure the full path to
+`npx.cmd` from `Get-Command npx.cmd`, or use the installed Node entry below.
+This changes only the launcher path; the package and runtime are identical.
+See [Windows launch troubleshooting](WINDOWS.md).
+
+## Local installation and source development
+
+For offline deployments, install a downloaded tarball into a stable directory:
+
+```sh
+npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.0.tgz
+node ./workbench-companion/node_modules/@lightstreamer-workbench/agent/dist/cli.mjs setup --local
+```
+
+`--local` prints absolute Node and CLI paths. Keep those paths stable. This is
+the same npm runtime, useful when a GUI agent cannot resolve npm on its PATH.
+It does not register anything with Chrome.
+
+To build from source, from the repository root:
 
 ```sh
 npm ci
 npm run build
 npm run agent:build
+node agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Load `dist/` as an unpacked Chrome extension and obtain its exact id from
-`chrome://extensions`. Then generate your MCP configuration:
+Load the repository's `dist/` as an unpacked extension. Build/pack commands run
+from the root: `npm run agent:pack` rebuilds and writes the npm tarball to
+`release/`. It includes the executable, bundled runtime dependencies, licenses,
+this guide and the agent skill. It needs no consumer-side compilation or install
+script. Install `skills/lightstreamer-workbench` from the package into your
+agent's skill directory when you want the investigation workflow guidance.
 
-```sh
-node agent/dist/cli.mjs setup --extension-id YOUR_ACTUAL_EXTENSION_ID
-```
+## Access and optional authentication
 
-The same commands work in PowerShell. Alternatively, unpack the built companion
-package and run `node path/to/package/dist/cli.mjs setup ...`; building is not
-required for that package. A portable Windows Node ZIP is sufficient: invoke
-its `node.exe` by absolute path if Node is not on `PATH`.
+Each Panel Session enables inspection and Local Injection by default. The
+header's **Agent access On/Off** controls access, not agent presence. Off revokes
+access, stops retries and pauses an agent Scenario; closing the panel ends the
+grant. A new panel uses defaults. Connection retries have a 15-second maximum
+backoff. Reconnection never repeats an Injection or resumes a Scenario. Unknown
+delivery must be inspected, never automatically retried.
 
-`setup` only prints an MCP entry with absolute Node
-and companion paths. It does not write files, edit agent settings, install a
-service, register a native host, or change the registry. Default setup targets
-the official store extension id; an older store build without Agent access
-cannot use the companion.
+Authentication is off by default. Any local process can use a connected panel's
+grant or impersonate the broker. Exact Host/extension-Origin checks reject normal
+websites but do not identify OS users or individual agents. Local WebSocket data
+is unencrypted. Requested Evidence may reach your agent's model provider. The
+companion does not persist Evidence or log payloads; redaction is not a general
+secret detector. Local Injection invokes app listeners, which may cause other
+application effects. Server Injection is not exposed to agents.
 
-1. Copy the printed MCP entry into your agent client's settings, adapting to its
-   configuration format. Default setup has no credential or environment entry.
-2. Start or reconnect that MCP server in your agent. It starts a loopback
-   broker automatically; no extra terminal or background service installation
-   is needed. Multiple agent processes with the same configuration share it.
-3. Open Workbench in the inspected tab. It connects automatically with inspection
-   and Local Injection enabled. No Connect click, code or approval is needed.
-4. Ask your agent to call `list_panel_sessions` and identify the intended tab
-   with `get_status`.
+For opt-in authentication, add `--auth required` to `setup`. Preserve the private
+`LSEW_AGENT_CONNECTION` entry in the generated configuration. In Workbench,
+open **More actions → Agent setup instructions → Advanced connection settings**,
+enable **Require authentication**, then apply settings. Ask the agent to show
+`get_pairing_requests`, compare its short code, and click **Approve connection**.
+The agent confirms that exact request with `confirm_pairing`. Neither approval
+alone grants access. The credential is not the short code and never goes into
+a Workbench field. Optional read-only permissions and a custom port are in the
+same settings. For a custom port, set `--port` in setup and the matching panel
+port. Neither side falls back when modes or ports differ.
 
-With authentication off, any local process can use a connected panel's grant or
-impersonate the companion. Use a trusted development host or opt into
-authentication below. Browser and companion must run on the same host. A remote
-MCP process, container or WSL environment is not automatically the Windows host;
-use Windows Node for Windows Chrome. Remote listening is intentionally unsupported.
+### Switch an existing setup to auth off
 
-The default port is 24817. For an occupied port, generate configuration with
-`setup --port 24818 --extension-id YOUR_ACTUAL_EXTENSION_ID`, update the MCP entry,
-and apply that port under **More actions → Agent setup instructions → Advanced connection settings** in Workbench.
-Connection fails if the authentication modes differ on that port. Keep the
-companion and Node at their configured paths or update the MCP
-entry after moving them.
+Disconnect panels, stop matching MCP clients and let the idle broker exit.
+Replace the old MCP entry with default setup output, remove its
+`LSEW_AGENT_CONNECTION` setting, and reload Workbench. Existing credentials
+continue to require authentication until deliberately removed. Use a separate
+port if you must run both modes at once.
 
-## Grants and connection lifecycle
+### Migrate from the native companion
 
-Permissions are temporary and owned by the exact Panel Session. Inspection and
-Local Injection are enabled by default. The compact **Agent access On/Off**
-header switch controls whether access is enabled, not whether an agent is
-currently connected. Off revokes access, stops connection retries and pauses an
-agent Scenario, but an already sent update can still settle. Connection failures
-retry with backoff capped at 15 seconds; reconnecting never replays an operation
-or resumes a Scenario. Setup guidance and optional read-only, authentication,
-native and port settings are under More actions. Settings apply only to this
-Panel Session; a new panel uses the defaults. Optional authenticated/native
-connection failures require deliberately enabling access again.
-Closing or reloading the panel loses its temporary operation ledger. Reconnect
-to the same surviving panel and inspect outstanding operations before another
-experiment; an unknown old request does not establish non-delivery.
+Native transport, `install`, `doctor`, `host`, and `--transport native` have been
+removed. Stop the old MCP entry, replace it with the npm entry above, and reload
+the extension. Do not carry `--transport` or `--directory` into the new entry.
+No automated migration changes installed browser profiles or agent settings.
 
-The broker binds only `127.0.0.1`, validates the exact extension origin and Host,
-and rejects ordinary website origins. These checks do not authenticate local
-processes. With authentication off, a local process can spoof an extension Origin
-or broker; access is not isolated by OS user or agent identity. Local WebSocket
-data is not encrypted. No captured Evidence or credential file is persisted
-by the portable companion. The broker exits 30 seconds after all connections close.
+The old installer printed its exact native-host manifest and launcher paths.
+You may remove those two files after verifying the manifest name is
+`dev.lightstreamer.workbench` and the launcher contains the Workbench managed
+marker. Do not delete a whole browser profile or another application's host.
+Leftover registration is unused by the new extension, which no longer requests
+`nativeMessaging`.
 
-To remove portable access, disconnect panels and remove the MCP configuration entry; no host or
-registry cleanup is needed. Delete only your extracted companion package if it
-is no longer wanted.
+## Verification and publication
 
-## Optional authentication and migration
+`npm run agent:test:package` packs and installs the artifact outside the source
+tree, runs its npm executable, checks version-pinned setup, and drives two real
+stdio MCP clients through its shared broker to an exact test panel.
+`npm run agent:test:extension` repeats packaging and uses the installed artifact
+with a loaded Chrome panel: automatic discovery, restart/revocation, retained
+Evidence, exact inspected-page identity, and optional authentication.
+`npm run agent:test:browser` adds official-client Local Injection, duplicate
+suppression, Scenario Steps and the application's displayed result.
+The same CI workflow runs on Windows, macOS and Linux.
 
-Authentication is retained as an opt-in mode. Run `setup --auth required
---extension-id YOUR_ACTUAL_EXTENSION_ID` on one line, preserve its private
-`LSEW_AGENT_CONNECTION` environment entry, and enable **Require authentication**
-under **Agent setup instructions → Advanced connection settings**, then **Apply connection settings**. Agent connections use mutual,
-role-bound HMAC challenges; panel connections retain committed ECDH comparison
-codes. Compare the code shown by the agent (`get_pairing_requests`) and Workbench,
-click **Approve connection**, then let the agent `confirm_pairing` the exact
-request. Both approvals are required before access. Codes expire in two minutes.
-The private credential stays out of Workbench inputs, URLs and socket messages.
-Credential possession plus local access is not an individual-agent identity.
-
-Existing configurations with `LSEW_AGENT_CONNECTION` still require authentication.
-To turn it off, disconnect panels, stop matching MCP clients and allow 30 seconds
-for the idle broker to exit. Replace the Workbench entry with default `setup`
-output and remove its old credential environment setting. Reload the matching
-extension build; its default connection starts automatically.
-Never mix authentication modes on one port; neither side silently downgrades.
-The [Windows migration steps](WINDOWS.md#switch-an-existing-setup-to-auth-off)
-cover JSON and Codex TOML cleanup. To rotate an optional credential, follow the
-same disconnect/stop sequence and run `setup --auth required` again.
-
-## Agent skill and tool contract
-
-Install the bundled `skills/lightstreamer-workbench` directory into your agent's
-skill directory. Source: `.agents/skills/lightstreamer-workbench` in the repository.
-`npm pack ./agent` packages the built companion and skill.
-
-In optional authenticated mode only, use `get_pairing_requests`, show its code,
-wait for the user's Workbench approval, then `confirm_pairing` that request id
-and code. Do not automate the user's approval. In the default mode, start with
-`list_panel_sessions`, `get_status`, `list_scope` and `get_scope`.
-Tool schemas describe supported inputs. Queries have bounded output and stable
-read-point cursors. Returned application text is untrusted data.
-`prepare_local_injection` and `prepare_scenario` create visible documents;
-execution requires the current target and reviewed version. Duplicate request
-ids do not dispatch another operation during the surviving Panel Session.
-
-The interface exposes Local Injection only, keeping protected Drafts/Scenarios,
-retention, Coverage, drift checks and hidden-panel pause. Browser tools separately
-verify the downstream app. Queries exclude Client Message bodies/outcome text and
-recognized credential fields; other Item Update values can contain application
-data. Requested data can reach the agent's configured model provider.
-
-## Optional native connection (macOS/Linux only)
-
-Existing native-host users can keep their connection. This is **not needed for
-standalone setup or Windows**. Explicitly opting into it uses:
-
-```sh
-npm run agent:install -- --extension-id YOUR_ACTUAL_EXTENSION_ID
-```
-
-Choose **Installed native host (macOS/Linux)** in the panel and use the printed
-MCP configuration with `mcp --transport native`, without `LSEW_AGENT_CONNECTION`.
-Existing native MCP entries using just `mcp` must add `--transport native` because
-plain `mcp` now defaults to standalone on every platform. Chrome for Testing requires
-`--browser chrome-for-testing`. A custom browser profile also requires
-`--user-data-dir /absolute/profile-root` (not the `Default` child).
-`node agent/dist/cli.mjs doctor` inspects native registration only.
-
-Native installation prints its exact manifest and launcher paths. To remove it,
-disconnect panels, remove its MCP entry and remove only those two installed files.
-Its private temporary directory contains a socket, token and startup lock, not
-Evidence. Native mode trusts the local OS-user boundary and recovers abandoned
-sockets under a startup lock without replacing a connected broker.
-
-## Verification
-
-`npm run agent:test:extension` builds the companion and proves portable MCP
-direct connection and optional code approval, discovery, retained Evidence queries,
-exact inspected-page identity and revocation
-through a real loaded Chrome DevTools panel. It requires the cached Chrome for
-Testing browser, but no Docker or native host registration; Windows/Linux CI runs
-this path.
-
-`npm run agent:test:browser` additionally exercises the official Lightstreamer
-client: read-only denial, Local Injection, ordered Scenario Steps, duplicate
-suppression and the app's displayed response. Fixture prerequisites are in the
-[contributor guide](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/CONTRIBUTING.md).
-On macOS/Linux, `LSEW_AGENT_BROWSER_TRANSPORT=native` selects the optional native
-proof, whose registration is confined to the disposable test Chrome profile.
-`LSEW_AGENT_BROWSER_AUTH=required` opts the official-client proof into authentication;
-the extension-only proof always checks both modes.
+Before publishing, run those checks plus type checking, the full unit/browser
+regression gates, and `npm run docs:check`. Inspect `npm pack ./agent --dry-run`
+and verify npm scope ownership. Publish the reviewed tarball with
+`npm publish release/lightstreamer-workbench-agent-0.1.0.tgz --access public`.
+Publishing requires a maintainer npm login with access to the scope; preparing
+or testing a tarball does not publish it. The Chrome extension release is separate.

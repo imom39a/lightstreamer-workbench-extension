@@ -3,19 +3,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
 import { AGENT_TOOLS } from "../protocol";
-import { connectBroker, messages, send } from "./ipc";
+import metadata from "../../../agent/package.json";
 import { connectPortableBroker } from "./portable-broker";
-import type { CompanionChannel } from "../portable-channel";
 import type { PortableConfig } from "../portable-config";
 
-export async function runMcp(cli: string, directory?: string, portable?: { config: PortableConfig; extensionId: string }) {
-  let channel: CompanionChannel;
-  if (portable) channel = await connectPortableBroker(cli, portable.config, portable.extensionId);
-  else {
-    const { socket, token } = await connectBroker(cli, directory);
-    channel = { send: value => send(socket, value), onMessage: callback => messages(socket, callback), onClose: callback => { socket.on("close", callback); }, close: () => socket.end() };
-    send(socket, { role: "agent", token });
-  }
+export async function runMcp(cli: string, connection: { config: PortableConfig; extensionId: string }) {
+  const channel = await connectPortableBroker(cli, connection.config, connection.extensionId);
   const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   channel.onMessage(message => {
     const callback = pending.get(String(message.id));
@@ -24,8 +17,8 @@ export async function runMcp(cli: string, directory?: string, portable?: { confi
     if (typeof message.error === "string") callback.reject(new Error(message.error));
     else callback.resolve(message.result);
   });
-  if (portable) channel.send({ role: "agent" });
-  const server = new Server({ name: "lightstreamer-workbench", version: "0.1.0" }, { capabilities: { tools: {} } });
+  channel.send({ role: "agent" });
+  const server = new Server({ name: "lightstreamer-workbench", version: metadata.version }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: AGENT_TOOLS.map(({ mutation: _mutation, ...tool }) => tool) }));
   server.setRequestHandler(CallToolRequestSchema, async request => {
     try {

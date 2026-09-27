@@ -1,4 +1,4 @@
-import { AGENT_PROTOCOL_VERSION, NATIVE_HOST_NAME, type AgentPermission } from "../../agent/protocol";
+import { AGENT_PROTOCOL_VERSION, type AgentPermission } from "../../agent/protocol";
 import { connectPortable, type CompanionChannel } from "../../agent/portable-channel";
 import type { CompanionAuth } from "../../agent/portable-config";
 import { beginPanelPairing, type PanelPairing, type PairingDisplay } from "../../agent/panel-pairing";
@@ -6,8 +6,8 @@ import { DEFAULT_COMPANION_PORT } from "../../agent/pairing";
 import { createAgentService } from "./agent-service";
 import type { WorkbenchRuntime } from "./workbench-runtime";
 
-export type AgentConnectionState = Readonly<{ enabled: boolean; permission: AgentPermission; status: "off" | "waiting" | "connecting" | "pairing" | "awaiting-agent" | "connected" | "error"; detail: string; transport?: "native" | "portable"; port?: number; auth?: CompanionAuth; requestedPermission?: "read" | "local"; pairing?: PairingDisplay }>;
-export type AgentConnectionOptions = { transport: "portable"; port?: number; auth?: CompanionAuth } | { transport: "native" };
+export type AgentConnectionState = Readonly<{ enabled: boolean; permission: AgentPermission; status: "off" | "waiting" | "connecting" | "pairing" | "awaiting-agent" | "connected" | "error"; detail: string; port?: number; auth?: CompanionAuth; requestedPermission?: "read" | "local"; pairing?: PairingDisplay }>;
+export type AgentConnectionOptions = { port?: number; auth?: CompanionAuth };
 export interface AgentConnection {
   getSnapshot(): AgentConnectionState;
   subscribe(listener: () => void): () => void;
@@ -21,7 +21,7 @@ export const UNAVAILABLE_AGENT_CONNECTION: AgentConnection = { getSnapshot: () =
 
 export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId: string): AgentConnection {
   let permission: "read" | "local" = "local";
-  let options: AgentConnectionOptions = { transport: "portable", port: DEFAULT_COMPANION_PORT, auth: "off" };
+  let options: AgentConnectionOptions = { port: DEFAULT_COMPANION_PORT, auth: "off" };
   let state: AgentConnectionState = { enabled: false, permission: "off", status: "off", detail: "Agent access is off for this Panel Session." };
   let channel: CompanionChannel | null = null;
   let pairingAttempt: PanelPairing | null = null;
@@ -40,7 +40,7 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
     const attempt = pairingAttempt; pairingAttempt = null; attempt?.close();
     const current = channel; channel = null; current?.close();
   }
-  const settings = () => ({ requestedPermission: permission, transport: options.transport, port: options.transport === "portable" ? options.port ?? DEFAULT_COMPANION_PORT : undefined, auth: options.transport === "portable" ? options.auth ?? "off" : undefined });
+  const settings = () => ({ requestedPermission: permission, port: options.port ?? DEFAULT_COMPANION_PORT, auth: options.auth ?? "off" });
   function disconnect() {
     release();
     publish({ ...settings(), enabled: false, permission: "off", status: "off", detail: "Agent access is off for this Panel Session. Opening a new panel enables default access." });
@@ -51,11 +51,11 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
       publish({ ...settings(), enabled: false, permission: "off", status: "error", detail: "Agent access requires the installed DevTools panel and companion." }); return;
     }
     const epoch = generation;
-    const auth = options.transport === "portable" ? options.auth ?? "off" : undefined;
+    const auth = options.auth ?? "off";
     const fail = () => {
       if (epoch !== generation) return;
       release();
-      const automatic = options.transport === "portable" && auth === "off";
+      const automatic = auth === "off";
       publish({ ...settings(), enabled: automatic, permission: "off", status: automatic ? "waiting" : "error", detail: automatic
         ? "Waiting for the local companion. Connection retries automatically. Check the running MCP server, extension ID, port and authentication mode. Pending operations are never repeated."
         : "Companion unavailable or approval expired. Check connection settings, then enable agent access again. Inspect any pending outcome first." });
@@ -88,20 +88,17 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
       reply({ type: "hello", role: "panel", protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, tabId: chrome.devtools.inspectedWindow.tabId, permission });
     };
     try {
-      if (options.transport === "portable") {
-        if (auth === "off") {
-          void connectPortable({ auth: "off", port: options.port ?? DEFAULT_COMPANION_PORT }, "panel").then(attach).catch(fail);
-          return;
-        }
-        const attempt = beginPanelPairing(options.port ?? DEFAULT_COMPANION_PORT, chrome.runtime.getURL("").replace(/\/$/, ""), pairing => {
-          if (epoch !== generation) return;
-          clearTimeout(deadline);
-          publish({ ...settings(), enabled: true, permission: "off", status: "pairing", pairing, detail: "No access yet. Compare this code with your agent, then approve the connection." });
-        });
-        pairingAttempt = attempt;
-        void attempt.ready.then(attach).catch(fail);
+      if (auth === "off") {
+        void connectPortable({ auth: "off", port: options.port ?? DEFAULT_COMPANION_PORT }, "panel").then(attach).catch(fail);
+        return;
       }
-      else attach(nativeChannel());
+      const attempt = beginPanelPairing(options.port ?? DEFAULT_COMPANION_PORT, chrome.runtime.getURL("").replace(/\/$/, ""), pairing => {
+        if (epoch !== generation) return;
+        clearTimeout(deadline);
+        publish({ ...settings(), enabled: true, permission: "off", status: "pairing", pairing, detail: "No access yet. Compare this code with your agent, then approve the connection." });
+      });
+      pairingAttempt = attempt;
+      void attempt.ready.then(attach).catch(fail);
     } catch { fail(); }
   }
   const connection: AgentConnection = {
@@ -122,15 +119,6 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
   // Panel-owned, not React-owned: hiding the settings never disables discovery.
   if (service && typeof chrome !== "undefined" && chrome.devtools) connection.connect();
   return connection;
-}
-
-function nativeChannel(): CompanionChannel {
-  const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-  return {
-    send: value => port.postMessage(value), close: () => port.disconnect(),
-    onMessage: callback => port.onMessage.addListener(value => { if (value && typeof value === "object" && !Array.isArray(value)) callback(value); }),
-    onClose: callback => port.onDisconnect.addListener(() => { void chrome.runtime.lastError; callback(); })
-  };
 }
 
 function describeInspectedPage(): Promise<{ chromeTabId: number; urlWithoutQuery: string | null }> {

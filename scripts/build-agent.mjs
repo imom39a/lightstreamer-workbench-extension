@@ -1,9 +1,15 @@
 import { build } from "esbuild";
-import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, writeFile, rm, chmod } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+// Resolve from this script so npm pack ./agent and npm --prefix agent pack agree.
+process.chdir(resolve(import.meta.dirname, ".."));
+await rm("agent/dist", { recursive: true, force: true });
+await rm("agent/skills", { recursive: true, force: true });
+await mkdir("release", { recursive: true });
 await mkdir("agent/dist", { recursive: true });
-const result = await build({ entryPoints: ["src/agent/companion/cli.ts"], outfile: "agent/dist/cli.mjs", bundle: true, metafile: true, platform: "node", format: "esm", target: "node22", banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" } });
+const result = await build({ absWorkingDir: process.cwd(), entryPoints: ["src/agent/companion/cli.ts"], outfile: "agent/dist/cli.mjs", bundle: true, metafile: true, platform: "node", format: "esm", target: "node22", banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" } });
+await chmod("agent/dist/cli.mjs", 0o755);
 await cp(".agents/skills/lightstreamer-workbench", "agent/skills/lightstreamer-workbench", { recursive: true });
 await cp("LICENSE", "agent/LICENSE");
 

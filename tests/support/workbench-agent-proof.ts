@@ -1,59 +1,39 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, unlink, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { startBroker } from "../../src/agent/companion/broker";
 import { startPortableBroker } from "../../src/agent/companion/portable-broker";
 import { DEFAULT_COMPANION_PORT, PAIRING_ENV, parsePairingCode, randomNonce } from "../../src/agent/pairing";
-import { NATIVE_HOST_NAME } from "../../src/agent/protocol";
 import { CdpClient, evaluateByValue, waitForCondition } from "./chrome-extension-cdp";
 
-/** Opt-in real Chrome proof. Portable by default; optional native registration is test-profile only. */
-export async function proveAgentFixture(root: string, profileDir: string, panel: CdpClient, page: CdpClient) {
-  const directory = await mkdtemp(join(tmpdir(), "lsew-agent-browser-"));
-  const manifest = join(profileDir, "NativeMessagingHosts", `${NATIVE_HOST_NAME}.json`);
-  const launcher = join(directory, "native-host");
-  const cli = join(root, "agent/dist/cli.mjs");
+/** Opt-in real Chrome proof. The same loopback runtime runs on every platform. */
+export async function proveAgentFixture(root: string, _profileDir: string, panel: CdpClient, page: CdpClient) {
+  const cli = (process.env.LSEW_AGENT_TEST_CLI ?? join(root, "agent/dist/cli.mjs"));
   let broker: { close(): void } | undefined;
-  const native = process.env.LSEW_AGENT_BROWSER_TRANSPORT === "native";
   const authenticated = process.env.LSEW_AGENT_BROWSER_AUTH === "required";
   let pairingCode = "";
   const client = new Client({ name: "workbench-browser-proof", version: "1" });
-  let registered = false;
   try {
     const origin = await evaluateByValue<string>(panel, "location.origin");
-    if (native) {
-      broker = await startBroker(directory);
-      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-      await writeFile(launcher, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(cli)} host "$@" --directory ${quote(directory)}\n`, { mode: 0o700 });
-      await mkdir(dirname(manifest), { recursive: true });
-      // Exclusive write deliberately refuses to replace a configured companion.
-      await writeFile(manifest, JSON.stringify({ name: NATIVE_HOST_NAME, description: "Temporary Workbench agent browser proof", path: launcher, type: "stdio", allowed_origins: [origin + "/"] }), { flag: "wx", mode: 0o600 });
-      registered = true;
-      await client.connect(new StdioClientTransport({ command: process.execPath, args: [cli, "mcp", "--directory", directory], stderr: "inherit", env: { [PAIRING_ENV]: "" } }));
-    } else {
-      pairingCode = authenticated ? await portableCode() : `wb1:${DEFAULT_COMPANION_PORT}:${randomNonce()}`;
-      broker = await startPortableBroker(authenticated ? pairingCode : { auth: "off", port: parsePairingCode(pairingCode).port }, origin.slice("chrome-extension://".length));
-      await client.connect(new StdioClientTransport({ command: process.execPath, args: [cli, "mcp", "--extension-id", origin.slice("chrome-extension://".length), "--port", String(parsePairingCode(pairingCode).port)], env: { [PAIRING_ENV]: authenticated ? pairingCode : "" }, stderr: "inherit" }));
-    }
+    pairingCode = authenticated ? await portableCode() : `wb1:${DEFAULT_COMPANION_PORT}:${randomNonce()}`;
+    broker = await startPortableBroker(authenticated ? pairingCode : { auth: "off", port: parsePairingCode(pairingCode).port }, origin.slice("chrome-extension://".length));
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [cli, "mcp", "--extension-id", origin.slice("chrome-extension://".length), "--port", String(parsePairingCode(pairingCode).port)], env: { [PAIRING_ENV]: authenticated ? pairingCode : "" }, stderr: "inherit" }));
     const call = async (name: string, args: Record<string, unknown> = {}) => {
       const reply = await client.callTool({ name, arguments: args });
       const text = (reply.content as Array<{ type: string; text: string }>).filter(part => part.type === "text").map(part => part.text).join("\n");
       assert.ok(!reply.isError, `${name}: ${text}`); return JSON.parse(text);
     };
-    if (!native && !authenticated) {
+    if (!authenticated) {
       const automatic = await settle(() => call("list_panel_sessions"), sessions => sessions.length === 1);
       assert.equal((await call("get_status", { panelSessionId: automatic[0].panelSessionId })).permission, "local", "Default startup grants Local Injection without any UI action.");
     }
     await click(panel, "button", "More actions");
     await click(panel, "summary", "Agent setup instructions");
-    await configureConnection(panel, native ? undefined : pairingCode, authenticated);
+    await configureConnection(panel, pairingCode, authenticated);
     await evaluateByValue(panel, `(() => { const select = document.querySelector('[aria-label="Agent permissions"]'); select.value = 'read'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
     await click(panel, "button", "Apply connection settings");
-    if (!native && authenticated) await approveConnection(panel, call);
+    if (authenticated) await approveConnection(panel, call);
     await waitForCondition(panel, "document.body.innerText.includes('Connected · inspection only.')", "real companion connection");
     const sessions = await call("list_panel_sessions");
     assert.equal(sessions.length, 1);
@@ -69,7 +49,7 @@ export async function proveAgentFixture(root: string, profileDir: string, panel:
     assert.equal(rejected.isError, true, "Read-only grant refuses mutation.");
     await evaluateByValue(panel, `(() => { const select = document.querySelector('[aria-label="Agent permissions"]'); select.value = 'local'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
     await click(panel, "button", "Apply connection settings");
-    if (!native && authenticated) await approveConnection(panel, call);
+    if (authenticated) await approveConnection(panel, call);
     await waitForCondition(panel, "document.body.innerText.includes('Connected · inspection and Local Injection allowed.')", "local grant reconnect");
     const document = (command: string, messageText: string) => JSON.stringify({ command, key: "agent-browser.TICKER", isSnapshot: false, fields: { command, key: "agent-browser.TICKER", modelId: "MESSENGER", modelValues: { messageId: "agent-browser", messageText, messageType: "TICKER" } } });
     const baselineCount = await evaluateByValue<number>(page, "Number(document.querySelector('#update-count').textContent)");
@@ -93,11 +73,9 @@ export async function proveAgentFixture(root: string, profileDir: string, panel:
     assert.ok(after.evidence.some((row: any) => row.payload?.synthetic), "Agent can read marked Local Evidence after commit.");
     await click(panel, "button", "Agent access On");
     await settle(() => call("list_panel_sessions"), result => result.length === 0);
-    console.log(`Agent browser proof passed (${native ? "native" : "portable, no installation"}): real MCP stdio → Chrome panel → official Lightstreamer listener → verified app DOM, duplicate suppression, ordered Scenario and revocation.`);
+    console.log(`Agent browser proof passed (npm companion, no installation): real MCP stdio → Chrome panel → official Lightstreamer listener → verified app DOM, duplicate suppression, ordered Scenario and revocation.`);
   } finally {
     await client.close(); broker?.close();
-    if (registered) await unlink(manifest);
-    await rm(directory, { recursive: true, force: true });
   }
 }
 
@@ -109,7 +87,7 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     const code = authenticated ? await portableCode() : `wb1:${DEFAULT_COMPANION_PORT}:${randomNonce()}`;
     let broker = await startPortableBroker(authenticated ? code : { auth: "off", port: parsePairingCode(code).port }, extensionId);
     let client = new Client({ name: "portable-chrome-proof", version: "1" });
-    const transport = () => new StdioClientTransport({ command: process.execPath, args: [join(root, "agent/dist/cli.mjs"), "mcp", "--extension-id", extensionId, "--port", String(parsePairingCode(code).port)], env: { [PAIRING_ENV]: authenticated ? code : "" }, stderr: "inherit" });
+    const transport = () => new StdioClientTransport({ command: process.execPath, args: [(process.env.LSEW_AGENT_TEST_CLI ?? join(root, "agent/dist/cli.mjs")), "mcp", "--extension-id", extensionId, "--port", String(parsePairingCode(code).port)], env: { [PAIRING_ENV]: authenticated ? code : "" }, stderr: "inherit" });
     try {
       await client.connect(transport());
       const call = async (name: string, args: Record<string, unknown> = {}) => {
@@ -157,16 +135,15 @@ async function portableCode() {
   return `wb1:${port}:${randomNonce()}`;
 }
 
-async function configureConnection(panel: CdpClient, pairingCode?: string, authenticated = false) {
+async function configureConnection(panel: CdpClient, pairingCode: string, authenticated = false) {
   await click(panel, "summary", "Advanced connection settings");
-  if (pairingCode) await evaluateByValue(panel, `(() => {
+  await evaluateByValue(panel, `(() => {
     const input = document.querySelector('[aria-label="Companion port"]');
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(String(parsePairingCode(pairingCode).port))});
     input.dispatchEvent(new Event('input', { bubbles: true }));
     const auth = [...document.querySelectorAll('label')].find(label => label.textContent.includes('Require authentication')).querySelector('input');
     if (auth.checked !== ${authenticated}) auth.click();
   })()`);
-  else await evaluateByValue(panel, `(() => { const select = document.querySelector('[aria-label="Agent transport"]'); select.value = 'native'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
 }
 
 async function approveConnection(panel: CdpClient, call: (name: string, args?: Record<string, unknown>) => Promise<any>) {

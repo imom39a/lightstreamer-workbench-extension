@@ -9,12 +9,12 @@ use a connected panel's grant or impersonate the companion. Authentication is
 optional, not a prerequisite for investigating an open panel with access enabled.
 The companion and Chrome must run on the same host; WSL/containers/remote agents
 need a host-side process and are not implicitly the same loopback connection.
-For Windows setup or recovery, use the companion package's `WINDOWS.md`
-(`agent/WINDOWS.md` in the source repo). It includes PowerShell commands, Windows
-path quoting and MCP/Codex configuration. Setup is separate from approval.
-An optional **Installed native host** path remains for macOS/Linux; only that
-path uses `install`, `doctor` and `mcp --transport native`. Discover commands with
-the companion's `--help`.
+Use the npm package `@lightstreamer-workbench/agent` on every platform. Its
+`setup` command prints version-pinned npm configuration; `setup --local` prints
+absolute Node/package paths for an already installed artifact. The common guide
+is `README.md` in the package (`agent/README.md` in source); Windows launcher
+troubleshooting is in `WINDOWS.md`. Native transport and its installer are removed.
+Old entries with `--transport native` must be replaced through the guide's migration.
 Do not install or change agent-wide configuration merely to answer a diagnostic question.
 
 Open Lightstreamer Workbench in the intended tab's DevTools. Inspection and Local
@@ -48,7 +48,7 @@ chat. It is not the short comparison code. For a pending authenticated connectio
    compare the fresh code; never reuse an earlier approval for a new request.
 
 No Evidence access is granted before both approvals in this mode. Default
-standalone and optional native connections do not use comparison codes.
+connections do not use comparison codes.
 Access is scoped to that Panel Session and resets when it closes.
 The companion does not keep captured Evidence on disk. Requested data is still
 shared with the agent and its model provider.
