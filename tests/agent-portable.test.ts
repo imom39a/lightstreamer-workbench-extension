@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { WebSocket, WebSocketServer } from "ws";
 import { build } from "esbuild";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -241,6 +241,26 @@ describe("installer-free companion", () => {
     expect(received.map(value => value.type)).toEqual(["pairing-start", "pairing-reveal"]);
     expect(received.every(value => value.panelSessionId === undefined && value.permission === undefined)).toBe(true);
   });
+
+  it("exits cleanly when an npm-launched agent closes stdin", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lsew-stdio-eof-"));
+    cleanups.push(() => rm(directory, { recursive: true, force: true }));
+    const cli = join(directory, "cli.mjs");
+    await build({ entryPoints: [fileURLToPath(new URL("../src/agent/companion/cli.ts", import.meta.url))], outfile: cli, bundle: true, platform: "node", format: "esm", target: "node22", banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
+    const child = spawn(process.execPath, [cli, "mcp", "--port", String(await freePort()), "--extension-id", extensionId], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, [PAIRING_ENV]: "" } });
+    cleanups.push(() => { child.kill(); });
+    let stderr = ""; child.stderr.on("data", data => { stderr += data; });
+    const exited = once(child, "exit");
+    const response = once(child.stdout, "data");
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "eof-test", version: "1" } } }) + "\n");
+    await response;
+    child.stdin.end();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve("still running"), 1500); })]);
+      expect(result, stderr || "Companion must exit on EOF without a signal from npm's parent process.").toEqual([0, null]);
+    } finally { clearTimeout(timer); child.kill(); }
+  }, 10000);
 
   it.each(["off", "required"] as const)("runs the bundled Node CLI with spaces in its path and a shared broker with auth %s", async auth => {
     const directory = await mkdtemp(join(tmpdir(), "lsew portable ")); cleanups.push(() => rm(directory, { recursive: true, force: true }));

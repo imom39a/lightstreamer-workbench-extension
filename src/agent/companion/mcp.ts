@@ -31,6 +31,16 @@ export async function runMcp(cli: string, connection: { config: PortableConfig; 
     } catch (error) { return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : "Companion unavailable." }] }; }
   });
   channel.onClose(() => { for (const callback of pending.values()) callback.reject(new Error("Companion disconnected. In-flight delivery may be unknown.")); pending.clear(); void server.close(); });
-  server.onclose = () => channel.close();
+  // npm/npx may launch through a shell. EOF must close the MCP child itself;
+  // relying on the client to signal its immediate child leaves this process alive.
+  const shutdown = () => { void server.close(); };
+  process.stdin.once("end", shutdown);
+  process.stdin.once("close", shutdown);
+  server.onclose = () => {
+    process.stdin.off("end", shutdown);
+    process.stdin.off("close", shutdown);
+    channel.close();
+  };
   await server.connect(new StdioServerTransport());
+  if (process.stdin.readableEnded || process.stdin.destroyed) shutdown();
 }
