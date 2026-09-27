@@ -1,4 +1,4 @@
-name: Portable agent companion
+name: Unified npm MCP companion
 
 on:
   pull_request:
@@ -23,8 +23,26 @@ permissions:
   contents: read
 
 jobs:
+  package:
+    name: Build one npm artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - run: npm run agent:pack
+      - uses: actions/upload-artifact@v6
+        with:
+          name: workbench-agent-npm
+          path: release/*.tgz
+          if-no-files-found: error
+
   portable:
-    name: Installer-free companion (${{ matrix.os }})
+    needs: package
+    name: Same npm artifact (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -64,5 +82,11 @@ jobs:
           path: .cache/lsew-browsers
           key: chrome-for-testing-agent-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm run fixture:browser:install
+      - uses: actions/download-artifact@v6
+        with:
+          name: workbench-agent-npm
+          path: release
       - name: Prove the installed npm package and real Chrome connection
+        env:
+          LSEW_AGENT_PACKAGE_TARBALL: release/lightstreamer-workbench-agent-0.1.0.tgz
         run: npm run agent:test:extension

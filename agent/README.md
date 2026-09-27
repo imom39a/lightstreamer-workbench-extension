@@ -142,7 +142,7 @@ with a loaded Chrome panel: automatic discovery, restart/revocation, retained
 Evidence, exact inspected-page identity, and optional authentication.
 `npm run agent:test:browser` adds official-client Local Injection, duplicate
 suppression, Scenario Steps and the application's displayed result.
-The same CI workflow runs on Windows, macOS and Linux.
+CI builds one tarball and tests that exact artifact on Windows, macOS and Linux.
 
 Before publishing, run those checks plus type checking, the full unit/browser
 regression gates, and `npm run docs:check`. Inspect `npm pack ./agent --dry-run`

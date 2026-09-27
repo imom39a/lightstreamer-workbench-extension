@@ -18,14 +18,17 @@ function npm(args, cwd = root) {
 }
 await rm(directory, { recursive: true, force: true });
 await mkdir(directory, { recursive: true });
-const packed = JSON.parse(npm(["pack", "./agent", "--json", "--pack-destination", directory]));
+const suppliedTarball = process.env.LSEW_AGENT_PACKAGE_TARBALL ? resolve(process.env.LSEW_AGENT_PACKAGE_TARBALL) : null;
+const packed = JSON.parse(npm(suppliedTarball
+  ? ["pack", suppliedTarball, "--dry-run", "--ignore-scripts", "--json"]
+  : ["pack", "./agent", "--json", "--pack-destination", directory]));
 assert.equal(packed.length, 1);
 const artifact = packed[0];
 for (const file of ["dist/cli.mjs", "dist/THIRD_PARTY_NOTICES.txt", "skills/lightstreamer-workbench/SKILL.md", "skills/lightstreamer-workbench/references/connection.md", "README.md", "LICENSE"]) {
   assert(artifact.files.some(entry => entry.path === file), `Missing package file ${file}`);
 }
 assert(artifact.files.every(entry => /^(dist\/|skills\/|README\.md$|WINDOWS\.md$|LICENSE$|package\.json$)/.test(entry.path)), "Unexpected file in npm artifact");
-npm(["install", "--prefix", directory, "--ignore-scripts", "--offline", "--no-audit", "--no-fund", join(directory, artifact.filename)]);
+npm(["install", "--prefix", directory, "--ignore-scripts", "--offline", "--no-audit", "--no-fund", suppliedTarball ?? join(directory, artifact.filename)]);
 const cli = join(directory, "node_modules", ...metadata.name.split("/"), "dist/cli.mjs");
 const installed = JSON.parse(await readFile(join(directory, "node_modules", ...metadata.name.split("/"), "package.json"), "utf8"));
 assert.equal(installed.version, metadata.version);
