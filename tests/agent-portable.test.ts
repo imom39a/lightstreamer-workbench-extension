@@ -266,7 +266,13 @@ describe("installer-free companion", () => {
     expect(() => invoke(["mcp", "--port", String(port === 24817 ? 24818 : 24817)], `wb1:${port}:${randomNonce()}`)).toThrow();
     const clients = [new Client({ name: "portable-a", version: "1" }), new Client({ name: "portable-b", version: "1" })];
     for (const client of clients) cleanups.push(() => client.close());
-    await Promise.all(clients.map(client => client.connect(new StdioClientTransport({ ...config, stderr: "pipe" }))));
+    const startupErrors: string[] = [];
+    await Promise.all(clients.map(async client => {
+      const transport = new StdioClientTransport({ ...config, stderr: "pipe" });
+      transport.stderr?.on("data", data => startupErrors.push(String(data)));
+      try { await client.connect(transport); }
+      catch (error) { throw new Error(`MCP startup failed: ${startupErrors.join("\n")}`, { cause: error }); }
+    }));
     expect((await clients[0]!.listTools()).tools.map(tool => tool.name)).toContain("prepare_scenario");
     const panel = auth === "required" ? await authenticate(credential, "panel") : await peer(port, { Origin: origin });
     if (auth === "off") { panel.send({ type: "connect", auth, role: "panel" }); expect(await panel.next()).toEqual({ type: "connected", auth }); }

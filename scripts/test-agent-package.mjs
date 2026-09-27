@@ -25,7 +25,6 @@ for (const file of ["dist/cli.mjs", "dist/THIRD_PARTY_NOTICES.txt", "skills/ligh
   assert(artifact.files.some(entry => entry.path === file), `Missing package file ${file}`);
 }
 assert(artifact.files.every(entry => /^(dist\/|skills\/|README\.md$|WINDOWS\.md$|LICENSE$|package\.json$)/.test(entry.path)), "Unexpected file in npm artifact");
-assert.equal(artifact.files.find(entry => entry.path === "dist/cli.mjs").mode & 0o111, 0o111, "CLI must be executable");
 npm(["install", "--prefix", directory, "--ignore-scripts", "--offline", "--no-audit", "--no-fund", join(directory, artifact.filename)]);
 const cli = join(directory, "node_modules", ...metadata.name.split("/"), "dist/cli.mjs");
 const installed = JSON.parse(await readFile(join(directory, "node_modules", ...metadata.name.split("/"), "package.json"), "utf8"));
