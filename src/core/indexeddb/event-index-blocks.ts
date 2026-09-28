@@ -276,29 +276,53 @@ function rowsBytesChecksum(hash: number, array: ArrayBufferView): number {
   return hash;
 }
 
-/** Hash the persisted code bytes while checking the numeric codes in the same
- * pass. Reading bytes through byteOffset preserves the exact checksum for
- * subarray views as well as ordinary arrays. */
-function rowsCodeBytesChecksum(
-  hash: number,
-  codes: Uint16Array | Uint32Array,
-  maximumCode: number,
-  maximumIsValid: boolean,
-  used?: Uint8Array
-): number {
+/** Hash text-code bytes while checking ranges and dictionary use in one pass.
+ * Read the raw view so subarray byteOffsets and host byte order stay exact. */
+function rowsTextCodeBytesChecksum(hash: number, codes: Uint16Array | Uint32Array, dictionaryLength: number, used: Uint8Array): number {
   const data = new Uint8Array(codes.buffer, codes.byteOffset, codes.byteLength);
-  const bytesPerCode = codes.BYTES_PER_ELEMENT;
   hash = Math.imul(hash ^ data.length, 0x01000193);
+  if (codes.BYTES_PER_ELEMENT === Uint16Array.BYTES_PER_ELEMENT) hash = rowsUint16TextCodeBytes(hash, codes as Uint16Array, data, dictionaryLength, used);
+  else hash = rowsUint32TextCodeBytes(hash, codes as Uint32Array, data, dictionaryLength, used);
+  if (used.some(value => value === 0)) throw new Error("Corrupt unused exact search token.");
+  return hash;
+}
+
+function rowsUint16TextCodeBytes(hash: number, codes: Uint16Array, data: Uint8Array, dictionaryLength: number, used: Uint8Array): number {
   for (let index = 0; index < codes.length; index++) {
     const code = codes[index]!;
-    if (maximumIsValid ? code > maximumCode : code >= maximumCode) {
-      throw new Error(used ? "Corrupt exact search token code." : "Corrupt exact search facet code.");
-    }
-    if (used) used[code] = 1;
-    const start = index * bytesPerCode;
-    for (let byte = 0; byte < bytesPerCode; byte++) hash = Math.imul(hash ^ data[start + byte]!, 0x01000193);
+    if (code >= dictionaryLength) throw new Error("Corrupt exact search token code.");
+    used[code] = 1;
+    const byte = index * Uint16Array.BYTES_PER_ELEMENT;
+    hash = Math.imul(hash ^ data[byte]!, 0x01000193);
+    hash = Math.imul(hash ^ data[byte + 1]!, 0x01000193);
   }
-  if (used?.some(value => value === 0)) throw new Error("Corrupt unused exact search token.");
+  return hash;
+}
+
+function rowsUint32TextCodeBytes(hash: number, codes: Uint32Array, data: Uint8Array, dictionaryLength: number, used: Uint8Array): number {
+  for (let index = 0; index < codes.length; index++) {
+    const code = codes[index]!;
+    if (code >= dictionaryLength) throw new Error("Corrupt exact search token code.");
+    used[code] = 1;
+    const byte = index * Uint32Array.BYTES_PER_ELEMENT;
+    hash = Math.imul(hash ^ data[byte]!, 0x01000193);
+    hash = Math.imul(hash ^ data[byte + 1]!, 0x01000193);
+    hash = Math.imul(hash ^ data[byte + 2]!, 0x01000193);
+    hash = Math.imul(hash ^ data[byte + 3]!, 0x01000193);
+  }
+  return hash;
+}
+
+/** Hash Uint16 facet codes while retaining their range validation. */
+function rowsFacetCodeBytesChecksum(hash: number, codes: Uint16Array, maximumCode: number): number {
+  const data = new Uint8Array(codes.buffer, codes.byteOffset, codes.byteLength);
+  hash = Math.imul(hash ^ data.length, 0x01000193);
+  for (let index = 0; index < codes.length; index++) {
+    if (codes[index]! > maximumCode) throw new Error("Corrupt exact search facet code.");
+    const byte = index * Uint16Array.BYTES_PER_ELEMENT;
+    hash = Math.imul(hash ^ data[byte]!, 0x01000193);
+    hash = Math.imul(hash ^ data[byte + 1]!, 0x01000193);
+  }
   return hash;
 }
 
@@ -378,7 +402,7 @@ function rowsChecksumV3(block: Omit<SearchIndexRowsBlock, "checksum">): number {
     hash = rowsTextChecksum(hash, token);
   }
   hash = rowsBytesChecksum(hash, block.textOffsets!);
-  hash = rowsCodeBytesChecksum(hash, block.textCodes!, dictionary.length, false, new Uint8Array(dictionary.length));
+  hash = rowsTextCodeBytesChecksum(hash, block.textCodes!, dictionary.length, new Uint8Array(dictionary.length));
   hash = Math.imul(hash ^ block.eventIds.length, 0x01000193);
   for (const value of block.eventIds) hash = rowsTextChecksum(hash, value);
   hash = rowsBytesChecksum(hash, block.timestamps);
@@ -394,7 +418,7 @@ function rowsChecksumV3(block: Omit<SearchIndexRowsBlock, "checksum">): number {
       hash = Math.imul(hash ^ (value.label === undefined ? 0 : 1), 0x01000193);
       if (value.label !== undefined) hash = rowsTextChecksum(hash, value.label);
     }
-    hash = rowsCodeBytesChecksum(hash, column.codes, column.values.length, true);
+    hash = rowsFacetCodeBytesChecksum(hash, column.codes, column.values.length);
   }
   return hash >>> 0;
 }
