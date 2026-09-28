@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   aggregatePerformanceShardResults,
   createTimeoutDiagnostic,
@@ -2103,9 +2103,10 @@ describe("Event History performance runner page operation", () => {
     ]);
     const unhandled: unknown[] = [];
     const onUnhandled = (error: unknown) => unhandled.push(error);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     process.on("unhandledRejection", onUnhandled);
     try {
-      const result = await watchdog(runPageOperation(cdp, "window.run()", {
+      const operation = watchdog(runPageOperation(cdp, "window.run()", {
         operationId: "late-poll",
         deadlineMs: 30,
         pollIntervalMs: 1,
@@ -2114,13 +2115,17 @@ describe("Event History performance runner page operation", () => {
         (value) => ({ value }),
         (error) => ({ error })
       ));
+      await vi.advanceTimersByTimeAsync(100);
+      const result = await operation;
       expectTimeoutOutcome(result);
+      expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
       rejectLatePoll(new Error("late poll failure"));
       await new Promise((resolve) => setImmediate(resolve));
       expect(unhandled).toEqual([]);
       expect(cdp.calls.length).toBeGreaterThan(3);
     } finally {
       process.off("unhandledRejection", onUnhandled);
+      vi.useRealTimers();
     }
   });
 });

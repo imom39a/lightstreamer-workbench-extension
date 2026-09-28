@@ -105,11 +105,16 @@ describe("bounded history indexes", () => {
       exactProjection(3, { facets: { key: { ...stringKey, label: "Same typed identity" } } }),
       exactProjection(4, { summary: "Topology checkpoint", searchText: "checkpoint must not match", timestamp: 0 })
     ])[0]!));
-    expect(block).toMatchObject({ sequence: -1, firstSequence: 1, lastSequence: 4, version: 1 });
+    expect(block).toMatchObject({ sequence: -1, firstSequence: 1, lastSequence: 4, version: 2 });
     expect(block.texts).toEqual([normalizeEvidenceSearchText(text), "value-2", "value-3", ""]);
     expect([...block.evidence]).toEqual([1, 1, 1, 0]);
     expect([...block.timestamps]).toEqual([1_700_000_000_001, 1_700_000_000_002, 1_700_000_000_003, 0]);
-    expect(block.facets.find(column => column.facet === "key")?.values).toEqual([stringKey, numberKey]);
+    expect(block.facets.find(column => column.facet === "key")?.values).toEqual([
+      { type: "string", value: "7", label: "String seven" }, { type: "number", value: "7", label: "Number seven" }
+    ]);
+    expect(block.facets.find(column => column.facet === "session")?.values).toEqual([
+      { type: "string", value: 'client-A/session-["owned"]' }
+    ]);
     expect(block.facets.find(column => column.facet === "session")?.values).toHaveLength(1);
     expect(searchIndexRowFacets(block, 0)).toEqual({ key: stringKey, session });
     expect(searchIndexRowFacets(block, 1, ["key"])).toEqual({ key: numberKey });
@@ -174,11 +179,11 @@ describe("bounded history indexes", () => {
     mutate(value => { value.evidence[1] = 0; value.texts[1] = ""; });
     mutate(value => { value.facets[0]!.codes[1] = 1; });
     mutate(value => { value.facets[0]!.codes[1] = 2; });
-    mutate(value => { value.facets[0]!.values[0] = typedFacetValue("key", "string", "changed"); });
+    mutate(value => { value.facets[0]!.values[0] = { type: "string", value: "changed" }; });
     mutate(value => { value.intervalId = "other"; });
     mutate(value => { value.firstSequence = 2; value.lastSequence = 3; });
     expect(() => readSearchIndexRowsBlock({ ...block, extra: true })).toThrow();
-    expect(() => readSearchIndexRowsBlock({ ...block, version: 2 })).toThrow();
+    expect(() => readSearchIndexRowsBlock({ ...block, version: 3 })).toThrow();
     expect(() => readSearchIndexRowsBlock({ ...block, sequence: 1 })).toThrow();
     expect(() => readSearchIndexRowsBlock({ ...block, eventIds: ["only-one"] })).toThrow();
     expect(() => readSearchIndexRowsBlock({ ...block, timestamps: new Float32Array(2) })).toThrow();
@@ -187,14 +192,22 @@ describe("bounded history indexes", () => {
     expect(() => groupSearchRowsProjections([exactProjection(1, { timestamp: Number.NaN })])).toThrow();
   });
 
-  it("keeps the version-one checksum stable across optimized UTF-16 hashing", () => {
+  it("reads the version-one checksum unchanged and writes compact version-two dictionaries", () => {
     const block = groupSearchRowsProjections([exactProjection(1, {
       searchText: " AB😀C café\t東京 ", facets: { key: typedFacetValue("key", "string", "7", "Seven") }
     })])[0]!;
-    expect(block.checksum).toBe(414_961_847);
-    const roundTripped = readSearchIndexRowsBlock(structuredClone(block));
-    expect(roundTripped.checksum).toBe(block.checksum);
+    expect(block.version).toBe(2);
+    expect(block.facets[0]!.values).toEqual([{ type: "string", value: "7", label: "Seven" }]);
+    const legacyV1: SearchIndexRowsBlock = {
+      ...block,
+      version: 1,
+      facets: [{ facet: "key", values: [typedFacetValue("key", "string", "7", "Seven")], codes: block.facets[0]!.codes }],
+      checksum: 414_961_847
+    };
+    const roundTripped = readSearchIndexRowsBlock(structuredClone(legacyV1));
+    expect(legacyV1.checksum).toBe(414_961_847);
     expect(roundTripped.texts).toEqual(block.texts);
+    expect(searchIndexRowFacets(roundTripped, 0)).toEqual({ key: typedFacetValue("key", "string", "7", "Seven") });
   });
 
   it("keeps legacy Bloom-only input valid and exposes partial exact coverage after a legacy append", async () => {

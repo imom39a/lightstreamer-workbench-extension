@@ -1,5 +1,5 @@
 import { normalizeEvidenceSearchText } from "../evidence-facets";
-import type { TypedFacetValue } from "../evidence-filter-contract";
+import { typedFacetValue, type TypedFacetValue } from "../evidence-filter-contract";
 
 export const EVENT_INDEX_BLOCK_SIZE = 256;
 export const SEARCH_BLOCK_FILTER_BYTES = 2048;
@@ -39,10 +39,14 @@ export type SearchIndexRowsProjection = SearchProjection & {
 
 export type SearchIndexRowsFacetColumn = {
   facet: string;
-  values: TypedFacetValue[];
+  values: Array<TypedFacetValue | SearchIndexRowsFacetValueV2>;
   /** Zero means absent; positive values address the one-based dictionary. */
   codes: Uint16Array;
 };
+
+/** Version two derives facet and identity from the containing column. A label
+ * is stored only when it differs from the displayed value. */
+export type SearchIndexRowsFacetValueV2 = Readonly<{ type: string; value: string; label?: string }>;
 
 /** Exact search-only rows live at the negative key beside the positive Bloom
  * block. They contain neither replay payloads nor display projections. */
@@ -51,7 +55,7 @@ export type SearchIndexRowsBlock = {
   intervalId: string;
   firstSequence: number;
   lastSequence: number;
-  version: 1;
+  version: 1 | 2;
   texts: string[];
   eventIds: string[];
   timestamps: Float64Array;
@@ -267,7 +271,7 @@ function rowsBytesChecksum(hash: number, array: ArrayBufferView): number {
   return hash;
 }
 
-function rowsChecksum(block: Omit<SearchIndexRowsBlock, "checksum">): number {
+function rowsChecksumV1(block: Omit<SearchIndexRowsBlock, "checksum">): number {
   let hash = rowsTextChecksum(0x811c9dc5, String(block.sequence));
   hash = rowsTextChecksum(hash, block.intervalId);
   hash = rowsTextChecksum(hash, String(block.firstSequence));
@@ -283,7 +287,8 @@ function rowsChecksum(block: Omit<SearchIndexRowsBlock, "checksum">): number {
   for (const column of block.facets) {
     hash = rowsTextChecksum(hash, column.facet);
     hash = Math.imul(hash ^ column.values.length, 0x01000193);
-    for (const value of column.values) {
+    for (const inputValue of column.values) {
+      const value = inputValue as TypedFacetValue;
       hash = rowsTextChecksum(hash, value.facet);
       hash = rowsTextChecksum(hash, value.type);
       hash = rowsTextChecksum(hash, value.value);
@@ -295,11 +300,39 @@ function rowsChecksum(block: Omit<SearchIndexRowsBlock, "checksum">): number {
   return hash >>> 0;
 }
 
+function rowsChecksumV2(block: Omit<SearchIndexRowsBlock, "checksum">): number {
+  let hash = rowsTextChecksum(0x811c9dc5, String(block.sequence));
+  hash = rowsTextChecksum(hash, block.intervalId);
+  hash = rowsTextChecksum(hash, String(block.firstSequence));
+  hash = rowsTextChecksum(hash, String(block.lastSequence));
+  hash = Math.imul(hash ^ block.version, 0x01000193);
+  hash = Math.imul(hash ^ block.texts.length, 0x01000193);
+  for (const value of block.texts) hash = rowsTextChecksum(hash, value);
+  hash = Math.imul(hash ^ block.eventIds.length, 0x01000193);
+  for (const value of block.eventIds) hash = rowsTextChecksum(hash, value);
+  hash = rowsBytesChecksum(hash, block.timestamps);
+  hash = rowsBytesChecksum(hash, block.evidence);
+  hash = Math.imul(hash ^ block.facets.length, 0x01000193);
+  for (const column of block.facets) {
+    hash = rowsTextChecksum(hash, column.facet);
+    hash = Math.imul(hash ^ column.values.length, 0x01000193);
+    for (const inputValue of column.values) {
+      const value = inputValue as SearchIndexRowsFacetValueV2;
+      hash = rowsTextChecksum(hash, value.type);
+      hash = rowsTextChecksum(hash, value.value);
+      hash = Math.imul(hash ^ (value.label === undefined ? 0 : 1), 0x01000193);
+      if (value.label !== undefined) hash = rowsTextChecksum(hash, value.label);
+    }
+    hash = rowsBytesChecksum(hash, column.codes);
+  }
+  return hash >>> 0;
+}
+
 export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
   exactKeys(input, ["sequence", "intervalId", "firstSequence", "lastSequence", "version", "texts", "eventIds", "timestamps", "evidence", "facets", "checksum"]);
   const block = input as SearchIndexRowsBlock;
   const length = block.lastSequence - block.firstSequence + 1;
-  if (block.version !== 1 || typeof block.intervalId !== "string" || !block.intervalId
+  if ((block.version !== 1 && block.version !== 2) || typeof block.intervalId !== "string" || !block.intervalId
     || !Number.isSafeInteger(block.sequence) || block.sequence >= 0
     || indexBlockStart(block.firstSequence) !== -block.sequence || indexBlockStart(block.lastSequence) !== -block.sequence
     || !Number.isSafeInteger(length) || length < 1 || length > EVENT_INDEX_BLOCK_SIZE
@@ -319,14 +352,30 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
       || !typedArray(column.codes, "Uint16Array", length)) throw new Error("Corrupt exact search facet column.");
     facets.add(column.facet);
     const identities = new Set<string>();
+    const valuesByType = new Map<string, Set<string>>();
     for (const inputValue of column.values) {
-      const value = readRowsFacetValue(inputValue, column.facet);
-      if (identities.has(value.identity)) throw new Error("Duplicate exact search facet value.");
-      identities.add(value.identity);
+      if (block.version === 1) {
+        const identity = readRowsFacetValue(inputValue, column.facet).identity;
+        if (identities.has(identity)) throw new Error("Duplicate exact search facet value.");
+        identities.add(identity);
+      } else {
+        exactKeys(inputValue, inputValue && typeof inputValue === "object" && "label" in inputValue
+          ? ["type", "value", "label"] : ["type", "value"]);
+        const value = inputValue as SearchIndexRowsFacetValueV2;
+        if (typeof value.type !== "string" || typeof value.value !== "string"
+          || ("label" in value && (typeof value.label !== "string" || value.label === value.value))) {
+          throw new Error("Corrupt compact exact search facet value.");
+        }
+        let values = valuesByType.get(value.type);
+        if (!values) { values = new Set<string>(); valuesByType.set(value.type, values); }
+        if (values.has(value.value)) throw new Error("Duplicate exact search facet value.");
+        values.add(value.value);
+      }
     }
     for (const code of column.codes) if (code > column.values.length) throw new Error("Corrupt exact search facet code.");
   }
-  if (!Number.isInteger(block.checksum) || block.checksum < 0 || block.checksum > 0xffff_ffff || block.checksum !== rowsChecksum(block)) {
+  const expectedChecksum = block.version === 1 ? rowsChecksumV1(block) : rowsChecksumV2(block);
+  if (!Number.isInteger(block.checksum) || block.checksum < 0 || block.checksum > 0xffff_ffff || block.checksum !== expectedChecksum) {
     throw new Error("Corrupt exact search index checksum.");
   }
   return block;
@@ -340,9 +389,21 @@ export function searchIndexRowFacets(block: SearchIndexRowsBlock, rowIndex: numb
   for (const column of block.facets) {
     if (requestedFacets !== undefined && !requestedFacets.includes(column.facet)) continue;
     const code = column.codes[rowIndex]!;
-    if (code !== 0) result[column.facet] = column.values[code - 1]!;
+    if (code !== 0) {
+      const value = column.values[code - 1]!;
+      result[column.facet] = block.version === 1
+        ? value as TypedFacetValue
+        : typedFacetValue(column.facet, value.type, value.value, value.label ?? value.value);
+    }
   }
   return result;
+}
+
+/** Reconstruct typed identities for block-level predicate evaluation. */
+export function searchIndexRowFacetValues(block: SearchIndexRowsBlock, column: SearchIndexRowsFacetColumn): readonly TypedFacetValue[] {
+  return block.version === 1
+    ? column.values as TypedFacetValue[]
+    : column.values.map(value => typedFacetValue(column.facet, value.type, value.value, value.label ?? value.value));
 }
 
 function buildRowsBlock(projections: readonly SearchIndexRowsProjection[]): SearchIndexRowsBlock {
@@ -352,7 +413,7 @@ function buildRowsBlock(projections: readonly SearchIndexRowsProjection[]): Sear
   const dictionaries = new Map<string, Map<string, number>>();
   const block: SearchIndexRowsBlock = {
     sequence: -indexBlockStart(first.sequence), intervalId: first.intervalId,
-    firstSequence: first.sequence, lastSequence: projections.at(-1)!.sequence, version: 1,
+    firstSequence: first.sequence, lastSequence: projections.at(-1)!.sequence, version: 2,
     texts: [], eventIds: [], timestamps: new Float64Array(projections.length), evidence: new Uint8Array(projections.length), facets: [], checksum: 0
   };
   projections.forEach((projection, row) => {
@@ -378,7 +439,7 @@ function buildRowsBlock(projections: readonly SearchIndexRowsProjection[]): Sear
       }
       let code = dictionary.get(value.identity);
       if (code === undefined) {
-        column.values.push({ ...value });
+        column.values.push({ type: value.type, value: value.value, ...(value.label === value.value ? {} : { label: value.label }) });
         code = column.values.length;
         dictionary.set(value.identity, code);
       }
@@ -386,7 +447,7 @@ function buildRowsBlock(projections: readonly SearchIndexRowsProjection[]): Sear
     }
   });
   block.facets = [...columns.values()].sort((left, right) => left.facet.localeCompare(right.facet));
-  block.checksum = rowsChecksum(block);
+  block.checksum = rowsChecksumV2(block);
   return block;
 }
 

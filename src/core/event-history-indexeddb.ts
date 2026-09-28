@@ -72,7 +72,7 @@ import { findEvidence, createEvidenceFindAccumulator, withEvidenceFindPage, isIn
 import {
   appendFacetPostingBlocks, appendSearchIndexBlocks, expandFacetPostingBlock,
   facetPostingToken, facetIdentityParts, indexBlockStart, readFacetPostingBlock, readSearchIndexBlock,
-  searchBlockMayContain, readSearchIndexRowsBlock, trimSearchIndexRowsBlock, EVENT_INDEX_BLOCK_SIZE, FACET_POSTING_NAMESPACE,
+  searchBlockMayContain, readSearchIndexRowsBlock, searchIndexRowFacetValues, trimSearchIndexRowsBlock, EVENT_INDEX_BLOCK_SIZE, FACET_POSTING_NAMESPACE,
   type SearchIndexBlock, type SearchIndexRowsBlock, type FacetPosting as FacetPostingRecord
 } from "./indexeddb/event-index-blocks";
 import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor, type EvidenceQueryCursor } from "./evidence-filter-cursor";
@@ -3691,7 +3691,7 @@ async function readFindSequenceIndex(
         const masks = criteria.map(([facet, criterion]) => {
           const column = rows.facets.find(candidate => candidate.facet === facet);
           return { codes: column?.codes, allowed: [criterionMatches(undefined, criterion),
-            ...(column?.values ?? []).map(observed => criterionMatches(observed as unknown as FilterRecord["facets"][string], criterion))] };
+            ...(column ? searchIndexRowFacetValues(rows, column) : []).map(observed => criterionMatches(observed as unknown as FilterRecord["facets"][string], criterion))] };
         });
         for (let sequence = lower; sequence <= upper; sequence++) {
           const row = sequence - rows.firstSequence;
