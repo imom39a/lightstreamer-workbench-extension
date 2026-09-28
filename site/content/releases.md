@@ -1,6 +1,6 @@
 ## 2.0.5 candidate — MCP agent access
 
-This repository candidate adds the MCP companion and the [Agent access guide]({{site}}docs/agent-access/). The extension and npm package are prepared but unpublished. Until npm publication is confirmed, use the companion tarball from the local release bundle with the matching unpacked extension build. Do not use a registry-based `npx` setup yet.
+This repository candidate adds the MCP companion and the [Agent access guide]({{site}}docs/agent-access/). The first companion package, `lightstreamer-workbench-agent@0.1.0`, was published to npm on September 28, 2026. Use `npx --yes lightstreamer-workbench-agent@latest setup` for the current package. At the time of that npm release, the 2.0.5 extension was a separate release candidate; use a matching unpacked build if your installed extension lacks Agent access.
 
 ## Earlier 2.0.4 repository candidate — Full-key JSON stream and capture reliability
 
