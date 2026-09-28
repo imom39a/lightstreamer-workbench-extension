@@ -58,6 +58,24 @@ test("cold exact Find uses compact rows for complete Scope, Filter and Around wi
   } finally { await memory.close(); await durable.close(); }
 });
 
+test("exact Find preserves Filter text whitespace semantics", async () => {
+  const { memory, durable } = await setup("find-exact-filter-whitespace", 40, 100);
+  try {
+    for (const text of ["CATEGORY keep-category", "category  keep-category", "category\tkeep-category"]) {
+      const query = { ...request, filter: { ...request.filter, text } };
+      const expected = await memory.query!(query), actual = await durable.query!(query);
+      expect(actual.ok && expected.ok).toBe(true);
+      if (!actual.ok || !expected.ok) continue;
+      expect(actual.value.find).toEqual(expected.value.find);
+      expect(actual.value.totals).toEqual(expected.value.totals);
+    }
+    const normalized = await durable.query!({ ...request, filter: { ...request.filter, text: "category keep-category" } });
+    expect(normalized).toMatchObject({ ok: true, value: { totals: { matching: 20 } } });
+    const doubled = await durable.query!({ ...request, filter: { ...request.filter, text: "category  keep-category" } });
+    expect(doubled).toMatchObject({ ok: true, value: { totals: { matching: 0, inScope: 0 }, find: { total: 0 } } });
+  } finally { await memory.close(); await durable.close(); }
+});
+
 test("legacy missing exact blocks and partially appended exact suffixes fall back without losing matches", async () => {
   const name = "find-exact-legacy", { memory, durable } = await setup(name);
   try {

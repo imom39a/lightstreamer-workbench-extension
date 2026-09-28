@@ -3635,7 +3635,7 @@ async function readFindSequenceIndex(
   const starts = [...blockStarts].sort((a, b) => a - b);
   let rowCount = 0;
   const canonicalFilter = canonicalizeFilter({ ...filter, around: null } as unknown as Filter);
-  const normalizedFilterText = normalizeEvidenceSearchText(canonicalFilter.text);
+  const filterText = canonicalFilter.text;
   const criteria = Object.entries(canonicalFilter.criteria);
   const criterionMatches = (observed: FilterRecord["facets"][string], criterion: (typeof criteria)[number][1]): boolean =>
     (criterion.include.length === 0 || Boolean(observed && criterion.include.some(wanted => filterValueMatches(observed, wanted))))
@@ -3688,8 +3688,10 @@ async function readFindSequenceIndex(
       const rows = rowsByStart.get(blockStart);
       if (rows && rows.firstSequence <= lower && rows.lastSequence >= upper) {
         const matchesFindText = searchIndexRowTextMatcher(rows, normalized);
-        const matchesFilterText = normalizedFilterText === normalized
-          ? matchesFindText : searchIndexRowTextMatcher(rows, normalizedFilterText);
+        // Filter canonicalization intentionally preserves internal whitespace;
+        // only Find uses Evidence search normalization.
+        const matchesFilterText = filterText === normalized
+          ? matchesFindText : searchIndexRowTextMatcher(rows, filterText, false);
         // Scope and structured predicates operate on dictionary codes. Repeated
         // client/session/subscription values are compared once per block, and
         // no per-row facet object is needed even for compound investigations.
@@ -3715,7 +3717,7 @@ async function readFindSequenceIndex(
           validateQueryProjection(projection, interval.id, lower + offset);
           const text = normalizeEvidenceSearchText(projection.searchText);
           consume(projection.sequence, projection.eventId, projection.timestamp, !isTopologyCheckpointProjection(projection),
-            !normalizedFilterText || text.includes(normalizedFilterText), !normalized || text.includes(normalized),
+            !filterText || text.includes(filterText), !normalized || text.includes(normalized),
             criteria.every(([facet, criterion]) => criterionMatches(projection.facets[facet] as FilterRecord["facets"][string], criterion)));
         }
       }

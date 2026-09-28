@@ -461,16 +461,18 @@ export function searchIndexRowText(block: SearchIndexRowsBlock, rowIndex: number
 
 /** Compile exact substring matching for a block. The common single-token
  * query uses a dictionary mask; multi-token queries retain native includes
- * semantics, including partial matches across token boundaries. */
-export function searchIndexRowTextMatcher(block: SearchIndexRowsBlock, query: string): (rowIndex: number) => boolean {
-  const normalized = normalizeEvidenceSearchText(query);
-  if (!normalized) return () => true;
-  if (block.version !== 3 || normalized.includes(" ")) {
-    return rowIndex => searchIndexRowText(block, rowIndex).includes(normalized);
+ * semantics, including partial matches across token boundaries.
+ * `normalizeQuery=false` preserves the Filter algebra's trim/lowercase-only
+ * canonical text, whose internal whitespace is intentionally significant. */
+export function searchIndexRowTextMatcher(block: SearchIndexRowsBlock, query: string, normalizeQuery = true): (rowIndex: number) => boolean {
+  const needle = normalizeQuery ? normalizeEvidenceSearchText(query) : query;
+  if (!needle) return () => true;
+  if (block.version !== 3 || needle.includes(" ")) {
+    return rowIndex => searchIndexRowText(block, rowIndex).includes(needle);
   }
   const dictionary = block.textDictionary!;
   const matchesToken = new Uint8Array(dictionary.length);
-  for (let index = 0; index < dictionary.length; index++) matchesToken[index] = dictionary[index]!.includes(normalized) ? 1 : 0;
+  for (let index = 0; index < dictionary.length; index++) matchesToken[index] = dictionary[index]!.includes(needle) ? 1 : 0;
   const offsets = block.textOffsets!;
   const codes = block.textCodes!;
   return rowIndex => {
