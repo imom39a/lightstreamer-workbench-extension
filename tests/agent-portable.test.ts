@@ -181,7 +181,7 @@ describe("installer-free companion", () => {
     panel.send({ id: first.id, result: "first" }); other.send({ id: second.id, result: "second" });
     expect((await a.next()).result).toBe("first"); expect((await b.next()).result).toBe("second");
     a.send({ id: "pending", name: "get_status", args: { panelSessionId: "one" } }); await panel.next();
-    panel.socket.close(); expect((await a.next()).error).toMatch("may be unknown");
+    panel.socket.close(); expect((await a.next()).error).toMatch(/^COMPANION_UNAVAILABLE:.*may have an unknown outcome/);
     a.send({ id: "remaining", name: "list_panel_sessions", args: {} }); expect((await a.next()).result).toHaveLength(1);
   });
 

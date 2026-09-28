@@ -75,7 +75,7 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
             if (request.client === peer || request.panel === peer) {
               clearTimeout(request.timer); pending.delete(key);
               if (request.panel !== peer) send(request.panel, { type: "cancel", id: key });
-              if (request.client !== peer) send(request.client, { id: request.id, error: "Panel connection closed. Delivery may be unknown; do not repeat it automatically." });
+              if (request.client !== peer) send(request.client, { id: request.id, error: "COMPANION_UNAVAILABLE: Panel connection closed. An in-flight operation may have an unknown outcome; inspect its existing requestId/receipt and do not retry automatically." });
             }
           }
         }

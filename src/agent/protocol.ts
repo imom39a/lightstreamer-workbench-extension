@@ -172,5 +172,4 @@ function validateQueryCrossFields(args: AgentArguments): void {
   const discoveries = args.discover as { facet: string }[] | undefined;
   if (discoveries && (new Set(discoveries.map(value => value.facet)).size !== discoveries.length || discoveries.some(value => !FACET_DESCRIPTORS.some(descriptor => descriptor.key === value.facet)))) throw new Error("arguments.discover: each supported facet may occur only once.");
   if (filterValue?.text !== undefined && args.text !== undefined && filterValue.text !== args.text) throw new Error("arguments.text and arguments.filter.text must match when both are supplied.");
-  if (args.cursor && Object.keys(args).some(key => !["panelSessionId", "cursor"].includes(key))) throw new Error("arguments: cursor continuation accepts no query options.");
 }

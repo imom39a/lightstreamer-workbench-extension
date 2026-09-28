@@ -6,10 +6,11 @@ import { AGENT_TOOLS, validateAgentCall } from "../protocol";
 import metadata from "../../../agent/package.json";
 import { connectPortableBroker } from "./portable-broker";
 import type { PortableConfig } from "../portable-config";
+import type { CompanionChannel } from "../portable-channel";
 import { agentToolFailure, agentToolResult } from "./tool-result";
 
-export async function runMcp(cli: string, connection: { config: PortableConfig; extensionId: string }) {
-  const channel = await connectPortableBroker(cli, connection.config, connection.extensionId);
+/** Build the MCP interface over one already-connected companion channel. */
+export function createMcpServer(channel: CompanionChannel) {
   const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   channel.onMessage(message => {
     const callback = pending.get(String(message.id));
@@ -49,7 +50,20 @@ export async function runMcp(cli: string, connection: { config: PortableConfig; 
       return agentToolResult(result);
     } catch (error) { return agentToolFailure(error); }
   });
-  channel.onClose(() => { for (const callback of pending.values()) callback.reject(new Error("Companion disconnected. In-flight delivery may be unknown.")); pending.clear(); void server.close(); });
+  channel.onClose(() => {
+    const unavailable = new Error("COMPANION_UNAVAILABLE: Companion connection closed. An in-flight operation may have an unknown outcome; inspect its existing requestId/receipt and do not retry automatically.");
+    for (const callback of pending.values()) callback.reject(unavailable);
+    pending.clear();
+    // Let rejected handlers emit their structured failure envelopes before closing
+    // the MCP transport, which otherwise aborts those in-flight requests.
+    setImmediate(() => { void server.close(); });
+  });
+  return server;
+}
+
+export async function runMcp(cli: string, connection: { config: PortableConfig; extensionId: string }) {
+  const channel = await connectPortableBroker(cli, connection.config, connection.extensionId);
+  const server = createMcpServer(channel);
   // npm/npx may launch through a shell. EOF must close the MCP child itself;
   // relying on the client to signal its immediate child leaves this process alive.
   const shutdown = () => { void server.close(); };

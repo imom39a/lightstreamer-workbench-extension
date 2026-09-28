@@ -104,6 +104,18 @@ try {
   const invalid = await clients[0].callTool({ name: "query_evidence", arguments: { panelSessionId: "npm-package-panel", filter: { unknown: true } } });
   assert.equal(invalid.isError, true);
   assert.equal(invalid.structuredContent.error.code, "INVALID_ARGUMENT");
+  const inFlightWait = clients[0].callTool({ name: "wait_for_evidence", arguments: {
+    panelSessionId: "npm-package-panel", pageEpoch: "installed-package-runtime", timeoutMs: 20000,
+    after: { interval: { id: "package-interval", ordinal: 1 }, committedEvidenceBoundary: null, retainedRange: null }
+  } });
+  const waitRequest = await next();
+  assert.equal(waitRequest.name, "wait_for_evidence");
+  panel.close();
+  const disconnected = await inFlightWait;
+  assert.equal(disconnected.isError, true, "A lost Panel link must not look like a successful wait.");
+  assert.equal(disconnected.structuredContent.error.code, "COMPANION_UNAVAILABLE", "An in-flight wait must expose connection loss as a machine-readable failure.");
+  assert.match(disconnected.structuredContent.error.message, /may have an unknown outcome/i);
+  assert.equal(disconnected.structuredContent.error.automaticRetry, false);
   const forbidden = await clients[0].callTool({ name: "execute_server_injection", arguments: {} });
   assert.equal(forbidden.isError, true);
 } finally {

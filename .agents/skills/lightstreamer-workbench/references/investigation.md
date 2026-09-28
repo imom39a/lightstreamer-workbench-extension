@@ -123,6 +123,15 @@ Handle the returned status explicitly:
 | `TARGET_CHANGED` | The page epoch changed; rediscover the target and start from its current page epoch. |
 | `QUERY_FAILED` | The query did not complete; inspect the failure and retry only as a new read. |
 
+Companion or Panel-link loss is an MCP tool error, not a wait status. While the
+MCP transport remains available, it returns `isError: true` with
+`structuredContent.error.code: "COMPANION_UNAVAILABLE"` and
+`automaticRetry: false`. If the MCP process or stdio transport also closes, the
+client may only receive a transport failure; treat that as unavailable, not as
+proof of non-delivery. For an interrupted mutation, reconnect, rediscover the
+exact Panel Session and inspect the existing `requestId` receipt when available.
+Its outcome may remain unknown; never automatically retry it with a new id.
+
 Never interpret a timeout, a bounded sample, or incomplete history as proof of
 absence. A `MATCHED` Workbench result still does not prove that the application
 rendered or accepted the update; check the same inspected tab with browser

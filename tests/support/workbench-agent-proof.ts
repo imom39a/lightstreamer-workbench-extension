@@ -32,7 +32,7 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.equal(status.permission, "local", "A normal connection grants inspection and Local Injection without settings.");
     assert.ok(status.capabilities.includes("search_evidence") && status.capabilities.includes("search_scope"));
     const scopeSearch = await call("search_scope", { panelSessionId, text: "SCENARIO.MUTATE-REINJECT", limit: 100 });
-    assert.ok(scopeSearch.scopes.some((entry: any) => entry.kind === "item" && entry.label === "scenario.mutate-reinject"), "MCP Scope search finds structural objects regardless of tree expansion.");
+    assert.ok(scopeSearch.scopes.some((entry: any) => entry.kind === "item" && entry.label === "scenario.mutate-reinject · #1"), `MCP Scope search finds the exact named, positional item regardless of tree expansion: ${JSON.stringify(scopeSearch)}`);
     const evidenceSearch = await call("search_evidence", { panelSessionId, text: "SCENARIO.MUTATE-REINJECT", limit: 1, includePayload: true });
     assert.ok(evidenceSearch.total > 0 && evidenceSearch.evidence.length === 1, "MCP Evidence search uses case-insensitive canonical matching.");
     if (evidenceSearch.nextCursor) {
