@@ -297,9 +297,11 @@ export type ScenarioRun = Readonly<{
 
 export function createScenarioFromDraft(
   draft: ScenarioDraftInput,
-  options: Readonly<{ scenarioId: string }>
+  options: Readonly<{ scenarioId: string; stepId?: string }>
 ): LocalInjectionScenario {
-  const firstStep: ScenarioStep = { kind: "step", id: "step-1", draft };
+  const stepId = options.stepId ?? "step-1";
+  validateExplicitMemberId(stepId);
+  const firstStep: ScenarioStep = { kind: "step", id: stepId, draft };
   const initial = {
     id: options.scenarioId,
     revision: 1,
@@ -323,15 +325,26 @@ export function createScenarioFromDraft(
 export function addScenarioStep(
   scenario: LocalInjectionScenario,
   draft: ScenarioDraftInput,
-  admission: ScenarioAdmissionContext = {}
+  admission: ScenarioAdmissionContext = {},
+  requestedStepId?: string
 ): ScenarioMutation {
   const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return Object.freeze({ ok: false as const, reason });
-  const step: ScenarioStep = { kind: "step", id: `step-${scenario.nextStepSequence}`, draft };
+  const allocation = requestedStepId === undefined ? allocateGeneratedStepIds(scenario, 1) : null;
+  if (requestedStepId === undefined && !allocation) return freeze({ ok: false as const, reason: "Could not allocate unique Scenario Step identities." });
+  const generated = allocation?.ids[0] ?? null;
+  const stepId = requestedStepId ?? generated!.id;
+  try {
+    validateExplicitMemberId(stepId);
+  } catch (error) {
+    return Object.freeze({ ok: false as const, reason: error instanceof Error ? error.message : "Scenario Step identity is invalid." });
+  }
+  if (reservedMemberIds(scenario).has(stepId)) return Object.freeze({ ok: false as const, reason: "Scenario member identity is already in use." });
+  const step: ScenarioStep = { kind: "step", id: stepId, draft };
   return commitScenarioMutation(scenario, {
     steps: [...scenario.steps, step],
     members: [...scenario.members, step],
-    nextStepSequence: scenario.nextStepSequence + 1
+    nextStepSequence: requestedStepId === undefined ? allocation!.nextStepSequence : scenario.nextStepSequence
   }, true, admission.retainedRunBytes ?? 0);
 }
 
@@ -366,11 +379,13 @@ export function confirmScenarioMembershipPreview(
     return freeze({ ok: false as const, reason: "Scenario changed after this membership preview. Preview the retained Evidence again." });
   }
   const drafts = preview.members.filter((member) => member.available && member.draft !== null).map((member) => member.draft!);
-  const steps = drafts.map((draft, index) => ({ kind: "step" as const, id: `step-${scenario.nextStepSequence + index}`, draft }));
+  const allocated = allocateGeneratedStepIds(scenario, drafts.length);
+  if (!allocated) return freeze({ ok: false as const, reason: "Could not allocate unique Scenario Step identities." });
+  const steps = drafts.map((draft, index) => ({ kind: "step" as const, id: allocated.ids[index]!.id, draft }));
   return commitScenarioMutation(scenario, {
     steps: [...scenario.steps, ...steps],
     members: [...scenario.members, ...steps],
-    nextStepSequence: scenario.nextStepSequence + steps.length
+    nextStepSequence: allocated.nextStepSequence
   }, true, admission.retainedRunBytes ?? 0);
 }
 
@@ -387,16 +402,19 @@ export function duplicateScenarioStep(scenario: LocalInjectionScenario, stepId: 
   const index = scenario.steps.findIndex(({ id }) => id === stepId);
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
   const source = scenario.steps[index]!;
+  const allocation = allocateGeneratedStepIds(scenario, 1);
+  if (!allocation) return freeze({ ok: false as const, reason: "Could not allocate unique Scenario Step identities." });
+  const allocated = allocation.ids[0]!;
   const duplicate: ScenarioStep = {
     kind: "step",
-    id: `step-${scenario.nextStepSequence}`,
-    draft: cloneScenarioDraft(source.draft, `${source.draft.id}-copy-${scenario.nextStepSequence}`)
+    id: allocated.id,
+    draft: cloneScenarioDraft(source.draft, `${source.draft.id}-copy-${allocated.sequence}`)
   };
   const steps = [...scenario.steps];
   steps.splice(index + 1, 0, duplicate);
   const members = [...scenario.members];
   members.splice(members.findIndex(({ id }) => id === stepId) + 1, 0, duplicate);
-  return commitScenarioMutation(scenario, { steps, members, nextStepSequence: scenario.nextStepSequence + 1 }, true, admission.retainedRunBytes ?? 0);
+  return commitScenarioMutation(scenario, { steps, members, nextStepSequence: allocation.nextStepSequence }, true, admission.retainedRunBytes ?? 0);
 }
 
 export function removeScenarioStep(scenario: LocalInjectionScenario, stepId: string, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
@@ -469,7 +487,12 @@ export function addScenarioCheckpoint(
   checkpoint: ScenarioCheckpoint,
   admission: ScenarioAdmissionContext = {}
 ): ScenarioMutation {
-  if (scenario.members.some(({ id }) => id === checkpoint.id)) return freeze({ ok: false as const, reason: "Scenario member identity is already in use." });
+  try {
+    validateExplicitMemberId(checkpoint.id);
+  } catch (error) {
+    return Object.freeze({ ok: false as const, reason: error instanceof Error ? error.message : "Scenario Checkpoint identity is invalid." });
+  }
+  if (reservedMemberIds(scenario).has(checkpoint.id)) return freeze({ ok: false as const, reason: "Scenario member identity is already in use." });
   return commitScenarioMutation(scenario, { members: [...scenario.members, checkpoint] }, true, admission.retainedRunBytes ?? 0);
 }
 
@@ -917,6 +940,39 @@ function canonicalize(value: unknown): unknown {
     return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, canonicalize((value as Record<string, unknown>)[key])]));
   }
   return value;
+}
+
+function validateExplicitMemberId(id: string): void {
+  if (typeof id !== "string" || id.trim().length === 0 || id.length > 256) {
+    throw new Error("Scenario member identity must contain 1 to 256 characters.");
+  }
+}
+
+/** Generated IDs skip explicit agent IDs and IDs held for undo restoration. */
+function allocateGeneratedStepIds(
+  scenario: LocalInjectionScenario,
+  count: number
+): Readonly<{ ids: readonly Readonly<{ id: string; sequence: number }>[]; nextStepSequence: number }> | null {
+  const reserved = reservedMemberIds(scenario);
+  const ids: Array<{ id: string; sequence: number }> = [];
+  let sequence = Math.max(2, scenario.nextStepSequence);
+  while (ids.length < count) {
+    if (!Number.isSafeInteger(sequence) || sequence === Number.MAX_SAFE_INTEGER) return null;
+    const id = `step-${sequence}`;
+    if (!reserved.has(id)) {
+      reserved.add(id);
+      ids.push({ id, sequence });
+    }
+    sequence += 1;
+  }
+  return { ids, nextStepSequence: sequence };
+}
+
+function reservedMemberIds(scenario: LocalInjectionScenario): Set<string> {
+  return new Set([
+    ...scenario.members.map(({ id }) => id),
+    ...scenario.removedSteps.map(({ step }) => step.id)
+  ]);
 }
 
 function cloneScenarioDraft(draft: ScenarioDraftInput, id: string): ScenarioDraftInput {

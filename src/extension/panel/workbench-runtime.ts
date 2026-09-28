@@ -5,7 +5,8 @@ import type {
   ScenarioCommittedBoundaryFeed,
   ScenarioCommittedBoundarySnapshot
 } from "../../core/local-injection-scenario-checkpoint";
-import type { AgentRuntime, AgentDraftInput } from "./agent-runtime";
+import { validateScenarioCheckpoint } from "../../core/local-injection-scenario-checkpoint";
+import type { AgentRuntime, AgentDraftInput, AgentCandidateInput, AgentScenarioMember, AgentScenarioPlanInput } from "./agent-runtime";
 import {
   toBulkShareableEventEnvelope,
   type LightstreamerEventEnvelope
@@ -78,6 +79,7 @@ import {
   type TypedFacetValue
 } from "../../core/evidence-filter-contract";
 import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
+import { classifyInjectionSourceFieldExecutability } from "../../core/item-update-value-semantics";
 import {
   analyzeLocalInjectionDocument,
   applyLocalInjectionDocumentToDraft,
@@ -1055,18 +1057,27 @@ class Runtime implements WorkbenchRuntime {
       if (input.scopeId && !target) throw new Error("Scope is unavailable.");
       const result = await this.evidenceQuery.query({
         at: input.at, scope: input.scopeId ? structuralEvidenceScope(target) : { kind: "PAGE" },
-        filter: { ...createFilter(), text: input.text ?? "" },
-        page: { order: "OLDEST_FIRST", size: input.size, ...(input.cursor ? { cursor: input.cursor } : {}) },
-        discover: [], includePayload: input.includePayload,
+        filter: input.filter ?? { ...createFilter(), text: input.text ?? "" },
+        page: { order: input.order ?? "OLDEST_FIRST", size: input.size, ...(input.cursor ? { cursor: input.cursor } : {}) },
+        discover: input.discover ?? [], includePayload: input.includePayload, signal: input.signal,
         ...(input.lookup ? { lookup: input.lookup } : {})
       });
       if (!result.ok) throw new Error(`${result.problem.code}: ${result.problem.message}`);
       return result.value;
     },
+    subscribeEvidence: listener => {
+      // History notification is independent of UI publication/visibility. Runtime
+      // publication also wakes waits when the inspected page identity changes.
+      const history = this.history.follow({ from: "NOW" }, () => listener());
+      const runtime = this.subscribe(listener);
+      return () => { history(); runtime(); };
+    },
     diagnostics: async (after) => {
       await this.diagnosticObservationSettlement;
       return this.diagnosticObservations.query({ after, through: this.diagnosticObservations.currentBoundary() });
     },
+    validateCandidate: (input, pageEpoch, stillAuthorized) => this.validateAgentCandidate(input, pageEpoch, stillAuthorized),
+    prepareScenarioPlan: (input, pageEpoch, stillAuthorized) => this.prepareAgentScenarioPlan(input, pageEpoch, stillAuthorized),
     prepare: (steps, scenario, pageEpoch, stillAuthorized) => this.prepareAgentDrafts(steps, scenario, pageEpoch, stillAuthorized),
     edit: (document, stepId) => {
       if (this.scenarioState) {
@@ -1089,6 +1100,189 @@ class Runtime implements WorkbenchRuntime {
     },
     finish: () => this.scenarioState ? this.finishScenario() : this.finishLocalInjection()
   };
+
+  private async validateAgentCandidate(input: AgentCandidateInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<unknown> {
+    const available = () => {
+      if (!stillAuthorized()) throw new Error("Agent access was revoked while validating the candidate.");
+      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("Page changed or panel is hidden/closed. Inspect the current target again.");
+    };
+    const validate = async (id: string, draft: AgentDraftInput) => {
+      available();
+      return this.resolveAgentCandidate(id, draft, available);
+    };
+    available();
+      if (input.kind === "draft") {
+        const built = await validate("candidate", input.draft);
+        const candidate = built.candidate;
+        const diagnostics = [...candidate.documentDiagnostics, ...candidate.targetDiagnostics];
+        const replayability = candidateReplayability(candidate, built.replayability);
+        return Object.freeze({ valid: localInjectionReady(candidate) && replayability.replayable, pageEpoch, target: agentTarget(candidate), candidates: [{ id: "candidate", kind: "step", valid: localInjectionReady(candidate) && replayability.replayable, diagnostics, replayability }], checkpoints: [], limitations: ["Validation does not inspect arbitrary page state or DOM."] });
+      }
+      const members: unknown[] = [];
+      const builtById = new Map<string, LocalInjectionDraftState>();
+      const steps: Array<{ id: string; valid: boolean; diagnostics: readonly LocalInjectionDiagnostic[] }> = [];
+      const checkpoints: Array<{ id: string; valid: boolean; reason?: string }> = [];
+      const earlierStepIds: string[] = [];
+      const seen = new Set<string>();
+      let target: LocalInjectionDraftState | null = null;
+      let definition: LocalInjectionScenario | null = null;
+      let valid = true;
+      for (const member of input.plan.members) {
+        if (!member.id || member.id.length > 256 || seen.has(member.id)) throw new Error("Scenario member identities must be unique and contain 1 to 256 characters.");
+        seen.add(member.id);
+        if (member.kind === "step") {
+          const built = await validate(member.id, member);
+          const candidate = built.candidate;
+          const incompatibility = target ? scenarioTargetIncompatibility(this.scenarioDraftInput(target).target, this.scenarioDraftInput(candidate).target) : null;
+          if (incompatibility) throw new Error(incompatibility);
+          target ??= candidate;
+          builtById.set(member.id, candidate);
+          if (!definition) definition = createScenarioFromDraft(this.scenarioDraftInput(candidate), { scenarioId: "agent-validation", stepId: member.id });
+          else {
+            const added = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: 0 }, member.id);
+            if (!added.ok) throw new Error(added.reason);
+            definition = added.scenario;
+          }
+          const diagnostics = [...candidate.documentDiagnostics, ...candidate.targetDiagnostics];
+          const replayability = candidateReplayability(candidate, built.replayability);
+          const independentlyInvalid = diagnostics.some(diagnostic => diagnostic.severity === "error" && !["unknown-key-update", "unknown-key-delete"].includes(diagnostic.code));
+          const step = { kind: "step", id: member.id, valid: replayability.replayable && !independentlyInvalid, diagnostics, replayability };
+          steps.push(step); members.push(step); earlierStepIds.push(member.id); valid &&= step.valid;
+        } else {
+          if (!target) throw new Error("A Scenario Checkpoint must follow at least one explicit Step.");
+          const checkpoint = { id: member.id, kind: "checkpoint" as const, name: member.name, assertions: member.assertions };
+          const checked = validateScenarioCheckpoint(checkpoint, { targetMode: target.anchor.subscriptionMode, deliveryPath: target.anchor.executionTarget === "captured-listener" ? "listener" : "wire", earlierStepIds });
+          const result = { id: member.id, kind: "checkpoint", valid: checked.ok, reason: checked.ok ? undefined : checked.reason };
+          if (checked.ok && definition) {
+            const added = addScenarioCheckpoint(definition, checkpoint, { retainedRunBytes: 0 });
+            if (!added.ok) throw new Error(added.reason);
+            definition = added.scenario;
+          }
+          checkpoints.push(result); members.push(result); valid &&= checked.ok;
+        }
+      }
+      if (!steps.length) throw new Error("A Scenario requires at least one explicit Step.");
+      const diagnostics = [...builtById.values()].flatMap(candidate => [...candidate.documentDiagnostics, ...candidate.targetDiagnostics]);
+      if (definition && valid) {
+        const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: this.scenarioDraftInput(builtById.get(step.id)!) })), { retainedRunBytes: 0 });
+        if (!ordered.ok) valid = false;
+        else {
+          const keys = [...builtById.values()].map(candidate => ({ item: { name: candidate.anchor.itemName, position: candidate.anchor.itemPosition }, keys: this.activeCommandKeys(candidate.anchor) }));
+          const preflight = reviewScenario(ordered.scenario, { runId: "agent-validation", committedEvidenceSeed: this.committedEvidenceBoundary, targetFingerprint: this.scenarioTargetFingerprint(target!), listenerIds: this.scenarioCurrentListenerIds(target!), historyAccepting: this.historyStatus.phase === "RUNNING" && this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null, clearInProgress: this.clearState !== "idle", activeCommandKeysByItem: keys, diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary() });
+          if (!preflight.ok) {
+            valid = false;
+            return Object.freeze({ valid, reason: `${preflight.stepId ? `${preflight.stepId}: ` : ""}${preflight.reason}`, pageEpoch, target: target ? agentTarget(target) : null, members, steps, checkpoints, limitations: ["Validation does not inspect arbitrary page state or DOM.", "Checkpoint assertions observe only Workbench-owned Injection, Evidence, COMMAND projection, or diagnostic facts."] });
+          }
+        }
+      }
+      const refusal = !valid
+        ? checkpoints.find(checkpoint => !checkpoint.valid)?.reason
+          ?? steps.find(step => !step.valid)?.diagnostics.find(diagnostic => diagnostic.severity === "error")?.message
+          ?? "One or more Steps have invalid Source replayability or an ordered Scenario preflight failure."
+        : undefined;
+      return Object.freeze({ valid, ...(refusal ? { reason: refusal } : {}), pageEpoch, target: target ? agentTarget(target) : null, members, steps, checkpoints, limitations: ["Validation does not inspect arbitrary page state or DOM.", "Checkpoint assertions observe only Workbench-owned Injection, Evidence, COMMAND projection, or diagnostic facts."] });
+  }
+
+  private async resolveAgentCandidate(id: string, draft: AgentDraftInput, available: () => void) {
+    if (Boolean(draft.scopeId) === Boolean(draft.evidence)) throw new Error("Choose exactly one Scope or Evidence source for each Step.");
+    let source: LightstreamerEventEnvelope | undefined;
+    if (draft.evidence) {
+      const result = await this.agent.query({ at: "LATEST_COMMITTED", size: 1, includePayload: true, lookup: draft.evidence });
+      if (result.lookup?.state !== "RETAINED") throw new Error("Source Evidence is no longer retained.");
+      source = lightstreamerPayload(result.lookup.evidence.payload) ?? undefined;
+      if (!source) throw new Error("Source has no complete Item Update payload.");
+    }
+    available();
+    const candidate = this.createLocalInjectionCandidate(draft.evidence
+      ? { kind: "selected-event", eventId: draft.evidence.eventId }
+      : { kind: "scope-author", scopeId: draft.scopeId! }, source, { id: `agent-draft-${id}`, recordError: false });
+    if (!candidate) throw new Error("Local Injection target is unavailable or incompatible with the selected source.");
+    if (draft.document !== undefined) {
+      candidate.rawText = draft.document;
+      this.refreshLocalInjectionValidation(candidate);
+    }
+    candidate.relativeDelayMs = draft.delayMs ?? 0;
+    const replayability = source?.update
+      ? classifyInjectionSourceFieldExecutability(source.update).map(field => ({ field: field.field, classification: field.classification, reason: "reason" in field ? field.reason : undefined }))
+      : [];
+    return { id, candidate, replayability };
+  }
+
+  private async prepareAgentScenarioPlan(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
+    await this.prepareAgentScenarioPlanInternal(input, pageEpoch, stillAuthorized);
+  }
+
+  private async prepareAgentScenarioPlanInternal(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
+    const available = () => {
+      if (!stillAuthorized()) throw new Error("Agent access was revoked while preparing the Scenario.");
+      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("Page changed or panel is hidden/closed. Inspect the current target again.");
+      if (this.localInjectionDraft || this.serverInjectionDraft) throw new Error("A protected Draft already exists. Finish it in Workbench before creating a Scenario.");
+      if (this.scenarioState) {
+        const existing = this.scenarioState;
+        const replace = input.replace;
+        if (!replace || replace.scenarioId !== existing.scenario.id || replace.revision !== existing.scenario.revision || !["edit", "review"].includes(existing.phase) || (existing.run?.trace.length ?? 0) > 0) {
+          throw new Error("A protected Scenario already exists. Replace only the exact unexecuted agent-owned Scenario revision or finish it in Workbench.");
+        }
+      } else if (input.replace) throw new Error("The Scenario selected for replacement is no longer available.");
+    };
+    available();
+    if (input.members[0]?.kind !== "step") throw new Error("A Scenario must begin with an explicit Injection Step.");
+    const built: Array<{ member: AgentScenarioMember; draft?: LocalInjectionDraftState }> = [];
+    for (const member of input.members) {
+      available();
+      if (member.kind === "step") {
+        const resolved = await this.resolveAgentCandidate(member.id, member, available);
+        const candidate = resolved.candidate;
+        if (!candidateReplayability(candidate, resolved.replayability).replayable) throw new Error(`${member.id}: captured Source fields require concrete replacement or permitted removal.`);
+        built.push({ member, draft: candidate });
+      } else built.push({ member });
+    }
+    available();
+    const first = built[0]?.draft;
+    if (!first) throw new Error("A Scenario requires at least one explicit Step.");
+    let definition = createScenarioFromDraft(this.scenarioDraftInput(first), { scenarioId: `local-injection-scenario-${crypto.randomUUID()}`, stepId: built[0]!.member.id });
+    const drafts = new Map<string, LocalInjectionDraftState>([[definition.steps[0]!.id, first]]);
+    let earlier: string[] = [definition.steps[0]!.id];
+    for (const entry of built.slice(1)) {
+      available();
+      if (entry.member.kind === "step") {
+        const candidate = entry.draft!;
+        const addition = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: 0 }, entry.member.id);
+        if (!addition.ok) throw new Error(addition.reason);
+        definition = addition.scenario;
+        drafts.set(entry.member.id, candidate);
+        earlier.push(entry.member.id);
+      } else {
+        const checkpoint = { kind: "checkpoint" as const, id: entry.member.id, name: entry.member.name, assertions: entry.member.assertions };
+        const checked = validateScenarioCheckpoint(checkpoint, { targetMode: definition.target.mode, deliveryPath: definition.target.deliveryPath, earlierStepIds: earlier });
+        if (!checked.ok) throw new Error(checked.reason);
+        const added = addScenarioCheckpoint(definition, checkpoint, { retainedRunBytes: 0 });
+        if (!added.ok) throw new Error(added.reason);
+        definition = added.scenario;
+      }
+    }
+    available();
+    const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: this.scenarioDraftInput(drafts.get(step.id)!) })), { retainedRunBytes: 0 });
+    if (!ordered.ok) throw new Error(ordered.reason);
+    const commandKeys = [...drafts.values()].map(draft => ({ item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition }, keys: this.activeCommandKeys(draft.anchor) }));
+    const preflight = reviewScenario(ordered.scenario, { runId: "agent-preflight", committedEvidenceSeed: this.committedEvidenceBoundary, targetFingerprint: this.scenarioTargetFingerprint(first), listenerIds: this.scenarioCurrentListenerIds(first), historyAccepting: this.historyStatus.phase === "RUNNING" && this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null, clearInProgress: this.clearState !== "idle", activeCommandKeysByItem: commandKeys, diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary() });
+    if (!preflight.ok) throw new Error(`${preflight.stepId ? `${preflight.stepId}: ` : ""}${preflight.reason}`);
+    for (const [index, reviewedStep] of preflight.run.steps.entries()) {
+      const draft = drafts.get(reviewedStep.id)!;
+      const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, reviewedStep.document, draft.explicitConcreteFields);
+      const review = this.localInjectionExecutionCoordinator.review({
+        fingerprint: this.localInjectionFingerprint(draft), executionTarget: draft.anchor.executionTarget,
+        document: reviewedStep.document, draft: cloneReinjectionDraft(executionDraft),
+        correlation: { scenarioId: preflight.run.scenarioId, runId: preflight.run.id, stepId: reviewedStep.id, ordinal: index + 1, targetId: draft.anchor.subscriptionId }
+      });
+      if (review.kind === "refused") throw new Error(`${reviewedStep.id}: ${review.reason}`);
+    }
+    available();
+    this.scenarioState = { phase: "edit", parked: false, discardConfirmation: false, scenario: ordered.scenario, drafts, run: null, reviews: new Map(), membershipError: null, pickerOpen: false, membershipPreview: null, focusedMemberId: ordered.scenario.members[0]!.id, focusedStepId: ordered.scenario.steps[0]!.id, removedDrafts: new Map(), priorRuns: [], retainedRunBytes: 0, runner: null, runnerSnapshot: null, serverInterleaves: [] };
+    this.localInjectionDraft = null;
+    this.reviewCurrentScenario();
+    if (this.scenarioState?.phase !== "review") throw new Error(this.scenarioState?.membershipError ?? "Scenario Review could not be completed.");
+  }
 
   private async prepareAgentDrafts(inputs: AgentDraftInput[], scenario: boolean, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
     const available = () => {
@@ -4135,8 +4329,10 @@ class Runtime implements WorkbenchRuntime {
 
   private createLocalInjectionCandidate(
     intent: LocalInjectionEntryIntent,
-    sourceOverride?: LightstreamerEventEnvelope
+    sourceOverride?: LightstreamerEventEnvelope,
+    options: Readonly<{ id?: string; recordError?: boolean }> = {}
   ): LocalInjectionDraftState | null {
+    const fail = (message: string) => { if (options.recordError !== false) this.localInjectionEntryError = message; return null; };
     const sourceEvent = intent.kind === "selected-event"
       ? sourceOverride ?? (this.selectedEventEnvelope?.id === intent.eventId
         ? this.selectedEventEnvelope
@@ -4148,8 +4344,7 @@ class Runtime implements WorkbenchRuntime {
 
     if (intent.kind === "selected-event") {
       if (!sourceEvent || !isCompatibleLocalInjectionSource(sourceEvent)) {
-        this.localInjectionEntryError = "Selected Evidence is not a compatible captured Item Update with a live delivery target.";
-        return null;
+        return fail("Selected Evidence is not a compatible captured Item Update with a live delivery target.");
       }
       baseDraft = createDraftFromEvent(sourceEvent);
       if (!baseDraft) return null;
@@ -4175,8 +4370,7 @@ class Runtime implements WorkbenchRuntime {
       const target = findTopologySelection(this.topologyProjection.snapshot(), intent.scopeId);
       const authored = authoredDraftFromScope(target, this.currentPageEpoch);
       if (!authored) {
-        this.localInjectionEntryError = "Authoring requires a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context.";
-        return null;
+        return fail("Authoring requires a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context.");
       }
       ({ draft: baseDraft, anchor } = authored);
     }
@@ -4185,7 +4379,7 @@ class Runtime implements WorkbenchRuntime {
     const rawText = serializeLocalInjectionDocument(document);
     const compareOpen = sourceDocument !== null;
     const state: LocalInjectionDraftState = {
-      id: `local-injection-draft-${++this.localInjectionSequence}`,
+      id: options.id ?? `local-injection-draft-${++this.localInjectionSequence}`,
       baseDraft,
       anchor,
       rawText,
@@ -8011,6 +8205,30 @@ function localInjectionReady(draft: LocalInjectionDraftState): boolean {
   return Boolean(draft.document) &&
     draft.documentDiagnostics.every(({ severity }) => severity !== "error") &&
     draft.targetDiagnostics.every(({ severity }) => severity !== "error");
+}
+
+function agentTarget(draft: LocalInjectionDraftState) {
+  return Object.freeze({
+    pageEpoch: draft.anchor.pageEpoch,
+    clientId: draft.anchor.clientId,
+    sessionId: draft.anchor.sessionId,
+    subscriptionId: draft.anchor.subscriptionId,
+    deliveryPath: draft.anchor.executionTarget === "captured-listener" ? "listener" as const : "wire" as const,
+    mode: draft.anchor.subscriptionMode
+  });
+}
+
+function candidateReplayability(
+  draft: LocalInjectionDraftState,
+  fields: readonly Readonly<{ field: string; classification: string; reason?: string }>[]
+) {
+  if (!draft.sourceRawText) return Object.freeze({ source: "source-free" as const, replayable: true, fields: Object.freeze([]), limitation: "No captured Injection Source exists; field values are authored and are not evidence of application state." });
+  const states = fields.map(field => {
+    const removedWhereOptional = Boolean(draft.document) && !Object.prototype.hasOwnProperty.call(draft.document!.fields, field.field) && !draft.anchor.fieldSchema.includes(field.field);
+    const resolved = field.classification === "executable" || draft.explicitConcreteFields.has(field.field) || removedWhereOptional;
+    return Object.freeze({ ...field, resolved, limitation: resolved ? null : "Replace this captured value with a concrete Draft value or remove it where the target schema permits." });
+  });
+  return Object.freeze({ source: "captured" as const, replayable: states.every(field => field.resolved), fields: Object.freeze(states), limitation: null });
 }
 
 function rememberExplicitConcreteFields(

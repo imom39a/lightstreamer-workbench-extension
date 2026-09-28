@@ -30,12 +30,15 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
   let failures = 0;
   let generation = 0;
   let disposed = false;
+  const pendingReads = new Map<string, AbortController>();
   const listeners = new Set<() => void>();
   const service = runtime.agent ? createAgentService(runtime.agent, panelSessionId, () => state.permission) : null;
   const unsubscribe = runtime.subscribe(() => service?.refreshOperations());
   function publish(next: AgentConnectionState) { state = Object.freeze(next); listeners.forEach(listener => listener()); }
   function release() {
     generation++; clearTimeout(deadline); clearTimeout(retry);
+    for (const controller of pendingReads.values()) controller.abort();
+    pendingReads.clear();
     service?.revoke();
     const attempt = pairingAttempt; pairingAttempt = null; attempt?.close();
     const current = channel; channel = null; current?.close();
@@ -71,19 +74,29 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
       const reply = (value: Record<string, unknown>) => { if (epoch === generation) { try { current.send(value); } catch { fail(); } } };
       current.onMessage(value => {
         if (epoch !== generation) return;
+        if (value.type === "cancel" && typeof value.id === "string") {
+          pendingReads.get(value.id)?.abort();
+          return;
+        }
         if (value.type === "ready") {
           clearTimeout(deadline); failures = 0;
           publish({ ...settings(), enabled: true, permission, status: "connected", detail: permission === "local" ? "Connected · inspection and Local Injection allowed." : "Connected · inspection only." });
           return;
         }
         if (state.status !== "connected" || typeof value.id !== "string" || typeof value.name !== "string") return;
-        const response = service.call(value.name, value.args).then(async result => {
+        const requestId = value.id;
+        if (pendingReads.has(requestId) || pendingReads.size >= 64) { reply({ id: requestId, error: "REQUEST_CAPACITY: Workbench request capacity reached." }); return; }
+        const controller = new AbortController();
+        pendingReads.set(requestId, controller);
+        const response = service.call(value.name, value.args, { signal: controller.signal }).then(async result => {
           if (value.name !== "get_status") return result;
           const inspectedPage = await describeInspectedPage();
           if ((result as { pageEpoch: string }).pageEpoch !== (runtime.agent!.status() as { pageEpoch: string }).pageEpoch) throw new Error("The inspected page changed while resolving its identity. Query status again.");
           return { ...result as object, inspectedPage };
         });
-        void response.then(result => reply({ id: value.id, result }), error => reply({ id: value.id, error: error instanceof Error ? error.message : "Workbench operation failed." }));
+        void response.then(result => reply({ id: requestId, result }), error => reply({ id: requestId, error: error instanceof Error ? error.message : "Workbench operation failed." })).finally(() => {
+          if (pendingReads.get(requestId) === controller) pendingReads.delete(requestId);
+        });
       });
       reply({ type: "hello", role: "panel", protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, tabId: chrome.devtools.inspectedWindow.tabId, permission });
     };

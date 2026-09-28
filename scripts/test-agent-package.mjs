@@ -54,7 +54,10 @@ try {
     cwd: directory, env: { LSEW_AGENT_CONNECTION: "" }, stderr: "inherit"
   }));
   assert.equal(clients[0].getServerVersion().version, metadata.version);
-  assert((await clients[0].listTools()).tools.some(tool => tool.name === "prepare_scenario"));
+  const tools = (await clients[0].listTools()).tools;
+  for (const name of ["prepare_scenario", "query_evidence", "describe_stream", "validate_agent_candidate", "wait_for_evidence"]) {
+    assert(tools.some(tool => tool.name === name && tool.outputSchema?.type === "object"), `Missing structured tool contract: ${name}`);
+  }
   panel = new WebSocket(`ws://127.0.0.1:${port}/workbench`, { headers: { Origin: `chrome-extension://${id}` } });
   const queue = [], readers = [];
   panel.on("message", data => { const message = JSON.parse(data.toString()); const read = readers.shift(); if (read) read(message); else queue.push(message); });
@@ -72,6 +75,21 @@ try {
   const request = await next();
   panel.send(JSON.stringify({ id: request.id, result: { pageEpoch: "installed-package-runtime" } }));
   assert.match(JSON.stringify(await call), /installed-package-runtime/);
+  const queryResult = {
+    readPoint: { interval: { id: "package-interval", ordinal: 1 }, committedEvidenceBoundary: null, retainedRange: null },
+    totals: { matching: 0, inScope: 0 }, coverage: "COMPLETE", evaluation: "COMPLETE", storage: "MEMORY_FALLBACK",
+    discoveries: {}, nextCursor: null, evidence: [], omissions: []
+  };
+  const query = clients[0].callTool({ name: "query_evidence", arguments: { panelSessionId: "npm-package-panel", discover: [{ facet: "kind", limit: 5 }] } });
+  const queryRequest = await next();
+  assert.equal(queryRequest.name, "query_evidence");
+  panel.send(JSON.stringify({ id: queryRequest.id, result: queryResult }));
+  const queryReply = await query;
+  assert.equal(queryReply.isError, undefined);
+  assert.deepEqual(queryReply.structuredContent, queryResult, "The real SDK accepts and preserves the declared structured query result");
+  const invalid = await clients[0].callTool({ name: "query_evidence", arguments: { panelSessionId: "npm-package-panel", filter: { unknown: true } } });
+  assert.equal(invalid.isError, true);
+  assert.equal(invalid.structuredContent.error.code, "INVALID_ARGUMENT");
   const forbidden = await clients[0].callTool({ name: "execute_server_injection", arguments: {} });
   assert.equal(forbidden.isError, true);
 } finally {
