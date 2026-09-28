@@ -226,6 +226,22 @@ describe("bounded history indexes", () => {
       searchText: " AB😀C café\t東京 ", facets: { key: typedFacetValue("key", "string", "7", "Seven") }
     })])[0]!;
     expect(block.version).toBe(3);
+    expect(block.checksum).toBe(1_469_945_097);
+    const nonzeroOffsetView = (source: Uint16Array | Uint32Array): Uint16Array | Uint32Array => {
+      const byteOffset = source.BYTES_PER_ELEMENT;
+      const buffer = new ArrayBuffer(source.byteLength + byteOffset);
+      const view = source instanceof Uint16Array
+        ? new Uint16Array(buffer, byteOffset, source.length)
+        : new Uint32Array(buffer, byteOffset, source.length);
+      view.set(source);
+      return view;
+    };
+    const offsetViewBlock = structuredClone(block);
+    offsetViewBlock.textCodes = block.textCodes instanceof Uint16Array
+      ? nonzeroOffsetView(block.textCodes) as Uint16Array
+      : nonzeroOffsetView(block.textCodes!) as Uint32Array;
+    offsetViewBlock.facets[0]!.codes = nonzeroOffsetView(block.facets[0]!.codes) as Uint16Array;
+    expect(readSearchIndexRowsBlock(offsetViewBlock).checksum).toBe(1_469_945_097);
     expect(block.facets[0]!.values).toEqual([{ type: "string", value: "7", label: "Seven" }]);
     const legacyV1: SearchIndexRowsBlock = {
       sequence: block.sequence, intervalId: block.intervalId, firstSequence: block.firstSequence, lastSequence: block.lastSequence,

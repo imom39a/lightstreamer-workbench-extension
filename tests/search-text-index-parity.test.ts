@@ -63,6 +63,13 @@ describe("version-three exact search text parity", () => {
     expect(block.textCodes).toBeInstanceOf(Uint32Array);
     expect(searchIndexRowText(block, 0)).toBe(normalizeEvidenceSearchText(original));
 
+    const codeBuffer = new ArrayBuffer(block.textCodes!.byteLength + Uint32Array.BYTES_PER_ELEMENT);
+    const nonzeroOffsetCodes = new Uint32Array(codeBuffer, Uint32Array.BYTES_PER_ELEMENT, block.textCodes!.length);
+    nonzeroOffsetCodes.set(block.textCodes!);
+    const offsetBlock = { ...block, textCodes: nonzeroOffsetCodes };
+    expect(nonzeroOffsetCodes.byteOffset).toBe(Uint32Array.BYTES_PER_ELEMENT);
+    expect(readSearchIndexRowsBlock(offsetBlock).checksum).toBe(block.checksum);
+
     const queries = ["token0", "tokenffff", "tokenfffe", "tokenffff token0", "missing-token"];
     for (const query of queries) {
       expect(searchIndexRowTextMatcher(block, query)(0))
@@ -75,7 +82,11 @@ describe("version-three exact search text parity", () => {
 
     const malformedCode = structuredClone(block);
     malformedCode.textCodes![0] = malformedCode.textDictionary!.length;
-    expect(() => readSearchIndexRowsBlock(malformedCode)).toThrow();
+    expect(() => readSearchIndexRowsBlock(malformedCode)).toThrow(/token code/);
+
+    const unusedToken = structuredClone(block);
+    unusedToken.textCodes![0] = unusedToken.textCodes![1]!;
+    expect(() => readSearchIndexRowsBlock(unusedToken)).toThrow(/unused exact search token/);
 
     const malformedToken = structuredClone(block);
     malformedToken.textDictionary![0] = "changed-token";

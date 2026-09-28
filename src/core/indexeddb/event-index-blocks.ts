@@ -276,6 +276,32 @@ function rowsBytesChecksum(hash: number, array: ArrayBufferView): number {
   return hash;
 }
 
+/** Hash the persisted code bytes while checking the numeric codes in the same
+ * pass. Reading bytes through byteOffset preserves the exact checksum for
+ * subarray views as well as ordinary arrays. */
+function rowsCodeBytesChecksum(
+  hash: number,
+  codes: Uint16Array | Uint32Array,
+  maximumCode: number,
+  maximumIsValid: boolean,
+  used?: Uint8Array
+): number {
+  const data = new Uint8Array(codes.buffer, codes.byteOffset, codes.byteLength);
+  const bytesPerCode = codes.BYTES_PER_ELEMENT;
+  hash = Math.imul(hash ^ data.length, 0x01000193);
+  for (let index = 0; index < codes.length; index++) {
+    const code = codes[index]!;
+    if (maximumIsValid ? code > maximumCode : code >= maximumCode) {
+      throw new Error(used ? "Corrupt exact search token code." : "Corrupt exact search facet code.");
+    }
+    if (used) used[code] = 1;
+    const start = index * bytesPerCode;
+    for (let byte = 0; byte < bytesPerCode; byte++) hash = Math.imul(hash ^ data[start + byte]!, 0x01000193);
+  }
+  if (used?.some(value => value === 0)) throw new Error("Corrupt unused exact search token.");
+  return hash;
+}
+
 function rowsChecksumV1(block: Omit<SearchIndexRowsBlock, "checksum">): number {
   let hash = rowsTextChecksum(0x811c9dc5, String(block.sequence));
   hash = rowsTextChecksum(hash, block.intervalId);
@@ -343,9 +369,16 @@ function rowsChecksumV3(block: Omit<SearchIndexRowsBlock, "checksum">): number {
   hash = Math.imul(hash ^ block.version, 0x01000193);
   const dictionary = block.textDictionary!;
   hash = Math.imul(hash ^ dictionary.length, 0x01000193);
-  for (const token of dictionary) hash = rowsTextChecksum(hash, token);
+  const dictionaryTokens = new Set<string>();
+  for (const token of dictionary) {
+    if (typeof token !== "string" || token.length === 0 || /\s/u.test(token) || dictionaryTokens.has(token)) {
+      throw new Error("Corrupt exact search text dictionary.");
+    }
+    dictionaryTokens.add(token);
+    hash = rowsTextChecksum(hash, token);
+  }
   hash = rowsBytesChecksum(hash, block.textOffsets!);
-  hash = rowsBytesChecksum(hash, block.textCodes!);
+  hash = rowsCodeBytesChecksum(hash, block.textCodes!, dictionary.length, false, new Uint8Array(dictionary.length));
   hash = Math.imul(hash ^ block.eventIds.length, 0x01000193);
   for (const value of block.eventIds) hash = rowsTextChecksum(hash, value);
   hash = rowsBytesChecksum(hash, block.timestamps);
@@ -361,7 +394,7 @@ function rowsChecksumV3(block: Omit<SearchIndexRowsBlock, "checksum">): number {
       hash = Math.imul(hash ^ (value.label === undefined ? 0 : 1), 0x01000193);
       if (value.label !== undefined) hash = rowsTextChecksum(hash, value.label);
     }
-    hash = rowsBytesChecksum(hash, column.codes);
+    hash = rowsCodeBytesChecksum(hash, column.codes, column.values.length, true);
   }
   return hash >>> 0;
 }
@@ -373,9 +406,7 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
   const block = input as SearchIndexRowsBlock;
   const length = block.lastSequence - block.firstSequence + 1;
   const validTextRows = block.version === 3
-    ? Array.isArray(block.textDictionary) && block.textDictionary.every(token => typeof token === "string" && token.length > 0
-      && !/\s/u.test(token))
-      && new Set(block.textDictionary).size === block.textDictionary.length
+    ? Array.isArray(block.textDictionary)
       && typedArray(block.textOffsets, "Uint32Array", length + 1)
       && ArrayBuffer.isView(block.textCodes)
       && (Object.prototype.toString.call(block.textCodes) === "[object Uint16Array]" || Object.prototype.toString.call(block.textCodes) === "[object Uint32Array]")
@@ -392,18 +423,10 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
     || !Array.isArray(block.facets)) throw new Error("Corrupt exact search index block.");
   if (block.version === 3) {
     const offsets = block.textOffsets!;
-    const codes = block.textCodes!;
-    const dictionary = block.textDictionary!;
     for (let row = 0; row < length; row++) {
       if (offsets[row + 1]! < offsets[row]!
         || (block.evidence[row] === 0 && offsets[row + 1] !== offsets[row])) throw new Error("Corrupt exact search token offsets.");
     }
-    const used = new Uint8Array(dictionary.length);
-    for (const code of codes) {
-      if (code >= dictionary.length) throw new Error("Corrupt exact search token code.");
-      used[code] = 1;
-    }
-    if (used.some(value => value === 0)) throw new Error("Corrupt unused exact search token.");
   }
   for (let row = 0; row < length; row++) {
     if (!Number.isFinite(block.timestamps[row]) || (block.evidence[row] !== 0 && block.evidence[row] !== 1)
@@ -416,13 +439,13 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
       || !Array.isArray(column.values) || column.values.length < 1 || column.values.length > length
       || !typedArray(column.codes, "Uint16Array", length)) throw new Error("Corrupt exact search facet column.");
     facets.add(column.facet);
-    const identities = new Set<string>();
-    const valuesByType = new Map<string, Set<string>>();
+    const identities = block.version === 1 ? new Set<string>() : undefined;
+    const valuesByType = block.version === 1 ? undefined : new Map<string, Set<string>>();
     for (const inputValue of column.values) {
       if (block.version === 1) {
         const identity = readRowsFacetValue(inputValue, column.facet).identity;
-        if (identities.has(identity)) throw new Error("Duplicate exact search facet value.");
-        identities.add(identity);
+        if (identities!.has(identity)) throw new Error("Duplicate exact search facet value.");
+        identities!.add(identity);
       } else {
         exactKeys(inputValue, inputValue && typeof inputValue === "object" && "label" in inputValue
           ? ["type", "value", "label"] : ["type", "value"]);
@@ -431,13 +454,15 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
           || ("label" in value && (typeof value.label !== "string" || value.label === value.value))) {
           throw new Error("Corrupt compact exact search facet value.");
         }
-        let values = valuesByType.get(value.type);
-        if (!values) { values = new Set<string>(); valuesByType.set(value.type, values); }
+        let values = valuesByType!.get(value.type);
+        if (!values) { values = new Set<string>(); valuesByType!.set(value.type, values); }
         if (values.has(value.value)) throw new Error("Duplicate exact search facet value.");
         values.add(value.value);
       }
     }
-    for (const code of column.codes) if (code > column.values.length) throw new Error("Corrupt exact search facet code.");
+    if (block.version !== 3) {
+      for (const code of column.codes) if (code > column.values.length) throw new Error("Corrupt exact search facet code.");
+    }
   }
   const expectedChecksum = block.version === 1 ? rowsChecksumV1(block)
     : block.version === 2 ? rowsChecksumV2(block) : rowsChecksumV3(block);
@@ -493,16 +518,25 @@ export function searchIndexRowTextMatcher(block: SearchIndexRowsBlock, query: st
   const offsets = block.textOffsets!;
   const codes = block.textCodes!;
   const dictionary = block.textDictionary!;
+  const firstTokenMatches = new Uint8Array(dictionary.length);
+  const lastTokenMatches = new Uint8Array(dictionary.length);
+  const firstPart = parts[0]!;
+  const lastPart = parts.at(-1)!;
+  for (let code = 0; code < dictionary.length; code++) {
+    const token = dictionary[code]!;
+    firstTokenMatches[code] = token.endsWith(firstPart) ? 1 : 0;
+    lastTokenMatches[code] = token.startsWith(lastPart) ? 1 : 0;
+  }
   return rowIndex => {
     const first = offsets[rowIndex]!;
     const end = offsets[rowIndex + 1]!;
     for (let start = first; start <= end - parts.length; start++) {
-      if (!dictionary[codes[start]!]!.endsWith(parts[0]!)) continue;
+      if (firstTokenMatches[codes[start]!] !== 1) continue;
       let matched = true;
       for (let part = 1; part < parts.length - 1; part++) {
         if (dictionary[codes[start + part]!] !== parts[part]) { matched = false; break; }
       }
-      if (matched && dictionary[codes[start + parts.length - 1]!]!.startsWith(parts.at(-1)!)) return true;
+      if (matched && lastTokenMatches[codes[start + parts.length - 1]!] === 1) return true;
     }
     return false;
   };
