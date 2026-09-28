@@ -59,6 +59,9 @@ try {
   for (const name of ["search_evidence", "search_scope"]) {
     assert.equal(advertised.find(tool => tool.name === name)?.annotations?.readOnlyHint, true, `${name} is discoverable and read-only in the installed artifact`);
   }
+  for (const name of ["query_evidence", "describe_stream", "validate_agent_candidate", "wait_for_evidence"]) {
+    assert(advertised.some(tool => tool.name === name && tool.outputSchema?.type === "object"), `Missing structured tool contract: ${name}`);
+  }
   panel = new WebSocket(`ws://127.0.0.1:${port}/workbench`, { headers: { Origin: `chrome-extension://${id}` } });
   const queue = [], readers = [];
   panel.on("message", data => { const message = JSON.parse(data.toString()); const read = readers.shift(); if (read) read(message); else queue.push(message); });
@@ -86,6 +89,21 @@ try {
     const invalid = await clients[0].callTool({ name, arguments: { panelSessionId: "npm-package-panel", text: "needle", limit: 101 } });
     assert.equal(invalid.isError, true, `${name} validates its bound before panel routing`);
   }
+  const queryResult = {
+    readPoint: { interval: { id: "package-interval", ordinal: 1 }, committedEvidenceBoundary: null, retainedRange: null },
+    totals: { matching: 0, inScope: 0 }, coverage: "COMPLETE", evaluation: "COMPLETE", storage: "MEMORY_FALLBACK",
+    discoveries: {}, nextCursor: null, evidence: [], omissions: []
+  };
+  const query = clients[0].callTool({ name: "query_evidence", arguments: { panelSessionId: "npm-package-panel", discover: [{ facet: "kind", limit: 5 }] } });
+  const queryRequest = await next();
+  assert.equal(queryRequest.name, "query_evidence");
+  panel.send(JSON.stringify({ id: queryRequest.id, result: queryResult }));
+  const queryReply = await query;
+  assert.equal(queryReply.isError, undefined);
+  assert.deepEqual(queryReply.structuredContent, queryResult, "The real SDK accepts and preserves the declared structured query result");
+  const invalid = await clients[0].callTool({ name: "query_evidence", arguments: { panelSessionId: "npm-package-panel", filter: { unknown: true } } });
+  assert.equal(invalid.isError, true);
+  assert.equal(invalid.structuredContent.error.code, "INVALID_ARGUMENT");
   const forbidden = await clients[0].callTool({ name: "execute_server_injection", arguments: {} });
   assert.equal(forbidden.isError, true);
 } finally {

@@ -107,6 +107,34 @@ companion does not persist Evidence or log payloads; redaction is not a general
 secret detector. Local Injection invokes app listeners, which may cause other
 application effects. Server Injection is not exposed to agents.
 
+## Evidence-guided experiments in source builds
+
+This repository's current source adds bounded stream discovery, event waiting,
+and non-mutating candidate validation. The published
+`lightstreamer-workbench-agent@0.1.0` package and published Workbench extension
+2.0.4 predate these tools. They are available only when the companion and
+extension are built from matching source that contains them; check
+`get_status.capabilities` for the connected panel's actual tool list. Existing
+npm setup, the single MCP companion process, and authentication settings stay
+the same.
+
+The investigation sequence is: discover a bounded profile with `describe_stream`,
+query explicit Evidence examples with `query_evidence`, validate a source-grounded
+Draft or ordered Scenario with `validate_agent_candidate`, prepare it through
+`prepare_local_injection` or `prepare_scenario`, then run and inspect its Evidence
+references. Read the packaged skill's `references/investigation.md` for the
+candidate and checkpoint shape, bounded wait outcomes, and application-side
+verification procedure.
+
+When `wait_for_evidence` is available, anchor it to an `after` read point and the
+current page epoch. It accepts the same typed filters as `query_evidence`, waits
+for 0–20,000 ms, and returns a bounded result of at most 100 Evidence records.
+Handle `MATCHED`, `TIMED_OUT`, `CANCELLED`, `HISTORY_CHANGED`,
+`HISTORY_INCOMPLETE`, `HISTORY_UNAVAILABLE`, `TARGET_CHANGED` and `QUERY_FAILED`
+as distinct outcomes. A timeout or incomplete/bounded result does not prove
+absence. Workbench checkpoints verify Workbench facts; use browser tools to
+verify the inspected application's DOM separately.
+
 Authentication and read-only enforcement remain in the underlying protocol for
 future controls and compatibility testing, but the current panel does not enable
 them. Use the default auth-off configuration and port 24817 with this panel.

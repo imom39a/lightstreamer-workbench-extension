@@ -3,28 +3,34 @@
 ## One Item Update
 
 1. Capture the baseline app observation and Workbench committed Evidence boundary.
-2. Call `prepare_local_injection` with the current `pageEpoch` and exactly one
+2. Validate the source-grounded candidate with `validate_agent_candidate`,
+   using `{pageEpoch, draft: {evidence}}` (or an explicit `scopeId`/document).
+   Resolve target or value diagnostics before preparing it.
+3. Call `prepare_local_injection` with the current `pageEpoch` and exactly one
    `evidence` identity or `scopeId`. An optional `document` is JSON text containing
    `command`, `key`, `isSnapshot` and `fields`; use the actual target schema.
-3. Inspect the returned anchor, source relationship and validation. Correct an
+4. Inspect the returned anchor, source relationship and validation. Correct an
    unexecuted agent Draft through `update_agent_document` using its current token.
    Use the replacement token. Human edits invalidate the agent's prepared version.
-4. Call `execute_local_injection` with that token and a fresh stable `requestId`.
-5. Read `get_operation` until it leaves pending. Repeating the same request id
+5. Call `execute_local_injection` with that token and a fresh stable `requestId`.
+6. Read `get_operation` until it leaves pending. Repeating the same request id
    retrieves the operation; it must not create another delivery. Partial, failed,
    blocked and unknown outcomes require diagnosis. A new request id is a new
    deliberate experiment, never a transport retry.
-6. Verify corresponding Local Evidence and the concrete app behavior separately.
+7. Verify corresponding Local Evidence and the concrete app behavior separately.
    `DELIVERED LOCALLY` with unretained Evidence is not an Evidence-backed success.
-7. `finish_agent_document` closes only an unchanged, completed agent-owned document.
+8. `finish_agent_document` closes only an unchanged, completed agent-owned document.
    Existing human Drafts are protected; conflicts require resolution in Workbench.
 
 ## Ordered reproduction
 
-Use `prepare_scenario` with 1–100 explicitly chosen Steps on the same exact target.
+Call `validate_agent_candidate` with the current `pageEpoch` and the explicit
+ordered `members` first. Resolve candidate diagnostics, then use `prepare_scenario`
+with the same plan (1–100 Steps, up to 200 members) on the same exact target.
 Each Step has an Evidence source or Scope, optional JSON document and `delayMs`.
-Review validates COMMAND Steps in their planned order, so an UPDATE can follow a
-planned ADD. Inspect validation and the returned immutable Run before executing.
+Steps and Checkpoints retain their chosen ids. Review validates COMMAND Steps in
+their planned order, so an UPDATE can follow a planned ADD. Inspect validation
+and the returned immutable Run before executing.
 Use `update_agent_document` with `stepId` to correct an unexecuted Step.
 
 Use `control_scenario` with exact `runId`, action and a fresh `requestId` for

@@ -38,7 +38,7 @@ jobs:
         run: npm run fixture:test:dry-run
 
   local-injection-browser:
-    name: Official-client Local Injection proof
+    name: Official-client + MCP Local Injection proof
     runs-on: ubuntu-latest
 
     steps:
@@ -70,5 +70,5 @@ jobs:
       - name: Install Chrome for Testing
         run: npm run fixture:browser:install
 
-      - name: Prove capture and Local Injection through the production panel
-        run: npm run fixture:test:browser
+      - name: Prove capture, MCP tooling and Local Injection through the production panel
+        run: npm run agent:test:browser
