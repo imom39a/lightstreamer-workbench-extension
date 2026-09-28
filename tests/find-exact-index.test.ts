@@ -1,4 +1,4 @@
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import { createIndexedDbEventHistory, transactionDone } from "../src/core/event-history-indexeddb";
 import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
@@ -97,6 +97,46 @@ test("present damaged exact blocks fail closed instead of falling back to a part
     expect(await durable.query!(request)).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
   } finally { await memory.close(); await durable.close(); }
 });
+
+test("prefetched exact chunks honor cancellation, avoid partial cache, and fail closed on later corruption", async () => {
+  const name = "find-exact-later-chunk-corruption", { memory, durable } = await setup(name, 8_300, 9_000);
+  try {
+    const controller = new AbortController();
+    let exactReads = 0;
+    const originalGetAll = IDBObjectStore.prototype.getAll;
+    const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function(this: IDBObjectStore, query?: IDBValidKey | IDBKeyRange | null, count?: number) {
+      const request = Reflect.apply(originalGetAll, this, [query, count]) as IDBRequest<unknown[]>;
+      const range = query && typeof query === "object" && "lower" in query ? query as IDBKeyRange : null;
+      if (this.name === "searchBlocks" && range?.lower !== undefined && range.lower < 0) {
+        exactReads += 1;
+        if (exactReads === 2) controller.abort();
+      }
+      return request;
+    });
+    let cancelled: Awaited<ReturnType<NonNullable<typeof durable.query>>>;
+    try { cancelled = await durable.query!({ ...request, signal: controller.signal }); }
+    finally { getAllSpy.mockRestore(); }
+    expect(cancelled).toMatchObject({ ok: false, problem: { code: "QUERY_CANCELLED" } });
+    expect(exactReads).toBe(2);
+
+    const expected = await memory.query!(request), actual = await durable.query!(request);
+    expect(actual.ok && expected.ok).toBe(true);
+    if (actual.ok && expected.ok) {
+      expect(actual.value.find).toEqual(expected.value.find);
+      expect(actual.value.telemetry?.findCursorReads).toBeGreaterThan(0);
+    }
+
+    await changeBlocks(name, async store => {
+      const block = await value(store.get(-8_193));
+      block.textDictionary[0] = "damaged-later-chunk";
+      store.put(block);
+    });
+    expect(await durable.query!({ ...request, find: { ...request.find!, text: "Café" } }))
+      .toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+  } finally { await memory.close(); await durable.close(); }
+  // Setup must cross the 8,192-row read boundary in both adapters. This is a
+  // correctness fixture; native browser measurements enforce query latency.
+}, 30_000);
 
 test("exact blocks honor latched appends and erase retained prefixes and Clear atomically", async () => {
   const name = "find-exact-retention", { memory, durable } = await setup(name, 550, 600);

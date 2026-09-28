@@ -94,8 +94,8 @@ export function facetIdentityParts(facetIdentity: string): { facet: string; type
 
 function exactKeys(value: unknown, expected: string[]): asserts value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid index block.");
-  const keys = Object.keys(value).sort();
-  if (keys.join("\0") !== expected.sort().join("\0")) throw new Error("Invalid index block fields.");
+  const keys = Object.keys(value);
+  if (keys.length !== expected.length || keys.some(key => !expected.includes(key))) throw new Error("Invalid index block fields.");
 }
 
 export function readFacetPostingBlock(input: unknown): FacetPostingBlock {

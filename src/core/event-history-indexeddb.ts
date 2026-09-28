@@ -3661,19 +3661,40 @@ async function readFindSequenceIndex(
     }
   };
   // Exact row blocks use column dictionaries instead of cloning the same rich
-  // facet objects for every row. Reads are bounded to 32 contiguous blocks,
-  // or 8,192 rows; they do not include replay payloads.
+  // facet objects for every row. Each read is bounded to 32 contiguous blocks,
+  // or 8,192 rows, with at most one additional read prefetched (16,384 rows
+  // maximum outstanding). Neither read contains replay payloads.
+  const readBlockLimit = 32;
+  const chunks: Array<{ start: number; end: number }> = [];
   for (let position = 0; position < starts.length;) {
-    if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
     const start = starts[position++]!;
     let end = start;
-    // Amortize IndexedDB request scheduling while keeping each query chunk
-    // bounded to 8,192 rows (32 × 256). A chunk contains exact search text and
-    // compact facets, never replay payloads. Query cancellation remains
-    // checked once per row after each bounded read.
-    const readBlockLimit = 32;
     for (let count = 1; count < readBlockLimit && starts[position] === end + EVENT_INDEX_BLOCK_SIZE; count++) end = starts[position++]!;
-    const rawRows = await requestToPromise<unknown[]>(searchBlocks.getAll(queryBoundRange(-end, -start), readBlockLimit), "reading exact Find blocks");
+    chunks.push({ start, end });
+  }
+  type ExactRowsChunkRead = { ok: true; rows: unknown[] } | { ok: false; error: unknown };
+  const readRowsChunk = (start: number, end: number): Promise<ExactRowsChunkRead> => {
+    try {
+      return requestToPromise<unknown[]>(searchBlocks.getAll(queryBoundRange(-end, -start), readBlockLimit), "reading exact Find blocks")
+        .then(rows => ({ ok: true as const, rows }), error => ({ ok: false as const, error }));
+    } catch (error) {
+      return Promise.resolve({ ok: false, error });
+    }
+  };
+  let prefetchedRows: Promise<ExactRowsChunkRead> | null = null;
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+    const { start, end } = chunks[chunkIndex]!;
+    const chunkRead = prefetchedRows ?? readRowsChunk(start, end);
+    prefetchedRows = null;
+    const chunkResult = await chunkRead;
+    if (!chunkResult.ok) throw chunkResult.error;
+    const rawRows = chunkResult.rows;
+    // Queue at most one next read before validating/consuming this bounded
+    // chunk. Attach both settlement handlers immediately so cancellation or a
+    // current-chunk corruption cannot leave an unhandled prefetch rejection.
+    const nextChunk = chunks[chunkIndex + 1];
+    if (nextChunk && !signal?.aborted) prefetchedRows = readRowsChunk(nextChunk.start, nextChunk.end);
     const rowsByStart = new Map<number, SearchIndexRowsBlock>();
     for (const value of rawRows) {
       const rows = readSearchIndexRowsBlock(value);
