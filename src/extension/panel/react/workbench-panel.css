@@ -199,7 +199,7 @@
 .workbench-react__evidence-codes dt { font: 700 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__evidence-codes dd { margin: 0; overflow-wrap: anywhere; }
 .workbench-react__evidence-code-notes { margin-top: 9px !important; }
-.workbench-react__ledger { display: grid; min-height: 0; flex: 1 1 auto; grid-auto-rows: minmax(30px, auto); grid-template-columns: 125px max-content max-content; align-content: start; overflow: auto; }
+.workbench-react__ledger { display: grid; min-height: 0; flex: 1 1 auto; grid-auto-rows: minmax(30px, auto); grid-template-columns: 125px max-content minmax(max-content, 1fr); align-content: start; overflow: auto; }
 .workbench-react__ledger-header, .workbench-react__evidence-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
 .workbench-react__ledger-header { position: sticky; z-index: 3; top: 0; min-height: 28px; border-bottom: 1px solid var(--wb-border-strong); background: var(--wb-raised); color: var(--wb-muted); font-size: 10px; text-transform: uppercase; }
 .workbench-react__ledger-header > *, .workbench-react__evidence-row > * { min-width: 0; padding: 4px 7px; white-space: nowrap; }

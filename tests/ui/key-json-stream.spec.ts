@@ -13,6 +13,57 @@ async function accessible(page: Page) {
   expect(await page.locator(".workbench-react").evaluate(el => el.scrollWidth > el.clientWidth)).toBe(false);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
 }
+test("Evidence table fills the available section with short rows", async ({ page }, testInfo) => {
+  await open(page, "live-selected", 1920, 900);
+  await page.getByRole("button", { name: "Collapse Scope", exact: true }).click();
+  await page.getByRole("button", { name: "Collapse Context", exact: true }).click();
+  const ledger = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
+  const rows = ledger.locator("[data-evidence-id]");
+  await expect(rows).toHaveCount(6);
+  for (const [frame, width, height] of [
+    ["wide", 1920, 900],
+    ["normal", 900, 700],
+    ["compact", 563, 700],
+    ["expanded", 1920, 900]
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    for (const mode of ["Raw fields", "Readable"] as const) {
+      await page.getByRole("button", { name: mode, exact: true }).click();
+      const widths = await ledger.evaluate(element => {
+        const right = element.getBoundingClientRect().left + element.scrollWidth - element.scrollLeft;
+        const header = element.querySelector('[role="columnheader"]:last-child')!;
+        const rows = [...element.querySelectorAll('[data-evidence-id]')];
+        return {
+          headerGap: right - header.getBoundingClientRect().right,
+          rowGaps: rows.map(row => right - row.getBoundingClientRect().right),
+          cellGaps: rows.map(row => right - row.querySelector('[role="gridcell"]:last-child')!.getBoundingClientRect().right),
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth
+        };
+      });
+      expect(Math.abs(widths.headerGap), `${frame}: Data header fills the section or scrollable content`).toBeLessThanOrEqual(1);
+      for (const gap of [...widths.rowGaps, ...widths.cellGaps]) {
+        expect(Math.abs(gap), `${frame}: Data cells and row highlights fill the section or scrollable content`).toBeLessThanOrEqual(1);
+      }
+      if (width === 1920) expect(widths.scrollWidth).toBe(widths.clientWidth);
+      if (width === 563) expect(widths.scrollWidth).toBeGreaterThan(widths.clientWidth);
+    }
+    await page.locator(".workbench-react").screenshot({ path: testInfo.outputPath(`short-evidence-table-${frame}.png`) });
+    await testInfo.attach(`short-evidence-table-${frame}`, {
+      path: testInfo.outputPath(`short-evidence-table-${frame}.png`),
+      contentType: "image/png"
+    });
+  }
+  // The newly filled area belongs to the row, including pointer and keyboard selection.
+  const firstRow = await rows.first().boundingBox();
+  await rows.first().click({ position: { x: firstRow!.width - 8, y: firstRow!.height / 2 } });
+  await expect(rows.first()).toHaveAttribute("aria-selected", "true");
+  await ledger.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(rows.nth(1)).toBeFocused();
+  await accessible(page);
+});
 for (const [frame,width,height] of [["compact",563,700],["normal",900,700],["shallow",900,320],["wide",1440,900]] as const) {
   test(`key/JSON stream keeps full single-line keys and only Op pinned · ${frame}`, async ({page},testInfo) => {
     await open(page,"frozen-high-volume",width,height);
