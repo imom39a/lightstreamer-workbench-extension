@@ -467,17 +467,42 @@ export function searchIndexRowText(block: SearchIndexRowsBlock, rowIndex: number
 export function searchIndexRowTextMatcher(block: SearchIndexRowsBlock, query: string, normalizeQuery = true): (rowIndex: number) => boolean {
   const needle = normalizeQuery ? normalizeEvidenceSearchText(query) : query;
   if (!needle) return () => true;
-  if (block.version !== 3 || needle.includes(" ")) {
+  if (block.version !== 3) {
     return rowIndex => searchIndexRowText(block, rowIndex).includes(needle);
   }
-  const dictionary = block.textDictionary!;
-  const matchesToken = new Uint8Array(dictionary.length);
-  for (let index = 0; index < dictionary.length; index++) matchesToken[index] = dictionary[index]!.includes(needle) ? 1 : 0;
+  if (!needle.includes(" ")) {
+    const dictionary = block.textDictionary!;
+    const matchesToken = new Uint8Array(dictionary.length);
+    for (let index = 0; index < dictionary.length; index++) matchesToken[index] = dictionary[index]!.includes(needle) ? 1 : 0;
+    const offsets = block.textOffsets!;
+    const codes = block.textCodes!;
+    return rowIndex => {
+      for (let index = offsets[rowIndex]!; index < offsets[rowIndex + 1]!; index++) {
+        if (matchesToken[codes[index]!] === 1) return true;
+      }
+      return false;
+    };
+  }
+  const parts = needle.split(" ");
+  // Canonical row text contains one ASCII space between tokens. For short
+  // phrases, match those token boundaries directly instead of rebuilding every
+  // row string. Unusual spacing and long queries retain native includes.
+  if (parts.length > 16 || parts.some(part => !part || /\s/u.test(part))) {
+    return rowIndex => searchIndexRowText(block, rowIndex).includes(needle);
+  }
   const offsets = block.textOffsets!;
   const codes = block.textCodes!;
+  const dictionary = block.textDictionary!;
   return rowIndex => {
-    for (let index = offsets[rowIndex]!; index < offsets[rowIndex + 1]!; index++) {
-      if (matchesToken[codes[index]!] === 1) return true;
+    const first = offsets[rowIndex]!;
+    const end = offsets[rowIndex + 1]!;
+    for (let start = first; start <= end - parts.length; start++) {
+      if (!dictionary[codes[start]!]!.endsWith(parts[0]!)) continue;
+      let matched = true;
+      for (let part = 1; part < parts.length - 1; part++) {
+        if (dictionary[codes[start + part]!] !== parts[part]) { matched = false; break; }
+      }
+      if (matched && dictionary[codes[start + parts.length - 1]!]!.startsWith(parts.at(-1)!)) return true;
     }
     return false;
   };
