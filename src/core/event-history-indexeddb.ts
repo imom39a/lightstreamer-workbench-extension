@@ -72,7 +72,7 @@ import { findEvidence, createEvidenceFindAccumulator, withEvidenceFindPage, isIn
 import {
   appendFacetPostingBlocks, appendSearchIndexBlocks, expandFacetPostingBlock,
   facetPostingToken, facetIdentityParts, indexBlockStart, readFacetPostingBlock, readSearchIndexBlock,
-  searchBlockMayContain, readSearchIndexRowsBlock, searchIndexRowFacetValues, trimSearchIndexRowsBlock, EVENT_INDEX_BLOCK_SIZE, FACET_POSTING_NAMESPACE,
+  searchBlockMayContain, readSearchIndexRowsBlock, searchIndexRowFacetValues, searchIndexRowTextMatcher, trimSearchIndexRowsBlock, EVENT_INDEX_BLOCK_SIZE, FACET_POSTING_NAMESPACE,
   type SearchIndexBlock, type SearchIndexRowsBlock, type FacetPosting as FacetPostingRecord
 } from "./indexeddb/event-index-blocks";
 import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor, type EvidenceQueryCursor } from "./evidence-filter-cursor";
@@ -3635,25 +3635,27 @@ async function readFindSequenceIndex(
   const starts = [...blockStarts].sort((a, b) => a - b);
   let rowCount = 0;
   const canonicalFilter = canonicalizeFilter({ ...filter, around: null } as unknown as Filter);
+  const normalizedFilterText = normalizeEvidenceSearchText(canonicalFilter.text);
   const criteria = Object.entries(canonicalFilter.criteria);
   const criterionMatches = (observed: FilterRecord["facets"][string], criterion: (typeof criteria)[number][1]): boolean =>
     (criterion.include.length === 0 || Boolean(observed && criterion.include.some(wanted => filterValueMatches(observed, wanted))))
     && !(observed && criterion.exclude.some(wanted => filterValueMatches(observed, wanted)));
-  const consume = (sequence: number, eventId: string, timestamp: number, text: string, evidence: boolean, matchesCriteria: boolean): void => {
+  const consume = (sequence: number, eventId: string, timestamp: number, evidence: boolean,
+    matchesFilterText: boolean, matchesFindText: boolean, matchesCriteria: boolean): void => {
     if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
     rowCount += 1;
     if (searchBlockStarts.has(indexBlockStart(sequence))) telemetry.findCursorReads += 1;
     if (!evidence) return;
     let inScope = allEligible;
     if (!allEligible && (candidates === null || candidates.has(sequence)) && canonicalFilter.unsupported.length === 0
-      && (!canonicalFilter.text || text.includes(canonicalFilter.text))) {
+      && matchesFilterText) {
       if (matchesCriteria) {
         matching += 1;
         inScope = around === null || (around.intervalId === interval.id && timestamp >= around.start && timestamp < around.end);
         if (inScope) eligible!.push(sequence);
       }
     }
-    if (normalized && (!find.scopeToFilter || inScope) && searchBlockStarts.has(indexBlockStart(sequence)) && text.includes(normalized)) {
+    if (normalized && (!find.scopeToFilter || inScope) && searchBlockStarts.has(indexBlockStart(sequence)) && matchesFindText) {
       matches.push(sequence);
       if (leadingMatches.length < 1_000) leadingMatches.push(Object.freeze({ intervalId: interval.id, pageId: interval.id, ownerId: "memory-event-history", sequence, eventId }));
     }
@@ -3685,6 +3687,9 @@ async function readFindSequenceIndex(
       const lower = Math.max(first, blockStart), upper = Math.min(last, blockStart + EVENT_INDEX_BLOCK_SIZE - 1);
       const rows = rowsByStart.get(blockStart);
       if (rows && rows.firstSequence <= lower && rows.lastSequence >= upper) {
+        const matchesFindText = searchIndexRowTextMatcher(rows, normalized);
+        const matchesFilterText = normalizedFilterText === normalized
+          ? matchesFindText : searchIndexRowTextMatcher(rows, normalizedFilterText);
         // Scope and structured predicates operate on dictionary codes. Repeated
         // client/session/subscription values are compared once per block, and
         // no per-row facet object is needed even for compound investigations.
@@ -3695,7 +3700,8 @@ async function readFindSequenceIndex(
         });
         for (let sequence = lower; sequence <= upper; sequence++) {
           const row = sequence - rows.firstSequence;
-          consume(sequence, rows.eventIds[row]!, rows.timestamps[row]!, rows.texts[row]!, rows.evidence[row] === 1,
+          consume(sequence, rows.eventIds[row]!, rows.timestamps[row]!, rows.evidence[row] === 1,
+            matchesFilterText(row), matchesFindText(row),
             masks.every(mask => mask.allowed[mask.codes?.[row] ?? 0]));
         }
       } else {
@@ -3707,7 +3713,9 @@ async function readFindSequenceIndex(
         for (const [offset, projection] of projections.entries()) {
           recordProjectionCursorRead(telemetry, state, "Find");
           validateQueryProjection(projection, interval.id, lower + offset);
-          consume(projection.sequence, projection.eventId, projection.timestamp, normalizeEvidenceSearchText(projection.searchText), !isTopologyCheckpointProjection(projection),
+          const text = normalizeEvidenceSearchText(projection.searchText);
+          consume(projection.sequence, projection.eventId, projection.timestamp, !isTopologyCheckpointProjection(projection),
+            !normalizedFilterText || text.includes(normalizedFilterText), !normalized || text.includes(normalized),
             criteria.every(([facet, criterion]) => criterionMatches(projection.facets[facet] as FilterRecord["facets"][string], criterion)));
         }
       }

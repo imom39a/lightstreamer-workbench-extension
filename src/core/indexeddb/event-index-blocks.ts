@@ -55,8 +55,13 @@ export type SearchIndexRowsBlock = {
   intervalId: string;
   firstSequence: number;
   lastSequence: number;
-  version: 1 | 2;
-  texts: string[];
+  version: 1 | 2 | 3;
+  /** Present in v1/v2 only. */
+  texts?: string[];
+  /** V3 stores each normalized whitespace-delimited token once per block. */
+  textDictionary?: string[];
+  textOffsets?: Uint32Array;
+  textCodes?: Uint16Array | Uint32Array;
   eventIds: string[];
   timestamps: Float64Array;
   /** Checkpoints are zero; observable Evidence rows are one. */
@@ -277,8 +282,9 @@ function rowsChecksumV1(block: Omit<SearchIndexRowsBlock, "checksum">): number {
   hash = rowsTextChecksum(hash, String(block.firstSequence));
   hash = rowsTextChecksum(hash, String(block.lastSequence));
   hash = Math.imul(hash ^ block.version, 0x01000193);
-  hash = Math.imul(hash ^ block.texts.length, 0x01000193);
-  for (const value of block.texts) hash = rowsTextChecksum(hash, value);
+  const texts = block.texts!;
+  hash = Math.imul(hash ^ texts.length, 0x01000193);
+  for (const value of texts) hash = rowsTextChecksum(hash, value);
   hash = Math.imul(hash ^ block.eventIds.length, 0x01000193);
   for (const value of block.eventIds) hash = rowsTextChecksum(hash, value);
   hash = rowsBytesChecksum(hash, block.timestamps);
@@ -306,8 +312,40 @@ function rowsChecksumV2(block: Omit<SearchIndexRowsBlock, "checksum">): number {
   hash = rowsTextChecksum(hash, String(block.firstSequence));
   hash = rowsTextChecksum(hash, String(block.lastSequence));
   hash = Math.imul(hash ^ block.version, 0x01000193);
-  hash = Math.imul(hash ^ block.texts.length, 0x01000193);
-  for (const value of block.texts) hash = rowsTextChecksum(hash, value);
+  const texts = block.texts!;
+  hash = Math.imul(hash ^ texts.length, 0x01000193);
+  for (const value of texts) hash = rowsTextChecksum(hash, value);
+  hash = Math.imul(hash ^ block.eventIds.length, 0x01000193);
+  for (const value of block.eventIds) hash = rowsTextChecksum(hash, value);
+  hash = rowsBytesChecksum(hash, block.timestamps);
+  hash = rowsBytesChecksum(hash, block.evidence);
+  hash = Math.imul(hash ^ block.facets.length, 0x01000193);
+  for (const column of block.facets) {
+    hash = rowsTextChecksum(hash, column.facet);
+    hash = Math.imul(hash ^ column.values.length, 0x01000193);
+    for (const inputValue of column.values) {
+      const value = inputValue as SearchIndexRowsFacetValueV2;
+      hash = rowsTextChecksum(hash, value.type);
+      hash = rowsTextChecksum(hash, value.value);
+      hash = Math.imul(hash ^ (value.label === undefined ? 0 : 1), 0x01000193);
+      if (value.label !== undefined) hash = rowsTextChecksum(hash, value.label);
+    }
+    hash = rowsBytesChecksum(hash, column.codes);
+  }
+  return hash >>> 0;
+}
+
+function rowsChecksumV3(block: Omit<SearchIndexRowsBlock, "checksum">): number {
+  let hash = rowsTextChecksum(0x811c9dc5, String(block.sequence));
+  hash = rowsTextChecksum(hash, block.intervalId);
+  hash = rowsTextChecksum(hash, String(block.firstSequence));
+  hash = rowsTextChecksum(hash, String(block.lastSequence));
+  hash = Math.imul(hash ^ block.version, 0x01000193);
+  const dictionary = block.textDictionary!;
+  hash = Math.imul(hash ^ dictionary.length, 0x01000193);
+  for (const token of dictionary) hash = rowsTextChecksum(hash, token);
+  hash = rowsBytesChecksum(hash, block.textOffsets!);
+  hash = rowsBytesChecksum(hash, block.textCodes!);
   hash = Math.imul(hash ^ block.eventIds.length, 0x01000193);
   for (const value of block.eventIds) hash = rowsTextChecksum(hash, value);
   hash = rowsBytesChecksum(hash, block.timestamps);
@@ -329,20 +367,47 @@ function rowsChecksumV2(block: Omit<SearchIndexRowsBlock, "checksum">): number {
 }
 
 export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
-  exactKeys(input, ["sequence", "intervalId", "firstSequence", "lastSequence", "version", "texts", "eventIds", "timestamps", "evidence", "facets", "checksum"]);
+  const version = input && typeof input === "object" ? Reflect.get(input, "version") : undefined;
+  const textKeys = version === 3 ? ["textDictionary", "textOffsets", "textCodes"] : ["texts"];
+  exactKeys(input, ["sequence", "intervalId", "firstSequence", "lastSequence", "version", ...textKeys, "eventIds", "timestamps", "evidence", "facets", "checksum"]);
   const block = input as SearchIndexRowsBlock;
   const length = block.lastSequence - block.firstSequence + 1;
-  if ((block.version !== 1 && block.version !== 2) || typeof block.intervalId !== "string" || !block.intervalId
+  const validTextRows = block.version === 3
+    ? Array.isArray(block.textDictionary) && block.textDictionary.every(token => typeof token === "string" && token.length > 0
+      && !/\s/u.test(token))
+      && new Set(block.textDictionary).size === block.textDictionary.length
+      && typedArray(block.textOffsets, "Uint32Array", length + 1)
+      && ArrayBuffer.isView(block.textCodes)
+      && (Object.prototype.toString.call(block.textCodes) === "[object Uint16Array]" || Object.prototype.toString.call(block.textCodes) === "[object Uint32Array]")
+      && block.textOffsets![0] === 0 && block.textOffsets![length] === block.textCodes!.length
+    : (block.version === 1 || block.version === 2)
+      && Array.isArray(block.texts) && block.texts.length === length && block.texts.every(value => typeof value === "string");
+  if ((block.version !== 1 && block.version !== 2 && block.version !== 3) || typeof block.intervalId !== "string" || !block.intervalId
     || !Number.isSafeInteger(block.sequence) || block.sequence >= 0
     || indexBlockStart(block.firstSequence) !== -block.sequence || indexBlockStart(block.lastSequence) !== -block.sequence
     || !Number.isSafeInteger(length) || length < 1 || length > EVENT_INDEX_BLOCK_SIZE
-    || !Array.isArray(block.texts) || block.texts.length !== length || block.texts.some(value => typeof value !== "string")
+    || !validTextRows
     || !Array.isArray(block.eventIds) || block.eventIds.length !== length || block.eventIds.some(value => typeof value !== "string" || !value)
     || !typedArray(block.timestamps, "Float64Array", length) || !typedArray(block.evidence, "Uint8Array", length)
     || !Array.isArray(block.facets)) throw new Error("Corrupt exact search index block.");
+  if (block.version === 3) {
+    const offsets = block.textOffsets!;
+    const codes = block.textCodes!;
+    const dictionary = block.textDictionary!;
+    for (let row = 0; row < length; row++) {
+      if (offsets[row + 1]! < offsets[row]!
+        || (block.evidence[row] === 0 && offsets[row + 1] !== offsets[row])) throw new Error("Corrupt exact search token offsets.");
+    }
+    const used = new Uint8Array(dictionary.length);
+    for (const code of codes) {
+      if (code >= dictionary.length) throw new Error("Corrupt exact search token code.");
+      used[code] = 1;
+    }
+    if (used.some(value => value === 0)) throw new Error("Corrupt unused exact search token.");
+  }
   for (let row = 0; row < length; row++) {
     if (!Number.isFinite(block.timestamps[row]) || (block.evidence[row] !== 0 && block.evidence[row] !== 1)
-      || (block.evidence[row] === 0 && block.texts[row] !== "")) throw new Error("Corrupt exact search row.");
+      || (block.evidence[row] === 0 && block.version !== 3 && block.texts![row] !== "")) throw new Error("Corrupt exact search row.");
   }
   const facets = new Set<string>();
   for (const column of block.facets) {
@@ -374,17 +439,51 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
     }
     for (const code of column.codes) if (code > column.values.length) throw new Error("Corrupt exact search facet code.");
   }
-  const expectedChecksum = block.version === 1 ? rowsChecksumV1(block) : rowsChecksumV2(block);
+  const expectedChecksum = block.version === 1 ? rowsChecksumV1(block)
+    : block.version === 2 ? rowsChecksumV2(block) : rowsChecksumV3(block);
   if (!Number.isInteger(block.checksum) || block.checksum < 0 || block.checksum > 0xffff_ffff || block.checksum !== expectedChecksum) {
     throw new Error("Corrupt exact search index checksum.");
   }
   return block;
 }
 
-/** Read only the requested columns after validating the block once. Text-only
- * matching can use texts/evidence directly without constructing facet objects. */
+/** Reconstruct a row's canonical normalized text from its block-local tokens. */
+export function searchIndexRowText(block: SearchIndexRowsBlock, rowIndex: number): string {
+  if (!Number.isSafeInteger(rowIndex) || rowIndex < 0 || rowIndex >= block.eventIds.length) throw new Error("Invalid exact search row offset.");
+  if (block.version !== 3) return block.texts![rowIndex]!;
+  const offsets = block.textOffsets!;
+  const dictionary = block.textDictionary!;
+  const codes = block.textCodes!;
+  const tokens: string[] = [];
+  for (let offset = offsets[rowIndex]!; offset < offsets[rowIndex + 1]!; offset++) tokens.push(dictionary[codes[offset]!]!);
+  return tokens.join(" ");
+}
+
+/** Compile exact substring matching for a block. The common single-token
+ * query uses a dictionary mask; multi-token queries retain native includes
+ * semantics, including partial matches across token boundaries. */
+export function searchIndexRowTextMatcher(block: SearchIndexRowsBlock, query: string): (rowIndex: number) => boolean {
+  const normalized = normalizeEvidenceSearchText(query);
+  if (!normalized) return () => true;
+  if (block.version !== 3 || normalized.includes(" ")) {
+    return rowIndex => searchIndexRowText(block, rowIndex).includes(normalized);
+  }
+  const dictionary = block.textDictionary!;
+  const matchesToken = new Uint8Array(dictionary.length);
+  for (let index = 0; index < dictionary.length; index++) matchesToken[index] = dictionary[index]!.includes(normalized) ? 1 : 0;
+  const offsets = block.textOffsets!;
+  const codes = block.textCodes!;
+  return rowIndex => {
+    for (let index = offsets[rowIndex]!; index < offsets[rowIndex + 1]!; index++) {
+      if (matchesToken[codes[index]!] === 1) return true;
+    }
+    return false;
+  };
+}
+
+/** Read only the requested columns after validating the block once. */
 export function searchIndexRowFacets(block: SearchIndexRowsBlock, rowIndex: number, requestedFacets?: readonly string[]): Readonly<Record<string, TypedFacetValue>> {
-  if (!Number.isSafeInteger(rowIndex) || rowIndex < 0 || rowIndex >= block.texts.length) throw new Error("Invalid exact search row offset.");
+  if (!Number.isSafeInteger(rowIndex) || rowIndex < 0 || rowIndex >= block.eventIds.length) throw new Error("Invalid exact search row offset.");
   const result: Record<string, TypedFacetValue> = Object.create(null) as Record<string, TypedFacetValue>;
   for (const column of block.facets) {
     if (requestedFacets !== undefined && !requestedFacets.includes(column.facet)) continue;
@@ -411,10 +510,15 @@ function buildRowsBlock(projections: readonly SearchIndexRowsProjection[]): Sear
   if (typeof first.intervalId !== "string" || !first.intervalId) throw new Error("Invalid exact search interval.");
   const columns = new Map<string, SearchIndexRowsFacetColumn>();
   const dictionaries = new Map<string, Map<string, number>>();
+  const textDictionary: string[] = [];
+  const textCodeLookup = new Map<string, number>();
+  const textCodeValues: number[] = [];
+  const textOffsets = new Uint32Array(projections.length + 1);
   const block: SearchIndexRowsBlock = {
     sequence: -indexBlockStart(first.sequence), intervalId: first.intervalId,
-    firstSequence: first.sequence, lastSequence: projections.at(-1)!.sequence, version: 2,
-    texts: [], eventIds: [], timestamps: new Float64Array(projections.length), evidence: new Uint8Array(projections.length), facets: [], checksum: 0
+    firstSequence: first.sequence, lastSequence: projections.at(-1)!.sequence, version: 3,
+    textDictionary, textOffsets, textCodes: new Uint16Array(),
+    eventIds: [], timestamps: new Float64Array(projections.length), evidence: new Uint8Array(projections.length), facets: [], checksum: 0
   };
   projections.forEach((projection, row) => {
     if (projection.sequence !== first.sequence + row || projection.intervalId !== first.intervalId
@@ -424,7 +528,19 @@ function buildRowsBlock(projections: readonly SearchIndexRowsProjection[]): Sear
       throw new Error("Invalid exact search projection.");
     }
     const evidence = projection.summary !== "Topology checkpoint";
-    block.texts.push(evidence ? normalizeEvidenceSearchText(projection.searchText) : "");
+    const normalizedText = evidence ? normalizeEvidenceSearchText(projection.searchText) : "";
+    if (normalizedText) {
+      for (const token of normalizedText.split(" ")) {
+        let code = textCodeLookup.get(token);
+        if (code === undefined) {
+          code = textDictionary.length;
+          textDictionary.push(token);
+          textCodeLookup.set(token, code);
+        }
+        textCodeValues.push(code);
+      }
+    }
+    textOffsets[row + 1] = textCodeValues.length;
     block.eventIds.push(projection.eventId);
     block.timestamps[row] = projection.timestamp;
     block.evidence[row] = evidence ? 1 : 0;
@@ -446,8 +562,9 @@ function buildRowsBlock(projections: readonly SearchIndexRowsProjection[]): Sear
       column.codes[row] = code;
     }
   });
+  block.textCodes = textDictionary.length <= 65_535 ? Uint16Array.from(textCodeValues) : Uint32Array.from(textCodeValues);
   block.facets = [...columns.values()].sort((left, right) => left.facet.localeCompare(right.facet));
-  block.checksum = rowsChecksumV2(block);
+  block.checksum = rowsChecksumV3(block);
   return block;
 }
 
@@ -475,8 +592,8 @@ export function mergeSearchIndexRowsBlock(previous: unknown, addition: SearchInd
   if (current.sequence !== addition.sequence || current.intervalId !== addition.intervalId || current.lastSequence + 1 !== addition.firstSequence) {
     throw new Error("Noncontiguous exact search block append.");
   }
-  const projections = [current, addition].flatMap(block => block.texts.map((searchText, row) => ({
-    sequence: block.firstSequence + row, intervalId: block.intervalId, searchText,
+  const projections = [current, addition].flatMap(block => block.eventIds.map((_eventId, row) => ({
+    sequence: block.firstSequence + row, intervalId: block.intervalId, searchText: searchIndexRowText(block, row),
     eventId: block.eventIds[row]!, timestamp: block.timestamps[row]!,
     summary: block.evidence[row] === 0 ? "Topology checkpoint" : "Evidence",
     facets: searchIndexRowFacets(block, row)
@@ -492,9 +609,9 @@ export function trimSearchIndexRowsBlock(input: SearchIndexRowsBlock, firstSeque
   if (firstSequence <= block.firstSequence) return block;
   if (firstSequence > block.lastSequence) return null;
   const offset = firstSequence - block.firstSequence;
-  return buildRowsBlock(block.texts.slice(offset).map((searchText, index) => {
+  return buildRowsBlock(Array.from({ length: block.eventIds.length - offset }, (_unused, index) => {
     const row = offset + index;
-    return { sequence: firstSequence + index, intervalId: block.intervalId, searchText,
+    return { sequence: firstSequence + index, intervalId: block.intervalId, searchText: searchIndexRowText(block, row),
       eventId: block.eventIds[row]!, timestamp: block.timestamps[row]!,
       summary: block.evidence[row] === 0 ? "Topology checkpoint" : "Evidence", facets: searchIndexRowFacets(block, row) };
   }));

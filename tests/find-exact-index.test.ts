@@ -75,7 +75,7 @@ test("legacy missing exact blocks and partially appended exact suffixes fall bac
 test("present damaged exact blocks fail closed instead of falling back to a partial answer", async () => {
   const name = "find-exact-corruption", { memory, durable } = await setup(name, 20);
   try {
-    await changeBlocks(name, async store => { const block = await value(store.get(-1)); block.texts[0] = "damaged-text"; store.put(block); });
+    await changeBlocks(name, async store => { const block = await value(store.get(-1)); block.textDictionary[0] = "damaged-text"; store.put(block); });
     expect(await durable.query!(request)).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
   } finally { await memory.close(); await durable.close(); }
 });
@@ -111,7 +111,7 @@ test("startup rejects a damaged present exact block while legacy absence stays r
   await history.offer(event(0)).settled;
   await history.close();
   await new Promise<void>(resolve => setTimeout(resolve, 0));
-  await changeBlocks(name, async store => { const block = await value(store.get(-1)); block.texts[0] = "damaged"; store.put(block); });
+  await changeBlocks(name, async store => { const block = await value(store.get(-1)); block.textDictionary[0] = "damaged"; store.put(block); });
   await expect(createIndexedDbEventHistory(options)).rejects.toThrow(/Corrupt exact search/);
   await changeBlocks(name, store => { store.delete(-1); });
   const legacy = await createIndexedDbEventHistory({ panelSessionId: name });

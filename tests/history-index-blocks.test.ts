@@ -4,7 +4,7 @@ import {
   EVENT_INDEX_BLOCK_SIZE, SEARCH_BLOCK_FILTER_BYTES, appendSearchIndexBlocks, expandFacetPostingBlock,
   facetPostingToken, groupFacetPostings, groupSearchProjections, groupSearchRowsProjections, indexBlockStart,
   mergeFacetPostingBlock, mergeSearchIndexBlock, mergeSearchIndexRowsBlock, readFacetPostingBlock,
-  readSearchIndexBlock, readSearchIndexRowsBlock, searchBlockMayContain, searchIndexRowFacets, trimSearchIndexRowsBlock,
+  readSearchIndexBlock, readSearchIndexRowsBlock, searchBlockMayContain, searchIndexRowFacets, searchIndexRowText, searchIndexRowTextMatcher, trimSearchIndexRowsBlock,
   type SearchIndexRowsBlock, type SearchIndexRowsProjection
 } from "../src/core/indexeddb/event-index-blocks";
 import { normalizeEvidenceSearchText } from "../src/core/evidence-facets";
@@ -105,8 +105,8 @@ describe("bounded history indexes", () => {
       exactProjection(3, { facets: { key: { ...stringKey, label: "Same typed identity" } } }),
       exactProjection(4, { summary: "Topology checkpoint", searchText: "checkpoint must not match", timestamp: 0 })
     ])[0]!));
-    expect(block).toMatchObject({ sequence: -1, firstSequence: 1, lastSequence: 4, version: 2 });
-    expect(block.texts).toEqual([normalizeEvidenceSearchText(text), "value-2", "value-3", ""]);
+    expect(block).toMatchObject({ sequence: -1, firstSequence: 1, lastSequence: 4, version: 3 });
+    expect([0, 1, 2, 3].map(row => searchIndexRowText(block, row))).toEqual([normalizeEvidenceSearchText(text), "value-2", "value-3", ""]);
     expect([...block.evidence]).toEqual([1, 1, 1, 0]);
     expect([...block.timestamps]).toEqual([1_700_000_000_001, 1_700_000_000_002, 1_700_000_000_003, 0]);
     expect(block.facets.find(column => column.facet === "key")?.values).toEqual([
@@ -124,6 +124,35 @@ describe("bounded history indexes", () => {
     expect(() => searchIndexRowFacets(block, -1)).toThrow();
     expect(Object.keys(block)).not.toContain("payload");
     expect(Object.keys(block)).not.toContain("summary");
+  });
+
+  it("matches dictionary-encoded text with exact includes semantics across tokens", () => {
+    const block = readSearchIndexRowsBlock(structuredClone(groupSearchRowsProjections([
+      exactProjection(1, { searchText: "  Café\t東京  repeat repeat café\t東京 " }),
+      exactProjection(2, { searchText: "" }),
+      exactProjection(3, { summary: "Topology checkpoint", searchText: "checkpoint hidden" })
+    ])[0]!));
+    const matches = (query: string, row = 0) => searchIndexRowTextMatcher(block, query)(row);
+    expect(searchIndexRowText(block, 0)).toBe("café 東京 repeat repeat café 東京");
+    expect(matches("afé")).toBe(true);
+    expect(matches("京")).toBe(true);
+    expect(matches("repeat café")).toBe(true);
+    expect(matches("afé 東京 rep")).toBe(true);
+    expect(matches("repeat repeat")).toBe(true);
+    expect(matches("café  東京")).toBe(true);
+    expect(matches("café absent")).toBe(false);
+    expect(matches("", 1)).toBe(true);
+    expect(searchIndexRowTextMatcher(block, "checkpoint")(2)).toBe(false);
+  });
+
+  it("uses 32-bit text dictionary codes when a block exceeds 65,535 unique tokens", () => {
+    const text = Array.from({ length: 65_536 }, (_unused, index) => `token${index.toString(16)}`).join(" ");
+    const block = readSearchIndexRowsBlock(groupSearchRowsProjections([exactProjection(1, { searchText: text })])[0]!);
+    expect(block.textDictionary).toHaveLength(65_536);
+    expect(block.textCodes).toBeInstanceOf(Uint32Array);
+    expect(searchIndexRowTextMatcher(block, "tokenffff")(0)).toBe(true);
+    expect(searchIndexRowTextMatcher(block, "tokenfffe")(0)).toBe(true);
+    expect(searchIndexRowTextMatcher(block, "missing-token")(0)).toBe(false);
   });
 
   it("bounds exact rows at block edges and merges partial appends without losing facet dictionaries", () => {
@@ -144,7 +173,7 @@ describe("bounded history indexes", () => {
     expect(() => groupSearchRowsProjections([exactProjection(1), exactProjection(3)])).toThrow();
     expect(() => groupSearchRowsProjections([exactProjection(1), exactProjection(2, { intervalId: "other" })])).toThrow();
     const all = groupSearchRowsProjections(Array.from({ length: 257 }, (_, row) => exactProjection(row + 1)));
-    expect(all.map(block => block.texts.length)).toEqual([EVENT_INDEX_BLOCK_SIZE, 1]);
+    expect(all.map(block => block.eventIds.length)).toEqual([EVENT_INDEX_BLOCK_SIZE, 1]);
   });
 
   it("trims retained suffixes without leaving removed exact text, event ids or facet identities", () => {
@@ -156,13 +185,13 @@ describe("bounded history indexes", () => {
     const trimmed = readSearchIndexRowsBlock(structuredClone(trimSearchIndexRowsBlock(block, 12)!));
     expect(trimmed).toMatchObject({ sequence: -1, firstSequence: 12, lastSequence: 13 });
     expect(trimmed.eventIds).toEqual(["event-12", "event-13"]);
-    expect(trimmed.texts).toEqual(["value-12", "value-13"]);
+    expect([0, 1].map(row => searchIndexRowText(trimmed, row))).toEqual(["value-12", "value-13"]);
     expect(trimmed.facets[0]!.values.map(value => value.value)).toEqual(["retained-key"]);
     expect([...trimmed.facets[0]!.codes]).toEqual([1, 0]);
     expect(trimSearchIndexRowsBlock(block, 1)).toBe(block);
     expect(trimSearchIndexRowsBlock(block, 14)).toBeNull();
     expect(() => trimSearchIndexRowsBlock(block, 0)).toThrow();
-    expect(block.texts[0]).toBe("removed-secret");
+    expect(searchIndexRowText(block, 0)).toBe("removed-secret");
   });
 
   it("fails closed on damaged exact row fields, typed arrays, dictionary values and codes", () => {
@@ -173,17 +202,17 @@ describe("bounded history indexes", () => {
       const value = structuredClone(block); change(value);
       expect(() => readSearchIndexRowsBlock(value)).toThrow();
     };
-    mutate(value => { value.texts[0] = "different"; });
+    mutate(value => { value.textDictionary![0] = "different"; });
     mutate(value => { value.eventIds[0] = "other-event"; });
     mutate(value => { value.timestamps[0]! += 1; });
-    mutate(value => { value.evidence[1] = 0; value.texts[1] = ""; });
+    mutate(value => { value.evidence[1] = 0; value.textOffsets![2] = value.textOffsets![1]!; });
     mutate(value => { value.facets[0]!.codes[1] = 1; });
     mutate(value => { value.facets[0]!.codes[1] = 2; });
     mutate(value => { value.facets[0]!.values[0] = { type: "string", value: "changed" }; });
     mutate(value => { value.intervalId = "other"; });
     mutate(value => { value.firstSequence = 2; value.lastSequence = 3; });
     expect(() => readSearchIndexRowsBlock({ ...block, extra: true })).toThrow();
-    expect(() => readSearchIndexRowsBlock({ ...block, version: 3 })).toThrow();
+    expect(() => readSearchIndexRowsBlock({ ...block, version: 2 })).toThrow();
     expect(() => readSearchIndexRowsBlock({ ...block, sequence: 1 })).toThrow();
     expect(() => readSearchIndexRowsBlock({ ...block, eventIds: ["only-one"] })).toThrow();
     expect(() => readSearchIndexRowsBlock({ ...block, timestamps: new Float32Array(2) })).toThrow();
@@ -192,22 +221,34 @@ describe("bounded history indexes", () => {
     expect(() => groupSearchRowsProjections([exactProjection(1, { timestamp: Number.NaN })])).toThrow();
   });
 
-  it("reads the version-one checksum unchanged and writes compact version-two dictionaries", () => {
+  it("reads legacy checksums unchanged and writes version-three text with compact facet dictionaries", () => {
     const block = groupSearchRowsProjections([exactProjection(1, {
       searchText: " AB😀C café\t東京 ", facets: { key: typedFacetValue("key", "string", "7", "Seven") }
     })])[0]!;
-    expect(block.version).toBe(2);
+    expect(block.version).toBe(3);
     expect(block.facets[0]!.values).toEqual([{ type: "string", value: "7", label: "Seven" }]);
     const legacyV1: SearchIndexRowsBlock = {
-      ...block,
-      version: 1,
-      facets: [{ facet: "key", values: [typedFacetValue("key", "string", "7", "Seven")], codes: block.facets[0]!.codes }],
+      sequence: block.sequence, intervalId: block.intervalId, firstSequence: block.firstSequence, lastSequence: block.lastSequence,
+      version: 1, texts: [normalizeEvidenceSearchText(" AB😀C café\t東京 ")], eventIds: [...block.eventIds],
+      timestamps: block.timestamps.slice(), evidence: block.evidence.slice(),
+      facets: [{ facet: "key", values: [typedFacetValue("key", "string", "7", "Seven")], codes: block.facets[0]!.codes.slice() }],
       checksum: 414_961_847
     };
     const roundTripped = readSearchIndexRowsBlock(structuredClone(legacyV1));
     expect(legacyV1.checksum).toBe(414_961_847);
-    expect(roundTripped.texts).toEqual(block.texts);
+    expect(searchIndexRowText(roundTripped, 0)).toBe(normalizeEvidenceSearchText(" AB😀C café\t東京 "));
     expect(searchIndexRowFacets(roundTripped, 0)).toEqual({ key: typedFacetValue("key", "string", "7", "Seven") });
+    // Golden output from the v2 writer at 89078cf; do not recompute its checksum
+    // with the current implementation when checking reader compatibility.
+    const legacyV2: SearchIndexRowsBlock = {
+      ...legacyV1, version: 2,
+      facets: [{ facet: "key", values: [{ type: "string", value: "7", label: "Seven" }], codes: new Uint16Array([1]) }],
+      checksum: 2_489_303_862
+    };
+    const versionTwo = readSearchIndexRowsBlock(structuredClone(legacyV2));
+    expect(searchIndexRowText(versionTwo, 0)).toBe("ab😀c café 東京");
+    expect(searchIndexRowTextMatcher(versionTwo, "C CAFÉ 東")(0)).toBe(true);
+    expect(searchIndexRowFacets(versionTwo, 0)).toEqual({ key: typedFacetValue("key", "string", "7", "Seven") });
   });
 
   it("keeps legacy Bloom-only input valid and exposes partial exact coverage after a legacy append", async () => {
@@ -244,7 +285,7 @@ describe("bounded history indexes", () => {
       const exact = readSearchIndexRowsBlock(stored.find(value => value.sequence === -1));
       expect(exact.eventIds).toEqual(["event-1", "event-2", "event-3"]);
       const damaged = structuredClone(exact);
-      damaged.texts[0] = "damage without checksum";
+      damaged.textDictionary![0] = "damage without checksum";
       transaction = database.transaction("searchBlocks", "readwrite");
       transaction.objectStore("searchBlocks").put(damaged);
       await transactionDone(transaction);

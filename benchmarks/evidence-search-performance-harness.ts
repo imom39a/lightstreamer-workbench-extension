@@ -182,6 +182,24 @@ async function run(adapter: Adapter, samples: number, retainedCount?: number, li
       assert(continuation.find?.total === count && continuation.find.hasMore === true && continuation.find.results?.length === 7, "Result continuation must have bounded output and a complete count");
       assert(continuation.find.results[0]?.identity.sequence === count - 9 && continuation.find.results.at(-1)?.identity.sequence === count - 3, "Result continuation must reach late Evidence beyond 1,000 matches");
       assert(continuation.find.page === undefined && continuation.find.match?.payload === undefined, "Companion-style search must omit reveal windows and unrequested payloads");
+
+      // A literal Find can begin and end inside words and cross normalized
+      // whitespace. Exercise that path across every retained row as well as
+      // the single-token queries above.
+      const crossToken = await measure("cross-token-broad-query", sample, {
+        ...latched, find: { ...base.find!, text: "ALUE  all-SEARCH-to" }
+      });
+      assert(crossToken.find?.total === count && crossToken.find.current?.sequence === 1,
+        "Cross-token partial Find must include every retained event");
+      const filteredCrossToken = await measure("filtered-cross-token-query", sample, {
+        ...latched, filter: { ...emptyFilter(), text: "category keep-category" },
+        find: { ...base.find!, text: "alue all-search-to" }
+      });
+      assert(filteredCrossToken.find?.total === count / 2 && filteredCrossToken.totals.matching === count / 2,
+        "Multi-token Filter and partial Find must keep exact eligible counts");
+      for (const record of [...filteredCrossToken.page.evidence, ...(filteredCrossToken.find.page?.evidence ?? [])]) {
+        assert(record.identity.sequence % 2 === 1, "Multi-token Find leaked an excluded row into its context");
+      }
     }
     let diagnosticProfile: Readonly<{ elapsedMs: number; totalMatches: number; telemetry: EvidenceSnapshot["telemetry"]; purpose: string }> | null = null;
     if (diagnosticProfileThresholdMs !== undefined && measurements.some(measurement => measurement.elapsedMs > diagnosticProfileThresholdMs)) {
@@ -210,7 +228,7 @@ async function run(adapter: Adapter, samples: number, retainedCount?: number, li
       adapter, samples, retainedCount: count, atProductionRetentionLimit: count === productionCount, liveAppend,
       firstColdOperation: liveAppend ? "pre-append-broad-query" : "initial-broad-query", acceptedCount: status.accepted, seedMs, capacity: status.capacity,
       canonicalBytes: status.capacity.measurements?.retainedBytes ?? null, measurements, diagnosticProfile,
-      correctness: { exactRetention: true, completeMatchCount: true, beyond1000: true, lateNavigation: true, filteredPage: true, boundedResponses: true, boundedPayloadHydration: true, ...(liveAppend ? { latchedLiveAppend: true } : {}) },
+      correctness: { exactRetention: true, completeMatchCount: true, beyond1000: true, lateNavigation: true, filteredPage: true, crossTokenSubstrings: true, multiTokenFilter: true, boundedResponses: true, boundedPayloadHydration: true, ...(liveAppend ? { latchedLiveAppend: true } : {}) },
       elapsedMs: performance.now() - startedAt
     };
   } catch (error) {

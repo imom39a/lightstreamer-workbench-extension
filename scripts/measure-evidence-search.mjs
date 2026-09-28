@@ -188,7 +188,7 @@ try {
     const cold = result.measurements.find(measurement => measurement.operation === result.firstColdOperation && measurement.sample === 1);
     lines.push(`- ${result.adapter}: ${cold.elapsedMs.toFixed(1)} ms (${result.firstColdOperation}). ${result.liveAppend ? "The first query precedes the final ten live appends; the full-capacity initial query uses a new readpoint after that warmup." : "Later initial-query samples reuse the same retained set."}`);
   }
-  lines.push("", "Assertions cover exact retention and full counts, late Next/Previous, neighbors after match 1,000, Filter-consistent reveal pages, bounded response arrays, and at most one full-payload hydration per query.", "", "This targeted proof does not replace the complete retention/capture activation matrix or browser UI visibility tests.", "");
+  lines.push("", "Assertions cover exact retention and full counts, late Next/Previous, neighbors after match 1,000, Filter-consistent reveal pages, cross-token partial substrings and multi-token Filters, bounded response arrays, and at most one full-payload hydration per query.", "", "This targeted proof does not replace the complete retention/capture activation matrix or browser UI visibility tests.", "");
   await writeFile(join(output, "README.md"), lines.join("\n"));
   console.log(`Search performance proof ${report.verdict} (correctness ${report.correctness}, latency ${latency.verdict}): ${output}`);
   if (report.verdict !== "PASS") process.exitCode = 1;
