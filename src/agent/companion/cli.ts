@@ -12,17 +12,19 @@ const [mode = "mcp", ...args] = process.argv.slice(2);
 const help = `Lightstreamer Workbench MCP companion ${metadata.version}
 
 Commands:
-  setup [--extension-id ID] [--port PORT] [--auth off|required] [--local]
+  setup [--extension-id ID] [--local]
     Print version-pinned npm MCP configuration. --local uses this Node/package path.
-  mcp [--extension-id ID] [--port PORT] [--auth off|required]
+  mcp [--extension-id ID]
     Run stdio MCP and start the shared loopback companion automatically.
   --version
   --help
 
 One Node runtime for Windows, macOS and Linux (Node 22.12+).
 No native host, registry registration or background service installation.
-Authentication is off by default; any local process can use connected panel grants.
-Existing LSEW_AGENT_CONNECTION configurations still require authentication.
+The current panel uses port 24817, authentication off, and inspection plus Local Injection.
+Any local process can use connected panel grants.
+Legacy auth/port flags remain for protocol testing, not current panel setup.
+Replace old authenticated/custom-port entries with default setup output.
 `;
 
 function options(allowed: readonly string[]) {
@@ -63,9 +65,9 @@ async function main() {
       args: values.has("--local") ? [cli, ...commandArgs] : ["--yes", `${metadata.name}@${metadata.version}`, ...commandArgs],
       ...(auth === "required" ? { env: { [PAIRING_ENV]: `wb1:${port}:${randomNonce()}` } } : {})
     };
-    process.stdout.write(JSON.stringify({ port, auth, mcpServers: { "lightstreamer-workbench": config }, next: (auth === "off"
-      ? "Add this MCP configuration to your agent and start it. Open Workbench; Agent access automatically enables inspection and Local Injection. No Connect click, credential or pairing is required. The header's Agent access On/Off switch disables access. Any local process can use a connected panel's grant. Setup writes no files or registry entries."
-      : "Add this private MCP configuration to your agent and start it. Under Workbench → More actions → Agent setup instructions → Advanced connection settings, enable Require authentication and Apply connection settings. Ask your agent to show get_pairing_requests, compare the code and click Approve connection. The agent finishes with confirm_pairing.") + (port === DEFAULT_COMPANION_PORT ? "" : ` Apply Companion port ${port} in Workbench's Advanced connection settings too.`) }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify({ port, auth, mcpServers: { "lightstreamer-workbench": config }, next: auth === "off" && port === DEFAULT_COMPANION_PORT
+      ? "Add this MCP configuration to your agent app. Starting its MCP server launches the companion automatically; no separate terminal or service is needed. Open Workbench: Agent access Waiting changes to On when ready. Connected agents can inspect and inject locally. Click Waiting or On to turn access off. No credentials, pairing or permission selection are needed. Any local process can use a connected panel grant. Setup writes no files or registry entries."
+      : "This retained protocol configuration is not supported by the current panel UI. Run setup without auth or port overrides and remove any old LSEW_AGENT_CONNECTION environment entry. The panel uses port 24817 with authentication off and inspection plus Local Injection." }, null, 2) + "\n");
     return;
   }
   if (mode === "mcp") {

@@ -236,11 +236,16 @@ UI change class, permanent surface, shared component, visual-QA packet, exceptio
 
 The maintainer explicitly requested friction-free automatic connection, selected
 inspection plus Local Injection as the default, and approved one compact
-**Agent access On/Off** control beside View in the operating header. On means
-access is enabled for this Panel Session, not that a particular agent is connected.
-Off revokes access and cancels automatic retries. Setup instructions and optional
-connection settings belong under More actions, not in the header or a separate
-connection workflow. Reconnection never repeats an Injection or resumes a Scenario;
+**Agent access** control beside View in the operating header. The maintainer's
+2026-09-28 readiness correction supersedes the original enabled-only label:
+**Waiting** means enabled but not yet ready, **On** means the companion connection
+is ready with access granted, and **Off** means disabled. On does not assert
+agent presence or activity. The pressed state represents enabled intent, so both
+Waiting and On can be turned off. Authentication and fine-grained permissions are not exposed in the current UI;
+connected agents receive inspection plus Local Injection together.
+Off revokes access and cancels automatic retries. Only setup instructions belong under More actions, not an Advanced connection
+settings form. The current panel uses port 24817 and authentication off. Retained
+underlying auth/permission capabilities are reserved for later controls. Reconnection never repeats an Injection or resumes a Scenario;
 all exact-target, protected-document and delivery rules above remain unchanged.
 
 ## Acceptance record

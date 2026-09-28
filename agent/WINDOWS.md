@@ -20,13 +20,16 @@ the verified tarball using the [local installation instructions](README.md#local
 you do not need to weaken that policy. The common MCP JSON uses `npx`. If your
 agent cannot resolve it, use the path returned by `Get-Command npx.cmd`.
 Restart a GUI agent after installing Node so it receives the updated PATH.
+After saving the MCP configuration, start/reconnect that server in your agent
+app. The app launches the companion automatically; no separate PowerShell
+window, manually running server, Windows service or Chrome native host is needed.
 
 If the client cannot launch npm shims, use a stable package installation and
 print an absolute Node configuration:
 
 ```powershell
 $workbenchNode = (Get-Command node.exe).Source
-$workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\@lightstreamer-workbench\agent\dist\cli.mjs').Path
+$workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs').Path
 & $workbenchNode $workbenchCli setup --local
 ```
 
@@ -37,18 +40,22 @@ have different loopback environments and do not automatically reach that Chrome.
 
 ## Connection troubleshooting
 
-Open the intended tab's Workbench panel and leave **Agent access On**. Ask the
+Open the intended tab's Workbench panel. **Agent access Waiting** means access
+is enabled but the companion connection is not ready. It changes to **On**
+automatically when connected; no Connect button is needed. **Off** means access
+is disabled; click it to enable access. Ask the
 agent for `list_panel_sessions`; then identify the exact tab with `get_status`.
-An empty list means no connected panel. Check that the MCP server is running,
-the extension includes Agent access, and setup names its actual extension ID.
+An empty list means no connected panel. Start/reconnect Workbench's MCP server
+in the agent app, which launches the companion for you. If it is already running, check
+that the extension includes Agent access and setup names its actual extension ID.
 For unpacked extensions, copy the ID from `chrome://extensions` into setup's
 `--extension-id` argument. Default setup targets the official Store extension.
 
-For a busy port, generate setup with `--port 24818` and apply the same port under
-Workbench's Advanced connection settings. Do not terminate an unrelated process.
-Both sides must use the same authentication mode. Default mode needs no code or
-approval. Optional authentication and its comparison-code flow are described in
-the common guide; never paste the private credential into Workbench or chat.
+The panel uses port 24817 with authentication off and inspection plus Local
+Injection available together. Remove old custom port or authentication settings
+from the MCP entry using the common migration instructions. If another process
+owns port 24817, identify it before making changes; do not terminate an unrelated
+process. There is no authentication, permission or port form in More actions.
 
 ## Switch an existing setup to auth off
 

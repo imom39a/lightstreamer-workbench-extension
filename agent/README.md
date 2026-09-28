@@ -34,8 +34,12 @@ standard JSON form is identical on both platforms:
 }
 ```
 
-Start/reconnect that MCP server, then open **Lightstreamer Workbench** in the
-intended tab's DevTools. Ask the agent to call `list_panel_sessions` and
+Your agent application launches the npm companion when it starts this configured
+MCP server. You do not need to run `mcp` in PowerShell or a terminal yourself,
+keep a terminal open, or install a background service. The companion remains a
+local Node process, not a hosted server or code running inside the Chrome extension.
+Start/reconnect the MCP server in your agent app, then open **Lightstreamer Workbench**
+in the intended tab's DevTools. Ask the agent to call `list_panel_sessions` and
 `get_status` to identify the tab. No separate broker terminal is needed.
 Multiple MCP clients share the broker. It exits 30 seconds after all agent and
 panel connections close. MCP stdout contains protocol messages only.
@@ -81,16 +85,20 @@ this guide and the agent skill. It needs no consumer-side compilation or install
 script. Install `skills/lightstreamer-workbench` from the package into your
 agent's skill directory when you want the investigation workflow guidance.
 
-## Access and optional authentication
+## Access
 
-Each Panel Session enables inspection and Local Injection by default. The
-header's **Agent access On/Off** controls access, not agent presence. Off revokes
-access, stops retries and pauses an agent Scenario; closing the panel ends the
-grant. A new panel uses defaults. Connection retries have a 15-second maximum
+Each Panel Session enables inspection and Local Injection by default. The header
+shows **Agent access Waiting** until the companion connection is ready, **On**
+once connected with access granted, and **Off** when disabled. On means access
+is ready, not that an agent is actively using it. Connection details stay under **More actions → Agent setup instructions**.
+Click Waiting or On to turn access off, or Off to enable it.
+Turning access off revokes the grant, stops retries and pauses an agent Scenario;
+closing the panel ends the grant. A new panel uses defaults. Connection retries have a 15-second maximum
 backoff. Reconnection never repeats an Injection or resumes a Scenario. Unknown
 delivery must be inspected, never automatically retried.
 
-Authentication is off by default. Any local process can use a connected panel's
+Authentication is off. Connected agents have inspection and Local Injection
+access; there is no permission selector, pairing step or advanced settings form. Any local process can use a connected panel's
 grant or impersonate the broker. Exact Host/extension-Origin checks reject normal
 websites but do not identify OS users or individual agents. Local WebSocket data
 is unencrypted. Requested Evidence may reach your agent's model provider. The
@@ -98,24 +106,17 @@ companion does not persist Evidence or log payloads; redaction is not a general
 secret detector. Local Injection invokes app listeners, which may cause other
 application effects. Server Injection is not exposed to agents.
 
-For opt-in authentication, add `--auth required` to `setup`. Preserve the private
-`LSEW_AGENT_CONNECTION` entry in the generated configuration. In Workbench,
-open **More actions → Agent setup instructions → Advanced connection settings**,
-enable **Require authentication**, then apply settings. Ask the agent to show
-`get_pairing_requests`, compare its short code, and click **Approve connection**.
-The agent confirms that exact request with `confirm_pairing`. Neither approval
-alone grants access. The credential is not the short code and never goes into
-a Workbench field. Optional read-only permissions and a custom port are in the
-same settings. For a custom port, set `--port` in setup and the matching panel
-port. Neither side falls back when modes or ports differ.
+Authentication and read-only enforcement remain in the underlying protocol for
+future controls and compatibility testing, but the current panel does not enable
+them. Use the default auth-off configuration and port 24817 with this panel.
 
 ### Switch an existing setup to auth off
 
 Disconnect panels, stop matching MCP clients and let the idle broker exit.
 Replace the old MCP entry with default setup output, remove its
-`LSEW_AGENT_CONNECTION` setting, and reload Workbench. Existing credentials
-continue to require authentication until deliberately removed. Use a separate
-port if you must run both modes at once.
+`LSEW_AGENT_CONNECTION` setting, and reload Workbench. Remove custom port overrides so both sides use 24817.
+Existing credentials continue to require authentication until deliberately removed;
+they are not silently ignored.
 
 ### Migrate from the native companion
 
@@ -138,7 +139,7 @@ tree, runs its npm executable, checks version-pinned setup, and drives two real
 stdio MCP clients through its shared broker to an exact test panel.
 `npm run agent:test:extension` repeats packaging and uses the installed artifact
 with a loaded Chrome panel: automatic discovery, restart/revocation, retained
-Evidence, exact inspected-page identity, and optional authentication.
+Evidence, exact inspected-page identity, and full inspection/Local Injection access.
 `npm run agent:test:browser` adds official-client Local Injection, duplicate
 suppression, Scenario Steps and the application's displayed result.
 CI builds one tarball and tests that exact artifact on Windows, macOS and Linux.

@@ -16,10 +16,18 @@ and loopback connection. The extension no longer requests `nativeMessaging`.
 Each mounted Panel Session owns its grant, connection, query cursors, prepared
 document and bounded operation ledger. Following the maintainer's explicit
 friction-free access decision, opening a panel automatically enables inspection
-and Local Injection. A compact On/Off control beside View in the header revokes
-access and cancels retries; On denotes enabled access, not connected-agent presence.
-Setup guidance and optional settings live under More actions. They apply to the
-current Panel Session; a new panel uses the defaults. The broker routes exact sessions
+and Local Injection. A compact control beside View in the header revokes access
+and cancels retries. Following the 2026-09-28 readiness correction, it shows
+Waiting while enabled but not ready, On only after
+the companion handshake grants access, and Off when disabled. On indicates a
+usable companion connection, not connected-agent presence or activity. The
+toggle's pressed state continues to express enabled intent; both Waiting and
+On can be turned off without changing the automatic reconnect contract.
+The maintainer also removed the Advanced connection settings block on 2026-09-28.
+More actions contains setup instructions only. The current panel uses port 24817,
+authentication off, and inspection plus Local Injection together; authentication
+and read-only enforcement remain internal for future controls. Access belongs to
+the current Panel Session; a new panel uses the defaults. The broker routes exact sessions
 and never retains Evidence. Default standalone access trusts local processes:
 any process with loopback access can use a connected panel's grant or impersonate
 the companion. Optional authenticated access additionally requires possession
@@ -45,9 +53,12 @@ connections use an explicit auth-off handshake and no comparison/approval step;
 the panel connects automatically at port 24817 and waits/retries if the companion
 starts later or restarts. Backoff is capped at 15 seconds. Loss revokes the active
 grant and pauses agent Scenarios; reconnecting never repeats an operation or
-resumes a Run. Optional authenticated failures require deliberate re-enabling,
-and neither mode silently falls back to auth off. Optional authenticated
-agent connections use mutual, role-bound nonce/HMAC
+resumes a Run.
+
+The following authentication protocol is retained for future controls, not a
+current panel workflow. Authenticated failures require deliberate re-enabling,
+and neither mode silently falls back to auth off. The retained protocol uses
+mutual, role-bound nonce/HMAC
 proofs with a generated credential in MCP configuration. Panel connections use
 fresh P-256 ECDH keys: the panel commits its public key and nonce before the
 broker reveals its key. Both derive a short comparison code from the shared
@@ -66,8 +77,8 @@ it is not an individual-agent identity or protection from a compromised host.
 Local WebSocket traffic
 is not encrypted; remote hosts and arbitrary website origins are not supported.
 Setup only prints configuration. Default setup emits command/arguments without
-a credential. `setup --auth required` enables the retained authenticated mode;
-the panel exposes it under Advanced connection settings. Existing credential-bearing MCP
+a credential. The retained `setup --auth required` mode is for protocol compatibility/testing;
+the current panel has no authentication or approval controls. Existing credential-bearing MCP
 entries continue to require authentication. Neither side falls back across
 modes, and switching requires disconnecting/restarting matching clients or a
 separate port. Runtime startup passes configuration to its local broker through
@@ -77,7 +88,10 @@ of local-process authentication, not the Panel Session or Local Injection bounda
 
 The npm package bundles its runtime dependencies and skill. Setup defaults to a
 version-pinned `npx` entry on all platforms; `--local` supports an installed
-artifact using absolute Node/package paths. Neither route requires a native
+artifact using absolute Node/package paths. The agent app starts this stdio MCP
+entry, which automatically starts or reuses the loopback companion. There is no
+separate terminal or service to manage; the process runs outside Chrome on the
+same computer. Neither route requires a native
 host or changes agent settings. Legacy native commands fail with migration
 guidance rather than silently changing the connection boundary. Package tests
 install the tarball and exercise the npm executable, MCP and loaded extension

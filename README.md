@@ -76,17 +76,22 @@ This is not a generic WebSocket inspector and is not a replacement for a Lightst
 ## Agent access (source candidate)
 
 The MCP companion is one npm package and Node runtime for Windows, macOS and Linux.
-It connects to open Workbench panels over localhost without native registration.
+Your configured agent app launches it automatically; no separate terminal or
+hosted server is needed. It connects to open Workbench panels over localhost
+without native registration.
 See the [common companion setup](agent/README.md) for npm configuration, local
 package testing and migration from the removed native connection. The package
 is prepared for publication; npm launch commands require its first publication.
 
 Agent access enables inspection and Local Injection automatically in each open
-Panel Session. The header's **Agent access On/Off** revokes that access and stops
-retries. Authentication is off by default: any local process can use a connected
+Panel Session. The header shows **Waiting** until the companion is ready, **On**
+when connected, and **Off** when disabled. Click Waiting or On to revoke access
+and stop retries. Authentication is off by default: any local process can use a connected
 panel's grant or impersonate the companion. Requested Evidence can reach your
-agent's model provider. Optional authentication, read-only access and custom ports
-remain under **More actions → Agent setup instructions**. Server Injection is not
+agent's model provider. Setup guidance remains
+under **More actions → Agent setup instructions**, without authentication or
+permission controls. The panel uses port 24817 with inspection and Local Injection
+together; underlying fine-grained controls are retained for later. Server Injection is not
 available to agents. Node 22.12+ and the Agent-enabled extension are required.
 
 ## Open Source And Contributions

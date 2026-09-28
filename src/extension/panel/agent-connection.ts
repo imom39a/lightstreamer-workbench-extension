@@ -57,7 +57,7 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
       release();
       const automatic = auth === "off";
       publish({ ...settings(), enabled: automatic, permission: "off", status: automatic ? "waiting" : "error", detail: automatic
-        ? "Waiting for the local companion. Connection retries automatically. Check the running MCP server, extension ID, port and authentication mode. Pending operations are never repeated."
+        ? "Waiting for the local companion. Connection retries automatically. Start or reconnect Workbench's MCP server in your agent app; it launches the companion for you. If it is already running, check the extension ID and use default setup (port 24817, authentication off). Pending operations are never repeated."
         : "Companion unavailable or approval expired. Check connection settings, then enable agent access again. Inspect any pending outcome first." });
       if (automatic) retry = setTimeout(start, Math.min(1000 * 2 ** Math.min(failures++, 4), 15000));
     };

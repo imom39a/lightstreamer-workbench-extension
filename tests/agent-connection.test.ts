@@ -4,6 +4,9 @@ import type { WorkbenchRuntime } from "../src/extension/panel/workbench-runtime"
 import type { AgentRuntime } from "../src/extension/panel/agent-runtime";
 import { connectPortable, type CompanionChannel } from "../src/agent/portable-channel";
 import { beginPanelPairing } from "../src/agent/panel-pairing";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { AgentAccessToggle } from "../src/extension/panel/react/agent-access";
 
 vi.mock("../src/agent/panel-pairing", () => ({ beginPanelPairing: vi.fn() }));
 vi.mock("../src/agent/portable-channel", () => ({ connectPortable: vi.fn() }));
@@ -20,6 +23,50 @@ function fixture(autoChannel?: CompanionChannel) {
   return { connection, agent, connectNative, unsubscribe };
 }
 describe("per-panel agent grants", () => {
+  it("renders Waiting until ready, returns to Waiting on loss, and keeps explicit Off across retries", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const f = fixture();
+    const mount = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(mount);
+    try {
+      await act(async () => root.render(createElement(AgentAccessToggle, { connection: f.connection })));
+      const button = mount.querySelector("button")!;
+      expect(button.textContent).toBe("Agent access Waiting");
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      vi.mocked(connectPortable).mockRejectedValue(new Error("not started"));
+      await act(async () => { f.connection.connect(); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.connection.getSnapshot().status).toBe("waiting");
+      expect(button.textContent).toBe("Agent access Waiting");
+      let read!: (message: Record<string, unknown>) => void, closed!: () => void;
+      const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: callback => { read = callback; }, onClose: callback => { closed = callback; } };
+      vi.mocked(connectPortable).mockResolvedValue(channel);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(button.textContent).toBe("Agent access Waiting"); // Socket alone is not a grant.
+      await act(async () => read({ type: "ready" }));
+      expect(button.textContent).toBe("Agent access On");
+      button.focus();
+      await act(async () => closed());
+      expect(button.textContent).toBe("Agent access Waiting");
+      expect(document.activeElement).toBe(button);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); read({ type: "ready" }); });
+      expect(button.textContent).toBe("Agent access On");
+      await act(async () => closed());
+      await act(async () => button.click());
+      expect(button.textContent).toBe("Agent access Off");
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+      const attempts = vi.mocked(connectPortable).mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+      expect(connectPortable).toHaveBeenCalledTimes(attempts);
+      expect(button.textContent).toBe("Agent access Off");
+      await act(async () => button.click());
+      expect(button.textContent).toBe("Agent access Waiting");
+      await act(async () => read({ type: "ready" }));
+      expect(button.textContent).toBe("Agent access On");
+    } finally {
+      await act(async () => root.unmount()); mount.remove(); f.connection.dispose();
+    }
+  });
   it("automatically offers inspection and Local Injection at the default port without a UI action", async () => {
     let read!: (message: Record<string, unknown>) => void;
     const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: callback => { read = callback; }, onClose: vi.fn() };
