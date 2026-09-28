@@ -48,6 +48,9 @@ jobs:
         with:
           fetch-depth: 0 # Visual review references accepted snapshots at recorded revisions.
 
+      - name: Trust the mounted checkout in the job container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:

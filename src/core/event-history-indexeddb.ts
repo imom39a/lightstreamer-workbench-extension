@@ -3659,13 +3659,19 @@ async function readFindSequenceIndex(
     }
   };
   // Exact row blocks use column dictionaries instead of cloning the same rich
-  // facet objects for every row. Four blocks bound transient read memory.
+  // facet objects for every row. Reads are bounded to 32 contiguous blocks,
+  // or 8,192 rows; they do not include replay payloads.
   for (let position = 0; position < starts.length;) {
     if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
     const start = starts[position++]!;
     let end = start;
-    for (let count = 1; count < 4 && starts[position] === end + EVENT_INDEX_BLOCK_SIZE; count++) end = starts[position++]!;
-    const rawRows = await requestToPromise<unknown[]>(searchBlocks.getAll(queryBoundRange(-end, -start), 4), "reading exact Find blocks");
+    // Amortize IndexedDB request scheduling while keeping each query chunk
+    // bounded to 8,192 rows (32 × 256). A chunk contains exact search text and
+    // compact facets, never replay payloads. Query cancellation remains
+    // checked once per row after each bounded read.
+    const readBlockLimit = 32;
+    for (let count = 1; count < readBlockLimit && starts[position] === end + EVENT_INDEX_BLOCK_SIZE; count++) end = starts[position++]!;
+    const rawRows = await requestToPromise<unknown[]>(searchBlocks.getAll(queryBoundRange(-end, -start), readBlockLimit), "reading exact Find blocks");
     const rowsByStart = new Map<number, SearchIndexRowsBlock>();
     for (const value of rawRows) {
       const rows = readSearchIndexRowsBlock(value);

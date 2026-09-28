@@ -144,8 +144,30 @@ try {
     } finally { gateCancelled = true; await stopProfile().catch(() => {}); await context.close().catch(() => {}); }
   }
   if (diagnostics.length > 0) throw new Error("Search performance page reported uncaught browser errors.");
+  const latencyOperations = results.flatMap(result => {
+    const operations = new Map();
+    for (const measurement of result.measurements) {
+      if (!operations.has(measurement.operation)) operations.set(measurement.operation, []);
+      operations.get(measurement.operation).push(measurement.elapsedMs);
+    }
+    return [...operations].map(([operation, times]) => {
+      times.sort((left, right) => left - right);
+      const middle = Math.floor(times.length / 2);
+      return {
+        adapter: result.adapter, retainedCount: result.retainedCount, operation, samples: times.length,
+        medianMs: times.length % 2 ? times[middle] : (times[middle - 1] + times[middle]) / 2,
+        p95Ms: times[Math.ceil(times.length * 0.95) - 1], minMs: times[0], maxMs: times.at(-1)
+      };
+    });
+  });
+  const latency = {
+    budgetMs: 500,
+    percentile: "Nearest-rank p95, independently for every operation and adapter; a one-sample cold operation uses that sample.",
+    verdict: latencyOperations.every(operation => operation.p95Ms <= 500) ? "PASS" : "FAIL",
+    operations: latencyOperations
+  };
   const report = {
-    verdict: "PASS", started, completed: new Date().toISOString(),
+    verdict: latency.verdict, correctness: "PASS", latency, started, completed: new Date().toISOString(),
     runner: { browser: browser.version(), executablePath, headless: true, fakeIndexedDb: false, normalProductionLimits: true, cpuProfile, diagnosticProfileThresholdMs, queryGate, liveAppend,
       atProductionRetentionLimit: results.every(result => result.atProductionRetentionLimit),
       measurement: "Browser performance.now around production EventHistory.query; excludes seeding and UI render/debounce; one fresh isolated browser context per adapter; sequential query samples use one seeded retained set." },
@@ -155,20 +177,11 @@ try {
     results, diagnostics
   };
   await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
-  await rm(join(output, "failure.json"), { force: true });
-  const lines = ["# Evidence search performance", "", `Correctness: **${report.verdict}**. Chromium ${report.runner.browser}, headless, production adapters with native browser APIs.`, "", report.workload, "", report.runner.measurement, "", report.hostNote, "", `Samples per operation and adapter: ${samples}. No baseline threshold is implied by PASS; latency is reported separately.`, "", "| Adapter | Retained | Operation | Median ms | Min ms | Max ms |", "|---|---:|---|---:|---:|---:|"];
-  for (const result of results) {
-    const operations = new Map();
-    for (const measurement of result.measurements) {
-      if (!operations.has(measurement.operation)) operations.set(measurement.operation, []);
-      operations.get(measurement.operation).push(measurement.elapsedMs);
-    }
-    for (const [operation, times] of operations) {
-      times.sort((left, right) => left - right);
-      const middle = Math.floor(times.length / 2);
-      const median = times.length % 2 ? times[middle] : (times[middle - 1] + times[middle]) / 2;
-      lines.push(`| ${result.adapter} | ${result.retainedCount.toLocaleString("en-US")} | ${operation} | ${median.toFixed(1)} | ${times[0].toFixed(1)} | ${times.at(-1).toFixed(1)} |`);
-    }
+  if (report.verdict === "PASS") await rm(join(output, "failure.json"), { force: true });
+  else await writeFile(join(output, "failure.json"), `${JSON.stringify({ verdict: "FAIL", correctness: report.correctness, latency, source: report.source }, null, 2)}\n`);
+  const lines = ["# Evidence search performance", "", `Correctness: **${report.correctness}**. Settled Find p95 ≤ ${latency.budgetMs} ms: **${latency.verdict}**. Overall: **${report.verdict}**. Chromium ${report.runner.browser}, headless, production adapters with native browser APIs.`, "", report.workload, "", report.runner.measurement, "", report.hostNote, "", `Samples per repeated operation and adapter: ${samples}. ${latency.percentile}`, "", "| Adapter | Retained | Operation | Median ms | p95 ms | Min ms | Max ms |", "|---|---:|---|---:|---:|---:|---:|"];
+  for (const operation of latencyOperations) {
+    lines.push(`| ${operation.adapter} | ${operation.retainedCount.toLocaleString("en-US")} | ${operation.operation} | ${operation.medianMs.toFixed(1)} | ${operation.p95Ms.toFixed(1)} | ${operation.minMs.toFixed(1)} | ${operation.maxMs.toFixed(1)} |`);
   }
   lines.push("", "First cold Find (after an ordinary one-row Evidence read, before any Find query):");
   for (const result of results) {
@@ -177,7 +190,8 @@ try {
   }
   lines.push("", "Assertions cover exact retention and full counts, late Next/Previous, neighbors after match 1,000, Filter-consistent reveal pages, bounded response arrays, and at most one full-payload hydration per query.", "", "This targeted proof does not replace the complete retention/capture activation matrix or browser UI visibility tests.", "");
   await writeFile(join(output, "README.md"), lines.join("\n"));
-  console.log(`Search performance proof PASS: ${output}`);
+  console.log(`Search performance proof ${report.verdict} (correctness ${report.correctness}, latency ${latency.verdict}): ${output}`);
+  if (report.verdict !== "PASS") process.exitCode = 1;
 } catch (error) {
   await writeFile(join(output, "failure.json"), `${JSON.stringify({ verdict: "FAIL", started, source: { ...sourceAtBundle, bundleSha256 }, error: String(error), results, diagnostics }, null, 2)}\n`).catch(() => {});
   throw error;
