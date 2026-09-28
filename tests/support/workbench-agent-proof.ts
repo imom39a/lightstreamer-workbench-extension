@@ -40,13 +40,38 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
       assert.deepEqual(next.readPoint, evidenceSearch.readPoint);
       assert.notEqual(next.evidence[0].identity.eventId, evidenceSearch.evidence[0].identity.eventId);
     }
-    const query = await call("query_evidence", { panelSessionId, limit: 100, includePayload: true });
-    const source = query.evidence.findLast((row: any) => row.payload?.kind === "item-update" && row.payload?.source === "server" && row.payload?.listener?.id && row.payload?.item?.name === "scenario.mutate-reinject");
-    assert.ok(source, "Agent can query current listener-based official-client Evidence.");
-    const profile = await call("describe_stream", { panelSessionId, filter: { criteria: [{ facet: "item", polarity: "include", type: source.facets.item.type, value: source.facets.item.value, label: source.facets.item.label }] } });
-    assert.ok(profile.streams.some((stream: any) => stream.examples.some((example: any) => example.identity.eventId === source.identity.eventId)), "Stream description provides exact captured examples.");
-    const exact = await call("get_evidence", { panelSessionId, evidence: source.identity });
-    assert.equal(exact.lookup.state, "RETAINED");
+    const liveItem = scopeSearch.scopes.find((entry: any) => entry.kind === "item" && entry.label === "scenario.mutate-reinject · #1" && !entry.retired && entry.lifecycle === "active");
+    assert.ok(liveItem, "Scope discovery identifies the exact active, positional item.");
+    const liveScope = await call("get_scope", { panelSessionId, scopeId: liveItem.scopeId });
+    assert.equal(liveScope.node.retired, false);
+    const anchor = liveScope.localInjection.anchor;
+    assert.equal(anchor.itemName, "scenario.mutate-reinject");
+    assert.equal(anchor.itemPosition, 1);
+    assert.equal(anchor.captureSource, "listener");
+    const serverListenerFilter = { criteria: [
+      { facet: "kind", polarity: "include", type: "enum", value: "ITEM-UPDATE" },
+      { facet: "provenance", polarity: "include", type: "enum", value: "SERVER" },
+      { facet: "observationPath", polarity: "include", type: "enum", value: "LISTENER" }
+    ] };
+    const boundary = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, filter: serverListenerFilter, limit: 100, order: "NEWEST_FIRST" });
+    const profile = await call("describe_stream", { panelSessionId, scopeId: liveItem.scopeId, filter: serverListenerFilter, at: boundary.readPoint, limit: 100, order: "NEWEST_FIRST" });
+    assert.ok(profile.streams.length > 0, "Stream description profiles the exact live item at a stable read point.");
+    let source: any = null;
+    for (const example of profile.streams.flatMap((stream: any) => stream.examples)) {
+      const hydrated = await call("get_evidence", { panelSessionId, evidence: example.identity });
+      assert.equal(hydrated.lookup.state, "RETAINED");
+      const candidate = hydrated.lookup.evidence;
+      if (candidate.payload?.kind === "item-update"
+        && candidate.payload?.source === "server"
+        && candidate.payload?.captureSource === "listener"
+        && candidate.payload?.listener?.id === anchor.listenerId
+        && candidate.payload?.item?.name === anchor.itemName
+        && candidate.payload?.item?.position === anchor.itemPosition) {
+        source = candidate;
+        break;
+      }
+    }
+    assert.ok(source, "A profiled example hydrates to the current listener-based server update for the exact item and position.");
     const document = (command: string, messageText: string) => JSON.stringify({ command, key: "agent-browser.TICKER", isSnapshot: false, fields: { command, key: "agent-browser.TICKER", modelId: "MESSENGER", modelValues: { messageId: "agent-browser", messageText, messageType: "TICKER" } } });
     const baselineCount = await evaluateByValue<number>(page, "Number(document.querySelector('#update-count').textContent)");
     const validation = await call("validate_agent_candidate", { panelSessionId, pageEpoch: status.pageEpoch, draft: { evidence: source.identity, document: document("ADD", "Agent MCP Local Injection") } });
