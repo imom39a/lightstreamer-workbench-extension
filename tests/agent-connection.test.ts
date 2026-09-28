@@ -45,6 +45,10 @@ describe("per-panel agent grants", () => {
       await act(async () => { f.connection.connect(); await vi.advanceTimersByTimeAsync(0); });
       expect(f.connection.getSnapshot().status).toBe("waiting");
       expect(button.textContent).toBe("Agent access Waiting");
+      expect(mount.querySelector('[role="status"]')?.textContent).toBe("Waiting for the companion. Workbench retries automatically.");
+      expect(mount.querySelector("details ol, details code")).toBeNull();
+      expect(mount.querySelector("details a")?.getAttribute("href")).toBe("https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/");
+      expect(mount.querySelector("details")!.textContent!.trim().split(/\s+/).length).toBeLessThanOrEqual(70);
       let read!: (message: Record<string, unknown>) => void, closed!: () => void;
       const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: callback => { read = callback; }, onClose: callback => { closed = callback; } };
       vi.mocked(connectPortable).mockResolvedValue(channel);

@@ -8,50 +8,24 @@ Node.js 22.12+ and npm must be available to your agent application. Chrome and
 the companion must run on the same computer. Windows Chrome needs Windows Node,
 not Node inside WSL or a container.
 
-## Before npm publication
+## Setup
 
-The first package candidate is `lightstreamer-workbench-agent@0.1.0`. It is
-prepared but is not published to npm. Registry lookup currently returns no
-package. Use the matching local release bundle or build the source checkout;
-do not use `npx` until publication is confirmed. Download the
-`workbench-mcp-release-bundle` artifact from the latest successful `main`
-branch run of the [Agent companion workflow](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml).
-Sign in to GitHub and download the artifact's wrapper ZIP. Extract it, then
-extract the named `lightstreamer-workbench-mcp-v2.0.5.zip` bundle inside. Check
-`release-manifest.json` in the MCP bundle root and verify its `source.commit`.
-Unpack `extension/lightstreamer-workbench-v2.0.5.zip` into its own directory
-and load that directory in `chrome://extensions`. Copy its unpacked extension
-ID. From the extracted MCP bundle root, install the companion tarball and
-print a local configuration:
-
-```sh
-npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.0.tgz
-node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
-```
-
-Copy the printed `mcpServers` entry into your agent's MCP configuration. Keep
-the installed package directory in place. The candidate extension version is
-2.0.5; using an unpacked build requires its ID because the Store ID is different.
-
-After npm publication is confirmed, use the version-pinned setup command:
+The [published npm package](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.0)
+is `lightstreamer-workbench-agent@0.1.0`. Use the
+[shared MCP setup guide](https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/)
+for macOS, Windows, and Linux.
 
 ```sh
 npx --yes lightstreamer-workbench-agent@0.1.0 setup
 ```
 
-Copy the printed `mcpServers` entry into your agent's MCP configuration. Its
-standard JSON form is identical on both platforms:
+In Windows PowerShell, use `npx.cmd`. For an unpacked extension, append
+`--extension-id YOUR_EXTENSION_ID` using the ID from `chrome://extensions`.
+Copy the printed `mcpServers` entry into your agent app's MCP settings.
 
-```json
-{
-  "mcpServers": {
-    "lightstreamer-workbench": {
-      "command": "npx",
-      "args": ["--yes", "lightstreamer-workbench-agent@0.1.0", "mcp"]
-    }
-  }
-}
-```
+The npm package does not update the extension. Use a compatible extension build.
+See [release notes](https://imom39a.github.io/lightstreamer-workbench-extension/releases/)
+for availability.
 
 Your agent application launches the npm companion when it starts this configured
 MCP server. You do not need to run `mcp` in PowerShell or a terminal yourself,
@@ -70,17 +44,31 @@ registry access; npm caches the package. Normal runtime traffic stays on loopbac
 For unpacked extensions, add `--extension-id YOUR_ACTUAL_EXTENSION_ID` to setup
 or the MCP arguments; the default is the official Store extension ID.
 
-If an agent app cannot find `npx` on Windows after publication, configure the
+If an agent app cannot find `npx` on Windows, configure the
 full path to `npx.cmd` from `Get-Command npx.cmd`, or use the installed Node
 entry below. See [Windows launch troubleshooting](WINDOWS.md).
 
 ## Local installation and source development
 
+For a matching extension and companion bundle, download `workbench-mcp-release-bundle`
+from a successful `main` run of the
+[Agent companion workflow](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml).
+
+1. Extract the downloaded wrapper ZIP.
+2. Extract the named MCP bundle inside it.
+3. Check `release-manifest.json` for the source commit and artifact names.
+4. Extract the extension ZIP from `extension/` into its own directory.
+5. Load that directory from `chrome://extensions`.
+6. Copy the unpacked extension ID.
+
+Run the following commands from the extracted MCP bundle root. Use the exact
+tarball name in its manifest if the package version differs.
+
 For offline deployments, install the extracted tarball into a stable directory:
 
 ```sh
 npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.0.tgz
-node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local
+node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
 `--local` prints absolute Node and CLI paths. Keep those paths stable. This is

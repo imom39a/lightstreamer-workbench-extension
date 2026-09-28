@@ -1,45 +1,31 @@
-## Is this a generic WebSocket inspector?
+## Which clients does Workbench support?
 
-No. Workbench supports the official Lightstreamer Web Client. It shows Lightstreamer clients, Sessions, Subscriptions, items, fields, COMMAND keys, snapshots, updates, and delivery boundaries.
+The official Lightstreamer Web Client. Workbench is not a generic WebSocket inspector. It observes the page's clients without connecting or subscribing for the application.
 
-## Does Workbench connect or subscribe for my application?
+## Does Local Injection reach the server?
 
-No. It observes clients and Subscriptions that the page owns. It does not call `connect()` or `subscribe()` for the application.
-
-## Does Local Injection reach the Lightstreamer Server?
-
-No. Local Injection delivers an Item Update in the inspected page.
+No. It delivers an Item Update locally. Application listeners can still trigger other actions. See [Local Injection]({{site}}docs/local-injection/).
 
 ## What does Server Injection send?
 
-Server Injection makes one reviewed call through the page-owned client's normal `sendMessage` path. It sends a Client Message; it does not create an inbound Server Update or contact a Data Adapter directly. Processed does not prove a downstream business effect. Workbench never retries an Unknown outcome automatically.
+One reviewed Client Message through the page-owned client. It does not create an inbound Server Update. See [Server Injection]({{site}}docs/server-injection/).
 
 ## Does Workbench show the server COMMAND state?
 
-No. Workbench shows captured `ADD`, `UPDATE`, and `DELETE` Evidence and related diagnostics. Derived state supports validation, Scenarios, and Checkpoints. It is not direct access to server state.
+No. It shows captured operations and diagnostics. Derived state supports validation and Scenarios but is not direct access to server state.
 
-## Is captured data uploaded?
+## Can captured data leave the browser?
 
-No. Captured Evidence, payloads, inspected URLs, search text, Drafts, and raw errors stay in the browser extension context. An export is a local download that you request. The inspected application controls its own network traffic.
-
-Configured production builds separately send fixed feature names, foreground engagement, coarse outcomes, and a random installation identifier to Google Analytics. Turn this off under **More actions → Help & resources → Usage analytics**. Workbench has no maintainer-operated upload service.
+Yes. Agent access can share requested Evidence with your model provider. You can also create exports. Usage analytics excludes captured data. See [Export and privacy]({{site}}docs/export-and-privacy/).
 
 ## How long is Evidence retained?
 
-Workbench retains Evidence only for the current Panel Session. One Panel Session owns one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 25,000 records or 128 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible.
-
-Complete History ends at the current History Interval's Committed Evidence Boundary. The visible Evidence window shows only part of the retained Evidence. Clear ends the current History Interval. Clear does not restart Capture after a terminal stop. A controlled Close tries to erase the Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence.
-
-Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session. The footer shows the current storage mode, and Notifications records the failure reason.
-
-## Is Workbench open source?
-
-Yes. The [public GitHub repository]({{github}}) uses the Apache-2.0 license.
-
-## Is this an official Lightstreamer product?
-
-No. Lightstreamer Workbench supports the official Lightstreamer Web Client. This project is independent and is not affiliated with Lightstreamer.
+Only within the current Panel Session. Rolling limits remove the oldest Evidence while Capture continues. See [retained history]({{site}}docs/evidence/#retained-history) for capacity and cleanup details.
 
 ## Can an MCP agent use Workbench?
 
-Yes. Agent access can query Evidence and prepare or run deliberate Local Injection through the open Panel Session. It cannot use Server Injection or run arbitrary page code. The first companion package is not yet published to npm. Use the [source setup guide]({{site}}docs/agent-access/) until registry publication is confirmed.
+Yes. The published companion supports inspection and Local Injection. Follow [MCP setup]({{site}}docs/agent-access/).
+
+## Is this an official Lightstreamer product?
+
+No. This independent, [open-source project]({{github}}) uses the Apache-2.0 license.

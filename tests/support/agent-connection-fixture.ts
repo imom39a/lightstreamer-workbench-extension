@@ -1,6 +1,6 @@
 import type { AgentConnection, AgentConnectionState } from "../../src/extension/panel/agent-connection";
 
-const waitingDetail = "Waiting for the local companion. Connection retries automatically. Start or reconnect Workbench's MCP server in your agent app; it launches the companion for you. If it is already running, check the extension ID and use default setup (port 24817, authentication off). Pending operations are never repeated.";
+const waitingDetail = "Waiting for the companion. Workbench retries automatically.";
 
 /** UI-only fixture; production transports are exercised by the extension proof. */
 export function agentConnectionFixture(fail = false): AgentConnection {

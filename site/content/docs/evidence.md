@@ -1,44 +1,51 @@
-## Scope, Filter, and Find are different
+## Select and search
 
-- **Scope** establishes the runtime-object boundary.
-- **Filter** changes which matching Evidence is visible and reports shown versus total counts.
-- **Find** navigates matches without changing the Evidence set.
-- **Selection** identifies the Evidence explained in Context.
+| Control | Purpose |
+| --- | --- |
+| **Scope** | Select the runtime object. |
+| **Filter** | Change which Evidence is visible. |
+| **Find** | Move between matches without changing Filter. |
+| **Selection** | Choose the event shown in Context. |
 
-Workbench keeps these states independent. If a Filter hides the selected event, use **Reveal** or **Clear selection**.
+These controls are independent. If Filter hides the selected event, use **Reveal** or **Clear selection**.
 
-## Read an Evidence row
+## Read a row
 
-Rows start with a compact **Op**, followed by the complete **Key / item** and **Data**. Only Op stays pinned when you scroll horizontally; the key and data stay on one line and scroll together. Keys are never shortened. **Codes** explains update and lifecycle codes such as `U`, `EOS`, and `SUBOK`.
+Each row shows **Op**, the complete **Key / item**, and **Data**. Op stays pinned during horizontal scroll. Keys and data stay on one line.
 
-**Readable** displays captured JSON object and array strings as structured values and marks them **JSON string**. **Raw fields** preserves the captured field types. Large payload previews are bounded; select a row to inspect its complete payload in Context. Exact Evidence identity, timestamp, retained sequence, Source, and phase remain available in Context.
+Use **Codes** to read update and lifecycle codes. **LOCAL** marks Local Injected Updates. `R` marks runtime activity. `W` marks Workbench activity. `S` marks a snapshot.
 
-## Use Filter
+**Readable** formats captured JSON strings and labels them **JSON string**. **Raw fields** preserves captured types.
 
-Filter applies to the Panel Session. You can add criteria without changing unrelated criteria. Workbench uses the same filter rules for IndexedDB and memory history.
+Large row previews have a size limit. Select the event to inspect its full Fields, identity, time, Source, and phase in Context.
 
-## Use Live and Frozen
+## Live and Frozen
 
-**Live** follows the newest matching Evidence. **Frozen** keeps the historical window, selection, and scroll position. Capture continues. Workbench counts new matching Evidence and does not move focus.
+**Live** follows new matching Evidence. **Frozen** keeps the visible window and selection. Capture continues in either state.
 
-Live or Frozen does not start or stop Capture. Capture does not delete history or change the Live or Frozen state.
+Use **Oldest**, **Older**, **Newer**, and **Newest** to navigate retained Evidence.
 
 ## Retained history
 
-One Panel Session owns one temporary Event History. IndexedDB can retain up to 100,000 Evidence records or 256 MiB. The memory fallback can retain up to 25,000 records or 128 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session. The footer shows the current storage mode, and Notifications records the failure reason. Use **Oldest**, **Older**, **Newer**, and **Newest** to move through retained Evidence.
+Each Panel Session owns one temporary Event History.
 
-Complete History ends at the current History Interval's Committed Evidence Boundary. Pending writes advance that boundary only after acceptance. Refused or failed candidates create explicit Evidence Gaps and do not change derived COMMAND state; they do not prevent later valid activity from becoming Evidence. Capture, Coverage, History Capacity, and Live or Frozen remain independent.
+| Storage | Record limit | Size limit |
+| --- | --- | --- |
+| IndexedDB | 100,000 | 256 MiB |
+| Memory fallback | 25,000 | 128 MiB |
 
-**Clear retained Evidence** ends the current History Interval. Scope and Filter do not change this boundary. Workbench requires confirmation before it clears the Evidence. Clear cannot restart Capture after a terminal stop.
+The first limit reached removes the oldest Evidence while Capture continues. Failed or oversized records create explicit Evidence Gaps. Later valid records can still be retained.
 
-A controlled Close tries to erase the Event History. An abnormal stop can prevent this action. Residual data can remain until Chrome runs the extension again. A new Panel Session does not load Evidence from an earlier Panel Session.
+The Committed Evidence Boundary identifies accepted records. Check Coverage, the retained range, and Evidence Gaps before drawing conclusions from missing data.
 
-## Evidence provenance
+Repeated IndexedDB failures switch the panel to memory. Check Notifications for the cause. Memory storage does not reduce Coverage by itself.
 
-The Op column labels Local Injected Updates **LOCAL**, runtime activity `R`, and Workbench activity `W`; unmarked updates are from the server. `S` marks a snapshot. Context retains the full `SERVER`, `LOCAL`, `RUNTIME`, or `WORKBENCH` Source. `ADD` and `DELETE` annotate COMMAND updates; an ordinary update uses `U`. These operations are not result or severity values.
+**Clear retained Evidence** requires confirmation. Closing the panel attempts erasure. An abnormal stop can leave residual data until the extension runs again. A new Panel Session starts empty.
 
-Outbound Client Message Evidence records the page-owned or Workbench-owned `sendMessage` submission and any available terminal listener outcome. An application message is `RUNTIME`; a Server Injection is `WORKBENCH`. A Processed message is not proof of a later Server Update or business effect.
+For storage and recovery details, see [Event History architecture on GitHub](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/docs/ARCHITECTURE.md#event-history-architecture).
 
-## Diagnostics are not Evidence filters
+## Client Messages
 
-Notifications applies to the Panel Session. It has Code, Severity, and Affected filters. These filters do not change Evidence Scope, Filter, Find, selection, Live or Frozen state, or retained history. **Dismiss** hides the footer message. It does not remove the notification or supporting Evidence.
+Outbound Client Messages record submission and available listener outcomes. An application's message is **RUNTIME**. A Server Injection is **WORKBENCH**.
+
+A Processed message does not prove a later Server Update or a business result. See [Server Injection]({{site}}docs/server-injection/).

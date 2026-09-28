@@ -33,23 +33,9 @@ body {
   min-width: 320px;
   margin: 0;
   color: var(--ink);
-  background:
-    radial-gradient(circle at 16% -5%, rgb(55 143 92 / 16%), transparent 34rem),
-    radial-gradient(circle at 92% 20%, rgb(43 93 78 / 8%), transparent 30rem),
-    var(--canvas);
+  background: var(--canvas);
   font-size: 16px;
   line-height: 1.65;
-}
-
-body::before {
-  position: fixed;
-  z-index: -1;
-  inset: 0;
-  background-image: linear-gradient(rgb(255 255 255 / 2%) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / 2%) 1px, transparent 1px);
-  background-size: 64px 64px;
-  mask-image: linear-gradient(to bottom, black, transparent 75%);
-  content: "";
-  pointer-events: none;
 }
 
 img {
@@ -67,7 +53,8 @@ a:hover {
 }
 
 a:focus-visible,
-button:focus-visible {
+button:focus-visible,
+pre:focus-visible {
   outline: 3px solid var(--amber);
   outline-offset: 4px;
 }
@@ -232,8 +219,7 @@ pre code {
 
 .hero {
   display: grid;
-  min-height: 620px;
-  padding: 5rem 0 4.25rem;
+  padding: 3rem 0;
   align-items: center;
   gap: 3rem;
   grid-template-columns: minmax(380px, 0.76fr) minmax(0, 1.24fr);
@@ -267,7 +253,7 @@ h3 {
 .hero h1 {
   max-width: 760px;
   margin-top: 1rem;
-  font-size: clamp(3rem, 5vw, 4.7rem);
+  font-size: clamp(2.2rem, 4vw, 3.4rem);
 }
 
 .lede {
@@ -380,14 +366,14 @@ h3 {
 }
 
 .section {
-  padding-block: 6.5rem;
+  padding-block: 2.5rem;
   border-bottom: 1px solid var(--line);
 }
 
 .section h2,
 .final-cta h2 {
   margin-top: 0.75rem;
-  font-size: clamp(2rem, 4vw, 3.8rem);
+  font-size: clamp(1.4rem, 3vw, 2rem);
 }
 
 .section--split {
@@ -586,23 +572,13 @@ h3 {
 }
 
 .check-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  margin: 1rem 0 0;
+  padding-left: 1.2rem;
 }
 
 .check-list li {
-  position: relative;
-  padding: 0.85rem 0 0.85rem 2rem;
-  border-bottom: 1px solid var(--line);
+  padding: 0.35rem 0;
   color: var(--muted-strong);
-}
-
-.check-list li::before {
-  position: absolute;
-  left: 0;
-  color: var(--green);
-  content: "✓";
 }
 
 .status-label {
@@ -666,7 +642,7 @@ h3 {
   width: min(calc(100% - 2rem), 980px);
   min-height: 65vh;
   margin-inline: auto;
-  padding: 5rem 0 7rem;
+  padding: 2.5rem 0 4rem;
   gap: 2.5rem 4rem;
   grid-template-columns: minmax(0, 1fr);
 }
@@ -678,8 +654,7 @@ h3 {
 }
 
 .article-intro h1 {
-  margin-top: 0.7rem;
-  font-size: clamp(2.6rem, 6vw, 5rem);
+  font-size: clamp(2rem, 4vw, 3rem);
 }
 
 .article-intro p {
@@ -741,9 +716,9 @@ h3 {
 }
 
 .article-content h2 {
-  margin: 3.3rem 0 1rem;
+  margin: 2rem 0 0.8rem;
   color: var(--ink);
-  font-size: clamp(1.7rem, 3vw, 2.35rem);
+  font-size: clamp(1.3rem, 3vw, 1.65rem);
 }
 
 .article-content h3 {
@@ -798,7 +773,7 @@ h3 {
   display: grid;
   width: min(calc(100% - 2rem), var(--content));
   margin-inline: auto;
-  padding: 4rem 0;
+  padding: 2rem 0;
   border-top: 1px solid var(--line);
   gap: 4rem;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 0.65fr);
@@ -929,12 +904,12 @@ h3 {
 
   .hero {
     min-height: 0;
-    padding: 4rem 0 3rem;
+    padding: 2rem 0;
     gap: 2.5rem;
   }
 
   .hero h1 {
-    font-size: clamp(2.7rem, 14vw, 4.3rem);
+    font-size: clamp(2rem, 9vw, 2.7rem);
   }
 
   .outcome-strip,
@@ -954,7 +929,7 @@ h3 {
   }
 
   .section {
-    padding-block: 4.5rem;
+    padding-block: 2rem;
   }
 
   .section--split,

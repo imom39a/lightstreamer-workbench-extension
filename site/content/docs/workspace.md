@@ -1,31 +1,33 @@
-Version 2 has one Workbench workspace. It replaces the separate Timeline, Topology, and COMMAND State pages. A wide layout shows Scope, Ordered Evidence, and Context at the same time.
+Workbench has three surfaces: Scope, Ordered Evidence, and Context.
 
 ## Runtime Scope
 
-The Scope breadcrumb sets the runtime boundary. The Scope tree uses this order: Page → client → Session → Subscription → item → listener. You can inspect a retired object, but you cannot use it as a Local Injection target.
+Select a page, client, Session, Subscription, item, or listener. Scope sets the runtime boundary for visible Evidence.
 
-Scope controls which Evidence is in the view. Selecting an Evidence row does not change Scope.
+Use **Search scopes** to find an object, including objects in collapsed branches. Selecting an Evidence row does not change Scope.
+
+Retired objects remain available for inspection but cannot receive Local Injection.
 
 ## Ordered Evidence
 
-Ordered Evidence shows events in retained order. Each row shows its identity, Lightstreamer meaning, Source, snapshot or live phase, and COMMAND operation.
+Read events in retained order. Each row shows **Op**, the complete **Key / item**, and **Data**.
 
-Workbench renders a limited number of rows at one time. The retained Evidence stays available. Use **Older** and **Newer** to move through it.
+Use **Codes** for operation meanings. Select a row to inspect its full data in Context. See [Ordered Evidence]({{site}}docs/evidence/) for Filter, Find, and history controls.
 
 ## Context
 
-If no row is selected, Context shows information about the active runtime object. If a row is selected, Context shows its Source and Fields first. **Activity summary**, **Filter selected Evidence**, and **Evidence metadata** are closed by default.
+With no event selected, Context describes the current runtime object. With an event selected, it shows the update Fields.
 
-Open only the section that you need. The Filter section has Include, Exclude, and Around actions. These actions do not change other filter criteria. Evidence metadata shows Source, phase, identities, observation path, COMMAND details, and limits.
-
-At compact width, Context replaces the Evidence list. Select **Back to Evidence** to return to the selected row.
+Open **Activity summary**, **Filter selected Evidence**, or **Evidence metadata** for supporting detail. At compact width, use **Back to Evidence** to return to the selected row.
 
 ## Notifications
 
-The **Notifications** footer control opens the Notifications document. It contains active Workbench conditions and recent Lightstreamer diagnostics for the Panel Session. Notification filters do not change Evidence Scope or Filter. A stable condition updates its existing entry.
+Open **Notifications** from the footer to inspect conditions and Lightstreamer diagnostics. Its filters do not change Evidence.
 
-**Dismiss** hides only the footer message. The notification, supporting Evidence, affected Scope, and diagnostic record remain available until the condition ends.
+Select supporting Evidence or the affected Scope to investigate. **Dismiss** hides only the footer message. It does not delete the notification or Evidence.
 
 ## Session operations
 
-**More actions** contains session operations that are not used frequently. These operations include copy, clear history, export, appearance settings, and Help links. Builds with usage analytics include its disclosure and off switch under **Help & resources → Usage analytics**. These operations do not open a primary workspace page.
+Open **More actions** for copy, clear, export, Agent access, and Help.
+
+The header's Agent access status opens its control without changing access. Use the [MCP setup guide]({{site}}docs/agent-access/) to connect an agent.

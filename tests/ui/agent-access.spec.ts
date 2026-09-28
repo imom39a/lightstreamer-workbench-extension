@@ -12,18 +12,14 @@ test("Header agent status opens More without changing access and restores its or
   await expect(status).toBeFocused();
 });
 
-test("More explains MCP setup, release availability and exact panel discovery", async ({ page }) => {
+test("More keeps agent access compact and links to the shared MCP setup guide", async ({ page }) => {
   await page.goto("/?scenario=live-selected&agent=error");
   const instructions = await openInstructions(page);
-  await expect(instructions).toContainText("Node.js 22.12 or later");
-  await expect(instructions).toContainText("same computer as Chrome");
-  await expect(instructions).toContainText("For a published npm release");
-  await expect(instructions).toContainText("npx --yes lightstreamer-workbench-agent@0.1.0 setup");
-  await expect(instructions).toContainText("--extension-id");
-  await expect(instructions).toContainText("mcpServers");
-  await expect(instructions).toContainText("list_panel_sessions");
-  await expect(instructions).toContainText("get_status");
-  await expect(instructions.getByRole("link", { name: "MCP setup guide (including Windows)" }))
+  expect((await instructions.innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(70);
+  await expect(instructions.locator("ol, code")).toHaveCount(0);
+  await expect(instructions).toContainText("without authentication");
+  await expect(instructions).toContainText("model provider");
+  await expect(instructions.getByRole("link", { name: "MCP setup guide", exact: true }))
     .toHaveAttribute("href", "https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/");
   await expect(page.getByRole("button", { name: "Agent access Waiting", exact: true })).toBeVisible();
   await accessible(page);
@@ -103,13 +99,13 @@ for (const [name, width, height] of [["compact", 563, 700], ["normal", 900, 700]
       await expect(instructions.getByRole("checkbox", { name: "Require authentication" })).toHaveCount(0);
       await expect(instructions.getByRole("button", { name: "Apply connection settings" })).toHaveCount(0);
       await expect(instructions.getByLabel("Companion port")).toHaveCount(0);
-      await expect(instructions).toContainText("Any local process can inspect or inject");
-      await expect(instructions).toContainText("launches the npm companion automatically");
-      await expect(instructions).toContainText("No separate terminal");
+      await expect(instructions).toContainText("without authentication");
+      await expect(instructions).toContainText("Local Injection can trigger app actions");
+      expect((await instructions.innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(70);
       await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-instructions.png`) });
       await accessible(page);
       await page.keyboard.press("Tab");
-      const guide = instructions.getByRole("link", { name: "MCP setup guide (including Windows)" });
+      const guide = instructions.getByRole("link", { name: "MCP setup guide", exact: true });
       await expect(guide).toBeFocused();
       await expect(guide).toBeInViewport();
       await instructions.getByRole("status").scrollIntoViewIfNeeded();
@@ -139,7 +135,7 @@ test(`Missing companion waits automatically: ${name} ${theme}`, async ({ page },
   await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-waiting-header.png`) });
   await accessible(page);
   const access = await openInstructions(page);
-  await expect(access.getByRole("status")).toContainText("Connection retries automatically");
+  await expect(access.getByRole("status")).toContainText("Workbench retries automatically");
   await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-waiting-instructions.png`) });
   await waiting.click();
   await expect(page.getByRole("button", { name: "Turn agent access off", exact: true })).toBeFocused();

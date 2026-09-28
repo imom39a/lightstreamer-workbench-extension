@@ -37,4 +37,4 @@ If Coverage is LIMITED or UNAVAILABLE, do the displayed recovery action. Do not 
 
 Next, use the [Developer guide]({{site}}docs/developer-guide/) or read about the [Workbench workspace]({{site}}docs/workspace/).
 
-To connect an MCP agent to this Panel Session, follow [Agent access]({{site}}docs/agent-access/). It requires Node.js 22.12 or later. The guide explains local setup until the companion package is published.
+To connect an agent, use [MCP setup]({{site}}docs/agent-access/).
