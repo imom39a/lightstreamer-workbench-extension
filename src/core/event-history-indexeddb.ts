@@ -2155,6 +2155,13 @@ async function validateExactSearchRows(store: IDBObjectStore, control: ControlRe
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) { resolve(); return; }
+      // Test runtimes may not expose IDBKeyRange, in which case the helper
+      // returns no range and this cursor also sees the migration marker and
+      // Bloom blocks. Exact rows occupy only negative numeric keys.
+      if (typeof cursor.key !== "number" || cursor.key >= 0) {
+        cursor.continue();
+        return;
+      }
       void (async () => {
         const rows = readSearchIndexRowsBlock(cursor.value);
         if (!control || cursor.key !== rows.sequence || rows.intervalId !== control.interval.id) throw new Error("Exact search block belongs to an unavailable interval.");

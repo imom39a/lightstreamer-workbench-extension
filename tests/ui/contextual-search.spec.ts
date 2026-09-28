@@ -133,11 +133,14 @@ for (const viewport of [
     await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("of 3 matches");
     const ledger = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
     const data = ledger.getByRole("columnheader", { name: "Data", exact: true });
-    await data.evaluate(header => {
+    const revealData = () => data.evaluate(header => {
       const ledger = header.closest<HTMLElement>('[role="grid"]')!;
       const pinned = ledger.querySelector('[role="columnheader"]')!.getBoundingClientRect();
-      ledger.scrollLeft += header.getBoundingClientRect().left - pinned.right - 8;
+      const range = document.createRange();
+      range.selectNodeContents(header);
+      ledger.scrollLeft += range.getBoundingClientRect().left - pinned.right - 32;
     });
+    await revealData();
     const left = await ledger.evaluate(element => element.scrollLeft);
     expect(left).toBeGreaterThan(0);
     const dataHeadingIsReachable = () => data.evaluate(header => {
@@ -145,9 +148,11 @@ for (const viewport of [
       range.selectNodeContents(header);
       const text = range.getBoundingClientRect();
       const ledger = header.closest('[role="grid"]')!.getBoundingClientRect();
-      return text.left >= ledger.left && text.right <= ledger.right && text.top >= ledger.top
+      const pinned = header.closest('[role="grid"]')!.querySelector('[role="columnheader"]')!.getBoundingClientRect();
+      return text.left >= pinned.right + 1 && text.right <= ledger.right && text.top >= ledger.top
         && text.bottom <= ledger.bottom
-        && header.contains(document.elementFromPoint(text.left + text.width / 2, text.top + text.height / 2));
+        && [text.left + 1, text.left + text.width / 2, text.right - 1].every(x =>
+          header.contains(document.elementFromPoint(x, text.top + text.height / 2)));
     });
     await expect.poll(dataHeadingIsReachable).toBe(true);
     await expect.poll(() => opHeaderIsUnobscured(page)).toBe(true);
@@ -157,8 +162,13 @@ for (const viewport of [
     await input.press("Enter");
     await expect.poll(() => page.locator('[data-find-current="true"]').getAttribute("data-evidence-id")).not.toBe(prior);
     await expect.poll(() => ledger.evaluate(element => element.scrollLeft)).toBe(left);
-    await expect.poll(dataHeadingIsReachable).toBe(true);
     await expect.poll(() => matchIsUnobscured(page)).toBe(true);
+    await expect(input).toBeFocused();
+    // Another page can change the content-sized Key column. After proving
+    // Find preserved the user's offset, prove Data is still fully reachable.
+    await revealData();
+    await expect.poll(dataHeadingIsReachable).toBe(true);
+    await expect.poll(() => opHeaderIsUnobscured(page)).toBe(true);
     await expect(input).toBeFocused();
     await page.screenshot({ path: info.outputPath("find-data-horizontal-scroll.png") });
   });
