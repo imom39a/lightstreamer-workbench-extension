@@ -19,7 +19,7 @@ function event(id: string): LightstreamerEventEnvelope {
 }
 
 describe("authoritative EventHistory test support", () => {
-  it("keeps query projections payload-free and hydrates requested page, Find and lookup Evidence", async () => {
+  it("preserves payloads on requested page, Find and lookup Evidence across repeated queries", async () => {
     const history = createAuthoritativeHistory({ precommitted: [event("first"), event("second")] });
     const request: EvidenceQueryRequest = {
       at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 },
@@ -29,8 +29,8 @@ describe("authoritative EventHistory test support", () => {
     try {
       const first = await history.query!(request);
       if (!first.ok) throw new Error(first.problem.message);
-      expect(first.value.page.evidence[0]?.payload).toBeUndefined();
-      expect(first.value.find?.results?.[0]?.payload).toBeUndefined();
+      expect(first.value.page.evidence[0]?.payload).toMatchObject({ id: "first" });
+      expect(first.value.find?.results?.[0]?.payload).toMatchObject({ id: "second" });
       expect(first.value.find?.match?.payload).toMatchObject({ id: "second", update: { key: "second" } });
       const selected = first.value.find!.first!;
 
@@ -41,10 +41,13 @@ describe("authoritative EventHistory test support", () => {
       expect(hydrated.value.page.evidence[0]?.payload).toMatchObject({ id: "first" });
       expect(hydrated.value.find?.results?.[0]?.payload).toMatchObject({ id: "second" });
       expect(hydrated.value.lookup).toMatchObject({ state: "RETAINED", evidence: { payload: { id: "second" } } });
-      const again = await history.query!({ ...request, at: first.value.readPoint, find: { ...request.find!, includeMatchPayload: false } });
+      const again = await history.query!({ ...request, at: first.value.readPoint, find: { ...request.find!, reveal: true, includeMatchPayload: false } });
       if (!again.ok) throw new Error(again.problem.message);
-      expect(again.value.page.evidence[0]?.payload).toBeUndefined();
-      expect(again.value.find?.results?.[0]?.payload).toBeUndefined();
+      expect(again.value.page.evidence[0]?.payload).toMatchObject({ id: "first" });
+      expect(again.value.find?.results?.[0]?.payload).toMatchObject({ id: "second" });
+      expect(again.value.find?.page?.evidence[0]?.payload).toMatchObject({ id: "second" });
+      expect(again.value.find?.window?.[0]?.payload).toMatchObject({ id: "second" });
+      expect(again.value.page.evidence[0]?.payload).not.toBe(first.value.page.evidence[0]?.payload);
       expect(again.value.find?.match).toBeUndefined();
 
       await history.clear();

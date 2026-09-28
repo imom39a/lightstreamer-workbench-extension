@@ -119,6 +119,51 @@ for (const viewport of [{ width: 563, height: 700 }, { width: 900, height: 320 }
   });
 }
 
+for (const viewport of [
+  { width: 563, height: 700, forced: false },
+  { width: 900, height: 320, forced: false },
+  { width: 900, height: 320, forced: true }
+]) {
+  test(`Find preserves the horizontal Evidence scroll and keeps Data reachable at ${viewport.width}x${viewport.height}${viewport.forced ? " forced colors" : ""}`, async ({ page }, info) => {
+    if (viewport.forced) await page.emulateMedia({ forcedColors: "active" });
+    await open(page, viewport.width, viewport.height);
+    await page.getByRole("button", { name: "Find", exact: true }).click();
+    const input = page.getByRole("textbox", { name: "Find in ordered Evidence" });
+    await input.fill("complete-retained-find-anchor");
+    await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("of 3 matches");
+    const ledger = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
+    const data = ledger.getByRole("columnheader", { name: "Data", exact: true });
+    await data.evaluate(header => {
+      const ledger = header.closest<HTMLElement>('[role="grid"]')!;
+      const pinned = ledger.querySelector('[role="columnheader"]')!.getBoundingClientRect();
+      ledger.scrollLeft += header.getBoundingClientRect().left - pinned.right - 8;
+    });
+    const left = await ledger.evaluate(element => element.scrollLeft);
+    expect(left).toBeGreaterThan(0);
+    const dataHeadingIsReachable = () => data.evaluate(header => {
+      const range = document.createRange();
+      range.selectNodeContents(header);
+      const text = range.getBoundingClientRect();
+      const ledger = header.closest('[role="grid"]')!.getBoundingClientRect();
+      return text.left >= ledger.left && text.right <= ledger.right && text.top >= ledger.top
+        && text.bottom <= ledger.bottom
+        && header.contains(document.elementFromPoint(text.left + text.width / 2, text.top + text.height / 2));
+    });
+    await expect.poll(dataHeadingIsReachable).toBe(true);
+    await expect.poll(() => opHeaderIsUnobscured(page)).toBe(true);
+    await expect.poll(() => matchIsUnobscured(page)).toBe(true);
+    await expect(input).toBeFocused();
+    const prior = await page.locator('[data-find-current="true"]').getAttribute("data-evidence-id");
+    await input.press("Enter");
+    await expect.poll(() => page.locator('[data-find-current="true"]').getAttribute("data-evidence-id")).not.toBe(prior);
+    await expect.poll(() => ledger.evaluate(element => element.scrollLeft)).toBe(left);
+    await expect.poll(dataHeadingIsReachable).toBe(true);
+    await expect.poll(() => matchIsUnobscured(page)).toBe(true);
+    await expect(input).toBeFocused();
+    await page.screenshot({ path: info.outputPath("find-data-horizontal-scroll.png") });
+  });
+}
+
 test("Scope search refreshes new captured branches explicitly and commits only on Enter", async ({ page }) => {
   await open(page, 900, 700, "live-high-scope");
   const origin = await page.locator(".workbench-react__scope-label").textContent();

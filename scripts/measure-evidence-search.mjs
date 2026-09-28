@@ -19,6 +19,7 @@ const cache = resolve(root, process.env.LSEW_BROWSER_CACHE_DIR ?? ".cache/lsew-b
 const samples = Number(process.env.LSEW_SEARCH_PERF_SAMPLES ?? "3");
 const retainedCount = process.env.LSEW_SEARCH_PERF_RETAINED_COUNT === undefined ? undefined : Number(process.env.LSEW_SEARCH_PERF_RETAINED_COUNT);
 const cpuProfile = process.env.LSEW_SEARCH_PERF_PROFILE === "1";
+const diagnosticProfileThresholdMs = process.env.LSEW_SEARCH_PERF_PROFILE_SLOW_MS === undefined ? undefined : Number(process.env.LSEW_SEARCH_PERF_PROFILE_SLOW_MS);
 const liveAppend = process.env.LSEW_SEARCH_PERF_LIVE_APPEND === "1";
 const firstColdOperation = liveAppend ? "pre-append-broad-query" : "initial-broad-query";
 const queryGate = process.env.LSEW_SEARCH_PERF_QUERY_GATE ? resolve(root, process.env.LSEW_SEARCH_PERF_QUERY_GATE) : null;
@@ -26,6 +27,7 @@ const timeoutMs = Number(process.env.LSEW_SEARCH_PERF_TIMEOUT_MS ?? "1800000");
 const hostNote = process.env.LSEW_SEARCH_PERF_HOST_NOTE ?? "Host load was not controlled.";
 const adapters = (process.env.LSEW_SEARCH_PERF_ADAPTERS ?? "indexeddb,memory").split(",");
 if (!Number.isSafeInteger(samples) || samples < 1 || samples > 10) throw new Error("Search performance samples must be an integer from 1 to 10.");
+if (diagnosticProfileThresholdMs !== undefined && (!Number.isFinite(diagnosticProfileThresholdMs) || diagnosticProfileThresholdMs <= 0)) throw new Error("Diagnostic profile threshold must be a positive finite number of milliseconds.");
 if (retainedCount !== undefined && (!Number.isSafeInteger(retainedCount) || retainedCount < 2_000 || retainedCount % 2 !== 0 || retainedCount > 100_000)) throw new Error("Exploratory retained count must be an even integer from 2,000 to 100,000.");
 if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000) throw new Error("Search performance timeout must be a positive integer of at least 1,000 ms.");
 if (adapters.length === 0 || adapters.some(adapter => !["indexeddb", "memory"].includes(adapter)) || new Set(adapters).size !== adapters.length) throw new Error("Search performance adapters must be indexeddb,memory or one of those adapters.");
@@ -81,17 +83,20 @@ try {
         console.log(`search-performance ${adapter}: query gate opened`);
       });
     }
-    const profileSession = cpuProfile ? await context.newCDPSession(page) : null;
+    const profileSession = cpuProfile || diagnosticProfileThresholdMs !== undefined ? await context.newCDPSession(page) : null;
     let profileActive = false;
+    let profileFilename = `${adapter}-cold-query.cpuprofile`;
     const stopProfile = async () => {
       if (!profileActive || !profileSession) return;
       const { profile } = await profileSession.send("Profiler.stop");
       profileActive = false;
-      await writeFile(join(output, `${adapter}-cold-query.cpuprofile`), `${JSON.stringify(profile)}\n`);
+      await writeFile(join(output, profileFilename), `${JSON.stringify(profile)}\n`);
     };
     if (profileSession) {
       await profileSession.send("Profiler.enable");
       await profileSession.send("Profiler.setSamplingInterval", { interval: 100 });
+    }
+    if (profileSession && cpuProfile) {
       await page.exposeBinding("__evidenceSearchPerformanceBeforeMeasure", async (_source, operation, sample) => {
         if (operation === firstColdOperation && sample === 1) {
           await profileSession.send("Profiler.start");
@@ -101,6 +106,14 @@ try {
       await page.exposeBinding("__evidenceSearchPerformanceAfterMeasure", async (_source, operation, sample) => {
         if (operation === firstColdOperation && sample === 1) await stopProfile();
       });
+    }
+    if (profileSession && diagnosticProfileThresholdMs !== undefined) {
+      await page.exposeBinding("__evidenceSearchPerformanceBeforeDiagnosticProfile", async () => {
+        profileFilename = `${adapter}-diagnostic-cold-query.cpuprofile`;
+        await profileSession.send("Profiler.start");
+        profileActive = true;
+      });
+      await page.exposeBinding("__evidenceSearchPerformanceAfterDiagnosticProfile", stopProfile);
     }
     const measurementsPath = join(output, `${adapter}-measurements.jsonl`);
     await writeFile(measurementsPath, "");
@@ -116,10 +129,10 @@ try {
     try {
       await page.goto(`http://127.0.0.1:${address.port}/`);
       await page.waitForFunction(() => Boolean(globalThis.__evidenceSearchPerformance));
-      const result = await page.evaluate(async ({ adapter, samples, timeoutMs, retainedCount, liveAppend }) => {
+      const result = await page.evaluate(async ({ adapter, samples, timeoutMs, retainedCount, liveAppend, diagnosticProfileThresholdMs }) => {
         const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error(`Adapter search proof exceeded ${timeoutMs} ms.`)), timeoutMs));
-        return await Promise.race([globalThis.__evidenceSearchPerformance.run(adapter, samples, retainedCount, liveAppend), timeout]);
-      }, { adapter, samples, timeoutMs, retainedCount, liveAppend });
+        return await Promise.race([globalThis.__evidenceSearchPerformance.run(adapter, samples, retainedCount, liveAppend, diagnosticProfileThresholdMs), timeout]);
+      }, { adapter, samples, timeoutMs, retainedCount, liveAppend, diagnosticProfileThresholdMs });
       results.push(result);
       await progressWrites;
       await writeFile(join(output, `${adapter}.json`), `${JSON.stringify(result, null, 2)}\n`);
@@ -133,7 +146,7 @@ try {
   if (diagnostics.length > 0) throw new Error("Search performance page reported uncaught browser errors.");
   const report = {
     verdict: "PASS", started, completed: new Date().toISOString(),
-    runner: { browser: browser.version(), executablePath, headless: true, fakeIndexedDb: false, normalProductionLimits: true, cpuProfile, queryGate, liveAppend,
+    runner: { browser: browser.version(), executablePath, headless: true, fakeIndexedDb: false, normalProductionLimits: true, cpuProfile, diagnosticProfileThresholdMs, queryGate, liveAppend,
       atProductionRetentionLimit: results.every(result => result.atProductionRetentionLimit),
       measurement: "Browser performance.now around production EventHistory.query; excludes seeding and UI render/debounce; one fresh isolated browser context per adapter; sequential query samples use one seeded retained set." },
     source: { ...sourceAtBundle, bundleSha256 },

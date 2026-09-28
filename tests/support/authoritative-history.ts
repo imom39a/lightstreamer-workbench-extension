@@ -375,9 +375,17 @@ export function createAuthoritativeHistory(
         });
       }
     }
+    // This synchronous test seam has always returned payload-bearing rows. Keep
+    // that contract, cloning only bounded returned rows rather than all retained
+    // candidates on every query.
+    const hydrated = new Map<number, SelectionRecord>();
     const hydrate = (record: SelectionRecord): SelectionRecord => {
+      const cached = hydrated.get(record.identity.sequence);
+      if (cached) return cached;
       const entry = currentEvidenceBySequence.get(record.identity.sequence)!;
-      return Object.freeze({ ...record, payload: copyCandidate(entry.candidate) });
+      const result = Object.freeze({ ...record, payload: copyCandidate(entry.candidate) });
+      hydrated.set(record.identity.sequence, result);
+      return result;
     };
     const selected = request.lookup === undefined
       ? undefined
@@ -391,12 +399,17 @@ export function createAuthoritativeHistory(
       const match = records.find(record => record.identity.eventId === matchIdentity?.eventId);
       if (match) find = Object.freeze({ ...find, match: hydrate(match) });
     }
-    if (find && request.includePayload) find = Object.freeze({ ...find, results: Object.freeze((find.results ?? []).map(hydrate)) });
+    if (find) find = Object.freeze({
+      ...find,
+      results: Object.freeze((find.results ?? []).map(hydrate)),
+      ...(find.page ? { page: Object.freeze({ ...find.page, evidence: Object.freeze(find.page.evidence.map(hydrate)) }) } : {}),
+      ...(find.window ? { window: Object.freeze(find.window.map(hydrate)) } : {})
+    });
     return gated({
       ok: true,
       value: Object.freeze({
         readPoint,
-        page: Object.freeze({ evidence: Object.freeze(request.includePayload ? page.map(hydrate) : page), nextCursor }),
+        page: Object.freeze({ evidence: Object.freeze(page.map(hydrate)), nextCursor }),
         totals: Object.freeze({ matching: matching.length, inScope: inScope.length }),
         discoveries: new Map(discoveries),
         lookup,

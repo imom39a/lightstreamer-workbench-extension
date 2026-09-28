@@ -39,7 +39,7 @@ function candidate(sequence: number, count: number): LightstreamerEventEnvelope 
   };
 }
 
-async function run(adapter: Adapter, samples: number, retainedCount?: number, liveAppend = false) {
+async function run(adapter: Adapter, samples: number, retainedCount?: number, liveAppend = false, diagnosticProfileThresholdMs?: number) {
   const productionCount = adapter === "indexeddb" ? 100_000 : 25_000;
   const count = retainedCount ?? productionCount;
   const initialCount = liveAppend ? count - 10 : count;
@@ -183,11 +183,33 @@ async function run(adapter: Adapter, samples: number, retainedCount?: number, li
       assert(continuation.find.results[0]?.identity.sequence === count - 9 && continuation.find.results.at(-1)?.identity.sequence === count - 3, "Result continuation must reach late Evidence beyond 1,000 matches");
       assert(continuation.find.page === undefined && continuation.find.match?.payload === undefined, "Companion-style search must omit reveal windows and unrequested payloads");
     }
+    let diagnosticProfile: Readonly<{ elapsedMs: number; totalMatches: number; telemetry: EvidenceSnapshot["telemetry"]; purpose: string }> | null = null;
+    if (diagnosticProfileThresholdMs !== undefined && measurements.some(measurement => measurement.elapsedMs > diagnosticProfileThresholdMs)) {
+      const beforeProfile = Reflect.get(globalThis, "__evidenceSearchPerformanceBeforeDiagnosticProfile") as (() => Promise<void>) | undefined;
+      const afterProfile = Reflect.get(globalThis, "__evidenceSearchPerformanceAfterDiagnosticProfile") as (() => Promise<void>) | undefined;
+      assert(typeof beforeProfile === "function" && typeof afterProfile === "function", "Diagnostic profiling requires the browser runner bindings");
+      console.info(`search-performance ${adapter}: acceptance timings complete; profiling a new broad query for diagnosis only`);
+      await beforeProfile();
+      try {
+        const before = performance.now();
+        const result = await history.query!({
+          at: "LATEST_COMMITTED", page: { order: "NEWEST_FIRST", size: 60 }, filter: emptyFilter(),
+          // A different substring forces a cold Find index while keeping exactly
+          // the same broad match set in this synthetic retained fixture.
+          find: { text: "all-search-toke", scopeToFilter: true, includeMatchPayload: true, current: firstIdentity }
+        });
+        const elapsedMs = performance.now() - before;
+        assert(result.ok && result.value.find?.total === count, "Diagnostic broad query must preserve the full fixture match count");
+        diagnosticProfile = { elapsedMs, totalMatches: result.value.find.total, telemetry: result.value.telemetry,
+          purpose: "CPU attribution after acceptance timings, with a fresh normalized Find query on the same retained fixture; excluded from latency acceptance samples." };
+        console.info(`search-performance ${adapter}: diagnostic-only broad query ${elapsedMs.toFixed(1)} ms`);
+      } finally { await afterProfile(); }
+    }
     progress.phase = "complete";
     return {
       adapter, samples, retainedCount: count, atProductionRetentionLimit: count === productionCount, liveAppend,
       firstColdOperation: liveAppend ? "pre-append-broad-query" : "initial-broad-query", acceptedCount: status.accepted, seedMs, capacity: status.capacity,
-      canonicalBytes: status.capacity.measurements?.retainedBytes ?? null, measurements,
+      canonicalBytes: status.capacity.measurements?.retainedBytes ?? null, measurements, diagnosticProfile,
       correctness: { exactRetention: true, completeMatchCount: true, beyond1000: true, lateNavigation: true, filteredPage: true, boundedResponses: true, boundedPayloadHydration: true, ...(liveAppend ? { latchedLiveAppend: true } : {}) },
       elapsedMs: performance.now() - startedAt
     };
