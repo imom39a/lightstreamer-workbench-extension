@@ -1,29 +1,36 @@
 # Windows MCP companion
 
 Windows and macOS use the same npm package, Node source and loopback connection.
-Follow [the common setup guide](README.md#connect-with-npm) first. There is no
+Follow [the common setup guide](README.md#before-npm-publication) first. There is no
 Windows build, native host, registry entry or administrator requirement.
 
 ## PowerShell
 
-Install Node.js 22.12+ with npm, then verify the commands your agent needs:
+Install Node.js 22.12+ with npm. Until npm publication is confirmed, install the
+tarball from the matching local release bundle and print an absolute local
+configuration. Load the matching extension archive as unpacked and use its ID:
 
 ```powershell
-node --version
 npm.cmd --version
-npx.cmd --yes lightstreamer-workbench-agent@0.1.0 setup
+$workbenchExtensionId = 'YOUR_UNPACKED_EXTENSION_ID'
+npm.cmd install --prefix .\workbench-companion .\agent\lightstreamer-workbench-agent-0.1.0.tgz
+$workbenchNode = (Get-Command node.exe).Source
+$workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs').Path
+& $workbenchNode $workbenchCli setup --local --extension-id $workbenchExtensionId
 ```
 
-For offline use, install the verified tarball using the
+From the extracted MCP bundle root, install the bundle's tarball using the
 [local installation instructions](README.md#local-installation-and-source-development).
 `npm.cmd`/`npx.cmd` avoid PowerShell execution-policy restrictions on `.ps1` shims;
-you do not need to weaken that policy. The common MCP JSON uses `npx`. If your
-agent cannot resolve it, use the path returned by `Get-Command npx.cmd`.
+you do not need to weaken that policy. The pinned `npx.cmd` setup applies after
+the package is published. If the agent cannot resolve it then, use the path
+returned by `Get-Command npx.cmd`.
 Restart a GUI agent after installing Node so it receives the updated PATH.
-After saving the MCP configuration, start/reconnect that server in your agent
+After saving the local MCP configuration, start/reconnect that server in your agent
 app. The app launches the companion automatically; no separate PowerShell
 window, manually running server, Windows service or Chrome native host is needed.
 
+After publication, `npx.cmd` is the Windows fallback for the pinned npm setup.
 The companion includes `describe_stream`, `wait_for_evidence`,
 `validate_agent_candidate`, `search_evidence` and `search_scope`. These also
 require a compatible extension; check `get_status.capabilities`. Build and load
@@ -37,7 +44,7 @@ print an absolute Node configuration:
 ```powershell
 $workbenchNode = (Get-Command node.exe).Source
 $workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs').Path
-& $workbenchNode $workbenchCli setup --local
+& $workbenchNode $workbenchCli setup --local --extension-id $workbenchExtensionId
 ```
 
 Paths with spaces are separate JSON argument entries, not a shell command string.

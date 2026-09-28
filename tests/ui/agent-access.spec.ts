@@ -12,6 +12,23 @@ test("Header agent status opens More without changing access and restores its or
   await expect(status).toBeFocused();
 });
 
+test("More explains MCP setup, release availability and exact panel discovery", async ({ page }) => {
+  await page.goto("/?scenario=live-selected&agent=error");
+  const instructions = await openInstructions(page);
+  await expect(instructions).toContainText("Node.js 22.12 or later");
+  await expect(instructions).toContainText("same computer as Chrome");
+  await expect(instructions).toContainText("For a published npm release");
+  await expect(instructions).toContainText("npx --yes lightstreamer-workbench-agent@0.1.0 setup");
+  await expect(instructions).toContainText("--extension-id");
+  await expect(instructions).toContainText("mcpServers");
+  await expect(instructions).toContainText("list_panel_sessions");
+  await expect(instructions).toContainText("get_status");
+  await expect(instructions.getByRole("link", { name: "MCP setup guide (including Windows)" }))
+    .toHaveAttribute("href", "https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/");
+  await expect(page.getByRole("button", { name: "Agent access Waiting", exact: true })).toBeVisible();
+  await accessible(page);
+});
+
 async function openInstructions(page: Page) {
   await page.getByRole("button", { name: "More actions", exact: true }).click();
   const summary = page.locator("summary").filter({ hasText: "Agent access and setup" });
@@ -91,6 +108,13 @@ for (const [name, width, height] of [["compact", 563, 700], ["normal", 900, 700]
       await expect(instructions).toContainText("No separate terminal");
       await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-instructions.png`) });
       await accessible(page);
+      await page.keyboard.press("Tab");
+      const guide = instructions.getByRole("link", { name: "MCP setup guide (including Windows)" });
+      await expect(guide).toBeFocused();
+      await expect(guide).toBeInViewport();
+      await instructions.getByRole("status").scrollIntoViewIfNeeded();
+      await expect(instructions.getByRole("status")).toBeInViewport();
+      await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-instructions-bottom.png`) });
       await page.getByRole("button", { name: "Back to prior investigation" }).click();
       await expect(toggle).toBeFocused();
       await page.emulateMedia({ forcedColors: "active" });

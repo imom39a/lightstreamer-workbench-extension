@@ -21,6 +21,7 @@ const pages = [
   page("docs/index.md", "docs/index.html", "Documentation", "Install Lightstreamer Workbench and learn how to inspect Lightstreamer activity.", "docs"),
   page("docs/developer-guide.md", "docs/developer-guide/index.html", "Developer guide", "Use Workbench to capture, inspect, diagnose, and test Lightstreamer activity.", "docs"),
   page("docs/getting-started.md", "docs/getting-started/index.html", "Getting started", "Install Workbench, open its DevTools panel, and capture your first Lightstreamer session.", "docs"),
+  page("docs/agent-access.md", "docs/agent-access/index.html", "Agent access", "Connect an MCP client to a Workbench panel and inspect Evidence or prepare deliberate Local Injection.", "docs"),
   page("docs/workspace.md", "docs/workspace/index.html", "The Workbench workspace", "Use Runtime Scope, Ordered Evidence, and Context in one workspace.", "docs"),
   page("docs/evidence.md", "docs/evidence/index.html", "Ordered Evidence", "Filter, find, select, freeze, and inspect retained Lightstreamer Evidence.", "docs"),
   page("docs/command-state.md", "docs/command-state/index.html", "Debug COMMAND lifecycles", "Trace COMMAND operations, inspect Fields, and review lifecycle diagnostics.", "docs"),

@@ -1,10 +1,14 @@
-## 2.0.4 candidate — Full-key JSON stream and capture reliability
+## 2.0.5 candidate — MCP agent access
+
+This repository candidate adds the MCP companion and the [Agent access guide]({{site}}docs/agent-access/). The extension and npm package are prepared but unpublished. Until npm publication is confirmed, use the companion tarball from the local release bundle with the matching unpacked extension build. Do not use a registry-based `npx` setup yet.
+
+## Earlier 2.0.4 repository candidate — Full-key JSON stream and capture reliability
 
 The Evidence stream now leads with compact operation codes, complete keys and readable captured data. Keys stay on one line without truncation, and scroll horizontally with the data while Op stays pinned. The Codes reference restores the earlier Lightstreamer and Workbench lifecycle notation. Readable JSON identifies encoded JSON strings; Raw fields preserves captured types. Large inline previews are bounded, with complete data available in Context.
 
 This release also includes the IndexedDB history throughput and memory-fallback improvements, grouped COMMAND edit validation fixes, and retirement of stale content bridges after extension reloads. Evidence and notification filters use consistent Off / Include / Exclude controls. Workbench now supports dark mode only, including when the operating system requests a light high-contrast palette.
 
-The release package is a candidate until Chrome Web Store review and publication complete. Capture remains observational; Local Injection and reviewed Server Injection retain their existing boundaries.
+At the time, the release package was a candidate awaiting Chrome Web Store review. That historical note does not describe current Store availability. Capture remains observational; Local Injection and reviewed Server Injection retain their existing boundaries.
 
 ## 2.0.3 — Client Messages, Server Injection, and usage analytics
 

@@ -6,8 +6,8 @@ Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extensio
 
 ## Builds covered
 
-- **Repository candidate with the Usage analytics control:** version `2.0.3` collects the limited product-usage data described below, enabled by default in configured production builds. This policy does not imply that the candidate has been published to the Chrome Web Store.
-- **Current Chrome Web Store release:** version `2.0.2` has no product analytics, tracking, advertising, account sign-in, or remote error logging. This and earlier v2 packages remove old analytics settings and installation identifier records at startup.
+- **Repository candidate with the Usage analytics control:** configured builds collect the limited product-usage data described below. The current repository candidate is not a statement about the version available in the Chrome Web Store.
+- **Chrome Web Store builds:** features and analytics behavior depend on the installed version. Check Chrome extension details and the release notes for its version. Do not infer Store availability from this repository candidate.
 - **Public website:** static HTML and CSS. It has no analytics, cookies, JavaScript, advertising, account sign-in, or remote error logging.
 
 The repository candidate also captures inspected-page Client Messages and implements deliberate Server Injection. This candidate is not a statement that the Chrome Web Store package has been published.
@@ -37,9 +37,9 @@ Workbench does not send captured Evidence to the maintainers or an analytics ser
 Agent access is on by default in each open Workbench Panel Session, with both
 inspection and Local Injection available through the configured local companion.
 The panel connects automatically and retries when the companion starts later.
-The header's **Agent access On/Off** switch disables access and retries for this
-Panel Session; a new panel uses the defaults. More actions contains setup guidance
-and optional read-only, authentication and port settings. No access preference or
+The header status shows **On**, **Waiting**, or **Off** and opens Agent access and
+setup under **More actions**. The status does not toggle access; use the on/off
+control in More. A new panel uses the defaults. No access preference or
 connection configuration is persisted by the panel.
 The local MCP companion lets an agent request retained Evidence,
 normalized diagnostics, runtime Scope and Draft/Scenario outcomes. Local Injection invokes the
@@ -55,10 +55,10 @@ general secret detector: other Item Update values, identifiers, diagnostics,
 and the inspected URL's origin/path can remain private application data. URL
 query strings and fragments are not included in the page descriptor.
 
-The grant does not identify an individual agent. Standalone authentication is
-off by default: any local process can use a connected panel's grant or impersonate
+The grant does not identify an individual agent. Authentication is
+off: any local process can use a connected panel's grant or impersonate
 the companion. Loopback/Origin checks do not isolate local processes or OS users.
-Use a trusted development machine or opt into authentication. Turning access Off revokes access and pauses an
+Use a trusted development machine. Turning access Off revokes access and pauses an
 agent Scenario, but cannot undo an update already sent. Closing the panel loses
 the temporary operation ledger; reconnecting never repeats an operation or resumes
 a Scenario, and unknown delivery is never automatically retried.
@@ -67,22 +67,16 @@ entries. The default output requires no credential or approval exchange.
 The companion binds exclusively to `127.0.0.1`; requested data crosses a local,
 unencrypted WebSocket. There is no remote listener or HTTP tool endpoint.
 
-Authentication remains available with `setup --auth required` and the panel's
-**Require authentication** option. In that mode, the agent client stores a private
-credential in its configuration; Workbench never asks for or stores it. Agent
-authentication uses challenge-response without putting the credential in a URL
-or socket message. Compare Workbench's short code with the agent's code and
-click Approve; the agent must confirm that exact request before access. Requests
-expire after two minutes. Keep the private credential secret; possession plus
-local access can use a connected panel's grant. Existing credential-bearing
-configurations remain authenticated until explicitly changed.
+Authentication and read-only enforcement remain protocol capabilities for
+future controls; the current panel does not offer them. The current connection
+uses port `24817` with authentication off and inspection plus Local Injection.
 
 The same npm-distributed Node companion runs on Windows, macOS and Linux.
 It creates no native-host registration, launcher, persistent credential file or
 OS service. Removing its MCP entry disables the agent-side connection; npm's
 package cache contains code, not Evidence. Native transport has been removed.
 
-Version 2 stores current Panel Session Evidence in one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 5,000 records or 32 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. Workbench does not change the storage type during a Panel Session.
+Version 2 stores current Panel Session Evidence in one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 25,000 records or 128 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. The memory fallback reduces History Capacity. It does not reduce Coverage by itself. Workbench does not change the storage type during a Panel Session.
 
 A controlled Close stops intake and commits accepted work. It then tries to erase retained and pending data. Workbench reports whether it confirmed erasure and cleanup. A crash, renderer stop, extension reload, or blocked cleanup can prevent erasure. Residual data can remain until a later safe cleanup. Cleanup removes only recognized unused Workbench data. It does not read, export, derive state from, or load this Evidence. A new Panel Session starts empty.
 
@@ -107,7 +101,7 @@ The analytics candidate adds the `storage` permission for the usage preference a
 Agent access uses a local loopback WebSocket and requires no additional manifest
 permission. The extension no longer requests `nativeMessaging`. The companion
 accepts the configured extension origin and local agents, not ordinary website
-origins; authentication is optional. Setup names the exact extension ID and does
+origins; authentication is off. Setup names the exact extension ID and does
 not expose a remote debugging port.
 
 Document each permission change in the pull request and release notes. Chrome Web Store review includes extension permissions.

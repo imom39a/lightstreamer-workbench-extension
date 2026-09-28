@@ -9,6 +9,7 @@ Lightstreamer Workbench is a Chrome DevTools extension. Use it to inspect applic
 5. [Debug a COMMAND lifecycle]({{site}}docs/command-state/) with ordered operations, Fields, and diagnostics.
 6. Create a Draft or a [Local Injection Scenario]({{site}}docs/local-injection/).
 7. [Capture and deliberately send a Client Message]({{site}}docs/server-injection/) with Server Injection.
+8. [Connect an MCP agent]({{site}}docs/agent-access/) to inspect Evidence and prepare deliberate Local Injection.
 
 ## Product boundary
 

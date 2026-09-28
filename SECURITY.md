@@ -47,20 +47,17 @@ Use the [Support page](https://imom39a.github.io/lightstreamer-workbench-extensi
 ## Data-handling reminder
 
 Agent access transfers requested data to a local MCP client and potentially its
-model provider. At the maintainer's request, open panels automatically enable
-inspection and Local Injection and connect on the default loopback port. The
-header's On/Off switch disables access and automatic retries for that Panel
-Session; a new panel uses the defaults. It retains exact runtime targets, bounded
-messages and optional transport authentication. Standalone authentication is
-off by default at the maintainer's request to simplify local setup. Any local
+model provider. Open panels automatically enable inspection and Local Injection
+and connect on the default loopback port. The header status shows On, Waiting or
+Off and opens Agent access and setup under More actions; the on/off control there
+changes access. A new panel uses the defaults. Any local
 process can use a connected panel's grant or impersonate the companion; this
 mode does not isolate OS users or agents. Standalone mode still binds only
 `127.0.0.1`, checks exact Host/path and configured extension Origin, and rejects
 ordinary website origins. Those checks are not local-process authentication:
-a local program can spoof an Origin. Use a trusted development host or opt in
-with `setup --auth required` and **Require authentication** in the panel.
+a local program can spoof an Origin. Use a trusted development host.
 
-Optional authenticated mode mutually authenticates agent clients with HMAC-SHA-256
+The retained optional authenticated protocol mutually authenticates agent clients with HMAC-SHA-256
 challenges and fresh nonces. The generated 256-bit credential stays out of URLs
 and network messages; it lives in the agent client's configuration, never a
 Workbench input field. Panel connections derive a short comparison code from
@@ -72,10 +69,8 @@ code is not the private MCP credential. Local traffic is not encrypted.
 Possession of the MCP credential plus local access can use an approved panel's
 grant; this is not an individual-agent identity
 or a defense against a compromised browser, local administrator or local agent.
-No native installer, registry mutation or persistent companion credential file
-is needed. Stop clients and disconnect panels before changing authentication
-modes or rotating credentials. A credential-bearing MCP configuration continues
-to require authentication; neither side silently downgrades after a failed handshake.
+The current panel does not offer authentication controls. This protocol is not
+part of the current setup workflow.
 
 Native transport has been removed. All supported platforms run the same
 npm-distributed Node companion over literal loopback; the extension does not

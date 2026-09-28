@@ -1,6 +1,6 @@
 {
   "name": "lightstreamer-workbench",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -34,6 +34,7 @@
     "release:zip": "node scripts/package-extension.mjs --format zip",
     "release:crx": "node scripts/package-extension.mjs --format crx",
     "release:package:all": "node scripts/package-extension.mjs --format both",
+    "release:mcp-bundle": "node scripts/package-mcp-release.mjs",
     "release:upload": "node scripts/chrome-web-store.mjs upload",
     "release:publish": "node scripts/chrome-web-store.mjs publish",
     "release:status": "node scripts/chrome-web-store.mjs status",

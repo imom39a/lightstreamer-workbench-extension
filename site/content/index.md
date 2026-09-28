@@ -1,16 +1,16 @@
 <section class="hero">
   <div class="hero__copy">
-    <span class="eyebrow">2.0.4 release candidate · Chrome DevTools</span>
+    <span class="eyebrow">Chrome DevTools · Repository candidate</span>
     <h1>Debug Lightstreamer in Chrome DevTools.</h1>
     <p class="lede">Inspect clients, Sessions, Subscriptions, Item Updates, snapshots, COMMAND lifecycles, and outbound Client Messages. Test an update locally or send one reviewed Client Message through the page's current Session.</p>
     <div class="hero__actions">
-      <a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Install current 2.0.2</a>
+      <a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Install from Chrome Web Store</a>
       <a class="button button--secondary" href="{{site}}docs/developer-guide/">Open the developer guide</a>
     </div>
-    <p class="hero__note"><span>Captured data stays local</span><span>No account</span><span>Analytics control</span><span>Open source</span></p>
+    <p class="hero__note"><span>Evidence stays local unless agent access is used</span><span>No account</span><span>Analytics control</span><span>Open source</span></p>
   </div>
   <figure class="product-frame product-frame--hero">
-    <figcaption><span></span><span></span><span></span><strong>2.0.4 candidate Workbench</strong></figcaption>
+    <figcaption><span></span><span></span><span></span><strong>Workbench in Chrome DevTools</strong></figcaption>
     <img src="{{site}}assets/app-workspace-context.png" alt="Lightstreamer Workbench showing Runtime Scope, Ordered Evidence, and selected Evidence Context in one Chrome DevTools workspace." width="960" height="600" fetchpriority="high">
   </figure>
 </section>
@@ -23,7 +23,7 @@
 
 <section class="section" id="capabilities">
   <header class="section__header">
-    <span class="eyebrow">2.0.4 candidate capabilities</span>
+    <span class="eyebrow">Workbench capabilities</span>
     <h2>Inspect Lightstreamer activity.</h2>
     <p>Workbench runs in Chrome DevTools. Each result links to captured Evidence or to an Injection that you deliberately created.</p>
   </header>
@@ -103,6 +103,15 @@
   </ol>
 </section>
 
+<section class="section guide-callout" id="agent-access">
+  <div class="guide-callout__copy">
+    <span class="eyebrow">MCP companion</span>
+    <h2>Inspect a Panel Session with an agent.</h2>
+    <p>Connect a local MCP client to query Evidence and prepare deliberate Local Injection. The guide explains local setup, the app-response boundary, and what data may reach your model provider.</p>
+    <a class="button button--secondary" href="{{site}}docs/agent-access/">Read the Agent access guide</a>
+  </div>
+</section>
+
 <section class="section evidence-boundary">
   <div>
     <span class="eyebrow">Data and storage</span>
@@ -110,7 +119,7 @@
   </div>
   <ul class="check-list">
     <li>One Panel Session owns one temporary Event History: up to 100,000 records or 256 MiB with normal IndexedDB storage; 25,000 records or 128 MiB in memory fallback.</li>
-    <li>Captured data stays in the browser extension context. Configured production builds send fixed usage events and a random installation identifier to Google Analytics; the control is under <strong>More actions → Help &amp; resources → Usage analytics</strong>.</li>
+    <li>Captured data stays in the browser extension context unless Agent access sends requested Evidence to a local MCP client and its configured model provider. Configured production builds send fixed usage events and a random installation identifier to Google Analytics; the control is under <strong>More actions → Help &amp; resources → Usage analytics</strong>.</li>
     <li>Workbench has no account, advertising, remote error logging, or maintainer-operated collection backend. Turning analytics off removes its saved identifier and session.</li>
     <li>Workbench creates a versioned JSON or offline HTML export only when you request it. Each export excludes credentials.</li>
     <li>Workbench shows Coverage and the Committed Evidence Boundary. Do not use missing data as proof beyond these limits.</li>
@@ -121,6 +130,6 @@
 <section class="final-cta">
   <span class="eyebrow">Get started</span>
   <h2>Install Lightstreamer Workbench.</h2>
-  <p>The Chrome Web Store currently serves 2.0.3. Version 2.0.4 remains a release candidate until Store review and publication complete.</p>
-  <div class="inline-actions"><a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Install current 2.0.2</a><a class="button button--secondary" href="{{site}}docs/developer-guide/">Open the developer guide</a></div>
+  <p>Install Workbench from the Chrome Web Store, or load a build from the source repository.</p>
+  <div class="inline-actions"><a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Install from Chrome Web Store</a><a class="button button--secondary" href="{{site}}docs/developer-guide/">Open the developer guide</a></div>
 </section>
