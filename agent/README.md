@@ -14,10 +14,11 @@ The first package candidate is `lightstreamer-workbench-agent@0.1.0`. It is
 prepared but is not published to npm. Registry lookup currently returns no
 package. Use the matching local release bundle or build the source checkout;
 do not use `npx` until publication is confirmed. Download the
-`workbench-mcp-release-bundle` artifact from the latest successful [Agent
-companion workflow run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml).
+`workbench-mcp-release-bundle` artifact from the latest successful `main`
+branch run of the [Agent companion workflow](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml).
 Sign in to GitHub and download the artifact's wrapper ZIP. Extract it, then
-extract the named `lightstreamer-workbench-mcp-v2.0.5.zip` bundle inside.
+extract the named `lightstreamer-workbench-mcp-v2.0.5.zip` bundle inside. Check
+`release-manifest.json` in the MCP bundle root and verify its `source.commit`.
 Unpack `extension/lightstreamer-workbench-v2.0.5.zip` into its own directory
 and load that directory in `chrome://extensions`. Copy its unpacked extension
 ID. From the extracted MCP bundle root, install the companion tarball and
