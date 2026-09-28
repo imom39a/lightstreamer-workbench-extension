@@ -24,10 +24,10 @@ const packed = JSON.parse(npm(suppliedTarball
   : ["pack", "./agent", "--json", "--pack-destination", directory]));
 assert.equal(packed.length, 1);
 const artifact = packed[0];
-for (const file of ["dist/cli.mjs", "dist/THIRD_PARTY_NOTICES.txt", "skills/lightstreamer-workbench/SKILL.md", "skills/lightstreamer-workbench/references/connection.md", "README.md", "LICENSE"]) {
+for (const file of ["dist/cli.mjs", "dist/THIRD_PARTY_NOTICES.txt", "skills/lightstreamer-workbench/SKILL.md", "skills/lightstreamer-workbench/references/connection.md", "README.md", "READS.md", "WINDOWS.md", "LICENSE"]) {
   assert(artifact.files.some(entry => entry.path === file), `Missing package file ${file}`);
 }
-assert(artifact.files.every(entry => /^(dist\/|skills\/|README\.md$|WINDOWS\.md$|LICENSE$|package\.json$)/.test(entry.path)), "Unexpected file in npm artifact");
+assert(artifact.files.every(entry => /^(dist\/|skills\/|README\.md$|READS\.md$|WINDOWS\.md$|LICENSE$|package\.json$)/.test(entry.path)), "Unexpected file in npm artifact");
 npm(["install", "--prefix", directory, "--ignore-scripts", "--offline", "--no-audit", "--no-fund", suppliedTarball ?? join(directory, artifact.filename)]);
 const cli = join(directory, "node_modules", ...metadata.name.split("/"), "dist/cli.mjs");
 const installed = JSON.parse(await readFile(join(directory, "node_modules", ...metadata.name.split("/"), "package.json"), "utf8"));
@@ -56,10 +56,10 @@ try {
   assert.equal(clients[0].getServerVersion().version, metadata.version);
   const advertised = (await clients[0].listTools()).tools;
   assert(advertised.some(tool => tool.name === "prepare_scenario"));
-  for (const name of ["search_evidence", "search_scope"]) {
+  for (const name of ["search_evidence", "search_scope", "summarize_evidence"]) {
     assert.equal(advertised.find(tool => tool.name === name)?.annotations?.readOnlyHint, true, `${name} is discoverable and read-only in the installed artifact`);
   }
-  for (const name of ["query_evidence", "describe_stream", "validate_agent_candidate", "wait_for_evidence"]) {
+  for (const name of ["query_evidence", "summarize_evidence", "describe_stream", "validate_agent_candidate", "wait_for_evidence"]) {
     assert(advertised.some(tool => tool.name === name && tool.outputSchema?.type === "object"), `Missing structured tool contract: ${name}`);
   }
   panel = new WebSocket(`ws://127.0.0.1:${port}/workbench`, { headers: { Origin: `chrome-extension://${id}` } });
@@ -80,10 +80,11 @@ try {
   panel.send(JSON.stringify({ id: request.id, result: { pageEpoch: "installed-package-runtime" } }));
   assert.match(JSON.stringify(await call), /installed-package-runtime/);
   for (const name of ["search_evidence", "search_scope"]) {
-    const search = clients[0].callTool({ name, arguments: { panelSessionId: "npm-package-panel", text: "needle", limit: 1 } });
+    const args = { panelSessionId: "npm-package-panel", text: "needle", limit: 1, ...(name === "search_evidence" ? { within: "page" } : {}) };
+    const search = clients[0].callTool({ name, arguments: args });
     const request = await next();
     assert.equal(request.name, name);
-    assert.deepEqual(request.args, { panelSessionId: "npm-package-panel", text: "needle", limit: 1 });
+    assert.deepEqual(request.args, args);
     panel.send(JSON.stringify({ id: request.id, result: { total: 1002, nextCursor: "frozen-search-cursor" } }));
     assert.match(JSON.stringify(await search), /frozen-search-cursor/);
     const invalid = await clients[0].callTool({ name, arguments: { panelSessionId: "npm-package-panel", text: "needle", limit: 101 } });
@@ -94,7 +95,7 @@ try {
     totals: { matching: 0, inScope: 0 }, coverage: "COMPLETE", evaluation: "COMPLETE", storage: "MEMORY_FALLBACK",
     discoveries: {}, nextCursor: null, evidence: [], omissions: []
   };
-  const query = clients[0].callTool({ name: "query_evidence", arguments: { panelSessionId: "npm-package-panel", discover: [{ facet: "kind", limit: 5 }] } });
+  const query = clients[0].callTool({ name: "query_evidence", arguments: { panelSessionId: "npm-package-panel", within: "page", discover: [{ facet: "kind", limit: 5 }] } });
   const queryRequest = await next();
   assert.equal(queryRequest.name, "query_evidence");
   panel.send(JSON.stringify({ id: queryRequest.id, result: queryResult }));

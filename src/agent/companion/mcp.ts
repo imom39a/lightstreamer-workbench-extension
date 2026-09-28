@@ -2,12 +2,14 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
-import { AGENT_TOOLS, validateAgentCall } from "../protocol";
+import { AGENT_READ_CONTRACT, AGENT_TOOLS, validateAgentCall } from "../protocol";
 import metadata from "../../../agent/package.json";
 import { connectPortableBroker } from "./portable-broker";
 import type { PortableConfig } from "../portable-config";
 import type { CompanionChannel } from "../portable-channel";
-import { agentToolFailure, agentToolResult } from "./tool-result";
+import { agentToolFailure, agentToolResult, agentToolResultBytes } from "./tool-result";
+
+const compactReads = new Set(["search_scope", "query_evidence", "search_evidence", "summarize_evidence", "get_evidence"]);
 
 /** Build the MCP interface over one already-connected companion channel. */
 export function createMcpServer(channel: CompanionChannel) {
@@ -47,6 +49,15 @@ export function createMcpServer(channel: CompanionChannel) {
         try { channel.send({ id, name: request.params.name, args: request.params.arguments ?? {} }); }
         catch (error) { settle(error instanceof Error ? error : new Error("COMPANION_UNAVAILABLE: Could not send the request.")); }
       });
+      // The owning panel fits each page to its saved budget. This final transport
+      // cap also protects a new companion connected to an older panel build.
+      // Cursor budgets live in the panel, so only the absolute ceiling is known
+      // here for a continuation; never cache Evidence or query state in the broker.
+      const args = request.params.arguments ?? {};
+      const budget = args.cursor ? AGENT_READ_CONTRACT.maxBytes : Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes);
+      if (compactReads.has(request.params.name) && agentToolResultBytes(result) > budget) {
+        throw new Error("RESULT_BUDGET_EXCEEDED: The connected panel exceeded the read response budget. Use matching extension and companion builds, then start a fresh narrower query or select fewer fields.");
+      }
       return agentToolResult(result);
     } catch (error) { return agentToolFailure(error); }
   });

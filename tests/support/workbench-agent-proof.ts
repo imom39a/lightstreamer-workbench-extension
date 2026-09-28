@@ -33,7 +33,7 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.ok(status.capabilities.includes("search_evidence") && status.capabilities.includes("search_scope"));
     const scopeSearch = await call("search_scope", { panelSessionId, text: "SCENARIO.MUTATE-REINJECT", limit: 100 });
     assert.ok(scopeSearch.scopes.some((entry: any) => entry.kind === "item" && entry.label === "scenario.mutate-reinject · #1"), `MCP Scope search finds the exact named, positional item regardless of tree expansion: ${JSON.stringify(scopeSearch)}`);
-    const evidenceSearch = await call("search_evidence", { panelSessionId, text: "SCENARIO.MUTATE-REINJECT", limit: 1, includePayload: true });
+    const evidenceSearch = await call("search_evidence", { panelSessionId, within: "page", text: "SCENARIO.MUTATE-REINJECT", limit: 1, includePayload: true, maxBytes: 65536 });
     assert.ok(evidenceSearch.total > 0 && evidenceSearch.evidence.length === 1, "MCP Evidence search uses case-insensitive canonical matching.");
     if (evidenceSearch.nextCursor) {
       const next = await call("search_evidence", { panelSessionId, cursor: evidenceSearch.nextCursor });
@@ -58,7 +58,7 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.ok(profile.streams.length > 0, "Stream description profiles the exact live item at a stable read point.");
     let source: any = null;
     for (const example of profile.streams.flatMap((stream: any) => stream.examples)) {
-      const hydrated = await call("get_evidence", { panelSessionId, evidence: example.identity });
+      const hydrated = await call("get_evidence", { panelSessionId, evidence: example.identity, includePayload: true, maxBytes: 65536 });
       assert.equal(hydrated.lookup.state, "RETAINED");
       const candidate = hydrated.lookup.evidence;
       if (candidate.payload?.kind === "item-update"
@@ -79,7 +79,7 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     const draft = await call("prepare_local_injection", { panelSessionId, evidence: source.identity, pageEpoch: status.pageEpoch, document: document("ADD", "Agent MCP Local Injection") });
     assert.ok(draft.local.draft.ready, JSON.stringify(draft));
     const request = { panelSessionId, token: draft.token, requestId: "browser-local-1" };
-    const before = await call("query_evidence", { panelSessionId, limit: 1 });
+    const before = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, limit: 1 });
     const observation = call("wait_for_evidence", { panelSessionId, pageEpoch: status.pageEpoch, after: before.readPoint, timeoutMs: 10000, filter: { criteria: [
       { facet: "provenance", polarity: "include", type: "enum", value: "LOCAL" },
       { facet: "key", polarity: "include", type: "string", value: "agent-browser.TICKER" }
@@ -110,7 +110,7 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     const trace = await settle(() => call("get_scenario_trace", { panelSessionId }), result => result.phase === "complete");
     assert.ok(trace.run.trace.some((entry: any) => entry.kind === "checkpoint" && entry.checkpointId === "evidence-check"));
     await call("finish_agent_document", { panelSessionId, token: scenario.token });
-    const after = await call("query_evidence", { panelSessionId, limit: 100, includePayload: true });
+    const after = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, where: { provenance: ["LOCAL"] }, limit: 10, includePayload: true, maxBytes: 65536 });
     assert.ok(after.evidence.some((row: any) => row.payload?.synthetic), "Agent can read marked Local Evidence after commit.");
     await setAgentAccess(panel, false);
     await settle(() => call("list_panel_sessions"), result => result.length === 0);
@@ -132,6 +132,9 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     await client.connect(transport());
     const call = async (name: string, args: Record<string, unknown> = {}) => {
       const result = await client.callTool({ name, arguments: args });
+      if (["search_scope", "query_evidence", "search_evidence", "summarize_evidence", "get_evidence"].includes(name) && !args.cursor) {
+        assert.ok(Buffer.byteLength(JSON.stringify(result)) <= Number(args.maxBytes ?? 8192), `${name} respects its serialized MCP budget`);
+      }
       assert.ok(!result.isError); return JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
     };
     const sessions = await settle(() => call("list_panel_sessions"), sessions => sessions.length === 1);
@@ -140,12 +143,23 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     const status = await call("get_status", { panelSessionId });
     assert.equal(status.inspectedPage.urlWithoutQuery, expectedUrl);
     assert.equal(status.permission, "local", "Inspection plus Local Injection requires no permission selection.");
-    const query = await call("query_evidence", { panelSessionId, limit: 100, includePayload: true });
+    assert.equal(status.readContract.version, 2);
+    const query = await call("query_evidence", { panelSessionId, within: "page", text: "cdp-same-tab-four", limit: 10, includePayload: true, maxBytes: 65536 });
     assert.ok(query.evidence.some((entry: any) => entry.payload?.item?.name === "cdp-same-tab-four"));
+    const summary = await call("summarize_evidence", { panelSessionId, within: "page", text: "cdp-same-tab-four", where: { kind: ["ITEM-UPDATE"], mode: ["MERGE"] }, facet: "kind" });
+    assert.equal(summary.totals.matching, query.totals.matching);
+    assert.equal(summary.distinctTotal, 1);
+    assert.equal(summary.values[0].value.value, "ITEM-UPDATE");
+    assert.equal(summary.evidence, undefined, "Indexed summaries do not send source events.");
+    const projected = await call("query_evidence", { panelSessionId, within: "page", text: "cdp-same-tab-four", where: { kind: ["ITEM-UPDATE"], mode: ["MERGE"] }, at: summary.readPoint, fields: ["value"], limit: 1 });
+    assert.deepEqual(projected.evidence[0].fields, { value: { state: "concrete", value: "cdp-live-four" } });
+    assert.equal(projected.evidence[0].payload, undefined);
+    const exact = await call("get_evidence", { panelSessionId, evidence: projected.evidence[0].identity, fields: ["value"] });
+    assert.deepEqual(exact.lookup.evidence.fields, projected.evidence[0].fields);
     assert.ok(status.capabilities.includes("search_evidence") && status.capabilities.includes("search_scope"));
     const scopes = await call("search_scope", { panelSessionId, text: "CDP-SAME-TAB-CLIENT", limit: 100 });
     assert.ok(scopes.scopes.some((entry: any) => entry.kind === "client" && entry.label === "cdp-same-tab-client"), JSON.stringify(scopes));
-    const found = await call("search_evidence", { panelSessionId, text: "CDP-SAME-TAB", limit: 1, includePayload: true });
+    const found = await call("search_evidence", { panelSessionId, within: "page", text: "CDP-SAME-TAB", limit: 1, includePayload: true, maxBytes: 65536 });
     assert.ok(found.total > 1 && found.nextCursor, "The installed companion can paginate retained Evidence search.");
     const continued = await call("search_evidence", { panelSessionId, cursor: found.nextCursor });
     assert.deepEqual(continued.readPoint, found.readPoint);
@@ -155,7 +169,7 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     assert.equal(current.search.within, "current-investigation");
     const profile = await call("describe_stream", { panelSessionId, limit: 100 });
     assert.ok(profile.sampled > 0 && profile.streams.length > 0, "Packaged MCP exposes bounded stream discovery.");
-    const kinds = await call("query_evidence", { panelSessionId, limit: 1, discover: [{ facet: "kind", limit: 10 }] });
+    const kinds = await call("query_evidence", { panelSessionId, within: "page", limit: 1, discover: [{ facet: "kind", limit: 10 }] });
     assert.equal(kinds.discoveries.kind.state, "AVAILABLE");
     const observation = await call("wait_for_evidence", { panelSessionId, pageEpoch: status.pageEpoch, after: kinds.readPoint, timeoutMs: 0, filter: { criteria: [{ facet: "key", polarity: "include", type: "string", value: "unobserved-agent-proof-key" }] } });
     assert.equal(observation.status, "TIMED_OUT", JSON.stringify(observation));

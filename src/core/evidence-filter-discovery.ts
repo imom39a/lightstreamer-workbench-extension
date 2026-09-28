@@ -125,13 +125,13 @@ function discoverFromAccounting(
   const descriptor = FACET_DESCRIPTORS.find((candidate) => candidate.key === request.facet);
   if (!descriptor || !Number.isSafeInteger(request.size) || request.size < 1 || request.size > 100) return unavailable(request.facet, "UNSUPPORTED_AT_READ_POINT", null);
   const search = text(request.search);
-  const filterKey = JSON.stringify(filter);
+  const filterKey = JSON.stringify(request.scopeToFilter ? { filter, scopeToFilter: true } : filter);
   const pointKey = readPointKey(readPoint);
   const parsed = parseCursor(request.cursor);
   const hasCursor = request.cursor !== undefined;
-  if (hasCursor && (!parsed || parsed.facet !== request.facet || parsed.search !== search || parsed.size !== request.size || parsed.filter !== filterKey || parsed.readPoint !== pointKey)) return unavailable(request.facet, "DISCOVERY_FAILED", null);
+  if (hasCursor && (!parsed || parsed.facet !== request.facet || parsed.search !== search || (!request.scopeToFilter && parsed.size !== request.size) || parsed.filter !== filterKey || parsed.readPoint !== pointKey)) return unavailable(request.facet, "DISCOVERY_FAILED", null);
 
-  const active = [...(filter.criteria[request.facet]?.include ?? []), ...(filter.criteria[request.facet]?.exclude ?? [])];
+  const active = request.scopeToFilter ? [] : [...(filter.criteria[request.facet]?.include ?? []), ...(filter.criteria[request.facet]?.exclude ?? [])];
   const activeIdentities = new Set(active.map((value) => value.identity));
   let distinctTotal = 0;
   for (const value of accounting.values()) if (matchesSearch(descriptor.label, value, search)) distinctTotal += 1;
@@ -184,7 +184,7 @@ export function discoverFacet(
   // and distinctTotal; ordered selection below is bounded by page size.
   const accounting = new Map<string, CompactValue>();
   let baseEvidenceCount = 0;
-  const baseFilter = withoutFacet(filter, request.facet);
+  const baseFilter = request.scopeToFilter ? filter : withoutFacet(filter, request.facet);
   for (const record of records) {
     if (!matchesBase(record, baseFilter)) continue;
     baseEvidenceCount += 1;

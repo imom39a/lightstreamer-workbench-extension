@@ -36,10 +36,10 @@ async function discoverSource(call: (name: string, args?: Record<string, unknown
   expect(item).toBeDefined();
   const scope = await call("get_scope", { scopeId: item.id });
   expect(scope.localInjection.document).toBeTruthy();
-  const page = await call("query_evidence", { includePayload: true, limit: 100 });
+  const page = await call("query_evidence", { within: "page", includePayload: true, maxBytes: 65536, limit: 100 });
   const example = page.evidence.find((entry: any) => entry.payload?.kind === "item-update" && entry.payload?.update?.key);
   expect(example).toBeDefined();
-  const exact = await call("get_evidence", { evidence: example.identity });
+  const exact = await call("get_evidence", { evidence: example.identity, includePayload: true, maxBytes: 65536 });
   expect(exact.lookup.state).toBe("RETAINED");
   return { item, scope, page, example: { ...example, payload: exact.lookup.evidence.payload } };
 }
@@ -74,10 +74,10 @@ describe("end-to-end agent experiment loop", () => {
     expect(prepared.scenario.phase).toBe("review");
     expect(prepared.scenario.members).toMatchObject([{ kind: "step", id: "update-discovered-row" }, { kind: "checkpoint", id: "local-evidence-checkpoint" }]);
 
-    const before = await call("query_evidence", { limit: 1 });
+    const before = await call("query_evidence", { within: "page", limit: 1 });
     const observation = call("wait_for_evidence", { pageEpoch: status.pageEpoch, after: before.readPoint, timeoutMs: 2000, filter: { criteria: [
       { facet: "provenance", polarity: "include", type: "enum", value: "LOCAL" },
-      { facet: "key", polarity: "include", type: example.facets.key.type, value: key }
+      { facet: "key", polarity: "include", type: "string", value: key }
     ] } });
     const command = { runId: prepared.scenario.run.id, requestId: "loop-step-1", action: "step" };
     const firstReceipt = await call("control_scenario", command);
@@ -85,7 +85,7 @@ describe("end-to-end agent experiment loop", () => {
     const matched = await observation;
     expect(matched.status).toBe("MATCHED");
     expect(matched.evidence.some((entry: any) => entry.facets.provenance.value === "LOCAL" && entry.facets.key.value === key)).toBe(true);
-    const committed = await call("query_evidence", { at: matched.readPoint, filter: { criteria: [{ facet: "key", polarity: "include", type: example.facets.key.type, value: key }] }, includePayload: true });
+    const committed = await call("query_evidence", { within: "page", at: matched.readPoint, filter: { criteria: [{ facet: "key", polarity: "include", type: "string", value: key }] }, includePayload: true, maxBytes: 65536 });
     const localEvidence = committed.evidence.find((entry: any) => entry.payload?.synthetic === true && entry.payload?.update?.key === key);
     expect(localEvidence).toBeDefined();
     expect((await call("get_operation", { requestId: command.requestId })).accepted).toBe(true);

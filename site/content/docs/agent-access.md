@@ -44,15 +44,25 @@ After npm publication is confirmed, use the version-pinned setup command `npx --
 
 The Workbench header shows **On**, **Waiting**, or **Off**. **On** means a companion connection is ready. **Waiting** means access is enabled but the companion is not ready. **Off** means access is disabled. The header status opens Agent access and setup; it does not toggle access. Use the on/off control under **More actions → Agent access and setup**. An open panel enables inspection and Local Injection by default.
 
-The supported tools include `list_panel_sessions`, `get_status`, `list_scope`, `search_scope`, `get_scope`, `query_evidence`, `search_evidence`, `describe_stream`, `wait_for_evidence`, `get_evidence`, `query_diagnostics`, `validate_agent_candidate`, `prepare_local_injection`, `execute_local_injection`, `prepare_scenario`, `control_scenario`, and `get_scenario_trace`. Tool results are bounded and tied to one exact Panel Session. Ask `get_status` for the connected extension's actual capabilities when a tool is unavailable.
+The supported tools include `list_panel_sessions`, `get_status`, `list_scope`, `search_scope`, `get_scope`, `query_evidence`, `search_evidence`, `summarize_evidence`, `describe_stream`, `wait_for_evidence`, `get_evidence`, `query_diagnostics`, `validate_agent_candidate`, `prepare_local_injection`, `execute_local_injection`, `prepare_scenario`, `control_scenario`, and `get_scenario_trace`. Tool results are bounded and tied to one exact Panel Session. Ask `get_status` for the connected extension's actual capabilities when a tool is unavailable.
+
+## Efficient reads on a large stream
+
+Check `get_status.readContract.version === 2`. Reload matching extension and companion builds and reconnect MCP if it is missing; a newer companion alone does not update the panel. Reconnecting also refreshes the agent's tool schemas.
+
+Find the smallest relevant Scope with `search_scope` (for example, `kind:"subscription"`). Use its exact `scopeId` in `summarize_evidence` to count matching records; add `facet:"key"` for distinct observed COMMAND keys. Then call `query_evidence` with `where:{key:["the-observed-key"]}` and `fields:["the-declared-field"]` for a few relevant examples. Use returned values, not the placeholder strings in this example.
+
+Fresh Evidence reads require `scopeId` or explicit `within:"page"` / `within:"current-investigation"`. Compact metadata is the default. `fields` selects exact Item Update field names; `includePayload:true` deliberately requests the full permitted envelope instead. These reads default to an 8 KiB serialized MCP result budget, including compatibility text and structured data. `maxBytes` can explicitly select 4–64 KiB; `limit` is a maximum, not a guaranteed page size. Continue only when the question needs more results, using `panelSessionId` and `cursor` alone.
+
+Summary counts refer to retained Evidence records, not currently active COMMAND rows. One item can contain many keys, and the same key can occur in multiple items. Inspect Coverage and the read point before drawing absence or completeness conclusions. Filtering, projection and aggregation run in the extension's owning panel over its existing history indexes; the companion routes requests and enforces a final size cap. There is no duplicate database or hosted query service. See the [read contract and examples](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/agent/READS.md).
 
 ## Investigate and run a local experiment
 
 Use this order so every proposed change has a source in observed Evidence:
 
 1. Discover the exact panel and inspect its current status.
-2. Profile the relevant stream with `describe_stream`; follow its completeness and omissions.
-3. Read representative Evidence with `query_evidence` or `search_evidence` at an explicit read point.
+2. Find the relevant Scope and summarize matching Evidence or distinct keys. Use `describe_stream` only when a bounded field-shape profile is needed.
+3. Read a few matching examples and selected fields with `query_evidence` or `search_evidence` at an explicit read point.
 4. Validate a source-grounded Draft or explicit Scenario with `validate_agent_candidate`.
 5. Review and prepare the deliberate Local Injection or Scenario.
 6. Execute the reviewed operation once, then inspect its outcome and Evidence references.

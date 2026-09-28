@@ -108,6 +108,91 @@ async function mutateFacetPosting(
 }
 
 describe("filter-impl-09 IndexedDB facet discovery", () => {
+  it("matches the full same-facet Filter for agent discovery without UI pins, in memory and IndexedDB", async () => {
+    const { memory, durable } = await setup(`filter-impl-09-exact-${crypto.randomUUID()}`, [
+      event("event-1", "alpha"), event("event-2", "alpha"), event("event-3", "beta"), event("event-4", "gamma")
+    ]);
+    try {
+      const alpha = typedFacetValue("key", "string", "alpha");
+      const beta = typedFacetValue("key", "string", "beta");
+      const ghost = typedFacetValue("key", "string", "ghost");
+      for (const history of [memory, durable]) {
+        const filter = { ...emptyFilter(), criteria: { key: { include: [alpha], exclude: [beta] } } };
+        const exact = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter, discover: [{ facet: "key", size: 10, scopeToFilter: true }] });
+        expect(exact.ok).toBe(true);
+        if (!exact.ok) throw new Error("Expected exact discovery to succeed");
+        expect(exact.value.totals.matching).toBe(2);
+        expect(exact.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 1, baseEvidenceCount: 2,
+          values: [{ value: { value: "alpha" }, count: 2, pinned: false }] });
+
+        const excluding = await history.query!({ at: exact.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: { ...emptyFilter(), criteria: { key: { include: [], exclude: [beta] } } }, discover: [{ facet: "key", size: 10, scopeToFilter: true }] });
+        expect(excluding.ok).toBe(true);
+        if (!excluding.ok) throw new Error("Expected exclusion discovery to succeed");
+        const excludedValues = excluding.value.discoveries.get("key");
+        expect(excludedValues).toMatchObject({ state: "AVAILABLE", distinctTotal: 2, baseEvidenceCount: 3 });
+        expect(excludedValues?.values.map(entry => entry.value.value)).toEqual(["alpha", "gamma"]);
+        expect(excludedValues?.values.every(entry => entry.pinned === false)).toBe(true);
+
+        const legacy = await history.query!({ at: exact.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: { ...emptyFilter(), criteria: { key: { include: [ghost], exclude: [] } } }, discover: [{ facet: "key", size: 10 }] });
+        const agent = await history.query!({ at: exact.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: { ...emptyFilter(), criteria: { key: { include: [ghost], exclude: [] } } }, discover: [{ facet: "key", size: 10, scopeToFilter: true }] });
+        expect(legacy.ok && agent.ok).toBe(true);
+        if (!legacy.ok || !agent.ok) throw new Error("Expected default and agent discovery to succeed");
+        expect(legacy.value.discoveries.get("key")?.values.some(entry => entry.value.value === "ghost" && entry.pinned)).toBe(true);
+        expect(agent.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "ZERO_BASE", values: [], baseEvidenceCount: 0 });
+      }
+    } finally { await Promise.all([memory.close(), durable.close()]); }
+  });
+
+  it("resizes exact discovery and adaptive Evidence continuations while keeping default cursors strict", async () => {
+    const { memory, durable } = await setup(`filter-impl-09-adaptive-${crypto.randomUUID()}`, [
+      event("event-1", "alpha"), event("event-2", "beta"), event("event-3", "gamma"), event("event-4", "delta")
+    ]);
+    try {
+      for (const history of [memory, durable]) {
+        const first = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), discover: [{ facet: "key", size: 1, scopeToFilter: true }] });
+        expect(first.ok).toBe(true);
+        if (!first.ok) throw new Error("Expected first exact discovery to succeed");
+        const discoverCursor = first.value.discoveries.get("key")?.nextCursor;
+        expect(discoverCursor).toBeTruthy();
+        const second = await history.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), discover: [{ facet: "key", size: 2, cursor: discoverCursor!, scopeToFilter: true }] });
+        expect(second.ok).toBe(true);
+        if (!second.ok) throw new Error("Expected resized exact discovery to succeed");
+        expect(second.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 4 });
+        expect(second.value.discoveries.get("key")?.values).toHaveLength(2);
+        const third = await history.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), discover: [{ facet: "key", size: 2, cursor: second.value.discoveries.get("key")?.nextCursor!, scopeToFilter: true }] });
+        expect(third.ok).toBe(true);
+        if (!third.ok) throw new Error("Expected final exact discovery to succeed");
+        expect(third.value.discoveries.get("key")?.values).toHaveLength(1);
+        expect(third.value.discoveries.get("key")?.nextCursor).toBeNull();
+        const values = [first, second, third].flatMap(result => result.value.discoveries.get("key")?.values.map(entry => entry.value.value) ?? []);
+        expect(values).toEqual(["alpha", "beta", "delta", "gamma"]);
+
+        const evidenceFirst = await history.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1, adaptiveSize: true }, filter: emptyFilter() });
+        expect(evidenceFirst.ok).toBe(true);
+        if (!evidenceFirst.ok) throw new Error("Expected first adaptive Evidence page");
+        expect(evidenceFirst.value.page.evidence.map(record => record.identity.eventId)).toEqual(["event-1"]);
+        const evidenceSecond = await history.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 2, cursor: evidenceFirst.value.page.nextCursor!, adaptiveSize: true }, filter: emptyFilter() });
+        expect(evidenceSecond.ok).toBe(true);
+        if (!evidenceSecond.ok) throw new Error("Expected resized adaptive Evidence page");
+        expect(evidenceSecond.value.page.evidence.map(record => record.identity.eventId)).toEqual(["event-2", "event-3"]);
+        const evidenceThird = await history.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 2, cursor: evidenceSecond.value.page.nextCursor!, adaptiveSize: true }, filter: emptyFilter() });
+        expect(evidenceThird.ok).toBe(true);
+        if (!evidenceThird.ok) throw new Error("Expected final adaptive Evidence page");
+        expect(evidenceThird.value.page.evidence.map(record => record.identity.eventId)).toEqual(["event-4"]);
+        expect(evidenceThird.value.page.nextCursor).toBeNull();
+
+        const strict = await history.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), discover: [{ facet: "key", size: 1 }] });
+        expect(strict.ok).toBe(true);
+        if (!strict.ok) throw new Error("Expected default query to succeed");
+        const strictPage = await history.query!({ at: strict.value.readPoint, page: { order: "OLDEST_FIRST", size: 2, cursor: strict.value.page.nextCursor! }, filter: emptyFilter() });
+        expect(strictPage).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+        const strictDiscover = await history.query!({ at: strict.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), discover: [{ facet: "key", size: 2, cursor: strict.value.discoveries.get("key")?.nextCursor! }] });
+        expect(strictDiscover.ok).toBe(true);
+        if (!strictDiscover.ok) throw new Error("Expected default discovery failure to be isolated");
+        expect(strictDiscover.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+      }
+    } finally { await Promise.all([memory.close(), durable.close()]); }
+  });
   it("matches memory, pages every value, and pins an active zero-count value", async () => {
     const candidates = Array.from({ length: 130 }, (_, index) => event(`event-${index}`, `key-${String(index).padStart(3, "0")}`));
     const { memory, durable } = await setup(`filter-impl-09-pages-${Date.now()}`, candidates);

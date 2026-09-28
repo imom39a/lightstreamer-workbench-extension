@@ -24,6 +24,7 @@ async function createService(history: EventHistory) {
   const investigation = createEvidenceInvestigationQuery({ query: request => history.query!(request) });
   const runtime = {
     status: () => ({}),
+    queryBoundary: () => ({ scope: { kind: "PAGE" as const }, filter: createFilter() }),
     query: async (input: AgentQueryInput) => {
       const result = await investigation.query({
         at: input.at, scope: { kind: "PAGE" }, filter: input.filter ?? createFilter(),
@@ -54,14 +55,14 @@ describe("MCP Evidence query storage parity", () => {
     const memoryCall = await createService(memory);
     const indexedDbCall = await createService(indexedDb);
 
-    const memoryDiscovery = await memoryCall("query_evidence", { limit: 1, discover: [{ facet: "kind", limit: 10 }] });
-    const indexedDbDiscovery = await indexedDbCall("query_evidence", { limit: 1, discover: [{ facet: "kind", limit: 10 }] });
+    const memoryDiscovery = await memoryCall("query_evidence", { within: "page", limit: 1, discover: [{ facet: "kind", limit: 10 }] });
+    const indexedDbDiscovery = await indexedDbCall("query_evidence", { within: "page", limit: 1, discover: [{ facet: "kind", limit: 10 }] });
     expect(indexedDbDiscovery.readPoint).toEqual(memoryDiscovery.readPoint);
     expect(indexedDbDiscovery.discoveries.kind).toEqual(memoryDiscovery.discoveries.kind);
     const itemKind = memoryDiscovery.discoveries.kind.values.find((entry: any) => entry.value.facet === "kind" && entry.value.type === "enum");
     expect(itemKind).toBeDefined();
 
-    const request = { at: memoryDiscovery.readPoint, filter: { criteria: [{ facet: "kind", polarity: "include", type: itemKind.value.type, value: itemKind.value.value, label: itemKind.value.label }] }, order: "OLDEST_FIRST", limit: 2 };
+    const request = { within: "page", at: memoryDiscovery.readPoint, filter: { criteria: [{ facet: "kind", polarity: "include", type: itemKind.value.type, value: itemKind.value.value, label: itemKind.value.label }] }, order: "OLDEST_FIRST", limit: 2 };
     const memoryFirst = await memoryCall("query_evidence", request);
     const indexedDbFirst = await indexedDbCall("query_evidence", { ...request, at: indexedDbDiscovery.readPoint });
     expect(indexedDbFirst.readPoint).toEqual(memoryFirst.readPoint);

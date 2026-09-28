@@ -3,6 +3,7 @@ import { FACET_DESCRIPTORS } from "../core/evidence-facets";
 export const AGENT_PROTOCOL_VERSION = 1;
 export type Message = Record<string, unknown>;
 export const AGENT_MAX_BYTES = 512 * 1024;
+export const AGENT_READ_CONTRACT = Object.freeze({ version: 2, defaultMaxBytes: 8192, maxBytes: 65536 });
 export type AgentPermission = "off" | "read" | "local";
 export type AgentArguments = Record<string, unknown>;
 type Schema = { type?: string; properties?: Record<string, Schema>; required?: string[]; additionalProperties?: boolean; items?: Schema; oneOf?: readonly Schema[]; enum?: readonly unknown[]; minimum?: number; maximum?: number; maxLength?: number; minLength?: number; maxItems?: number; minItems?: number };
@@ -21,13 +22,19 @@ const criterion = object({ facet: text, polarity: { type: "string", enum: ["incl
 const around = object({ intervalId: text, start: number(), end: number() }, ["intervalId", "start", "end"]);
 const filter = object({ text: { type: "string", maxLength: 2048 }, criteria: { type: "array", maxItems: 100, items: criterion }, around });
 const discovery = object({ facet: text, search: { type: "string", maxLength: 2048 }, limit: { ...integer(100), minimum: 1 }, cursor: text }, ["facet"]);
+const within = { type: "string", enum: ["page", "current-investigation"] };
+const choices: Schema = { type: "array", minItems: 1, maxItems: 100, items: text };
+const where = object(Object.fromEntries(["kind", "mode", "key", "operation", "phase", "provenance"].map(facet => [facet, choices])));
+const fields: Schema = { type: "array", minItems: 1, maxItems: 32, items: text };
+const maxBytes: Schema = { type: "integer", minimum: 4096, maximum: AGENT_READ_CONTRACT.maxBytes };
 const querySchema = {
-  scopeId: text, text: { type: "string", maxLength: 2048 }, filter,
+  scopeId: text, within, text: { type: "string", maxLength: 2048 }, filter, where, fields, maxBytes,
   limit: { ...integer(100), minimum: 1 }, cursor: text, includePayload: { type: "boolean" },
   order: { type: "string", enum: ["NEWEST_FIRST", "OLDEST_FIRST"] }, at: { oneOf: [{ type: "string", enum: ["LATEST_COMMITTED"] }, readPoint] },
   discover: { type: "array", maxItems: 10, items: discovery }
 };
-const streamSchema = Object.fromEntries(Object.entries(querySchema).filter(([key]) => !["cursor", "discover", "includePayload"].includes(key)));
+const streamSchema = Object.fromEntries(Object.entries(querySchema).filter(([key]) => !["cursor", "discover", "includePayload", "within", "where", "fields", "maxBytes"].includes(key)));
+const summarySchema = Object.fromEntries(Object.entries(querySchema).filter(([key]) => !["discover", "includePayload", "fields", "order"].includes(key)));
 const stepSource = { scopeId: text, evidence: identity, document: { type: "string", maxLength: 64 * 1024 }, delayMs: integer(3600000) };
 const assertionItem = object({ name: { oneOf: [{ type: "string", maxLength: 2048 }, { type: "null" }] }, position: { oneOf: [{ ...integer(Number.MAX_SAFE_INTEGER) }, { type: "null" }] } }, ["name", "position"]);
 const assertion = { type: "object", oneOf: [
@@ -56,15 +63,16 @@ export const AGENT_TOOLS = [
   tool("list_panel_sessions", "List available Workbench Panel Sessions. Open panels connect automatically by default with inspection and Local Injection access. Choose the exact browser tab; never infer that the first session is the intended target.", {}),
   tool("get_pairing_requests", "Optional authenticated mode only: list pending connections and short comparison codes. Default authentication-off connections need no pairing; use list_panel_sessions instead. For authenticated requests, show the code and ask the user to compare it in Workbench and click Approve. Returns no inspected-page data.", {}),
   tool("confirm_pairing", "Optional authenticated mode only: confirm the exact comparison code after the user approves it in Workbench. Cannot approve on the user's behalf. Default authentication-off connections skip this tool. Then use list_panel_sessions to identify the exact tab.", { requestId: text, code: { type: "string", minLength: 9, maxLength: 9 } }, ["requestId", "code"], true),
-  tool("get_status", "Read capabilities, page epoch, Capture, Coverage, retention and committed Evidence boundary.", {}),
+  tool("get_status", "Read capabilities, readContract version and response budgets, page epoch, Capture, Coverage, retention and committed Evidence boundary. New read options require readContract.version 2 on the connected panel.", {}),
   tool("list_scope", "Read a bounded page of clients, Sessions, Subscriptions and items without changing UI selection.", { offset: integer(100000), limit: { ...integer(100), minimum: 1 } }),
-  tool("search_scope", "Find structural Scope objects, including collapsed branches, by case-insensitive substring in identity, label, type, ancestor path, detail or lifecycle. Supply text for a new search, or only cursor to continue its frozen Topology snapshot. Returns at most 100 matches per page and never changes human selection. Cursors expire after retention, Clear, page change or access revocation.", { text, limit: { ...integer(100), minimum: 1 }, cursor: text }),
+  tool("search_scope", "Locate structural Scopes by text, optional kind and parentScopeId. Returns exact scopeIds for subsequent reads, not COMMAND keys. Search includes collapsed branches and never changes human selection. Continue with only panelSessionId and cursor; start fresh to change options.", { text, kind: { type: "string", enum: ["page", "client", "session", "subscription", "item", "listener"] }, parentScopeId: text, limit: { ...integer(100), minimum: 1 }, cursor: text, maxBytes }),
   tool("get_scope", "Inspect one exact Scope and its Local Injection target, schema and availability.", { scopeId: text }, ["scopeId"]),
-  tool("query_evidence", "Query retained Evidence with typed facet include/exclude criteria, order, an explicit stable read point, around window and bounded facet discovery. Legacy scopeId/text remain supported. Continue with the returned opaque cursor. Item Update payloads are opt-in; Client Message bodies remain redacted.", { ...querySchema, discover: querySchema.discover }),
-  tool("search_evidence", "Find retained Evidence by case-insensitive substring, including matches beyond the visible Timeline and 1,000 results. within defaults to page (optional exact scopeId, no human Filter); current-investigation freezes the human Scope and Filter. Supply text for a new search, or only cursor for subsequent pages at the same read point. Search never moves human Scope, Filter, Find or selection. Payloads are opt-in; explanations use only allowed fields, with Client Message text and credentials redacted. Expired retention requires a new search.", { text, within: { type: "string", enum: ["page", "current-investigation"] }, scopeId: text, limit: { ...integer(100), minimum: 1 }, cursor: text, includePayload: { type: "boolean" } }),
+  tool("query_evidence", "Read compact matching Evidence in an explicit scopeId or within:page/current-investigation. where uses OR within each facet and AND between facets. fields selects exact Item Update field names; includePayload:true explicitly requests the full permitted envelope instead. Default serialized MCP result budget is 8192 bytes; limit is a maximum, not a guaranteed page size. Prefer summarize_evidence for counts/distinct keys. Continue with only panelSessionId and cursor; start fresh without cursor to change options, optionally preserving at. Does not change human investigation.", querySchema),
+  tool("search_evidence", "Search text within an explicit scopeId or within:page/current-investigation, with the same where, fields, at read point and response budget as query_evidence. Matches are case-insensitive substrings; returned excerpts use permitted fields only. Default 8192-byte result, compact records, no payload. Continue with only panelSessionId and cursor; start fresh to narrow or change options. Does not change human investigation.", { text, within, scopeId: text, where, fields, maxBytes, at: querySchema.at, limit: { ...integer(100), minimum: 1 }, cursor: text, includePayload: { type: "boolean" } }),
+  tool("summarize_evidence", "Count retained matching Evidence in an explicit Scope without returning events. Optional facet returns indexed distinct values and Evidence-record counts. Historical COMMAND key values are not currently active rows, and item count is not key count. Shares where/filter/text/at with query_evidence. Default 8192-byte result; continue with only panelSessionId and cursor at the same read point. No payload hydration or client-side event enumeration is needed.", { ...summarySchema, facet: { type: "string", enum: FACET_DESCRIPTORS.map(entry => entry.key) } }),
   tool("describe_stream", "Summarize Lightstreamer Subscription and item-update streams from a bounded retained Evidence sample. Profiles report sample coverage and exact matching totals; continue with query_evidence when the sample is incomplete.", { ...streamSchema, limit: { ...integer(100), minimum: 1 } }),
   tool("wait_for_evidence", "Wait up to 20 seconds for matching committed Evidence after an exact read point, without blocking other tools. Results distinguish matched, timeout, cancellation, changed target/history, incomplete history and query failure. This is not proof of app behavior or event absence. Always inspect the returned read point.", { after: readPoint, pageEpoch: text, timeoutMs: integer(20000), scopeId: text, text: querySchema.text, filter, limit: querySchema.limit, includePayload: { type: "boolean" } }, ["after", "pageEpoch"]),
-  tool("get_evidence", "Read one exact retained Evidence identity. Client Message bodies and outcome text remain redacted.", { evidence: identity }, ["evidence"]),
+  tool("get_evidence", "Look up one exact retained Evidence identity. Defaults to compact metadata; fields selects exact Item Update field names. Use includePayload:true only when the full permitted envelope is necessary. Default serialized MCP result budget is 8192 bytes. Client Message bodies and credentials remain redacted.", { evidence: identity, fields, includePayload: { type: "boolean" }, maxBytes }, ["evidence"]),
   tool("query_diagnostics", "Read normalized Diagnostic Observations after a boundary. Continue with nextAfter when truncated. Missing observations prove nothing when coverage is limited.", { after: object({ intervalId: text, sequence: integer(Number.MAX_SAFE_INTEGER) }, ["intervalId", "sequence"]), limit: { ...integer(100), minimum: 1 } }),
   tool("update_agent_document", "Correct an unexecuted agent-owned Draft or Scenario Step using JSON document text. Requires its current token. Human edits cause a conflict. Returns a replacement token and validation.", { token: text, document: { type: "string", maxLength: 64 * 1024 }, stepId: text }, ["token", "document"], true),
   tool("prepare_local_injection", "Create a visible Local Injection Draft from exact Evidence or a live COMMAND Scope. document is optional JSON text with command, key, isSnapshot and fields. Returns an immutable execution token; does not inject.", { ...sourceProperties, pageEpoch: text }, ["pageEpoch"], true),
@@ -84,6 +92,16 @@ function tool(name: string, description: string, properties: Record<string, Sche
       readPoint, totals: { type: "object", additionalProperties: true, required: ["matching", "inScope"] }, coverage: { type: "string", enum: ["COMPLETE", "LIMITED"] },
       evaluation: { type: "string", enum: ["COMPLETE", "UNSUPPORTED_FILTER"] }, storage: { type: "string", enum: ["INDEXED_DB", "MEMORY_FALLBACK"] }, discoveries: { type: "object", additionalProperties: true },
       nextCursor: { oneOf: [{ type: "null" }, { type: "string", maxLength: 8192 }] }, evidence: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } }, omissions: { type: "array", maxItems: 100, items: text }
+    }
+  } : name === "summarize_evidence" ? {
+    type: "object", additionalProperties: true, required: ["readPoint", "totals", "coverage", "evaluation", "storage", "countMeaning", "values", "distinctTotal", "nextCursor"], properties: {
+      readPoint, totals: { type: "object", additionalProperties: true, required: ["matching", "inScope"] },
+      coverage: { type: "string", enum: ["COMPLETE", "LIMITED"] }, evaluation: { type: "string", enum: ["COMPLETE", "UNSUPPORTED_FILTER"] },
+      storage: { type: "string", enum: ["INDEXED_DB", "MEMORY_FALLBACK"] }, countMeaning: text,
+      facet: { type: "string", enum: FACET_DESCRIPTORS.map(entry => entry.key) },
+      values: { type: "array", maxItems: 100, items: object({ value: object({ facet: text, type: text, value: scalar, label: { type: "string" } }, ["facet", "type", "value", "label"]), count: integer(Number.MAX_SAFE_INTEGER) }, ["value", "count"]) },
+      distinctTotal: { oneOf: [{ type: "null" }, integer(Number.MAX_SAFE_INTEGER)] },
+      nextCursor: { oneOf: [{ type: "null" }, text] }
     }
   } : name === "describe_stream" ? {
     type: "object", additionalProperties: true, required: ["readPoint", "matchingTotal", "sampled", "completeness", "nextCursor", "omissions"], properties: {
@@ -107,18 +125,27 @@ export function validateAgentCall(name: string, args: unknown): asserts args is 
   const definition = AGENT_TOOLS.find(tool => tool.name === name);
   if (!definition) throw new Error("Unknown Workbench tool.");
   validate(definition.inputSchema, args, "arguments");
+  const input = args as AgentArguments;
+  if (["query_evidence", "search_evidence", "summarize_evidence"].includes(name) && input.cursor === undefined) {
+    if (input.scopeId === undefined && input.within === undefined) throw new Error("SCOPE_REQUIRED: supply an exact scopeId, within:page, or within:current-investigation. Find scopeIds with search_scope.");
+    if (input.scopeId !== undefined && input.within === "current-investigation") throw new Error("INVALID_ARGUMENT: current-investigation already defines Scope; omit scopeId or start a scoped query.");
+  }
+  if (input.fields !== undefined && input.includePayload === true) throw new Error("INVALID_ARGUMENT: choose fields or includePayload:true, not both.");
+  if (Array.isArray(input.fields) && new Set(input.fields).size !== input.fields.length) throw new Error("INVALID_ARGUMENT: fields must contain unique exact field names.");
+  if (input.where && ((input.filter as { criteria?: unknown[] } | undefined)?.criteria?.length ?? 0) > 0) throw new Error("INVALID_ARGUMENT: choose where or filter.criteria, not both.");
+  if (input.within === "current-investigation" && (input.where !== undefined || input.filter !== undefined || (name !== "search_evidence" && input.text !== undefined))) {
+    throw new Error("INVALID_ARGUMENT: current-investigation preserves the human Filter. Use an exact scopeId or within:page to supply different filters; search_evidence text searches inside the preserved Filter.");
+  }
   if (name === "search_scope" || name === "search_evidence") {
-    const input = args as AgentArguments;
     if (input.cursor !== undefined) {
-      if (Object.keys(input).some(key => key !== "panelSessionId" && key !== "cursor")) throw new Error("Continue a search with only panelSessionId and cursor; start a new search to change its boundary or options.");
+      if (Object.keys(input).some(key => key !== "panelSessionId" && key !== "cursor")) throw new Error("QUERY_OPTIONS_CHANGED: continue with only panelSessionId and cursor; start a new search without cursor to change options.");
     } else if (typeof input.text !== "string" || input.text.trim().length === 0) {
       throw new Error("Search text must contain at least one non-whitespace character.");
     }
-    if (input.within === "current-investigation" && input.scopeId !== undefined) throw new Error("current-investigation already defines Scope; omit scopeId or choose within: page.");
   }
   if (name === "validate_agent_candidate" && (Object.prototype.hasOwnProperty.call(args as object, "draft") === Object.prototype.hasOwnProperty.call(args as object, "members"))) throw new Error("arguments: provide exactly one of draft or members.");
   if (name === "prepare_scenario" && (Object.prototype.hasOwnProperty.call(args as object, "steps") === Object.prototype.hasOwnProperty.call(args as object, "members"))) throw new Error("arguments: provide exactly one of members or legacy steps.");
-  if (["query_evidence", "describe_stream"].includes(name)) validateQueryCrossFields(args as AgentArguments);
+  if (["query_evidence", "search_evidence", "summarize_evidence", "describe_stream"].includes(name)) validateQueryCrossFields(args as AgentArguments);
   if (name === "wait_for_evidence") validateQueryCrossFields({ ...args as AgentArguments, at: (args as AgentArguments).after });
   if (new TextEncoder().encode(JSON.stringify(args)).byteLength > AGENT_MAX_BYTES) throw new Error("Request exceeds the 512 KiB limit.");
 }
@@ -152,7 +179,7 @@ function validate(schema: Schema, value: unknown, path: string): void {
   } else if (schema.type === "boolean" && typeof value !== "boolean") throw new Error(`${path}: expected boolean.`);
 }
 function validateQueryCrossFields(args: AgentArguments): void {
-  if (args.cursor && Object.keys(args).some(key => !["panelSessionId", "cursor"].includes(key))) throw new Error("arguments: cursor continuation accepts no query options.");
+  if (args.cursor && Object.keys(args).some(key => !["panelSessionId", "cursor"].includes(key))) throw new Error("QUERY_OPTIONS_CHANGED: continue with only panelSessionId and cursor; start a new query without cursor to change options, optionally preserving at.");
   const point = args.at;
   if (point && typeof point === "object") {
   const value = point as { interval: { id: string }; committedEvidenceBoundary: { intervalId: string; sequence: number } | null; retainedRange: { first: { intervalId: string; sequence: number }; last: { intervalId: string; sequence: number } } | null };

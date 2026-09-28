@@ -45,9 +45,10 @@ describe("MCP companion search", () => {
   it("advertises bounded read-only search tools and rejects ambiguous continuation arguments", () => {
     for (const name of ["search_scope", "search_evidence"]) {
       expect(AGENT_TOOLS.find(tool => tool.name === name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
-      expect(() => validateAgentCall(name, { panelSessionId: "p", text: "needle", limit: 101 })).toThrow("invalid integer");
-      expect(() => validateAgentCall(name, { panelSessionId: "p", text: " ", limit: 1 })).toThrow("non-whitespace");
-      expect(() => validateAgentCall(name, { panelSessionId: "p", text: "a".repeat(2049) })).toThrow("invalid string");
+      const scope = name === "search_evidence" ? { within: "page" } : {};
+      expect(() => validateAgentCall(name, { panelSessionId: "p", ...scope, text: "needle", limit: 101 })).toThrow("invalid integer");
+      expect(() => validateAgentCall(name, { panelSessionId: "p", ...scope, text: " ", limit: 1 })).toThrow("non-whitespace");
+      expect(() => validateAgentCall(name, { panelSessionId: "p", ...scope, text: "a".repeat(2049) })).toThrow("invalid string");
       expect(() => validateAgentCall(name, { panelSessionId: "p", cursor: "c", text: "different" })).toThrow("only panelSessionId and cursor");
       expect(() => validateAgentCall(name, { panelSessionId: "p", cursor: "c" })).not.toThrow();
     }
@@ -57,9 +58,10 @@ describe("MCP companion search", () => {
   it("pages every match beyond 1,000 at one read point while Capture appends", async () => {
     const { history, runtime, call } = await fixture(Array.from({ length: 1002 }, (_, index) => event(index + 1)));
     const before = investigation(runtime);
-    const first = await call("search_evidence", { text: "SeArCh-NeEdLe", limit: 100 });
-    expect(first).toMatchObject({ total: 1002, search: { within: "page", scope: { kind: "PAGE" }, filter: { text: "" } } });
-    expect(first.evidence).toHaveLength(100);
+    const first = await call("search_evidence", { within: "page", text: "SeArCh-NeEdLe", limit: 100 });
+    expect(first).toMatchObject({ total: 1002, search: { within: "page" } });
+    expect(first.evidence.length).toBeGreaterThan(0);
+    expect(first.evidence.length).toBeLessThanOrEqual(100);
     expect(first.evidence[0].payload).toBeUndefined();
     await offer(history, [event(1003)]);
     const identities = first.evidence.map((entry: any) => entry.identity.eventId);
@@ -75,7 +77,7 @@ describe("MCP companion search", () => {
     expect(new Set(identities).size).toBe(1002);
     expect(identities.at(-1)).toBe("search-event-1002");
     expect(investigation(runtime)).toEqual(before);
-    expect((await call("search_evidence", { text: "search-needle" })).total).toBe(1003);
+    expect((await call("search_evidence", { within: "page", text: "search-needle" })).total).toBe(1003);
   });
 
   it("freezes the current Scope and Filter independently of Find and preserves the human investigation", async () => {
@@ -91,9 +93,9 @@ describe("MCP companion search", () => {
     runtime.dispatch({ type: "select-evidence", eventId: "search-event-2" });
     await vi.waitFor(() => expect(runtime.getSnapshot().evidence.loading).toBe(false));
     const before = investigation(runtime);
-    const first = await call("search_evidence", { text: "needle", within: "current-investigation", limit: 1, includePayload: true });
+    const first = await call("search_evidence", { text: "needle", within: "current-investigation", limit: 1, includePayload: true, maxBytes: 65536 });
     expect(first.total).toBe(2);
-    expect(first.search).toMatchObject({ within: "current-investigation", scope: { kind: "CLIENT", clientId: "client-1" }, filter: { text: "search-needle" } });
+    expect(first.search).toEqual({ text: "needle", within: "current-investigation", match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" });
     expect(first.evidence[0].match).toMatchObject({ state: "EXPLAINED", fields: expect.arrayContaining([expect.objectContaining({ excerpt: "search-needle" })]) });
     await call("search_scope", { text: "ROWS", limit: 1 });
     expect(investigation(runtime)).toEqual(before);
@@ -104,7 +106,11 @@ describe("MCP companion search", () => {
     expect(second.total).toBe(2);
     expect(second.evidence[0].identity.eventId).toBe("search-event-2");
     expect(second.nextCursor).toBeNull();
-    expect((await call("search_evidence", { text: "needle", scopeId: clientScope.id })).total).toBe(3);
+    expect([first.evidence[0].identity.eventId, second.evidence[0].identity.eventId]).toEqual(["search-event-1", "search-event-2"]);
+    const scoped = await call("search_evidence", { text: "needle", scopeId: clientScope.id });
+    expect(scoped.total).toBe(3);
+    expect(scoped.search).toMatchObject({ scopeId: clientScope.id });
+    expect(scoped.search).not.toHaveProperty("filter");
   });
 
   it("searches the complete structural Topology and freezes Scope pagination across new objects", async () => {
@@ -113,7 +119,8 @@ describe("MCP companion search", () => {
     const before = investigation(runtime);
     const first = await call("search_scope", { text: "INSTRUMENT-", limit: 100 });
     expect(first.total).toBeGreaterThanOrEqual(130);
-    expect(first.scopes).toHaveLength(100);
+    expect(first.scopes.length).toBeGreaterThan(0);
+    expect(first.scopes.length).toBeLessThanOrEqual(100);
     expect(first.scopes.some((entry: any) => entry.kind === "item" && entry.path.includes("client-1"))).toBe(true);
     await offer(history, [event(131, { subscription: { id: "new-subscription", mode: "COMMAND", items: ["instrument-new"], fields: ["command", "key", "qty"], active: true, subscribed: true }, item: { name: "instrument-new", position: 1 } })]);
     const ids = first.scopes.map((entry: any) => entry.scopeId);
@@ -149,13 +156,13 @@ describe("MCP companion search", () => {
 
   it("expires both search continuations on retention and Clear", async () => {
     const { history, call } = await fixture(undefined, { maxRetainedCount: 6 });
-    const evidence = await call("search_evidence", { text: "needle", limit: 1 });
+    const evidence = await call("search_evidence", { within: "page", text: "needle", limit: 1 });
     const scopes = await call("search_scope", { text: "client-1", limit: 1 });
     expect(scopes.nextCursor).toBeTruthy();
     await offer(history, [event(7)]);
     await expect(call("search_evidence", { cursor: evidence.nextCursor })).rejects.toThrow(/READ_POINT_UNAVAILABLE|retention/i);
     await expect(call("search_scope", { cursor: scopes.nextCursor })).rejects.toThrow("retention");
-    const latestEvidence = await call("search_evidence", { text: "needle", limit: 1 });
+    const latestEvidence = await call("search_evidence", { within: "page", text: "needle", limit: 1 });
     const latestScopes = await call("search_scope", { text: "client-1", limit: 1 });
     await history.clear();
     await expect(call("search_evidence", { cursor: latestEvidence.nextCursor })).rejects.toThrow(/HISTORY_INTERVAL_UNAVAILABLE|Clear/i);
@@ -164,7 +171,7 @@ describe("MCP companion search", () => {
 
   it("expires cursors on revocation and cannot route them into another Panel Session", async () => {
     const { runtime, service, call, grant } = await fixture();
-    const searches = await Promise.all([call("search_evidence", { text: "needle", limit: 1 }), call("search_scope", { text: "client-1", limit: 1 })]);
+    const searches = await Promise.all([call("search_evidence", { within: "page", text: "needle", limit: 1 }), call("search_scope", { text: "client-1", limit: 1 })]);
     const another = createAgentService(runtime.agent!, "panel-2", () => "read");
     for (const [index, name] of ["search_evidence", "search_scope"].entries()) {
       await expect(service.call(name, { panelSessionId: "panel-2", cursor: searches[index].nextCursor })).rejects.toThrow("not granted");
@@ -177,7 +184,7 @@ describe("MCP companion search", () => {
 
   it("expires continuations when the inspected page epoch changes", async () => {
     const { history, call } = await fixture();
-    const evidence = await call("search_evidence", { text: "needle", limit: 1 });
+    const evidence = await call("search_evidence", { within: "page", text: "needle", limit: 1 });
     const scopes = await call("search_scope", { text: "client-1", limit: 1 });
     await offer(history, [event(7, { topology: { ...event(7).topology!, pageEpoch: "next-page" } })]);
     await expect(call("search_evidence", { cursor: evidence.nextCursor })).rejects.toThrow("page change");
@@ -189,7 +196,7 @@ describe("MCP companion search", () => {
     const first = await call("search_scope", { text: "client-1", limit: 1 });
     for (let i = 0; i < 8; i++) await call("search_scope", { text: "client-1", limit: 1 });
     await expect(call("search_scope", { cursor: first.nextCursor })).rejects.toThrow("expired");
-    const evidence = await call("search_evidence", { text: "needle", limit: 1 });
+    const evidence = await call("search_evidence", { within: "page", text: "needle", limit: 1 });
     const scopes = await call("search_scope", { text: "client-1", limit: 1 });
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60 * 1000 + 1);
     await expect(call("search_evidence", { cursor: evidence.nextCursor })).rejects.toThrow("expired");
@@ -204,7 +211,7 @@ describe("MCP companion search", () => {
       await new Promise<void>(resolve => { release = resolve; });
       return query(input);
     });
-    const pending = call("search_evidence", { text: "needle" });
+    const pending = call("search_evidence", { within: "page", text: "needle" });
     grant("off"); service.revoke(); grant("read"); release();
     await expect(pending).rejects.toThrow("revoked");
   });
@@ -216,7 +223,7 @@ describe("MCP companion search", () => {
       event(2, { update: { isSnapshot: false, fields: { qty: JSON.stringify({ description: "allowed-match", password: credential }), token: credential }, changedFields: { token: credential } }, raw: { duplicate: credential } })
     ]);
     for (const text of ["body-marker", "outcome-marker", "credential-marker", "allowed-match"]) {
-      const result = await call("search_evidence", { text, includePayload: true });
+      const result = await call("search_evidence", { within: "page", text, includePayload: true, maxBytes: 65536 });
       expect(JSON.stringify(result)).not.toContain(message);
       expect(JSON.stringify(result)).not.toContain(response);
       expect(JSON.stringify(result)).not.toContain(credential);

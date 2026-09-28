@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AGENT_TOOLS, validateAgentCall } from "../src/agent/protocol";
+import { createFilter } from "../src/core/filter-algebra";
 import { createAgentService } from "../src/extension/panel/agent-service";
 import type { AgentQueryInput, AgentRuntime } from "../src/extension/panel/agent-runtime";
 import type { EvidenceIdentity, EvidenceReadPoint, EvidenceSnapshot } from "../src/core/evidence-filter-contract";
@@ -19,7 +20,7 @@ function snapshot(nextCursor: string | null = null): EvidenceSnapshot {
 type QueryMock = ReturnType<typeof vi.fn<(input: AgentQueryInput) => Promise<EvidenceSnapshot>>>;
 function service(query: QueryMock = vi.fn<(input: AgentQueryInput) => Promise<EvidenceSnapshot>>(async () => snapshot("storage-cursor"))) {
   const runtime = {
-    query,
+    query, queryBoundary: () => ({ scope: { kind: "PAGE" as const }, filter: createFilter() }),
     status: () => ({ visible: true }), scopes: () => ({}), scope: () => ({}), diagnostics: vi.fn(),
     prepare: vi.fn(), validateCandidate: vi.fn(async () => ({ valid: true })), prepareScenarioPlan: vi.fn(), edit: vi.fn(),
     local: () => ({ draft: null }), scenario: () => null, execute: vi.fn(), control: vi.fn(), finish: vi.fn()
@@ -57,7 +58,7 @@ describe("agent query and discovery interface", () => {
   it("pins explicit read points, filters and order to opaque continuation cursors", async () => {
     const { agent, query } = service();
     const first = await call(agent, "query_evidence", {
-      at: point, order: "OLDEST_FIRST", filter: { criteria: [{ facet: "mode", polarity: "exclude", type: "enum", value: "MERGE" }] }, limit: 2
+      within: "page", at: point, order: "OLDEST_FIRST", filter: { criteria: [{ facet: "mode", polarity: "exclude", type: "enum", value: "MERGE" }] }, limit: 2
     });
     const second = await call(agent, "query_evidence", { cursor: first.nextCursor });
     expect(second.readPoint).toEqual(first.readPoint);
@@ -79,20 +80,20 @@ describe("agent query and discovery interface", () => {
     expect(query.mock.calls[1]![0].includePayload).toBe(false); // Public continuation preserves opt-in.
     const discoveryQuery = vi.fn<(input: AgentQueryInput) => Promise<EvidenceSnapshot>>(async () => ({ ...snapshot(null), discoveries: new Map([["kind", { state: "AVAILABLE", facet: "kind", values: [], distinctTotal: 0, nextCursor: null, baseEvidenceCount: 0 } as any]]) }));
     const { agent: discoveryAgent } = service(discoveryQuery);
-    const result = await call(discoveryAgent, "query_evidence", { discover: [{ facet: "kind", limit: 10 }] });
+    const result = await call(discoveryAgent, "query_evidence", { within: "page", discover: [{ facet: "kind", limit: 10 }] });
     expect(result.discoveries.kind.state).toBe("AVAILABLE");
     expect(discoveryQuery).toHaveBeenCalledWith(expect.objectContaining({ discover: [{ facet: "kind", size: 10 }] }));
   });
 
   it("rejects malformed nested values, inconsistent read points and conflicting legacy text", async () => {
-    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", filter: { criteria: [{ facet: "kind", polarity: "include", type: "enum", value: "x", identity: "forged" }] } })).toThrow("unknown property");
-    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", at: { ...point, committedEvidenceBoundary: identity(1) } })).toThrow("precedes");
-    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", at: { ...point, retainedRange: { first: { ...identity(1), intervalId: "other" }, last: identity(2) } } })).toThrow("inconsistent");
-    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", text: "one", filter: { text: "two" } })).toThrow("must match");
-    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", filter: { around: { intervalId: "interval-1", start: 10, end: 2 } } })).toThrow("half-open timestamp range");
-    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", filter: { around: { intervalId: "interval-1", start: 10, end: 10 } } })).toThrow("half-open timestamp range");
-    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", filter: { criteria: [{ facet: "kind", polarity: "include", type: "number", value: 1 }] } })).toThrow("unsupported facet or value type");
-    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", at: { interval: point.interval } })).toThrow("expected exactly one supported shape");
+    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", within: "page", filter: { criteria: [{ facet: "kind", polarity: "include", type: "enum", value: "x", identity: "forged" }] } })).toThrow("unknown property");
+    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", within: "page", at: { ...point, committedEvidenceBoundary: identity(1) } })).toThrow("precedes");
+    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", within: "page", at: { ...point, retainedRange: { first: { ...identity(1), intervalId: "other" }, last: identity(2) } } })).toThrow("inconsistent");
+    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", within: "page", text: "one", filter: { text: "two" } })).toThrow("must match");
+    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", within: "page", filter: { around: { intervalId: "interval-1", start: 10, end: 2 } } })).toThrow("half-open timestamp range");
+    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", within: "page", filter: { around: { intervalId: "interval-1", start: 10, end: 10 } } })).toThrow("half-open timestamp range");
+    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", within: "page", filter: { criteria: [{ facet: "kind", polarity: "include", type: "number", value: 1 }] } })).toThrow("unsupported facet or value type");
+    expect(() => validateAgentCall("query_evidence", { panelSessionId: "panel-1", within: "page", at: { interval: point.interval } })).toThrow("expected exactly one supported shape");
   });
 
   it("requires explicit, uniquely identified candidate Scenario members and typed assertions", async () => {
