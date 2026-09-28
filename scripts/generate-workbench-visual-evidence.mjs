@@ -89,7 +89,9 @@ try {
   });
   const results = [];
   for (const scenario of scenarios) {
-    const reference = scenario.reference?.source === "asset"
+    const reference = scenario.reference?.source === "git"
+      ? await readGitBlob(scenario.reference.revision, scenario.reference.path)
+      : scenario.reference?.source === "asset"
       ? await readFile(resolve(projectRoot, scenario.reference.path))
       : scenario.reference?.source === "prototype-12"
       ? await captureReadabilityPrototype(browser, scenario)
@@ -141,7 +143,9 @@ try {
     browserMode: "headless",
     evidenceMode: "non-interactive",
     source: {
-      reference: scenarios.every(({ prototype }) => prototype?.setup === "scenario-halt")
+      reference: scenarios.every(({ reference }) => reference?.source === "git")
+        ? "Prior accepted production baselines at each recorded Git revision; new search surfaces intentionally compare against the preceding investigation surface at the same geometry."
+        : scenarios.every(({ prototype }) => prototype?.setup === "scenario-halt")
         ? `initial Scenario 05 production baselines at ${scenarioHaltReferenceCommit}; the surface is absent at implementation base e74d4ca, so these are explicit new-baseline references`
         : scenarios.every(({ reference }) => reference?.source === "production")
           ? "clean production storage-headroom scenarios with the advisory estimate omitted"
@@ -150,7 +154,18 @@ try {
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
     contactSheets,
-    review: !grep && results.length === allScenarios.length ? {
+    review: grep?.startsWith("search-") ? {
+      classification: "Material UI",
+      changedWorkflow: "Contextual Evidence Find and Search scopes within the existing investigation surfaces.",
+      acceptanceCriteria: [
+        "Find keeps the query focused while revealing the active match below the sticky ledger header, explains hidden-field matches, and preserves selection until Inspect match.",
+        "Find uses current Scope and Filter, stable retained results, complete navigation, and explicit refresh or expiry recovery.",
+        "Search scopes identifies complete structural results by type, identity, path and lifecycle. Typing and browsing do not commit Scope; Enter chooses and staged Escape restores the origin.",
+        "Compact, normal, shallow, wide and forced-colors states have reachable controls, visible focus, no shell overflow and no serious or critical axe findings."
+      ],
+      matrixRationale: "Ten states cover populated and empty Scope search, retained Evidence Find, compact/normal/shallow/wide geometry, Dark and forced colors. Prior accepted production images show the preceding investigation surfaces at the same geometry.",
+      baselineIntent: "Add ten independently generated Darwin/Linux search baselines and update affected existing Scope and Find baselines. Compare prior, current, and diff artifacts in independent visual QA."
+    } : !grep && results.length === allScenarios.length ? {
       classification: "Material UI",
       changedWorkflow: "The integrated Workbench matrix covers the approved Scope priority blocks and full-key JSON Evidence stream, the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, protected Server Injection through LightstreamerClient.sendMessage, diagnostics, and compact operating actions in the shipped panel shell.",
       acceptanceCriteria: [
@@ -395,7 +410,7 @@ function isServerInjectionScenario(scenario) {
 
 function contactSheetScenarioIds(matrix) {
   return matrix
-    .filter(({ id, production }) => id.startsWith("scenario-") || id.startsWith("readability-c-") || id.startsWith("local-injection-") || id.startsWith("server-injection-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup) || isHistoryFooterSetup(production.setup))
+    .filter(({ id, production }) => id.startsWith("search-") || id.startsWith("scenario-") || id.startsWith("readability-c-") || id.startsWith("local-injection-") || id.startsWith("server-injection-") || production.setup.startsWith("activity") || production.setup === "diagnostics" || isIntegratedDiagnosticSetup(production.setup) || isStorageHeadroomSetup(production.setup) || isHistoryFooterSetup(production.setup))
     .map(({ id }) => id);
 }
 
@@ -413,10 +428,11 @@ function publicReviewScope() {
   const readabilityIds = allScenarios.filter(({ production }) => isReadabilitySetup(production.setup)).map(({ id }) => id);
   const localInjectionIds = allScenarios.filter(({ production }) => isLocalInjectionSetup(production.setup)).map(({ id }) => id);
   const serverInjectionIds = allScenarios.filter(({ production }) => isServerInjectionScenario(production.scenario)).map(({ id }) => id);
+  const searchIds = allScenarios.filter(({ id }) => id.startsWith("search-")).map(({ id }) => id);
   return {
     contactSheetScenarioIds: contactSheetScenarioIds(allScenarios),
-    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds],
-    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds]
+    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...searchIds],
+    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...searchIds]
   };
 }
 
@@ -728,7 +744,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
     let focusEvidence = null;
     let memoryEvidence = null;
     let storageEvidence = null;
-    if (scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isLocalInjectionSetup(scenario.production.setup) || isServerInjectionScenario(scenario.production.scenario) || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || isHistoryFooterSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
+    if (scenario.id.startsWith("search-") || scenario.production.setup === "retained-find" || scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isLocalInjectionSetup(scenario.production.setup) || isServerInjectionScenario(scenario.production.scenario) || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || isHistoryFooterSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -737,9 +753,20 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
           .map((violation) => ({ id: violation.id, impact: violation.impact, help: violation.help }));
       });
       if (seriousOrCriticalViolations.length) {
-        throw new Error(`Help resources has serious or critical axe violations: ${JSON.stringify(seriousOrCriticalViolations)}`);
+        throw new Error(`Production visual state has serious or critical axe violations: ${JSON.stringify(seriousOrCriticalViolations)}`);
       }
       accessibility = { seriousOrCriticalViolations };
+    }
+    if (scenario.id.startsWith("search-")) {
+      const input = page.getByRole("textbox", { name: scenario.production.setup.startsWith("scope-search") ? "Search scopes" : "Find in ordered Evidence", exact: true });
+      focusEvidence = await input.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return { action: element.getAttribute("aria-label"), focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth}`, visible: bounds.top >= 0 && bounds.left >= 0 && bounds.right <= innerWidth && bounds.bottom <= innerHeight,
+          unobscured: element === document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2) };
+      });
+      if (!focusEvidence.focused || !focusEvidence.visible || !focusEvidence.unobscured || focusEvidence.outline.startsWith("none")) throw new Error("Search query must retain visible, unobscured keyboard focus.");
     }
     if (scenario.production.setup.startsWith("activity")) {
       const action = scenario.production.setup === "activity-main-chooser"
@@ -1163,7 +1190,9 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await scenario.getByRole("button", { name: "Add captured update" }).click();
     const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
-    await picker.getByRole("button", { name: "Preview visible set" }).click();
+    const preview = picker.getByRole("button", { name: "Preview visible set" });
+    await preview.focus();
+    await preview.press("Space");
     await picker.getByText("Will add after confirmation").waitFor();
     return;
   }
@@ -1186,6 +1215,9 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
   }
   if (setup === "scenario") {
     await page.getByRole("region", { name: "Local Injection Scenario" }).waitFor({ state: "visible" });
+    if (new URL(page.url()).searchParams.get("scenario") === "local-injection-scenario-edit") {
+      await page.getByRole("heading", { name: "Local Injection Scenario", exact: true }).focus();
+    }
     return;
   }
   if (setup === "server-injection") {
@@ -1371,10 +1403,18 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     await page.getByRole("textbox", { name: "Local Injection JSON", exact: true }).waitFor();
     return;
   }
+  if (setup === "scope-search" || setup === "scope-search-empty") {
+    await page.getByRole("button", { name: "Scope", exact: true }).click();
+    await page.getByRole("button", { name: "Search scopes", exact: true }).click();
+    const input = page.getByRole("textbox", { name: "Search scopes", exact: true });
+    await input.fill(setup === "scope-search-empty" ? "unavailable-object" : "high-scope-subscription-219");
+    await page.getByRole("region", { name: "Scope search", exact: true }).getByText(setup === "scope-search-empty" ? "No matching scopes" : "3 matches", { exact: true }).waitFor();
+    return;
+  }
   if (setup === "retained-find") {
     await page.getByRole("button", { name: "Find", exact: true }).click();
     await page.getByRole("textbox", { name: "Find in ordered Evidence" }).fill("complete-retained-find-anchor");
-    await page.getByRole("search", { name: "Find in ordered Evidence" }).getByText("1 of 3 matches").waitFor();
+    await page.getByRole("search", { name: "Find in ordered Evidence" }).getByText("3 of 3 matches").waitFor();
     await page.locator('[data-find-current="true"]').waitFor();
     return;
   }

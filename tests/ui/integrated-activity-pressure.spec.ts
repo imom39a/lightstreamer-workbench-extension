@@ -224,7 +224,7 @@ test("Normal Context retains its preferred resize after available height clamps 
 
 
 test("Near the Normal gate, storage diagnostics and Find preserve useful Evidence and Context", async ({ page }) => {
-  await openPanel(page, "storage-headroom-warning", 700);
+  await openPanel(page, "storage-headroom-warning", 760);
   await page.getByRole("button", { name: "Find", exact: true }).click();
   const find = page.getByRole("textbox", { name: "Find in ordered Evidence" });
   await find.fill("scenario");
@@ -234,7 +234,7 @@ test("Near the Normal gate, storage diagnostics and Find preserve useful Evidenc
   const context = page.getByRole("complementary", { name: "Context" });
   expect(await context.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(210);
   await expect(page.getByRole("separator", { name: "Resize Context" })).toHaveAttribute("aria-orientation", "vertical");
-  await page.setViewportSize({ width: 900, height: 700 });
+  await page.setViewportSize({ width: 900, height: 760 });
   await expect(page.getByRole("separator", { name: "Resize Context" })).toHaveAttribute("aria-orientation", "horizontal");
   await expect(find).toBeFocused();
   await expect(find).toHaveValue("scenario");

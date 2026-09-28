@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../../src/core/event-envelope";
 import { type EvidenceRead, type Outcome } from "../../src/core/event-history-authoritative";
+import { type EvidenceQueryRequest } from "../../src/core/evidence-filter-contract";
 import { createAuthoritativeHistory } from "./authoritative-history";
 
 function event(id: string): LightstreamerEventEnvelope {
@@ -18,6 +19,44 @@ function event(id: string): LightstreamerEventEnvelope {
 }
 
 describe("authoritative EventHistory test support", () => {
+  it("preserves payloads on requested page, Find and lookup Evidence across repeated queries", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [event("first"), event("second")] });
+    const request: EvidenceQueryRequest = {
+      at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 },
+      filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] },
+      find: { text: "second", reveal: false, includeMatchPayload: true }
+    };
+    try {
+      const first = await history.query!(request);
+      if (!first.ok) throw new Error(first.problem.message);
+      expect(first.value.page.evidence[0]?.payload).toMatchObject({ id: "first" });
+      expect(first.value.find?.results?.[0]?.payload).toMatchObject({ id: "second" });
+      expect(first.value.find?.match?.payload).toMatchObject({ id: "second", update: { key: "second" } });
+      const selected = first.value.find!.first!;
+
+      await history.offer(event("third")).settled;
+      const hydrated = await history.query!({ ...request, at: first.value.readPoint, includePayload: true, lookup: selected });
+      if (!hydrated.ok) throw new Error(hydrated.problem.message);
+      expect(hydrated.value.totals).toEqual({ matching: 2, inScope: 2 });
+      expect(hydrated.value.page.evidence[0]?.payload).toMatchObject({ id: "first" });
+      expect(hydrated.value.find?.results?.[0]?.payload).toMatchObject({ id: "second" });
+      expect(hydrated.value.lookup).toMatchObject({ state: "RETAINED", evidence: { payload: { id: "second" } } });
+      const again = await history.query!({ ...request, at: first.value.readPoint, find: { ...request.find!, reveal: true, includeMatchPayload: false } });
+      if (!again.ok) throw new Error(again.problem.message);
+      expect(again.value.page.evidence[0]?.payload).toMatchObject({ id: "first" });
+      expect(again.value.find?.results?.[0]?.payload).toMatchObject({ id: "second" });
+      expect(again.value.find?.page?.evidence[0]?.payload).toMatchObject({ id: "second" });
+      expect(again.value.find?.window?.[0]?.payload).toMatchObject({ id: "second" });
+      expect(again.value.page.evidence[0]?.payload).not.toBe(first.value.page.evidence[0]?.payload);
+      expect(again.value.find?.match).toBeUndefined();
+
+      await history.clear();
+      await history.offer(event("after-clear")).settled;
+      const cleared = await history.query!({ ...request, find: undefined, includePayload: true });
+      expect(cleared).toMatchObject({ ok: true, value: { totals: { matching: 1, inScope: 1 }, page: { evidence: [{ payload: { id: "after-clear" } }] } } });
+    } finally { await history.close(); }
+  });
+
   it("constructs with ordered evidence, replays once, follows now, and controls receipts", async () => {
     const history = createAuthoritativeHistory({
       intervalId: "support-session:interval-1",

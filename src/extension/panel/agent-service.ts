@@ -1,15 +1,38 @@
 import { AGENT_MAX_BYTES, AGENT_PROTOCOL_VERSION, AGENT_TOOLS, validateAgentCall, type AgentArguments, type AgentPermission } from "../../agent/protocol";
 import { toBulkShareableEventEnvelope, type LightstreamerEventEnvelope } from "../../core/event-envelope";
 import type { EvidenceIdentity, EvidenceReadPoint, DeterministicEvidenceRecord } from "../../core/evidence-filter-contract";
-import type { AgentRuntime, AgentDraftInput } from "./agent-runtime";
+import { createScopeSearchIndex, searchScopes, type ScopeSearchIndex, type ScopeSearchNode } from "../../core/scope-search";
+import { canonicalizeFilter, createFilter, createTypedFilterValue } from "../../core/evidence-filter-contract";
+import type { Filter } from "../../core/filter-algebra";
+import type { AgentRuntime, AgentDraftInput, AgentQueryBoundary, AgentScopeSearchSnapshot, AgentScenarioMember, AgentScenarioPlanInput, AgentQueryInput } from "./agent-runtime";
 import { cloneCredentialSafe as omitCredentialFields } from "./topology-export";
+import { describeAgentStreams } from "./agent-stream-description";
+import { waitForAgentEvidence } from "./agent-evidence-wait";
+import type { HistoryStatus } from "../../core/event-history-authoritative";
+
+const SEARCH_CURSOR_LIFETIME_MS = 5 * 60 * 1000;
+type EvidenceSearch = { at: EvidenceReadPoint; after: EvidenceIdentity; boundary: AgentQueryBoundary; within: "page" | "current-investigation"; text: string; size: number; includePayload: boolean; pageEpoch: unknown; expiresAt: number };
+type ScopeSearch = { index: ScopeSearchIndex; snapshot: Omit<AgentScopeSearchSnapshot, "nodes">; text: string; size: number; expiresAt: number };
 
 export function createAgentService(runtime: AgentRuntime, panelSessionId: string, permission: () => AgentPermission) {
-  const cursors = new Map<string, { at: EvidenceReadPoint; cursor: string; scopeId?: string; text?: string; size: number; includePayload: boolean }>();
+  const cursors = new Map<string, { at: EvidenceReadPoint; cursor: string; query?: Omit<AgentQueryInput, "cursor" | "at">; scopeId?: string; text?: string; size?: number; includePayload?: boolean }>();
+  const evidenceSearches = new Map<string, EvidenceSearch>();
+  // Multiple page cursors share one bounded Topology snapshot rather than copying it.
+  const scopeSearches = new Map<string, ScopeSearch>();
+  const scopeCursors = new Map<string, { searchId: string; offset: number }>();
   const requests = new Map<string, { signature: string; kind: "local" | "scenario"; draftId?: string; value: unknown }>();
+  const waits = new Set<AbortController>();
   let prepared: { token: string; fingerprint: string; kind: "local" | "scenario"; consumed: boolean } | null = null;
   let busy = false;
   let grantGeneration = 0;
+  const saveNextCursor = (query: AgentQueryInput, readPoint: EvidenceReadPoint, cursor: string | null): string | null => {
+    if (!cursor) return null;
+    const opaque = crypto.randomUUID();
+    const { at: _at, cursor: _cursor, ...boundQuery } = query;
+    cursors.set(opaque, { query: boundQuery, at: readPoint, cursor });
+    if (cursors.size > 128) cursors.delete(cursors.keys().next().value!);
+    return opaque;
+  };
   const fingerprint = (scenario: boolean) => {
     if (!scenario) return JSON.stringify([runtime.local().draft?.id, runtime.local().draft?.rawText, runtime.local().draft?.anchor]);
     const definition = runtime.scenario()?.scenario;
@@ -26,37 +49,117 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       else if (draft.phase !== "pending") operation.value = { state: "not-run", validation: safeDraft(runtime.local()) };
     }
   }
-  async function call(name: string, input: unknown): Promise<unknown> {
+  async function call(name: string, input: unknown, signal?: AbortSignal): Promise<unknown> {
     validateAgentCall(name, input);
     const args = input as AgentArguments;
     if (permission() === "off" || args.panelSessionId !== panelSessionId) throw new Error("This Panel Session has not granted agent access.");
     const mutation = AGENT_TOOLS.find(tool => tool.name === name)!.mutation;
     if (mutation && permission() !== "local") throw new Error("This Panel Session grants inspection only.");
-    if (busy) throw new Error("Another agent operation is preparing a document. Try this read again after it settles.");
+    if (busy && mutation && !(name === "control_scenario" && ["pause", "stop"].includes(String(args.action)))) throw new Error("Another agent operation is preparing a document. Try this mutation again after it settles.");
     refreshOperations();
     if (requests.size >= 256 && ["execute_local_injection", "control_scenario"].includes(name) && !(typeof args.requestId === "string" && requests.has(args.requestId)) && !["pause", "stop"].includes(String(args.action))) throw new Error("This Panel Session reached its 256-operation agent limit. Existing outcomes remain readable; pause and stop remain available.");
     switch (name) {
-      case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, permission: permission(), ...runtime.status() as object, capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local")).map(tool => tool.name) };
+      case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, permission: permission(), ...runtime.status() as object, capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local") && (tool.name !== "validate_agent_candidate" || typeof runtime.validateCandidate === "function") && (tool.name !== "prepare_scenario" || typeof runtime.prepareScenarioPlan === "function")).map(tool => tool.name) };
       case "list_scope": return runtime.scopes(Number(args.offset ?? 0), Number(args.limit ?? 50));
+      case "search_scope": {
+        const saved = args.cursor ? scopeCursors.get(String(args.cursor)) : undefined;
+        if (args.cursor && !saved) throw new Error("Search cursor expired. Start a new search.");
+        const searchId = saved?.searchId ?? crypto.randomUUID();
+        let search = saved ? scopeSearches.get(searchId) : undefined;
+        if (saved) {
+          if (!search || search.expiresAt <= Date.now()) throw new Error("Search cursor expired. Start a new search.");
+          const status = runtime.status() as { pageEpoch: string | null; history: { interval: { id: string }; retainedRange: { first: { sequence: number } } | null } };
+          const first = search.snapshot.history.retainedFirstSequence;
+          if (status.pageEpoch !== search.snapshot.pageEpoch || status.history.interval.id !== search.snapshot.history.intervalId
+            || (first !== null && (status.history.retainedRange === null || status.history.retainedRange.first.sequence > first))) {
+            throw new Error("Scope search snapshot expired after page change, Clear or retention. Start a new search.");
+          }
+        } else {
+          const { nodes, ...snapshot } = runtime.scopeSearchSnapshot();
+          search = { index: createScopeSearchIndex(cloneCredentialSafe(nodes) as readonly ScopeSearchNode[]), snapshot, text: String(args.text).trim(), size: Number(args.limit ?? 25), expiresAt: Date.now() + SEARCH_CURSOR_LIFETIME_MS };
+        }
+        const result = searchScopes(search!.index, search!.text, { offset: saved?.offset ?? 0, limit: search!.size });
+        let nextCursor: string | null = null;
+        if (result.hasNext) {
+          scopeSearches.set(searchId, search!);
+          if (scopeSearches.size > 8) scopeSearches.delete(scopeSearches.keys().next().value!);
+          nextCursor = crypto.randomUUID();
+          scopeCursors.set(nextCursor, { searchId, offset: result.offset + result.matches.length });
+          if (scopeCursors.size > 128) scopeCursors.delete(scopeCursors.keys().next().value!);
+        }
+        return { snapshot: search!.snapshot, boundary: "ALL_STRUCTURAL_TOPOLOGY", match: "CASE_INSENSITIVE_SUBSTRING", text: search!.text, total: result.total, offset: result.offset, nextCursor, scopes: result.matches.map(({ node, path, ancestorIds, matchedFields }) => ({ scopeId: node.id, kind: node.kind, label: node.label, detail: node.detail, lifecycle: node.lifecycle, retired: node.retired, path, ancestorIds, matchedFields })) };
+      }
       case "get_scope": return cloneCredentialSafe(runtime.scope(String(args.scopeId)));
+      case "search_evidence": {
+        const saved = args.cursor ? evidenceSearches.get(String(args.cursor)) : undefined;
+        if (args.cursor && (!saved || saved.expiresAt <= Date.now())) throw new Error("Search cursor expired. Start a new search.");
+        const pageEpoch = (runtime.status() as { pageEpoch: unknown }).pageEpoch;
+        if (saved && saved.pageEpoch !== pageEpoch) throw new Error("Search cursor expired after page change. Start a new search.");
+        const within = saved?.within ?? (args.within === "current-investigation" ? "current-investigation" : "page");
+        const boundary = saved?.boundary ?? structuredClone(runtime.queryBoundary(args.scopeId as string | undefined, within === "current-investigation"));
+        const text = saved?.text ?? String(args.text).trim();
+        const size = saved?.size ?? Number(args.limit ?? 25);
+        const includePayload = saved?.includePayload ?? args.includePayload === true;
+        const result = await runtime.query({ ...boundary, at: saved?.at ?? "LATEST_COMMITTED", size: 1, includePayload, find: { text, scopeToFilter: true, reveal: false, size, ...(saved ? { after: saved.after } : {}) } });
+        if (result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: Evidence search cannot evaluate this investigation. Remove the unsupported Filter criterion or explicitly search within: page.");
+        if (!result.find) throw new Error("Evidence search is unavailable at this read point.");
+        const records = result.find.results ?? [];
+        let nextCursor: string | null = null;
+        if (result.find.hasMore && records.length > 0) {
+          nextCursor = crypto.randomUUID();
+          evidenceSearches.set(nextCursor, { boundary, within, text, size, includePayload, pageEpoch, at: result.readPoint, after: records.at(-1)!.identity, expiresAt: saved?.expiresAt ?? Date.now() + SEARCH_CURSOR_LIFETIME_MS });
+          if (evidenceSearches.size > 128) evidenceSearches.delete(evidenceSearches.keys().next().value!);
+        }
+        return { search: { text, within, ...cloneCredentialSafe(boundary) as object, match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" }, readPoint: result.readPoint, total: result.find.total, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor, evidence: records.map(record => {
+          const evidence = safeRecord(record);
+          return { ...evidence, match: safeMatchExplanation(evidence, text) };
+        }) };
+      }
       case "query_evidence": {
-        let query = { scopeId: args.scopeId as string | undefined, text: args.text as string | undefined, size: Number(args.limit ?? 25), includePayload: args.includePayload === true, at: "LATEST_COMMITTED" as "LATEST_COMMITTED" | EvidenceReadPoint, cursor: undefined as string | undefined };
+        let query = makeQuery(args);
         if (args.cursor) {
+          const suppliedQueryKeys = Object.keys(args).filter(key => !["panelSessionId", "cursor"].includes(key));
+          if (suppliedQueryKeys.length) throw new Error("Continue a query with only its cursor; query arguments are bound to the first page.");
           const saved = cursors.get(String(args.cursor));
           if (!saved) throw new Error("Query cursor expired. Start a new query.");
-          query = { ...saved, scopeId: saved.scopeId, text: saved.text };
+          query = saved.query ? { ...saved.query, at: saved.at, cursor: saved.cursor } : { scopeId: saved.scopeId, text: saved.text, size: saved.size ?? 25, includePayload: saved.includePayload ?? false, at: saved.at, cursor: saved.cursor };
         }
-        const result = await runtime.query(query);
-        let nextCursor: string | null = null;
-        if (result.page.nextCursor) {
-          nextCursor = crypto.randomUUID();
-          cursors.set(nextCursor, { ...query, at: result.readPoint, cursor: result.page.nextCursor });
-          if (cursors.size > 128) cursors.delete(cursors.keys().next().value!);
-        }
-        return { readPoint: result.readPoint, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor, evidence: result.page.evidence.map(safeRecord) };
+        const result = await runtime.query({ ...query, signal });
+        const nextCursor = saveNextCursor(query, result.readPoint, result.page.nextCursor);
+        return { readPoint: result.readPoint, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, discoveries: cloneCredentialSafe(Object.fromEntries(result.discoveries)), nextCursor, evidence: boundedRecords(result.page.evidence), omissions: omissions(query.includePayload) };
+      }
+      case "describe_stream": {
+        const query = makeQuery(args, 100, true, "NEWEST_FIRST");
+        if (query.size > 100) throw new Error("Stream descriptions are limited to 100 Evidence records per read point.");
+        if (args.cursor) throw new Error("describe_stream summarizes one bounded sample; use query_evidence to continue pages.");
+        const result = await runtime.query({ ...query, signal });
+        const records = boundedRecords(result.page.evidence) as DeterministicEvidenceRecord[];
+        const sampled = records.length;
+        const completeSample = result.evaluation === "COMPLETE" && result.coverage === "COMPLETE" && sampled >= result.totals.matching && result.page.nextCursor === null && records.every(record => record.payload !== undefined);
+        const profile = describeAgentStreams({ records, limit: query.size, readPoint: result.readPoint, completeness: completeSample ? "COMPLETE" : "LIMITED", window: query.order ?? "NEWEST_FIRST" });
+        const nextCursor = saveNextCursor({ ...query, includePayload: false }, result.readPoint, result.page.nextCursor);
+        const current = runtime.status() as { capture?: { coverage?: string; operation?: string; firstMissingEventId?: string | null; detail?: string }; history?: { phase?: string; retained?: number; retention?: unknown; continuity?: unknown } };
+        return { ...profile, readPoint: result.readPoint, matchingTotal: result.totals.matching, sampled, completeness: profile.completeness, nextCursor, observationCoverage: current.capture?.coverage ?? "UNAVAILABLE", history: { phase: current.history?.phase ?? "UNKNOWN", retained: current.history?.retained ?? 0, retention: current.history?.retention ?? null, continuity: current.history?.continuity ?? null }, omissions: [...omissions(true), ...(completeSample ? [] : ["The sample or its payload budget is incomplete. Use query_evidence with nextCursor when present, or narrow the query to inspect omitted payloads."])] };
+      }
+      case "wait_for_evidence": {
+        if (!runtime.subscribeEvidence) throw new Error("Evidence observation is unavailable in this panel build.");
+        if (waits.size >= 4) throw new Error("REQUEST_CAPACITY: At most four Evidence waits may run concurrently per Panel Session.");
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        waits.add(controller); signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+        try {
+          const query = makeQuery({ ...args, order: "NEWEST_FIRST" });
+          const result = await waitForAgentEvidence({
+            status: () => runtime.status() as { pageEpoch: string | null; history: HistoryStatus },
+            subscribe: listener => runtime.subscribeEvidence!(listener),
+            query: readSignal => runtime.query({ ...query, at: "LATEST_COMMITTED", signal: readSignal })
+          }, { after: args.after as EvidenceReadPoint, pageEpoch: String(args.pageEpoch), timeoutMs: Number(args.timeoutMs ?? 10000), signal: controller.signal });
+          return { ...result, evidence: boundedRecords(result.evidence), omissions: omissions(query.includePayload) };
+        } finally { signal?.removeEventListener("abort", cancel); waits.delete(controller); }
       }
       case "get_evidence": {
-        const result = await runtime.query({ at: "LATEST_COMMITTED", size: 1, includePayload: true, lookup: args.evidence as EvidenceIdentity });
+        const result = await runtime.query({ at: "LATEST_COMMITTED", size: 1, includePayload: true, lookup: args.evidence as EvidenceIdentity, signal });
         return { readPoint: result.readPoint, coverage: result.coverage, lookup: result.lookup?.state === "RETAINED" ? { state: "RETAINED", evidence: safeRecord(result.lookup.evidence) } : result.lookup };
       }
       case "query_diagnostics": {
@@ -72,15 +175,36 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         return { token: prepared.token, ...snapshot() };
       }
       case "prepare_local_injection":
-      case "prepare_scenario": {
-        busy = true;
+      case "prepare_scenario":
+      case "validate_agent_candidate": {
+        const ownsBusy = name !== "validate_agent_candidate";
+        if (ownsBusy) busy = true;
         try {
-          const scenario = name === "prepare_scenario";
           const generation = grantGeneration;
-          await runtime.prepare(scenario ? args.steps as AgentDraftInput[] : [{ scopeId: args.scopeId as string | undefined, evidence: args.evidence as EvidenceIdentity | undefined, document: args.document as string | undefined }], scenario, String(args.pageEpoch), () => permission() === "local" && generation === grantGeneration);
-          prepared = { token: crypto.randomUUID(), fingerprint: fingerprint(scenario), kind: scenario ? "scenario" : "local", consumed: false };
+          const stillAuthorized = () => (name === "validate_agent_candidate" ? permission() !== "off" : permission() === "local") && generation === grantGeneration;
+          if (name === "validate_agent_candidate") {
+            const input = args.members
+              ? { kind: "scenario" as const, plan: scenarioPlan(args) }
+              : { kind: "draft" as const, draft: args.draft as AgentDraftInput };
+            if (input.kind === "draft") validateDraftSource(input.draft);
+            return cloneCredentialSafe(await runtime.validateCandidate(input, String(args.pageEpoch), stillAuthorized));
+          }
+          if (name === "prepare_scenario") {
+            const plan = scenarioPlan(args);
+            if (plan.replace) {
+              const current = runtime.scenario()?.scenario;
+              if (!prepared || prepared.kind !== "scenario" || prepared.fingerprint !== fingerprint(true) || current?.id !== plan.replace.scenarioId || current.revision !== plan.replace.revision) throw new Error("Only the unchanged agent-owned Scenario can be replaced.");
+            }
+            await runtime.prepareScenarioPlan(plan, String(args.pageEpoch), stillAuthorized);
+            prepared = { token: crypto.randomUUID(), fingerprint: fingerprint(true), kind: "scenario", consumed: false };
+            return { token: prepared.token, ...snapshot() };
+          }
+          const draft: AgentDraftInput = { scopeId: args.scopeId as string | undefined, evidence: args.evidence as EvidenceIdentity | undefined, document: args.document as string | undefined };
+          validateDraftSource(draft);
+          await runtime.prepare([draft], false, String(args.pageEpoch), stillAuthorized);
+          prepared = { token: crypto.randomUUID(), fingerprint: fingerprint(false), kind: "local", consumed: false };
           return { token: prepared.token, ...snapshot() };
-        } finally { busy = false; }
+        } finally { if (ownsBusy) busy = false; }
       }
       case "execute_local_injection": {
         const id = String(args.requestId);
@@ -137,24 +261,59 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
     }
   }
   return {
-    async call(name: string, args: unknown) {
-      const result = await call(name, args);
+    async call(name: string, args: unknown, options?: { signal?: AbortSignal }) {
+      const generation = grantGeneration;
+      const result = await call(name, args, options?.signal);
       // Grants can be revoked while a read awaits storage. Do not disclose its result.
-      if (permission() === "off") throw new Error("Agent access was revoked.");
+      if (permission() === "off" || generation !== grantGeneration) throw new Error("Agent access was revoked.");
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > AGENT_MAX_BYTES) throw new Error("Response exceeds 512 KiB. Narrow the query, lower its limit, or omit payloads. Mutations are not retried; inspect their existing outcome.");
       return result;
     },
     refreshOperations,
-    revoke() { grantGeneration++; if (prepared?.kind === "scenario") runtime.control("pause"); }
+    revoke() { grantGeneration++; cursors.clear(); evidenceSearches.clear(); scopeCursors.clear(); scopeSearches.clear(); for (const wait of waits) wait.abort(); if (prepared?.kind === "scenario") runtime.control("pause"); }
   };
 }
 
-function safeRecord(record: DeterministicEvidenceRecord) {
+function safeRecord(record: DeterministicEvidenceRecord, payloadBudget = 256 * 1024) {
   // searchText and summary can contain Client Message text; neither is exported.
+  const payloadBytes = record.payload ? new TextEncoder().encode(JSON.stringify(record.payload)).byteLength : 0;
+  if (payloadBytes > payloadBudget) return { identity: record.identity, timestamp: record.timestamp, facets: cloneCredentialSafe(record.facets), payloadBytes, payloadOmitted: "Payload exceeds the bounded response budget. Query this exact identity separately or inspect it in Workbench." };
   const payload = record.payload ? toBulkShareableEventEnvelope(record.payload as LightstreamerEventEnvelope) : null;
   // Raw transport text can duplicate a redacted Client Message or credential values.
   const { raw: _raw, ...semantic } = payload ?? {};
   return { identity: record.identity, timestamp: record.timestamp, facets: cloneCredentialSafe(record.facets), ...(payload ? { payload: cloneCredentialSafe(semantic) } : {}) };
+}
+/** Explain only the exported representation: canonical searchText/summary may contain secrets. */
+function safeMatchExplanation(evidence: ReturnType<typeof safeRecord>, query: string) {
+  const needle = query.toLowerCase();
+  const fields: Array<{ field: string; excerpt: string }> = [];
+  let remaining = 4096;
+  function visit(value: unknown, path: string, depth = 0): void {
+    if (fields.length >= 3 || depth > 16 || remaining-- <= 0) return;
+    if (value !== null && typeof value === "object") {
+      for (const [key, entry] of Object.entries(value)) {
+        visit(entry, path ? `${path}.${key}` : key, depth + 1);
+        if (fields.length >= 3 || remaining <= 0) break;
+      }
+    } else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      const text = String(value);
+      const found = text.toLowerCase().indexOf(needle);
+      if (found < 0) return;
+      const start = Math.max(0, found - 32), end = Math.min(text.length, start + 160);
+      fields.push({ field: path.slice(0, 200), excerpt: `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}` });
+    }
+  }
+  visit(evidence, "");
+  return { state: fields.length > 0 ? "EXPLAINED" : "NO_SHAREABLE_EXCERPT", fields };
+}
+
+function boundedRecords(records: readonly DeterministicEvidenceRecord[]) {
+  let remaining = 256 * 1024;
+  return records.map(record => {
+    const safe = safeRecord(record, Math.min(64 * 1024, remaining));
+    if ("payload" in safe) remaining = Math.max(0, remaining - new TextEncoder().encode(JSON.stringify(safe.payload)).byteLength);
+    return safe;
+  });
 }
 function safeDraft(local: ReturnType<AgentRuntime["local"]>) {
   if (!local.draft) return local;
@@ -164,21 +323,69 @@ function safeDraft(local: ReturnType<AgentRuntime["local"]>) {
 }
 function safeScenario(state: ReturnType<AgentRuntime["scenario"]>, offset = 0, limit = 25) {
   if (!state) return null;
-  // Source JSON text can contain credentials; expose reviewed documents, identities and trace only.
+  // Source JSON text can contain credentials; expose reviewed documents, explicit membership and trace only.
   let remaining = 64 * 1024;
-  const steps = state.scenario.steps.slice(offset, offset + limit).map(step => {
+  const members = state.scenario.members.slice(offset, offset + limit).map(member => {
+    if (member.kind === "checkpoint") return { kind: "checkpoint" as const, id: member.id, name: member.name, assertions: member.assertions };
+    const step = member;
     const bytes = new TextEncoder().encode(JSON.stringify(step.draft.document)).byteLength;
     const include = bytes <= remaining;
     if (include) remaining -= bytes;
-    return { id: step.id, document: include ? step.draft.document : null, ...(include ? {} : { documentOmitted: "Preview budget exceeded; inspect the Workbench document or request a smaller page.", documentBytes: bytes }), diagnostics: step.draft.diagnostics, ready: step.draft.ready };
+    return { kind: "step" as const, id: step.id, document: include ? step.draft.document : null, ...(include ? {} : { documentOmitted: "Preview budget exceeded; inspect the Workbench document or request a smaller page.", documentBytes: bytes }), diagnostics: step.draft.diagnostics, ready: step.draft.ready };
   });
+  const steps = members.filter((member): member is Extract<typeof member, { kind: "step" }> => member.kind === "step");
   const run = state.run ? {
     id: state.run.id, target: state.run.target, committedEvidenceSeed: state.run.committedEvidenceSeed,
     status: state.run.status, nextOrdinal: state.run.nextOrdinal, trace: state.run.trace.slice(offset, offset + limit),
     controls: state.run.controls.slice(-25), drifts: state.run.drifts.slice(-25), controlsTotal: state.run.controls.length, driftsTotal: state.run.drifts.length
   } : null;
-  const totalSteps = state.scenario.steps.length, totalTrace = state.run?.trace.length ?? 0;
-  return cloneCredentialSafe({ phase: state.phase, scenarioId: state.scenario.id, offset, totalSteps, totalTrace, nextOffset: offset + limit < Math.max(totalSteps, totalTrace) ? offset + limit : null, steps, run, membershipError: state.membershipError, runner: state.runner ? { phase: state.runner.phase, pauseReason: state.runner.pauseReason, nextOrdinal: state.runner.nextOrdinal } : null });
+  const totalSteps = state.scenario.steps.length, totalMembers = state.scenario.members.length, totalTrace = state.run?.trace.length ?? 0;
+  return cloneCredentialSafe({ phase: state.phase, scenarioId: state.scenario.id, revision: state.scenario.revision, offset, totalSteps, totalMembers, totalTrace, nextOffset: offset + limit < Math.max(totalMembers, totalTrace) ? offset + limit : null, members, steps, run, membershipError: state.membershipError, runner: state.runner ? { phase: state.runner.phase, pauseReason: state.runner.pauseReason, nextOrdinal: state.runner.nextOrdinal } : null });
+}
+
+function makeQuery(args: AgentArguments, defaultLimit = 25, forcePayload = false, defaultOrder: AgentQueryInput["order"] = "OLDEST_FIRST"): AgentQueryInput {
+  const inputFilter = args.filter as { text?: string; criteria?: readonly { facet: string; polarity: "include" | "exclude"; type: string; value: string | number | boolean | null; label?: string }[]; around?: Filter["around"] } | undefined;
+  const text = inputFilter?.text ?? args.text as string | undefined ?? "";
+  const criteria: Record<string, { include: ReturnType<typeof createTypedFilterValue>[]; exclude: ReturnType<typeof createTypedFilterValue>[] }> = {};
+  for (const entry of inputFilter?.criteria ?? []) {
+    const bucket = criteria[entry.facet] ??= { include: [], exclude: [] };
+    bucket[entry.polarity].push(createTypedFilterValue(entry.facet, entry.type, entry.value, entry.label ?? String(entry.value)));
+  }
+  const queryFilter = canonicalizeFilter({ ...createFilter(), text, criteria, around: inputFilter?.around ?? null });
+  const discoveries = (args.discover as readonly { facet: string; search?: string; limit?: number; cursor?: string }[] | undefined)?.map(request => ({ facet: request.facet, ...(request.search === undefined ? {} : { search: request.search }), size: Number(request.limit ?? 25), ...(request.cursor ? { cursor: request.cursor } : {}) }));
+  return {
+    ...(typeof args.scopeId === "string" ? { scopeId: args.scopeId } : {}),
+    size: Number(args.limit ?? defaultLimit),
+    at: (args.at as EvidenceReadPoint | "LATEST_COMMITTED" | undefined) ?? "LATEST_COMMITTED",
+    ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}),
+    includePayload: forcePayload || args.includePayload === true,
+    order: (args.order as AgentQueryInput["order"] | undefined) ?? defaultOrder,
+    filter: queryFilter,
+    ...(discoveries ? { discover: discoveries } : {})
+  };
+}
+
+function scenarioPlan(args: AgentArguments): AgentScenarioPlanInput {
+  const members: AgentScenarioMember[] = args.members
+    ? args.members as AgentScenarioMember[]
+    : (args.steps as AgentDraftInput[]).map((step, index) => ({ kind: "step", id: `step-${index + 1}`, ...step }));
+  const ids = new Set<string>();
+  for (const member of members) {
+    if (ids.has(member.id)) throw new Error("Scenario member ids must be unique.");
+    ids.add(member.id);
+    if (member.kind === "step") validateDraftSource(member);
+  }
+  return { members, ...(args.replace ? { replace: args.replace as AgentScenarioPlanInput["replace"] } : {}) };
+}
+
+function validateDraftSource(draft: AgentDraftInput): void {
+  if (Boolean(draft.scopeId) === Boolean(draft.evidence)) throw new Error("Provide exactly one live scopeId or retained Evidence identity for each candidate Step.");
+}
+
+function omissions(payloadRequested: boolean): string[] {
+  return payloadRequested
+    ? ["Client Message bodies are redacted; raw transport text is omitted."]
+    : ["Item Update payloads were not requested; Client Message bodies and raw transport text are omitted."];
 }
 
 function cloneCredentialSafe(value: unknown, depth = 0): unknown {

@@ -76,6 +76,18 @@ Scope, Filter, and Find remain distinct:
 - **Filter** changes the visible evidence set and exposes its active criteria and shown/total counts.
 - **Find** moves among matches without silently changing the evidence set.
 
+The existing Scope surface also owns **Search scopes**, a temporary view over
+the full structural model. Substring search includes collapsed branches and shows
+type, identity, ancestor path, and lifecycle. Browsing results preserves the
+committed Scope until explicit activation. It does not mix event results with
+runtime objects or introduce another permanent workspace destination.
+
+Evidence Find searches retained events within current Scope and Filter. Its
+matched-field excerpt explains hidden metadata matches; **Inspect match** updates
+selection and Context deliberately. Result navigation preserves the selected
+Context and reveals every match in the bounded ledger. Capture can advance while
+the search read point remains stable; explicit refresh includes newer Evidence.
+
 Live Capture never steals focus, selection, scroll position, or detail context. Frozen investigation preserves the historical window while Capture continues and reports newer matching evidence.
 
 ### History and operating boundaries

@@ -38,11 +38,19 @@ jobs:
     name: Panel UI browser gate
     runs-on: ubuntu-24.04
     container: mcr.microsoft.com/playwright:v1.62.1-noble
-    timeout-minutes: 10
+    # The 328 browser checks plus 107-state visual packet can exceed 25 minutes
+    # before the real-extension smoke. Keep orchestration headroom separate
+    # from the unchanged per-test and measured operation budgets.
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # Visual review references accepted snapshots at recorded revisions.
+
+      - name: Trust the mounted checkout in the job container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Set up Node.js
         uses: actions/setup-node@v6

@@ -2780,21 +2780,24 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().evidence.findState).toMatchObject({
       query: "alpha",
       matchCount: 3,
-      currentIndex: 0,
-      currentEventId: "alpha-1"
-    });
-    runtime.dispatch({ type: "find-next" });
-    expect(runtime.getSnapshot().evidence.findState).toMatchObject({
       currentIndex: 1,
       currentEventId: "alpha-2"
     });
+    runtime.dispatch({ type: "find-next" });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().evidence.findState).toMatchObject({
+      currentIndex: 2,
+      currentEventId: "alpha-3"
+    });
     runtime.dispatch({ type: "find-previous" });
-    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("alpha-1");
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("alpha-2");
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(membership);
     expect(runtime.getSnapshot().selectionEventId).toBe("beta-1");
 
     runtime.dispatch({ type: "clear-find" });
-    expect(runtime.getSnapshot().evidence.findState).toEqual({
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().evidence.findState).toMatchObject({
       query: "",
       matchCount: 0,
       currentIndex: -1,
@@ -2869,13 +2872,14 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "set-find", value: "ITEM UPDATE" });
     await flushStoreNotifications();
-    expect(runtime.getSnapshot().evidence.findState).toEqual({
+    expect(runtime.getSnapshot().evidence.findState).toMatchObject({
       query: "ITEM UPDATE",
       matchCount: 2,
       currentIndex: 0,
       currentEventId: "update-1"
     });
     runtime.dispatch({ type: "find-next" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("update-2");
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(unfilteredIds);
 
@@ -2920,16 +2924,17 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "set-find", value: "needle" });
     await flushStoreNotifications();
-    expect(runtime.getSnapshot().evidence.findState).toEqual({
+    expect(runtime.getSnapshot().evidence.findState).toMatchObject({
       query: "needle",
       matchCount: 3,
-      currentIndex: 0,
-      currentEventId: "retained-5"
+      currentIndex: 2,
+      currentEventId: "retained-3995"
     });
     expect(runtime.getSnapshot().evidence.events).toHaveLength(60);
-    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-5")).toBe(true);
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-3995")).toBe(true);
 
-    runtime.dispatch({ type: "find-next" });
+    runtime.dispatch({ type: "find-previous" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("retained-2050");
     expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-2050")).toBe(true);
     expect(runtime.getSnapshot()).toMatchObject({
@@ -2952,9 +2957,11 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-2050")).toBe(true);
 
     runtime.dispatch({ type: "find-next" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("retained-3995");
     expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-3995")).toBe(true);
     runtime.dispatch({ type: "clear-find" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-4001")).toBe(true);
     runtime.dispose();
   });
@@ -2975,11 +2982,12 @@ describe("WorkbenchRuntime", () => {
     await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(180));
     runtime.dispatch({ type: "set-find", value: "indexed-needle" });
     await vi.waitFor(() => expect(runtime.getSnapshot().evidence.findState.matchCount).toBe(3));
-    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-2");
-    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-2")).toBe(true);
-    runtime.dispatch({ type: "find-next" });
     expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-91");
     expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-91")).toBe(true);
+    runtime.dispatch({ type: "find-next" });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-179");
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-179")).toBe(true);
     runtime.dispose();
     await history.close();
   });

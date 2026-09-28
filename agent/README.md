@@ -107,6 +107,34 @@ companion does not persist Evidence or log payloads; redaction is not a general
 secret detector. Local Injection invokes app listeners, which may cause other
 application effects. Server Injection is not exposed to agents.
 
+## Evidence-guided experiments in source builds
+
+This repository's current source adds bounded stream discovery, event waiting,
+and non-mutating candidate validation. The published
+`lightstreamer-workbench-agent@0.1.0` package and published Workbench extension
+2.0.4 predate these tools. They are available only when the companion and
+extension are built from matching source that contains them; check
+`get_status.capabilities` for the connected panel's actual tool list. Existing
+npm setup, the single MCP companion process, and authentication settings stay
+the same.
+
+The investigation sequence is: discover a bounded profile with `describe_stream`,
+query explicit Evidence examples with `query_evidence`, validate a source-grounded
+Draft or ordered Scenario with `validate_agent_candidate`, prepare it through
+`prepare_local_injection` or `prepare_scenario`, then run and inspect its Evidence
+references. Read the packaged skill's `references/investigation.md` for the
+candidate and checkpoint shape, bounded wait outcomes, and application-side
+verification procedure.
+
+When `wait_for_evidence` is available, anchor it to an `after` read point and the
+current page epoch. It accepts the same typed filters as `query_evidence`, waits
+for 0–20,000 ms, and returns a bounded result of at most 100 Evidence records.
+Handle `MATCHED`, `TIMED_OUT`, `CANCELLED`, `HISTORY_CHANGED`,
+`HISTORY_INCOMPLETE`, `HISTORY_UNAVAILABLE`, `TARGET_CHANGED` and `QUERY_FAILED`
+as distinct outcomes. A timeout or incomplete/bounded result does not prove
+absence. Workbench checkpoints verify Workbench facts; use browser tools to
+verify the inspected application's DOM separately.
+
 Authentication and read-only enforcement remain in the underlying protocol for
 future controls and compatibility testing, but the current panel does not enable
 them. Use the default auth-off configuration and port 24817 with this panel.
@@ -132,6 +160,51 @@ You may remove those two files after verifying the manifest name is
 marker. Do not delete a whole browser profile or another application's host.
 Leftover registration is unused by the new extension, which no longer requests
 `nativeMessaging`.
+
+## Search Evidence and Scope
+
+`search_scope` searches the complete structural Topology, including collapsed
+branches, by case-insensitive substring in labels, identities, types, ancestor
+paths, details and lifecycle. Results include the exact `scopeId` and ancestor
+path. Use that ID with `get_scope` or `search_evidence`; searching never changes
+the human's selected Scope.
+
+`search_evidence` applies the same canonical Find matching as the panel across
+retained Evidence. Its `within` boundary is explicit:
+
+- `page` (default) searches the page without the human's Filter. An optional
+  `scopeId` narrows it to that exact structural Scope.
+- `current-investigation` captures the human's current Scope and Filter and
+  applies Find text independently. Both boundaries remain fixed during paging,
+  even if the human later changes their investigation.
+
+An unsupported current Filter rejects the search without returning matches.
+Remove the unsupported criterion or explicitly choose `within:"page"`.
+
+For example, after identifying the intended Panel Session:
+
+```json
+{"panelSessionId":"chosen-panel","text":"row-42","within":"current-investigation","limit":25}
+```
+
+Both search tools return up to 100 matches per page and an opaque `nextCursor`
+when more matches exist. Continue with **only** `panelSessionId` and `cursor`.
+Evidence searches preserve their read point, total and order while Capture adds
+events; Scope searches preserve their Topology snapshot. All matches remain
+reachable, including beyond 1,000 results. Start a new search to include newer
+Evidence or Topology. Cursors expire after five minutes, bounded cursor-cache
+eviction, retention removes the captured range, Clear, page change or access
+revocation. An expired cursor requires a fresh search.
+
+Neither search moves the human's Scope, Filter, Find, selection or Capture.
+Evidence payloads require `includePayload:true`. Match explanations use only
+fields permitted in the response; a canonical match in omitted payload data,
+Client Message text or recognized credentials may have `NO_SHAREABLE_EXCERPT`.
+Raw capture text and the internal search index are never returned. Existing
+`query_evidence` and `get_evidence` remain available for general retained reads
+and exact Evidence lookup. Check `get_status.capabilities` before using new
+tools with an older loaded extension; both the extension and companion need
+the search update.
 
 ## Verification and publication
 

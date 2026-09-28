@@ -29,7 +29,7 @@ describe("history-100k-02 bounded IndexedDB continuation", () => {
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const history = await createIndexedDbEventHistory({ panelSessionId: `history-100k-02-keyset-${Date.now()}` });
     try {
-      for (let sequence = 1; sequence <= 200; sequence += 1) await history.offer(event(sequence)).settled;
+      await Promise.all(Array.from({ length: 200 }, (_, index) => history.offer(event(index + 1)).settled));
 
       const first = await history.query!({
         at: "LATEST_COMMITTED",
@@ -88,7 +88,10 @@ describe("history-100k-02 bounded IndexedDB continuation", () => {
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const history = await createIndexedDbEventHistory({ panelSessionId: `history-100k-02-driver-${Date.now()}` });
     try {
-      for (let sequence = 1; sequence <= 200; sequence += 1) await history.offer(event(sequence, sequence === 137 ? "rare-key" : "common-key")).settled;
+      await Promise.all(Array.from({ length: 200 }, (_, index) => {
+        const sequence = index + 1;
+        return history.offer(event(sequence, sequence === 137 ? "rare-key" : "common-key")).settled;
+      }));
       const result = await history.query!({
         at: "LATEST_COMMITTED",
         page: { order: "OLDEST_FIRST", size: 10 },

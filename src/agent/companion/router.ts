@@ -34,6 +34,15 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
             send(request.client, { id: request.id, ...(message.error ? { error: message.error } : { result: message.result }) });
             return;
           }
+          if (message.type === "cancel" && typeof message.id === "string") {
+            for (const [route, request] of pending) {
+              if (request.client !== peer || request.id !== message.id) continue;
+              clearTimeout(request.timer); pending.delete(route);
+              send(request.panel, { type: "cancel", id: route });
+              send(peer, { id: message.id, error: "QUERY_CANCELLED: Request cancelled. A delivery may have occurred; inspect its existing requestId." });
+            }
+            return;
+          }
           if (typeof message.id !== "string" || typeof message.name !== "string") { peer.close(); return; }
           try {
             validateAgentCall(message.name, message.args);
@@ -48,11 +57,12 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
               ); return;
             }
             const panel = panels.get(String((message.args as Message).panelSessionId));
-            if (!panel) throw new Error("Panel Session is not connected. Open Workbench and explicitly connect agent access.");
+            if (!panel) throw new Error("COMPANION_UNAVAILABLE: Panel Session is not connected. Open Workbench and check Agent access status.");
             if (pending.size >= 64) throw new Error("Companion request capacity reached.");
             const route = randomUUID(), id = message.id;
             const timer = setTimeout(() => {
               pending.delete(route);
+              send(panel.peer, { type: "cancel", id: route });
               send(peer, { id, error: "Workbench reply timed out. An execution may have occurred; query its requestId instead of repeating it." });
             }, 30000);
             pending.set(route, { client: peer, panel: panel.peer, id, timer });
@@ -64,12 +74,13 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
           for (const [key, request] of pending) {
             if (request.client === peer || request.panel === peer) {
               clearTimeout(request.timer); pending.delete(key);
-              if (request.client !== peer) send(request.client, { id: request.id, error: "Panel connection closed. Delivery may be unknown; do not repeat it automatically." });
+              if (request.panel !== peer) send(request.panel, { type: "cancel", id: key });
+              if (request.client !== peer) send(request.client, { id: request.id, error: "COMPANION_UNAVAILABLE: Panel connection closed. An in-flight operation may have an unknown outcome; inspect its existing requestId/receipt and do not retry automatically." });
             }
           }
         }
       };
     },
-    dispose() { for (const request of pending.values()) clearTimeout(request.timer); pending.clear(); panels.clear(); }
+    dispose() { for (const [route, request] of pending) { clearTimeout(request.timer); send(request.panel, { type: "cancel", id: route }); } pending.clear(); panels.clear(); }
   };
 }

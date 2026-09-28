@@ -117,6 +117,17 @@
 .workbench-react__find { min-width: 0; flex: 0 0 auto; border-bottom: 1px solid var(--wb-border); background: var(--wb-raised); padding: 3px 9px; }
 .workbench-react__find input { width: min(260px, 36vw); }
 .workbench-react__find input, .workbench-react__filter input { min-width: 120px; }
+.workbench-react__find-detail { display: flex; flex: 1 1 100%; min-width: 0; align-items: center; gap: 6px 10px; color: var(--wb-muted); font-size: 10px; }
+.workbench-react__find-detail > :first-child { flex: 0 0 auto; }
+.workbench-react__find-detail button { flex: 0 0 auto; margin-left: auto; }
+.workbench-react__find-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workbench-react__search-hit { background: var(--wb-info-soft); color: var(--wb-text); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
+.workbench-react__scope-tree-host { display: flex; flex: 1 1 auto; min-height: 0; }
+.workbench-react__scope-tree-host[hidden] { display: none; }
+.workbench-react__scope-search-entry { flex: 0 0 auto; padding: 4px 9px; border-bottom: 1px solid var(--wb-border); }
+@media (forced-colors: active) {
+  .workbench-react__search-hit { color: MarkText; background: Mark; forced-color-adjust: none; }
+}
 .workbench-react__filter { position: relative; z-index: 3; flex: 0 0 auto; border-bottom: 1px solid var(--wb-border); background: var(--wb-bg); padding: 6px 9px; }
 .workbench-react__filter-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .workbench-react__filter label { color: var(--wb-muted); }
@@ -199,7 +210,7 @@
 .workbench-react__evidence-codes dt { font: 700 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__evidence-codes dd { margin: 0; overflow-wrap: anywhere; }
 .workbench-react__evidence-code-notes { margin-top: 9px !important; }
-.workbench-react__ledger { display: grid; min-height: 0; flex: 1 1 auto; grid-auto-rows: minmax(30px, auto); grid-template-columns: 125px max-content minmax(max-content, 1fr); align-content: start; overflow: auto; }
+.workbench-react__ledger { display: grid; isolation: isolate; min-height: 0; flex: 1 1 auto; grid-auto-rows: minmax(30px, auto); grid-template-columns: 125px max-content minmax(max-content, 1fr); align-content: start; overflow: auto; }
 .workbench-react__ledger-header, .workbench-react__evidence-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
 .workbench-react__ledger-header { position: sticky; z-index: 3; top: 0; min-height: 28px; border-bottom: 1px solid var(--wb-border-strong); background: var(--wb-raised); color: var(--wb-muted); font-size: 10px; text-transform: uppercase; }
 .workbench-react__ledger-header > *, .workbench-react__evidence-row > * { min-width: 0; padding: 4px 7px; white-space: nowrap; }
@@ -207,7 +218,7 @@
 .workbench-react button.workbench-react__evidence-row:hover { background: color-mix(in srgb, var(--wb-selection) 42%, transparent); }
 .workbench-react button.workbench-react__evidence-row[aria-selected="true"] { background: var(--wb-selection); }
 .workbench-react__evidence-row[data-find-current="true"] { box-shadow: inset 0 0 0 1px var(--wb-info); }
-.workbench-react__evidence-op { position: sticky; z-index: 4; left: 0; display: flex; align-self: stretch; align-items: center; gap: 3px; border-right: 1px solid var(--wb-border); background: var(--wb-raised); font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__evidence-op { position: sticky; z-index: 2; left: 0; display: flex; align-self: stretch; align-items: center; gap: 3px; border-right: 1px solid var(--wb-border); background: var(--wb-raised); font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__ledger-header > :first-child { position: sticky; z-index: 5; left: 0; border-right: 1px solid var(--wb-border); background: var(--wb-raised); }
 .workbench-react__evidence-row[aria-selected="true"] .workbench-react__evidence-op { box-shadow: inset 3px 0 0 var(--wb-selection-marker); background: var(--wb-selection); }
 .workbench-react__evidence-op small, .workbench-react__evidence-op em { color: var(--wb-muted); font: 9px/1 system-ui, sans-serif; font-style: normal; }

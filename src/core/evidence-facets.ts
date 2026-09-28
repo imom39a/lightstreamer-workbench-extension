@@ -183,7 +183,7 @@ function canonical(value: unknown): string {
 function canonicalEvidenceSearchTextFromExtraction(
   event: LightstreamerEventEnvelope,
   context: EvidenceFacetContext,
-  extracted: EvidenceFacetExtraction
+  extracted: Pick<EvidenceFacetExtraction, "facets">
 ): string {
   const facetText = FACET_DESCRIPTORS.flatMap((descriptor) => {
     const facet = extracted.facets[descriptor.key];
@@ -251,7 +251,7 @@ export function canonicalEvidenceSearchText(event: LightstreamerEventEnvelope, c
 export function canonicalEvidenceSearchTextWithExtraction(
   event: LightstreamerEventEnvelope,
   context: EvidenceFacetContext,
-  extracted: EvidenceFacetExtraction
+  extracted: Pick<EvidenceFacetExtraction, "facets">
 ): string {
   return canonicalEvidenceSearchTextFromExtraction(event, context, extracted);
 }

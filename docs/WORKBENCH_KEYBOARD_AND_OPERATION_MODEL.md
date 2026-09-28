@@ -103,16 +103,29 @@ Keyboard users reach the labelled **Inject locally** control directly from the a
 These are distinct operations and must remain visibly distinguishable.
 
 - **Find** locates matches without changing the evidence set. Enter and Shift+Enter navigate next and previous matches.
+- **Search scopes** locates structural objects within the existing Scope surface, including collapsed and off-screen branches. Arrow keys browse matching objects without changing active Scope; Enter or click commits an object. Results show their full path and identity to distinguish repeated labels. The search input remains focused while its active descendant moves. Escape clears a non-empty query, then closes the search and restores its exact origin with prior tree expansion and scroll.
 - **Filter** changes the visible set, remains visibly active, reports shown versus total evidence, and provides explicit Apply and Clear actions.
 - **Jump** navigates to a known client, Session, Subscription, item, key, or event identity.
 - **Scope** changes the authoritative runtime object whose evidence is being investigated.
 
 Control/Command+F is the only accepted panel-level chord:
 
-- When Workbench chrome or Evidence owns focus, it opens Evidence Find.
+- When Scope or Search scopes owns focus, it opens or focuses Search scopes.
+- When other Workbench chrome or Evidence owns focus, it opens Evidence Find.
 - When raw evidence or a draft editor owns focus, it remains document-local.
 - Filter receives no global shortcut.
 - Find uses staged Escape: the first Escape clears a non-empty temporary query; the next closes Find and restores its exact origin.
+
+Evidence Find searches all retained searchable Evidence under the current Scope
+and Filter. It keeps input focus while each match is scrolled fully below the
+ledger header. The row and a bounded matched-field excerpt explain what matched;
+**Inspect match** explicitly selects that event and opens Context. Navigation
+alone preserves selected Context. Counts describe matching events, not individual
+text occurrences, and wrap is explicit. Query loading preserves the mounted
+ledger and does not steal focus. Search results latch one committed read point;
+new Capture is reported for **Refresh results**, and retention expiry requires
+refresh. Closing restores the originating Live/Frozen investigation when its
+anchor remains retained. Capture continues throughout.
 
 This context boundary follows the established distinction between DevTools panel search and filtering. See [Chrome DevTools search](https://developer.chrome.com/docs/devtools/search/) and [Chrome DevTools keyboard shortcuts](https://developer.chrome.com/docs/devtools/shortcuts).
 

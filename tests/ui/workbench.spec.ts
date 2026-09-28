@@ -716,14 +716,14 @@ test("Workbench finds off-window matches across all retained Evidence without ch
   await find.focus();
   await page.keyboard.press("Enter");
   await page.getByRole("textbox", { name: "Find in ordered Evidence" }).fill("complete-retained-find-anchor");
-  await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("1 of 3 matches");
-  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(5)}"]`)).toHaveAttribute("data-find-current", "true");
+  await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("3 of 3 matches");
+  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(3_995)}"]`)).toHaveAttribute("data-find-current", "true");
   await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
 
   await page.getByRole("button", { name: "Next", exact: true }).click();
-  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(2_050)}"]`)).toHaveAttribute("data-find-current", "true");
+  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(5)}"]`)).toHaveAttribute("data-find-current", "true");
   await page.getByRole("button", { name: "Next", exact: true }).click();
-  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(3_995)}"]`)).toHaveAttribute("data-find-current", "true");
+  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(2_050)}"]`)).toHaveAttribute("data-find-current", "true");
   await expect(page.getByText(/View FROZEN/)).toBeVisible();
   await expect(page.getByRole("heading", { name: new RegExp(selectedIdentity) })).toBeVisible();
 
@@ -2215,13 +2215,13 @@ test("Workbench marks and navigates Find results without changing selected Evide
   await page.getByRole("button", { name: "Find", exact: true }).click();
   const current = page.locator('[data-find-current="true"]');
   const before = await current.getAttribute("data-evidence-id");
-  await expect(current).toContainText(/Find 1 of/);
+  await expect(current.locator(".workbench-react__find-match")).toHaveAttribute("title", /Find 1 of/);
   await page.keyboard.press("Enter");
   await expect.poll(() => page.locator('[data-find-current="true"]').getAttribute("data-evidence-id")).not.toBe(before);
   await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toHaveAttribute("aria-selected", "true");
   const findCurrent = page.locator('[data-find-current="true"]');
-  const findDataCell = findCurrent.locator(".workbench-react__evidence-data");
-  expect(await findDataCell.evaluate((cell) => {
+  const pinnedOp = findCurrent.locator(".workbench-react__evidence-op");
+  expect(await pinnedOp.evaluate((cell) => {
     const match = cell.querySelector<HTMLElement>(".workbench-react__find-match");
     if (!match) return false;
     const cellRect = cell.getBoundingClientRect();

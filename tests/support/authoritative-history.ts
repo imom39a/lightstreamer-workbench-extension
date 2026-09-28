@@ -30,7 +30,7 @@ import {
 import { canonicalEvidenceSearchText, extractEvidenceFacets } from "../../src/core/evidence-facets";
 import { typedFacetValue } from "../../src/core/evidence-filter-contract";
 import { discoverFacet } from "../../src/core/evidence-filter-discovery";
-import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "../../src/core/evidence-filter-selection";
+import { findEvidence, withEvidenceFindPage, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "../../src/core/evidence-filter-selection";
 import { evaluateFilter, type FilterInput, type FilterRecord } from "../../src/core/filter-algebra";
 
 export type AuthoritativeHistoryOfferDecision = "commit" | "refuse";
@@ -75,6 +75,8 @@ export function createAuthoritativeHistory(
   let intervalOrdinal = 1;
   let interval = intervalFor(intervalOrdinal);
   let currentEvidence: CommittedEvidence[] = [];
+  const currentEvidenceBySequence = new Map<number, CommittedEvidence>();
+  let queryProjections = new WeakMap<CommittedEvidence, SelectionRecord>();
   let nextSequence = 1;
   let offerNumber = 0;
   let notAccepted = 0;
@@ -134,6 +136,7 @@ export function createAuthoritativeHistory(
       candidate: copied
     });
     currentEvidence.push(evidence);
+    currentEvidenceBySequence.set(evidence.sequence, evidence);
     allEvidence.push(evidence);
     return toRef(evidence);
   }
@@ -282,8 +285,11 @@ export function createAuthoritativeHistory(
     const gated = <T>(value: T): Promise<T> => compatibilityRead
       ? compatibilityRead.then(() => value)
       : Promise.resolve(value);
-    const readPoint = queryReadPoint();
-    if (request.at !== "LATEST_COMMITTED" && !sameReadPoint(request.at, readPoint)) {
+    const latestReadPoint = queryReadPoint();
+    const readPoint = request.at === "LATEST_COMMITTED" ? latestReadPoint : request.at;
+    if (readPoint.interval.id !== latestReadPoint.interval.id
+      || (readPoint.committedEvidenceBoundary?.sequence ?? 0) > (latestReadPoint.committedEvidenceBoundary?.sequence ?? 0)
+      || (readPoint.retainedRange !== null && (latestReadPoint.retainedRange === null || readPoint.retainedRange.first.sequence < latestReadPoint.retainedRange.first.sequence))) {
       return gated(queryFailure("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable."));
     }
     if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > 100) {
@@ -291,7 +297,9 @@ export function createAuthoritativeHistory(
     }
 
     const records: SelectionRecord[] = currentEvidence.flatMap((entry) => {
-      if (entry.candidate.kind === "topology-checkpoint") return [];
+      if (entry.candidate.kind === "topology-checkpoint" || entry.sequence > (readPoint.committedEvidenceBoundary?.sequence ?? 0) || entry.sequence < (readPoint.retainedRange?.first.sequence ?? 1)) return [];
+      const cached = queryProjections.get(entry);
+      if (cached) return [cached];
       const identity = Object.freeze({
         intervalId: entry.intervalId,
         pageId: interval.id,
@@ -311,7 +319,7 @@ export function createAuthoritativeHistory(
         const label = event.item.name ?? String(event.item.position);
         facets.item = typedFacetValue("item", "legacy-label", label, label);
       }
-      return [Object.freeze({
+      const record = Object.freeze({
         identity,
         timestamp: event.timestamp,
         summary: event.kind,
@@ -321,9 +329,10 @@ export function createAuthoritativeHistory(
           listenerOwner: identity.ownerId,
           summary: event.kind
         }),
-        facets: Object.freeze(facets),
-        payload: copyCandidate(event)
-      })];
+        facets: Object.freeze(facets)
+      });
+      queryProjections.set(entry, record);
+      return [record];
     });
     const around = normalizeAround(request.filter.around, readPoint.retainedRange);
     const filter = around === request.filter.around
@@ -366,15 +375,41 @@ export function createAuthoritativeHistory(
         });
       }
     }
+    // This synchronous test seam has always returned payload-bearing rows. Keep
+    // that contract, cloning only bounded returned rows rather than all retained
+    // candidates on every query.
+    const hydrated = new Map<number, SelectionRecord>();
+    const hydrate = (record: SelectionRecord): SelectionRecord => {
+      const cached = hydrated.get(record.identity.sequence);
+      if (cached) return cached;
+      const entry = currentEvidenceBySequence.get(record.identity.sequence)!;
+      const result = Object.freeze({ ...record, payload: copyCandidate(entry.candidate) });
+      hydrated.set(record.identity.sequence, result);
+      return result;
+    };
+    const selected = request.lookup === undefined
+      ? undefined
+      : records.find(record => record.identity.sequence === request.lookup!.sequence);
     const lookup = request.lookup === undefined
       ? null
-      : lookupEvidence(records, readPoint, request.lookup, filter, around);
-    const find = request.find === undefined ? null : findEvidence(request.find.scopeToFilter ? inScope : records, request.find);
+      : lookupEvidence(selected ? [hydrate(selected)] : [], readPoint, request.lookup, filter, around);
+    let find = request.find === undefined ? null : withEvidenceFindPage(findEvidence(request.find.scopeToFilter ? inScope : records, request.find), inScope, request, readPoint);
+    if (find && request.find?.includeMatchPayload) {
+      const matchIdentity = find.current ?? find.first;
+      const match = records.find(record => record.identity.eventId === matchIdentity?.eventId);
+      if (match) find = Object.freeze({ ...find, match: hydrate(match) });
+    }
+    if (find) find = Object.freeze({
+      ...find,
+      results: Object.freeze((find.results ?? []).map(hydrate)),
+      ...(find.page ? { page: Object.freeze({ ...find.page, evidence: Object.freeze(find.page.evidence.map(hydrate)) }) } : {}),
+      ...(find.window ? { window: Object.freeze(find.window.map(hydrate)) } : {})
+    });
     return gated({
       ok: true,
       value: Object.freeze({
         readPoint,
-        page: Object.freeze({ evidence: Object.freeze(page), nextCursor }),
+        page: Object.freeze({ evidence: Object.freeze(page.map(hydrate)), nextCursor }),
         totals: Object.freeze({ matching: matching.length, inScope: inScope.length }),
         discoveries: new Map(discoveries),
         lookup,
@@ -397,6 +432,8 @@ export function createAuthoritativeHistory(
     intervalOrdinal += 1;
     interval = intervalFor(intervalOrdinal);
     currentEvidence = [];
+    currentEvidenceBySequence.clear();
+    queryProjections = new WeakMap();
     const result = Object.freeze({ previousInterval, interval });
     publish(
       Object.freeze({

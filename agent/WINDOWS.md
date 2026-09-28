@@ -24,6 +24,12 @@ After saving the MCP configuration, start/reconnect that server in your agent
 app. The app launches the companion automatically; no separate PowerShell
 window, manually running server, Windows service or Chrome native host is needed.
 
+The source-only `describe_stream`, `wait_for_evidence` and
+`validate_agent_candidate` tools require a matching source-built companion and
+extension. Published companion 0.1.0 and extension 2.0.4 predate them; see
+[Evidence-guided experiments](README.md#evidence-guided-experiments-in-source-builds).
+The setup command and Windows connection path are unchanged.
+
 If the client cannot launch npm shims, use a stable package installation and
 print an absolute Node configuration:
 

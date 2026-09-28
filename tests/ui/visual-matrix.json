@@ -700,5 +700,177 @@
     "theme": "dark",
     "reference": {"source": "prototype-12", "variant": "C", "frame": "compact"},
     "production": {"scenario": "frozen-high-volume", "setup": "readability-scope"}
+  },
+  {
+    "id": "search-scopes-compact-dark",
+    "viewport": {
+      "width": 563,
+      "height": 700
+    },
+    "theme": "dark",
+    "production": {
+      "scenario": "live-high-scope",
+      "setup": "scope-search"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/compact-long-identities-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-scopes-normal-dark",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "theme": "dark",
+    "production": {
+      "scenario": "live-high-scope",
+      "setup": "scope-search"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/normal-density-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-scopes-shallow-dark",
+    "viewport": {
+      "width": 900,
+      "height": 320
+    },
+    "theme": "dark",
+    "production": {
+      "scenario": "live-high-scope",
+      "setup": "scope-search"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-scopes-wide-dark",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "dark",
+    "production": {
+      "scenario": "live-high-scope",
+      "setup": "scope-search"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/wide-selected-json-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-scopes-empty-normal-dark",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "theme": "dark",
+    "production": {
+      "scenario": "live-high-scope",
+      "setup": "scope-search-empty"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/normal-density-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-scopes-shallow-forced-dark",
+    "viewport": {
+      "width": 900,
+      "height": 320
+    },
+    "theme": "dark",
+    "forcedColors": true,
+    "production": {
+      "scenario": "live-high-scope",
+      "setup": "scope-search"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-find-compact-dark",
+    "viewport": {
+      "width": 563,
+      "height": 700
+    },
+    "theme": "dark",
+    "production": {
+      "scenario": "frozen-high-volume",
+      "setup": "retained-find"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/compact-long-identities-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-find-shallow-dark",
+    "viewport": {
+      "width": 900,
+      "height": 320
+    },
+    "theme": "dark",
+    "production": {
+      "scenario": "frozen-high-volume",
+      "setup": "retained-find"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-find-wide-dark",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "dark",
+    "production": {
+      "scenario": "frozen-high-volume",
+      "setup": "retained-find"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/wide-selected-json-dark-darwin.png"
+    }
+  },
+  {
+    "id": "search-find-shallow-forced-dark",
+    "viewport": {
+      "width": 900,
+      "height": 320
+    },
+    "theme": "dark",
+    "forcedColors": true,
+    "production": {
+      "scenario": "frozen-high-volume",
+      "setup": "retained-find"
+    },
+    "reference": {
+      "source": "git",
+      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
+    }
   }
 ]

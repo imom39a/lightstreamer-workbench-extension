@@ -5,7 +5,8 @@ import type {
   ScenarioCommittedBoundaryFeed,
   ScenarioCommittedBoundarySnapshot
 } from "../../core/local-injection-scenario-checkpoint";
-import type { AgentRuntime, AgentDraftInput } from "./agent-runtime";
+import { validateScenarioCheckpoint } from "../../core/local-injection-scenario-checkpoint";
+import type { AgentRuntime, AgentDraftInput, AgentCandidateInput, AgentScenarioMember, AgentScenarioPlanInput } from "./agent-runtime";
 import {
   toBulkShareableEventEnvelope,
   type LightstreamerEventEnvelope
@@ -78,6 +79,7 @@ import {
   type TypedFacetValue
 } from "../../core/evidence-filter-contract";
 import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
+import { classifyInjectionSourceFieldExecutability } from "../../core/item-update-value-semantics";
 import {
   analyzeLocalInjectionDocument,
   applyLocalInjectionDocumentToDraft,
@@ -434,6 +436,12 @@ export type WorkbenchEvidenceSnapshot = Readonly<{
     matchCount: number;
     currentIndex: number;
     currentEventId: string | null;
+    loading: boolean;
+    revealRevision: number;
+    newerCount: number;
+    expired: boolean;
+    wrapped: "next" | "previous" | null;
+    snippet: Readonly<{ field: string; text: string }> | null;
   }>;
   filterMutation: WorkbenchFilterMutationSnapshot;
   restoration: WorkbenchInvestigationRestorationSnapshot;
@@ -690,6 +698,8 @@ export type WorkbenchCommand =
   | { type: "set-find"; value: string }
   | { type: "find-next" }
   | { type: "find-previous" }
+  | { type: "refresh-find" }
+  | { type: "inspect-find-match" }
   | { type: "clear-find" }
   | { type: "show-older-evidence" }
   | { type: "show-newer-evidence" }
@@ -1050,23 +1060,45 @@ class Runtime implements WorkbenchRuntime {
       const candidate = authoredDraftFromScope(findTopologySelection(this.topologyProjection.snapshot(), id), this.currentPageEpoch);
       return { node, pageEpoch: this.currentPageEpoch, localInjection: candidate ? { anchor: candidate.anchor, document: createLocalInjectionDocumentFromDraft(candidate.draft), diagnostics: this.validateLocalInjectionTarget(candidate.anchor) } : { unavailable: "Authoring requires a live COMMAND item with a captured delivery context. Use captured Evidence for other supported modes." } };
     },
+    scopeSearchSnapshot: () => {
+      const scope = this.scopeSnapshot();
+      const history = this.history.status();
+      return { pageEpoch: this.currentPageEpoch, structureRevision: scope.structureRevision, nodes: scope.nodes,
+        history: { intervalId: history.interval.id, committedSequence: history.committedEvidenceBoundary?.sequence ?? null, retainedFirstSequence: history.retainedRange?.first.sequence ?? null } };
+    },
+    queryBoundary: (scopeId, useCurrentInvestigation = false) => {
+      const id = useCurrentInvestigation ? this.scopeId : scopeId;
+      const target = id ? findTopologySelection(this.topologyProjection.snapshot(), id) : null;
+      if (id && !target) throw new Error("Scope is unavailable.");
+      return { scope: structuralEvidenceScope(target), filter: useCurrentInvestigation ? this.canonicalFilter : createFilter() };
+    },
     query: async (input) => {
       const target = input.scopeId ? findTopologySelection(this.topologyProjection.snapshot(), input.scopeId) : null;
       if (input.scopeId && !target) throw new Error("Scope is unavailable.");
       const result = await this.evidenceQuery.query({
-        at: input.at, scope: input.scopeId ? structuralEvidenceScope(target) : { kind: "PAGE" },
-        filter: { ...createFilter(), text: input.text ?? "" },
-        page: { order: "OLDEST_FIRST", size: input.size, ...(input.cursor ? { cursor: input.cursor } : {}) },
-        discover: [], includePayload: input.includePayload,
+        at: input.at, scope: input.scope ?? (input.scopeId ? structuralEvidenceScope(target) : { kind: "PAGE" }),
+        filter: input.filter ?? { ...createFilter(), text: input.text ?? "" },
+        ...(input.find ? { find: input.find } : {}),
+        page: { order: input.order ?? "OLDEST_FIRST", size: input.size, ...(input.cursor ? { cursor: input.cursor } : {}) },
+        discover: input.discover ?? [], includePayload: input.includePayload, signal: input.signal,
         ...(input.lookup ? { lookup: input.lookup } : {})
       });
       if (!result.ok) throw new Error(`${result.problem.code}: ${result.problem.message}`);
       return result.value;
     },
+    subscribeEvidence: listener => {
+      // History notification is independent of UI publication/visibility. Runtime
+      // publication also wakes waits when the inspected page identity changes.
+      const history = this.history.follow({ from: "NOW" }, () => listener());
+      const runtime = this.subscribe(listener);
+      return () => { history(); runtime(); };
+    },
     diagnostics: async (after) => {
       await this.diagnosticObservationSettlement;
       return this.diagnosticObservations.query({ after, through: this.diagnosticObservations.currentBoundary() });
     },
+    validateCandidate: (input, pageEpoch, stillAuthorized) => this.validateAgentCandidate(input, pageEpoch, stillAuthorized),
+    prepareScenarioPlan: (input, pageEpoch, stillAuthorized) => this.prepareAgentScenarioPlan(input, pageEpoch, stillAuthorized),
     prepare: (steps, scenario, pageEpoch, stillAuthorized) => this.prepareAgentDrafts(steps, scenario, pageEpoch, stillAuthorized),
     edit: (document, stepId) => {
       if (this.scenarioState) {
@@ -1089,6 +1121,189 @@ class Runtime implements WorkbenchRuntime {
     },
     finish: () => this.scenarioState ? this.finishScenario() : this.finishLocalInjection()
   };
+
+  private async validateAgentCandidate(input: AgentCandidateInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<unknown> {
+    const available = () => {
+      if (!stillAuthorized()) throw new Error("Agent access was revoked while validating the candidate.");
+      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("Page changed or panel is hidden/closed. Inspect the current target again.");
+    };
+    const validate = async (id: string, draft: AgentDraftInput) => {
+      available();
+      return this.resolveAgentCandidate(id, draft, available);
+    };
+    available();
+      if (input.kind === "draft") {
+        const built = await validate("candidate", input.draft);
+        const candidate = built.candidate;
+        const diagnostics = [...candidate.documentDiagnostics, ...candidate.targetDiagnostics];
+        const replayability = candidateReplayability(candidate, built.replayability);
+        return Object.freeze({ valid: localInjectionReady(candidate) && replayability.replayable, pageEpoch, target: agentTarget(candidate), candidates: [{ id: "candidate", kind: "step", valid: localInjectionReady(candidate) && replayability.replayable, diagnostics, replayability }], checkpoints: [], limitations: ["Validation does not inspect arbitrary page state or DOM."] });
+      }
+      const members: unknown[] = [];
+      const builtById = new Map<string, LocalInjectionDraftState>();
+      const steps: Array<{ id: string; valid: boolean; diagnostics: readonly LocalInjectionDiagnostic[] }> = [];
+      const checkpoints: Array<{ id: string; valid: boolean; reason?: string }> = [];
+      const earlierStepIds: string[] = [];
+      const seen = new Set<string>();
+      let target: LocalInjectionDraftState | null = null;
+      let definition: LocalInjectionScenario | null = null;
+      let valid = true;
+      for (const member of input.plan.members) {
+        if (!member.id || member.id.length > 256 || seen.has(member.id)) throw new Error("Scenario member identities must be unique and contain 1 to 256 characters.");
+        seen.add(member.id);
+        if (member.kind === "step") {
+          const built = await validate(member.id, member);
+          const candidate = built.candidate;
+          const incompatibility = target ? scenarioTargetIncompatibility(this.scenarioDraftInput(target).target, this.scenarioDraftInput(candidate).target) : null;
+          if (incompatibility) throw new Error(incompatibility);
+          target ??= candidate;
+          builtById.set(member.id, candidate);
+          if (!definition) definition = createScenarioFromDraft(this.scenarioDraftInput(candidate), { scenarioId: "agent-validation", stepId: member.id });
+          else {
+            const added = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: 0 }, member.id);
+            if (!added.ok) throw new Error(added.reason);
+            definition = added.scenario;
+          }
+          const diagnostics = [...candidate.documentDiagnostics, ...candidate.targetDiagnostics];
+          const replayability = candidateReplayability(candidate, built.replayability);
+          const independentlyInvalid = diagnostics.some(diagnostic => diagnostic.severity === "error" && !["unknown-key-update", "unknown-key-delete"].includes(diagnostic.code));
+          const step = { kind: "step", id: member.id, valid: replayability.replayable && !independentlyInvalid, diagnostics, replayability };
+          steps.push(step); members.push(step); earlierStepIds.push(member.id); valid &&= step.valid;
+        } else {
+          if (!target) throw new Error("A Scenario Checkpoint must follow at least one explicit Step.");
+          const checkpoint = { id: member.id, kind: "checkpoint" as const, name: member.name, assertions: member.assertions };
+          const checked = validateScenarioCheckpoint(checkpoint, { targetMode: target.anchor.subscriptionMode, deliveryPath: target.anchor.executionTarget === "captured-listener" ? "listener" : "wire", earlierStepIds });
+          const result = { id: member.id, kind: "checkpoint", valid: checked.ok, reason: checked.ok ? undefined : checked.reason };
+          if (checked.ok && definition) {
+            const added = addScenarioCheckpoint(definition, checkpoint, { retainedRunBytes: 0 });
+            if (!added.ok) throw new Error(added.reason);
+            definition = added.scenario;
+          }
+          checkpoints.push(result); members.push(result); valid &&= checked.ok;
+        }
+      }
+      if (!steps.length) throw new Error("A Scenario requires at least one explicit Step.");
+      const diagnostics = [...builtById.values()].flatMap(candidate => [...candidate.documentDiagnostics, ...candidate.targetDiagnostics]);
+      if (definition && valid) {
+        const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: this.scenarioDraftInput(builtById.get(step.id)!) })), { retainedRunBytes: 0 });
+        if (!ordered.ok) valid = false;
+        else {
+          const keys = [...builtById.values()].map(candidate => ({ item: { name: candidate.anchor.itemName, position: candidate.anchor.itemPosition }, keys: this.activeCommandKeys(candidate.anchor) }));
+          const preflight = reviewScenario(ordered.scenario, { runId: "agent-validation", committedEvidenceSeed: this.committedEvidenceBoundary, targetFingerprint: this.scenarioTargetFingerprint(target!), listenerIds: this.scenarioCurrentListenerIds(target!), historyAccepting: this.historyStatus.phase === "RUNNING" && this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null, clearInProgress: this.clearState !== "idle", activeCommandKeysByItem: keys, diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary() });
+          if (!preflight.ok) {
+            valid = false;
+            return Object.freeze({ valid, reason: `${preflight.stepId ? `${preflight.stepId}: ` : ""}${preflight.reason}`, pageEpoch, target: target ? agentTarget(target) : null, members, steps, checkpoints, limitations: ["Validation does not inspect arbitrary page state or DOM.", "Checkpoint assertions observe only Workbench-owned Injection, Evidence, COMMAND projection, or diagnostic facts."] });
+          }
+        }
+      }
+      const refusal = !valid
+        ? checkpoints.find(checkpoint => !checkpoint.valid)?.reason
+          ?? steps.find(step => !step.valid)?.diagnostics.find(diagnostic => diagnostic.severity === "error")?.message
+          ?? "One or more Steps have invalid Source replayability or an ordered Scenario preflight failure."
+        : undefined;
+      return Object.freeze({ valid, ...(refusal ? { reason: refusal } : {}), pageEpoch, target: target ? agentTarget(target) : null, members, steps, checkpoints, limitations: ["Validation does not inspect arbitrary page state or DOM.", "Checkpoint assertions observe only Workbench-owned Injection, Evidence, COMMAND projection, or diagnostic facts."] });
+  }
+
+  private async resolveAgentCandidate(id: string, draft: AgentDraftInput, available: () => void) {
+    if (Boolean(draft.scopeId) === Boolean(draft.evidence)) throw new Error("Choose exactly one Scope or Evidence source for each Step.");
+    let source: LightstreamerEventEnvelope | undefined;
+    if (draft.evidence) {
+      const result = await this.agent.query({ at: "LATEST_COMMITTED", size: 1, includePayload: true, lookup: draft.evidence });
+      if (result.lookup?.state !== "RETAINED") throw new Error("Source Evidence is no longer retained.");
+      source = lightstreamerPayload(result.lookup.evidence.payload) ?? undefined;
+      if (!source) throw new Error("Source has no complete Item Update payload.");
+    }
+    available();
+    const candidate = this.createLocalInjectionCandidate(draft.evidence
+      ? { kind: "selected-event", eventId: draft.evidence.eventId }
+      : { kind: "scope-author", scopeId: draft.scopeId! }, source, { id: `agent-draft-${id}`, recordError: false });
+    if (!candidate) throw new Error("Local Injection target is unavailable or incompatible with the selected source.");
+    if (draft.document !== undefined) {
+      candidate.rawText = draft.document;
+      this.refreshLocalInjectionValidation(candidate);
+    }
+    candidate.relativeDelayMs = draft.delayMs ?? 0;
+    const replayability = source?.update
+      ? classifyInjectionSourceFieldExecutability(source.update).map(field => ({ field: field.field, classification: field.classification, reason: "reason" in field ? field.reason : undefined }))
+      : [];
+    return { id, candidate, replayability };
+  }
+
+  private async prepareAgentScenarioPlan(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
+    await this.prepareAgentScenarioPlanInternal(input, pageEpoch, stillAuthorized);
+  }
+
+  private async prepareAgentScenarioPlanInternal(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
+    const available = () => {
+      if (!stillAuthorized()) throw new Error("Agent access was revoked while preparing the Scenario.");
+      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("Page changed or panel is hidden/closed. Inspect the current target again.");
+      if (this.localInjectionDraft || this.serverInjectionDraft) throw new Error("A protected Draft already exists. Finish it in Workbench before creating a Scenario.");
+      if (this.scenarioState) {
+        const existing = this.scenarioState;
+        const replace = input.replace;
+        if (!replace || replace.scenarioId !== existing.scenario.id || replace.revision !== existing.scenario.revision || !["edit", "review"].includes(existing.phase) || (existing.run?.trace.length ?? 0) > 0) {
+          throw new Error("A protected Scenario already exists. Replace only the exact unexecuted agent-owned Scenario revision or finish it in Workbench.");
+        }
+      } else if (input.replace) throw new Error("The Scenario selected for replacement is no longer available.");
+    };
+    available();
+    if (input.members[0]?.kind !== "step") throw new Error("A Scenario must begin with an explicit Injection Step.");
+    const built: Array<{ member: AgentScenarioMember; draft?: LocalInjectionDraftState }> = [];
+    for (const member of input.members) {
+      available();
+      if (member.kind === "step") {
+        const resolved = await this.resolveAgentCandidate(member.id, member, available);
+        const candidate = resolved.candidate;
+        if (!candidateReplayability(candidate, resolved.replayability).replayable) throw new Error(`${member.id}: captured Source fields require concrete replacement or permitted removal.`);
+        built.push({ member, draft: candidate });
+      } else built.push({ member });
+    }
+    available();
+    const first = built[0]?.draft;
+    if (!first) throw new Error("A Scenario requires at least one explicit Step.");
+    let definition = createScenarioFromDraft(this.scenarioDraftInput(first), { scenarioId: `local-injection-scenario-${crypto.randomUUID()}`, stepId: built[0]!.member.id });
+    const drafts = new Map<string, LocalInjectionDraftState>([[definition.steps[0]!.id, first]]);
+    let earlier: string[] = [definition.steps[0]!.id];
+    for (const entry of built.slice(1)) {
+      available();
+      if (entry.member.kind === "step") {
+        const candidate = entry.draft!;
+        const addition = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: 0 }, entry.member.id);
+        if (!addition.ok) throw new Error(addition.reason);
+        definition = addition.scenario;
+        drafts.set(entry.member.id, candidate);
+        earlier.push(entry.member.id);
+      } else {
+        const checkpoint = { kind: "checkpoint" as const, id: entry.member.id, name: entry.member.name, assertions: entry.member.assertions };
+        const checked = validateScenarioCheckpoint(checkpoint, { targetMode: definition.target.mode, deliveryPath: definition.target.deliveryPath, earlierStepIds: earlier });
+        if (!checked.ok) throw new Error(checked.reason);
+        const added = addScenarioCheckpoint(definition, checkpoint, { retainedRunBytes: 0 });
+        if (!added.ok) throw new Error(added.reason);
+        definition = added.scenario;
+      }
+    }
+    available();
+    const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: this.scenarioDraftInput(drafts.get(step.id)!) })), { retainedRunBytes: 0 });
+    if (!ordered.ok) throw new Error(ordered.reason);
+    const commandKeys = [...drafts.values()].map(draft => ({ item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition }, keys: this.activeCommandKeys(draft.anchor) }));
+    const preflight = reviewScenario(ordered.scenario, { runId: "agent-preflight", committedEvidenceSeed: this.committedEvidenceBoundary, targetFingerprint: this.scenarioTargetFingerprint(first), listenerIds: this.scenarioCurrentListenerIds(first), historyAccepting: this.historyStatus.phase === "RUNNING" && this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null, clearInProgress: this.clearState !== "idle", activeCommandKeysByItem: commandKeys, diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary() });
+    if (!preflight.ok) throw new Error(`${preflight.stepId ? `${preflight.stepId}: ` : ""}${preflight.reason}`);
+    for (const [index, reviewedStep] of preflight.run.steps.entries()) {
+      const draft = drafts.get(reviewedStep.id)!;
+      const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, reviewedStep.document, draft.explicitConcreteFields);
+      const review = this.localInjectionExecutionCoordinator.review({
+        fingerprint: this.localInjectionFingerprint(draft), executionTarget: draft.anchor.executionTarget,
+        document: reviewedStep.document, draft: cloneReinjectionDraft(executionDraft),
+        correlation: { scenarioId: preflight.run.scenarioId, runId: preflight.run.id, stepId: reviewedStep.id, ordinal: index + 1, targetId: draft.anchor.subscriptionId }
+      });
+      if (review.kind === "refused") throw new Error(`${reviewedStep.id}: ${review.reason}`);
+    }
+    available();
+    this.scenarioState = { phase: "edit", parked: false, discardConfirmation: false, scenario: ordered.scenario, drafts, run: null, reviews: new Map(), membershipError: null, pickerOpen: false, membershipPreview: null, focusedMemberId: ordered.scenario.members[0]!.id, focusedStepId: ordered.scenario.steps[0]!.id, removedDrafts: new Map(), priorRuns: [], retainedRunBytes: 0, runner: null, runnerSnapshot: null, serverInterleaves: [] };
+    this.localInjectionDraft = null;
+    this.reviewCurrentScenario();
+    if (this.scenarioState?.phase !== "review") throw new Error(this.scenarioState?.membershipError ?? "Scenario Review could not be completed.");
+  }
 
   private async prepareAgentDrafts(inputs: AgentDraftInput[], scenario: boolean, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
     const available = () => {
@@ -1215,6 +1430,7 @@ class Runtime implements WorkbenchRuntime {
   private topologyProjection: TopologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
+  private readonly compactEvidenceEvents = new WeakSet<LightstreamerEventEnvelope>();
   private visible: boolean;
   private theme: "auto" | "dark" | "light";
   private captureStatus: CaptureStatus;
@@ -1239,6 +1455,16 @@ class Runtime implements WorkbenchRuntime {
   private restorationReadPoint: EvidenceReadPoint | null = null;
   private find = "";
   private findCurrentEventId: string | null = null;
+  private findRequestedIdentity: EvidenceIdentity | null = null;
+  private findReadPoint: EvidenceReadPoint | null = null;
+  private findInvestigation: EvidenceSnapshot | null = null;
+  private findWindowData: EvidenceData | null = null;
+  private findOriginScrollTop = 0;
+  private findLoading = false;
+  private findRevealPending = false;
+  private findRevealRevision = 0;
+  private findWrapped: "next" | "previous" | null = null;
+  private findExpired = false;
   private mode: "live" | "frozen" = "live";
   private liveEvidence: EvidenceData = emptyEvidence;
   private frozenEvidence: EvidenceData | null = null;
@@ -1644,6 +1870,12 @@ class Runtime implements WorkbenchRuntime {
     this.canonicalFilter = checkpoint.filter;
     this.find = checkpoint.find;
     this.findCurrentEventId = checkpoint.findCurrentEventId;
+    this.findRequestedIdentity = null;
+    this.findReadPoint = null;
+    this.findInvestigation = null;
+    this.findWindowData = null;
+    this.findExpired = false;
+    this.findRevealPending = Boolean(this.find.trim());
     this.selectionEventId = checkpoint.selectionEventId;
     this.selectedEvidenceIdentity = checkpoint.selectedEvidenceIdentity;
     this.selectedEventEnvelope = null;
@@ -1917,7 +2149,15 @@ class Runtime implements WorkbenchRuntime {
         return;
       }
       case "set-find":
+        if (!command.value.trim()) { this.closeFind(); return; }
+        if (!this.find.trim()) {
+          this.findOriginScrollTop = this.evidenceScrollTop;
+          const anchor = this.findIdentity(this.focusedEventId) ?? this.findIdentity(this.selectionEventId) ?? this.displayedEvidence().records[0]?.identity;
+          this.findCurrentEventId = anchor?.eventId ?? null;
+        }
         this.find = command.value;
+        this.findWrapped = null;
+        this.findRevealPending = true;
         this.refreshEvidence("command");
         return;
       case "find-next":
@@ -1926,10 +2166,21 @@ class Runtime implements WorkbenchRuntime {
       case "find-previous":
         this.navigateFind(-1);
         return;
+      case "refresh-find":
+        if (!this.find.trim()) return;
+        this.findReadPoint = null;
+        this.findExpired = false;
+        this.findWrapped = null;
+        this.findRevealPending = true;
+        this.refreshEvidence("command");
+        return;
+      case "inspect-find-match":
+        if (this.snapshot.evidence.findState.expired || this.findLoading || !this.findCurrentEventId) return;
+        this.dispatch({ type: "select-evidence", eventId: this.findCurrentEventId });
+        this.dispatch({ type: "open-context" });
+        return;
       case "clear-find":
-        this.find = "";
-        this.clearFindResults();
-        this.publish();
+        this.closeFind();
         return;
       case "show-older-evidence":
         this.navigateEvidenceWindow("older");
@@ -2562,6 +2813,12 @@ class Runtime implements WorkbenchRuntime {
         this.refreshEvidence("command");
         return;
       case "follow-live":
+        this.find = "";
+        this.clearFindResults();
+        this.findReadPoint = null;
+        this.findInvestigation = null;
+        this.findWindowData = null;
+        this.findExpired = false;
         this.mode = "live";
         this.restorationReadPoint = null;
         this.frozenEvidence = null;
@@ -2847,10 +3104,12 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private displayedEvidence(): EvidenceData {
+    if (this.find.trim() && this.findWindowData) return this.findWindowData;
     return this.mode === "frozen" ? this.frozenEvidence ?? emptyEvidence : this.liveEvidence;
   }
 
   private displayedInvestigation(): EvidenceSnapshot | null {
+    if (this.find.trim() && this.findInvestigation) return this.findInvestigation;
     return this.mode === "frozen"
       ? this.frozenInvestigation ?? this.liveInvestigation
       : this.liveInvestigation;
@@ -2906,35 +3165,33 @@ class Runtime implements WorkbenchRuntime {
 
   private clearFindResults(): void {
     this.findCurrentEventId = null;
+    this.findRequestedIdentity = null;
+  }
+
+  private closeFind(): void {
+    this.find = "";
+    this.clearFindResults();
+    this.findReadPoint = null;
+    this.findInvestigation = null;
+    this.findWindowData = null;
+    this.findLoading = false;
+    this.findRevealPending = false;
+    this.findWrapped = null;
+    this.findExpired = false;
+    this.evidenceScrollTop = this.findOriginScrollTop;
+    this.refreshEvidence("command");
   }
 
   private navigateFind(direction: 1 | -1): void {
-    const find = this.displayedInvestigation()?.find;
-    if (!find || find.total === 0) {
-      this.clearFindResults();
-      this.publish();
-      return;
-    }
-    const matches = find.matches ?? [];
-    const current = matches.findIndex((identity) => identity.eventId === this.findCurrentEventId);
-    const target = matches.length > 0
-      ? matches[(current < 0 ? (direction > 0 ? 0 : matches.length - 1) : (current + direction + matches.length) % matches.length)]
-      : direction > 0 ? find.next ?? find.first : find.previous ?? find.first;
-    this.findCurrentEventId = target?.eventId ?? null;
-    if (direction > 0 && target && find.nextWindow && find.nextWindow.length > 0) {
-      const investigation = this.displayedInvestigation();
-      if (investigation) {
-        this.applyInvestigationSnapshot(
-          Object.freeze({
-            ...investigation,
-            find: Object.freeze({ ...find, current: target, window: find.nextWindow })
-          }),
-          "command",
-          this.displayedEvidence().offset
-        );
-        this.publish();
-      }
-    }
+    if (this.findLoading || this.snapshot.evidence.findState.expired) return;
+    const find = this.findInvestigation?.find;
+    if (!find || find.total === 0) return;
+    const neighbor = direction > 0 ? find.next : find.previous;
+    const target = neighbor ?? (direction > 0 ? find.first : find.last);
+    if (!target) return;
+    this.findWrapped = neighbor ? null : direction > 0 ? "next" : "previous";
+    this.findRequestedIdentity = target;
+    this.findRevealPending = true;
     this.refreshEvidence("command");
   }
 
@@ -3064,6 +3321,13 @@ class Runtime implements WorkbenchRuntime {
     this.contextId = "context:scope";
     this.actionsReturnContextId = null;
     this.clearFindResults();
+    this.findReadPoint = null;
+    this.findInvestigation = null;
+    this.findWindowData = null;
+    this.findLoading = false;
+    this.findRevealPending = false;
+    this.findWrapped = null;
+    this.findExpired = false;
     this.evidencePageCursors.clear();
     this.filterDiscovery = null;
   }
@@ -3209,6 +3473,13 @@ class Runtime implements WorkbenchRuntime {
 
     this.trackHiddenActivityConditionLifecycle = false;
     this.hiddenDirty = false;
+    if (this.evidenceQueryPending && this.findLoading) {
+      // Visibility must not cancel an explicit Find and replace it with an
+      // unrelated passive read. Publish its pending state, then catch up Live.
+      this.passiveRefreshPending = true;
+      this.publish();
+      return;
+    }
     this.refreshEvidence("visibility");
   }
 
@@ -3793,7 +4064,21 @@ class Runtime implements WorkbenchRuntime {
     direction: "older" | "newer" | "oldest" | "newest"
   ): void {
     const displayed = this.displayedEvidence();
-    const total = this.liveEvidence.total;
+    const leavingFind = Boolean(this.find.trim());
+    if (leavingFind) {
+      this.frozenInvestigation = this.findInvestigation;
+      this.frozenInvestigationContract = this.displayedInvestigationContract();
+      this.restorationReadPoint = this.findReadPoint;
+      this.find = "";
+      this.clearFindResults();
+      this.findReadPoint = null;
+      this.findInvestigation = null;
+      this.findWindowData = null;
+      this.findExpired = false;
+      this.evidencePageCursors.clear();
+      this.frozenEvidence = displayed;
+    }
+    const total = leavingFind ? displayed.total : this.liveEvidence.total;
     const visibleEnd = Math.max(0, displayed.total - displayed.offset);
     const currentOffset = Math.max(0, total - visibleEnd);
     const oldestOffset = Math.max(0, total - Math.min(total, this.windowSize));
@@ -4135,8 +4420,10 @@ class Runtime implements WorkbenchRuntime {
 
   private createLocalInjectionCandidate(
     intent: LocalInjectionEntryIntent,
-    sourceOverride?: LightstreamerEventEnvelope
+    sourceOverride?: LightstreamerEventEnvelope,
+    options: Readonly<{ id?: string; recordError?: boolean }> = {}
   ): LocalInjectionDraftState | null {
+    const fail = (message: string) => { if (options.recordError !== false) this.localInjectionEntryError = message; return null; };
     const sourceEvent = intent.kind === "selected-event"
       ? sourceOverride ?? (this.selectedEventEnvelope?.id === intent.eventId
         ? this.selectedEventEnvelope
@@ -4148,8 +4435,7 @@ class Runtime implements WorkbenchRuntime {
 
     if (intent.kind === "selected-event") {
       if (!sourceEvent || !isCompatibleLocalInjectionSource(sourceEvent)) {
-        this.localInjectionEntryError = "Selected Evidence is not a compatible captured Item Update with a live delivery target.";
-        return null;
+        return fail("Selected Evidence is not a compatible captured Item Update with a live delivery target.");
       }
       baseDraft = createDraftFromEvent(sourceEvent);
       if (!baseDraft) return null;
@@ -4175,8 +4461,7 @@ class Runtime implements WorkbenchRuntime {
       const target = findTopologySelection(this.topologyProjection.snapshot(), intent.scopeId);
       const authored = authoredDraftFromScope(target, this.currentPageEpoch);
       if (!authored) {
-        this.localInjectionEntryError = "Authoring requires a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context.";
-        return null;
+        return fail("Authoring requires a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context.");
       }
       ({ draft: baseDraft, anchor } = authored);
     }
@@ -4185,7 +4470,7 @@ class Runtime implements WorkbenchRuntime {
     const rawText = serializeLocalInjectionDocument(document);
     const compareOpen = sourceDocument !== null;
     const state: LocalInjectionDraftState = {
-      id: `local-injection-draft-${++this.localInjectionSequence}`,
+      id: options.id ?? `local-injection-draft-${++this.localInjectionSequence}`,
       baseDraft,
       anchor,
       rawText,
@@ -5217,6 +5502,13 @@ class Runtime implements WorkbenchRuntime {
       this.timelineEvidenceOffset = null;
       this.timelineEvidenceRevealActive = false;
     }
+    if (source === "scope" || source === "filter" || source === "reveal-selection") {
+      this.findReadPoint = null;
+      this.findInvestigation = null;
+      this.findWindowData = null;
+      this.findExpired = false;
+      this.findRevealPending = Boolean(this.find.trim());
+    }
     if (source === "passive" && this.evidenceQueryPending) {
       this.passiveRefreshPending = true;
       return;
@@ -5234,6 +5526,7 @@ class Runtime implements WorkbenchRuntime {
     this.evidenceQueryAbortController = queryController;
     const request = Object.freeze({ ...this.investigationRequest(effectiveOffset, source, preserveCommandOffset), signal: queryController.signal });
     this.evidenceQueryPending = true;
+    this.findLoading = Boolean(request.find);
     this.evidenceLoading = source !== "passive";
     this.investigationState = "loading";
     this.investigationProblem = null;
@@ -5256,10 +5549,12 @@ class Runtime implements WorkbenchRuntime {
         if (this.disposed || generation !== this.queryGeneration) return;
         if (this.evidenceQueryAbortController === queryController) this.evidenceQueryAbortController = null;
         this.evidenceQueryPending = false;
+        this.findLoading = false;
         this.evidenceLoading = false;
         if (!result.ok) {
           this.investigationState = "error";
           this.investigationProblem = result.problem;
+          if (request.find && (result.problem.code === "READ_POINT_UNAVAILABLE" || result.problem.code === "HISTORY_INTERVAL_UNAVAILABLE")) this.findExpired = true;
           this.lastEvidenceQueryError = result.problem.code;
           if (source === "initial") this.initialEvidenceSettled = true;
           if (!this.liveInvestigation && this.lastCoherentInvestigation) {
@@ -5345,6 +5640,7 @@ class Runtime implements WorkbenchRuntime {
         if (this.disposed || generation !== this.queryGeneration) return;
         if (this.evidenceQueryAbortController === queryController) this.evidenceQueryAbortController = null;
         this.evidenceQueryPending = false;
+        this.findLoading = false;
         this.evidenceLoading = false;
         const problem: EvidenceFilterReadProblem = {
           code: "QUERY_FAILED",
@@ -5379,17 +5675,14 @@ class Runtime implements WorkbenchRuntime {
       ? this.restorationReadPoint ?? this.frozenInvestigation?.readPoint
       : null;
     const pageSize = Math.min(100, this.windowSize);
-    const currentFind = this.findIdentity(this.findCurrentEventId);
+    const currentFind = this.findRequestedIdentity ?? this.findIdentity(this.findCurrentEventId);
     const selectedLookup = this.selectedLookupIdentity();
     const discoveryByFacet = new Map<string, FacetDiscoveryRequest>();
     for (const discovery of this.investigationDiscoveries) discoveryByFacet.set(discovery.facet, discovery);
     if (this.filterDiscovery) discoveryByFacet.set(this.filterDiscovery.facet, this.filterDiscovery);
     return Object.freeze({
-      // Find is a retained-history operation even while the visible page is
-      // Frozen. Read its canonical match window at the current boundary, then
-      // keep the Frozen page/read point when publishing that window.
-      at: this.mode === "frozen" && this.find.trim() !== "" && source === "command" && !timelineReveal
-        ? "LATEST_COMMITTED"
+      at: this.find.trim() !== "" && source !== "passive" && source !== "visibility"
+        ? this.findReadPoint ?? "LATEST_COMMITTED"
         : frozenReadPoint ?? "LATEST_COMMITTED",
       scope: structuralEvidenceScope(target),
       filter: this.canonicalFilter,
@@ -5402,7 +5695,7 @@ class Runtime implements WorkbenchRuntime {
       }),
       discover: Object.freeze([...discoveryByFacet.values()]),
       ...(selectedLookup === null ? {} : { lookup: selectedLookup }),
-      ...(this.find.trim() === "" ? {} : { find: { text: this.find, scopeToFilter: true, ...(currentFind ? { current: currentFind } : {}) } })
+      ...(this.find.trim() === "" || source === "passive" || source === "visibility" ? {} : { find: { text: this.find, scopeToFilter: true, includeMatchPayload: true, ...(currentFind ? { current: currentFind } : {}) } })
     });
   }
 
@@ -5410,9 +5703,18 @@ class Runtime implements WorkbenchRuntime {
     request: EvidenceInvestigationQueryRequest,
     targetOffset: number
   ): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
-    if (targetOffset === 0 || request.page.cursor !== undefined) {
-      return this.evidenceQuery.query(request);
+    if (request.find) {
+      if (targetOffset === 0 || request.page.cursor !== undefined) return this.evidenceQuery.query(request);
+      return this.evidenceQuery.query(request).then(async result => {
+        if (!result.ok || result.value.find?.total || targetOffset === 0 || request.page.cursor !== undefined) return result;
+        // A zero-match search has no reveal page. Preserve the investigated
+        // window at this same read point instead of relabeling the newest page
+        // with the origin's older offset.
+        const page = await this.queryPagedInvestigation({ ...request, at: result.value.readPoint, find: undefined }, targetOffset);
+        return page.ok ? { ok: true as const, value: Object.freeze({ ...result.value, page: page.value.page }) } : page;
+      });
     }
+    if (targetOffset === 0 || request.page.cursor !== undefined) return this.evidenceQuery.query(request);
     return this.queryPagedInvestigation(request, targetOffset);
   }
 
@@ -5490,45 +5792,34 @@ class Runtime implements WorkbenchRuntime {
     offset: number,
     timelineReveal = false
   ): void {
-    const frozenFindBase = this.mode === "frozen" && this.find.trim() !== "" && source === "command" && !timelineReveal
-      ? this.frozenInvestigation
-      : null;
-    const projectedValue = frozenFindBase
-      ? Object.freeze({ ...value, readPoint: frozenFindBase.readPoint, totals: frozenFindBase.totals })
-      : value;
-    // Find is part of the same bounded canonical query. When it supplies its
-    // bounded target window, publish that window as the visible page so
-    // next/previous navigation can reveal a retained match without a
-    // renderer-owned scan or a second full-history read.
-    const findWindow = value.find?.window;
-    const findTargetId = value.find?.current?.eventId ?? value.find?.first?.eventId ?? null;
-    const targetIsOnCanonicalPage = findTargetId === null || value.page.evidence.some((record) => record.identity.eventId === findTargetId);
-    const timelineSelectionIsOnCanonicalPage = this.timelineEvidenceRevealActive && this.selectionEventId !== null && value.page.evidence.some((record) => record.identity.eventId === this.selectionEventId);
-    const timelineLookupPage = this.timelineEvidenceRevealActive && !timelineSelectionIsOnCanonicalPage &&
-      value.lookup?.state === "RETAINED" && value.lookup.evidence.identity.eventId === this.selectionEventId
-      ? Object.freeze({ ...projectedValue.page, evidence: Object.freeze([value.lookup.evidence]), nextCursor: null })
-      : null;
-    const boundedFindWindow = !this.timelineEvidenceRevealActive && timelineLookupPage === null && !timelineSelectionIsOnCanonicalPage && !targetIsOnCanonicalPage && findWindow && findWindow.length > 0
-      ? findWindow.slice(0, this.windowSize)
-      : null;
-    const displayedPage = timelineLookupPage ?? (boundedFindWindow && boundedFindWindow.length > 0
-      ? Object.freeze({ ...projectedValue.page, evidence: Object.freeze([...boundedFindWindow].reverse()) })
-      : projectedValue.page);
-    const displayedValue = displayedPage === projectedValue.page
-      ? projectedValue
-      : Object.freeze({ ...projectedValue, page: displayedPage });
-    const records = Object.freeze([...displayedPage.evidence].reverse());
-    const events = Object.freeze(records.flatMap((record) => [this.eventForRecord(record)]));
-    const nextEvidence = freezeEvidence(events, displayedValue.totals.inScope, offset, records);
-    const liveRecords = Object.freeze([...value.page.evidence].reverse());
-    const liveEvents = Object.freeze(liveRecords.flatMap((record) => [this.eventForRecord(record)]));
-    this.liveEvidence = frozenFindBase
-      ? freezeEvidence(liveEvents, value.totals.inScope, offset, liveRecords)
-      : nextEvidence;
-    this.liveInvestigation = frozenFindBase ? value : displayedValue;
-    this.applyFindResult(value.find);
+    const isFind = Boolean(value.find && this.find.trim() && source !== "passive" && source !== "visibility");
+    const revealFind = isFind && !timelineReveal && !this.timelineEvidenceRevealActive;
+    const timelineSelectionIsOnCanonicalPage = this.timelineEvidenceRevealActive && this.selectionEventId !== null && value.page.evidence.some(record => record.identity.eventId === this.selectionEventId);
+    const timelineLookupPage = this.timelineEvidenceRevealActive && !timelineSelectionIsOnCanonicalPage && value.lookup?.state === "RETAINED" && value.lookup.evidence.identity.eventId === this.selectionEventId
+      ? Object.freeze({ evidence: Object.freeze([value.lookup.evidence]), nextCursor: null }) : null;
+    const displayedPage = timelineLookupPage ?? (revealFind && value.find?.page?.evidence.length ? value.find.page : value.page);
+    const displayedOffset = revealFind && value.find?.page?.evidence.length ? value.find.page.offset : offset;
+    const displayedValue = Object.freeze({ ...value, page: displayedPage });
+    const records = Object.freeze([...displayedPage.evidence].reverse().map(record => value.find?.match?.identity.eventId === record.identity.eventId ? value.find.match : record));
+    const events = Object.freeze(records.map(record => this.eventForRecord(record)));
+    const nextEvidence = freezeEvidence(events, displayedValue.totals.inScope, displayedOffset, records);
+    if (isFind) {
+      this.findReadPoint = value.readPoint;
+      this.findInvestigation = displayedValue;
+      this.findWindowData = nextEvidence;
+      this.applyFindResult(value.find);
+      if (this.findRevealPending) {
+        this.findRevealRevision += 1;
+        this.findRevealPending = false;
+      }
+      if (displayedPage.nextCursor) this.evidencePageCursors.set(displayedOffset + records.length, displayedPage.nextCursor);
+    } else {
+      this.liveEvidence = nextEvidence;
+      this.liveInvestigation = displayedValue;
+      if (!this.find.trim()) this.applyFindResult(null);
+    }
 
-    const selectedRecord = this.liveEvidence.records.find(
+    const selectedRecord = nextEvidence.records.find(
       (record) => record.identity.eventId === this.selectionEventId
     );
     if (selectedRecord) {
@@ -5548,7 +5839,7 @@ class Runtime implements WorkbenchRuntime {
       }
     }
 
-    if (this.mode === "frozen" && source !== "passive" && source !== "visibility") {
+    if (!isFind && this.mode === "frozen" && source !== "passive" && source !== "visibility") {
       this.frozenEvidence = nextEvidence;
       this.frozenInvestigation = displayedValue;
     }
@@ -5563,6 +5854,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.findCurrentEventId = find.current?.eventId ?? find.first?.eventId ?? null;
+    this.findRequestedIdentity = null;
   }
 
   private reconcileSelectionFromLookup(
@@ -5593,12 +5885,14 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private eventForRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
+    const payload = lightstreamerPayload(record.payload);
     const cached = this.evidenceEventCache.get(record.identity.eventId);
-    if (cached) {
+    if (cached && (!payload || !this.compactEvidenceEvents.has(cached))) {
       this.cacheEvidenceEvent(cached);
       return cached;
     }
-    const event = eventFromDeterministicRecord(record);
+    const event = payload ?? eventFromDeterministicRecord(record);
+    if (!payload) this.compactEvidenceEvents.add(event);
     this.cacheEvidenceEvent(event);
     return event;
   }
@@ -5623,7 +5917,7 @@ class Runtime implements WorkbenchRuntime {
 
   private identityForEventId(eventId: string | null): EvidenceIdentity | null {
     if (!eventId) return null;
-    const investigation = this.liveInvestigation ?? this.frozenInvestigation;
+    const investigation = this.findInvestigation ?? this.liveInvestigation ?? this.frozenInvestigation;
     return investigation?.page.evidence.find((record) => record.identity.eventId === eventId)?.identity ??
       (investigation?.lookup?.state === "RETAINED" && investigation.lookup.evidence.identity.eventId === eventId
         ? investigation.lookup.evidence.identity
@@ -5632,7 +5926,7 @@ class Runtime implements WorkbenchRuntime {
 
   private findIdentity(eventId: string | null): EvidenceIdentity | null {
     if (!eventId) return null;
-    const investigations = [this.liveInvestigation, this.frozenInvestigation];
+    const investigations = [this.findInvestigation, this.liveInvestigation, this.frozenInvestigation];
     for (const investigation of investigations) {
       const match = investigation?.find?.current?.eventId === eventId
         ? investigation.find.current
@@ -5642,7 +5936,7 @@ class Runtime implements WorkbenchRuntime {
           ? investigation.find.previous
           : investigation?.find?.next?.eventId === eventId
             ? investigation.find.next
-            : null;
+            : investigation?.find?.last?.eventId === eventId ? investigation.find.last : null;
       if (match) return match;
     }
     return this.identityForEventId(eventId);
@@ -5744,8 +6038,13 @@ class Runtime implements WorkbenchRuntime {
       ? Math.max(0, this.liveEvidence.total - baseVisibleEnd)
       : 0;
     const findResult = this.displayedInvestigation()?.find;
-    const findMatches = findResult?.matches ?? [];
-    const findIndex = findMatches.findIndex((identity) => identity.eventId === this.findCurrentEventId);
+    const findIndex = this.find.trim() ? findResult?.currentIndex ?? -1 : -1;
+    const findBoundary = this.findReadPoint?.committedEvidenceBoundary?.sequence ?? 0;
+    const currentHistory = this.history.status();
+    const findNewerCount = this.find.trim() && currentHistory.interval.id === this.findReadPoint?.interval.id
+      ? Math.max(0, (currentHistory.committedEvidenceBoundary?.sequence ?? 0) - findBoundary) : 0;
+    const retainedStart = currentHistory.retainedRange?.first.sequence ?? 0;
+    const findExpired = this.findExpired || Boolean(this.findReadPoint && (currentHistory.interval.id !== this.findReadPoint.interval.id || retainedStart > (this.findReadPoint.retainedRange?.first.sequence ?? retainedStart)));
     const currentFindEventId = this.find.trim() === ""
       ? null
       : this.findCurrentEventId ?? findResult?.current?.eventId ?? null;
@@ -5823,16 +6122,16 @@ class Runtime implements WorkbenchRuntime {
           this.presentEvidence(event, evidence.records[index]?.identity.sequence ?? null)
         )),
         loading: this.evidenceLoading,
-        total: this.mode === "frozen" || this.evidenceLoading ? evidence.total : this.liveEvidence.total,
+        total: this.find.trim() || this.mode === "frozen" || this.evidenceLoading ? evidence.total : this.liveEvidence.total,
         windowSize: this.windowSize,
         mode: this.mode,
         newerCount,
-        offset: this.mode === "frozen" ? evidence.offset : newerCount,
+        offset: this.find.trim() || this.mode === "frozen" ? evidence.offset : newerCount,
         scrollTop: this.evidenceScrollTop,
         visibleStart,
         visibleEnd,
         hasOlder: visibleStart > 1,
-        hasNewer: newerCount > 0,
+        hasNewer: this.find.trim() ? evidence.offset > 0 : newerCount > 0,
         find: this.find,
         findState: Object.freeze({
           query: this.find,
@@ -5840,7 +6139,13 @@ class Runtime implements WorkbenchRuntime {
             ? 0
             : findResult?.total ?? 0,
           currentIndex: findIndex,
-          currentEventId: currentFindEventId
+          currentEventId: currentFindEventId,
+          loading: this.findLoading,
+          revealRevision: this.findRevealRevision,
+          newerCount: findNewerCount,
+          expired: findExpired,
+          wrapped: this.findWrapped,
+          snippet: evidenceFindSnippet(findResult?.match, this.find)
         }),
         filterMutation: this.filterMutation,
         restoration: Object.freeze({
@@ -8013,6 +8318,30 @@ function localInjectionReady(draft: LocalInjectionDraftState): boolean {
     draft.targetDiagnostics.every(({ severity }) => severity !== "error");
 }
 
+function agentTarget(draft: LocalInjectionDraftState) {
+  return Object.freeze({
+    pageEpoch: draft.anchor.pageEpoch,
+    clientId: draft.anchor.clientId,
+    sessionId: draft.anchor.sessionId,
+    subscriptionId: draft.anchor.subscriptionId,
+    deliveryPath: draft.anchor.executionTarget === "captured-listener" ? "listener" as const : "wire" as const,
+    mode: draft.anchor.subscriptionMode
+  });
+}
+
+function candidateReplayability(
+  draft: LocalInjectionDraftState,
+  fields: readonly Readonly<{ field: string; classification: string; reason?: string }>[]
+) {
+  if (!draft.sourceRawText) return Object.freeze({ source: "source-free" as const, replayable: true, fields: Object.freeze([]), limitation: "No captured Injection Source exists; field values are authored and are not evidence of application state." });
+  const states = fields.map(field => {
+    const removedWhereOptional = Boolean(draft.document) && !Object.prototype.hasOwnProperty.call(draft.document!.fields, field.field) && !draft.anchor.fieldSchema.includes(field.field);
+    const resolved = field.classification === "executable" || draft.explicitConcreteFields.has(field.field) || removedWhereOptional;
+    return Object.freeze({ ...field, resolved, limitation: resolved ? null : "Replace this captured value with a concrete Draft value or remove it where the target schema permits." });
+  });
+  return Object.freeze({ source: "captured" as const, replayable: states.every(field => field.resolved), fields: Object.freeze(states), limitation: null });
+}
+
 function rememberExplicitConcreteFields(
   fields: Set<string>,
   previous: LocalInjectionDocument | null,
@@ -9079,4 +9408,28 @@ function browserScheduler(): WorkbenchRuntimeScheduler {
       globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>);
     }
   };
+}
+
+/** Explain the one current match; other rows never require replay payload reads. */
+function evidenceFindSnippet(record: DeterministicEvidenceRecord | undefined, query: string): Readonly<{ field: string; text: string }> | null {
+  const needle = query.toLocaleLowerCase().replace(/\s+/g, " ").trim();
+  if (!record || !needle) return null;
+  const excerpt = (field: string, value: string) => {
+    const normalized = value.replace(/\s+/g, " ");
+    const index = normalized.toLocaleLowerCase().indexOf(needle);
+    if (index < 0 && !field.toLocaleLowerCase().includes(needle)) return null;
+    const start = Math.max(0, index - 48);
+    const end = Math.min(normalized.length, Math.max(index, 0) + needle.length + 88);
+    return Object.freeze({ field, text: `${start ? "…" : ""}${normalized.slice(start, end)}${end < normalized.length ? "…" : ""}` });
+  };
+  const visit = (value: unknown, path: string, depth: number): Readonly<{ field: string; text: string }> | null => {
+    if (depth > 6) return null;
+    if (value === null || typeof value !== "object") return excerpt(path, String(value));
+    for (const [key, child] of Object.entries(value)) {
+      const found = visit(child, path ? `${path}.${key}` : key, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  return visit(record.payload, "", 0) ?? excerpt("Evidence", record.searchText);
 }

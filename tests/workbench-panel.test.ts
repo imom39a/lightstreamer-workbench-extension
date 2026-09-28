@@ -101,7 +101,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       hasOlder: false,
       hasNewer: false,
       find: "",
-      findState: { query: "", matchCount: 0, currentIndex: -1, currentEventId: null },
+      findState: { query: "", matchCount: 0, currentIndex: -1, currentEventId: null, loading: false, revealRevision: 0, newerCount: 0, expired: false, wrapped: null, snippet: null },
       filterMutation: { state: "idle", revision: 1, changed: false, message: null, removedCriteria: 0 },
       restoration: { canBack: false, canForward: false, barrier: 0, current: -1 },
       filterRecoveryFocused: false,
@@ -946,7 +946,7 @@ describe("React Workbench Diagnose panel", () => {
       evidence: {
         ...base.evidence,
         find: "order",
-        findState: { query: "order", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" }
+        findState: { ...base.evidence.findState, query: "order", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" }
       }
     });
     const root = createRoot(rootElement);
@@ -1223,7 +1223,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("marks and scrolls the current Find result without changing Evidence selection", async () => {
+  it("marks the current Find result without changing Evidence selection", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const scrollIntoView = vi.fn();
@@ -1234,7 +1234,7 @@ describe("React Workbench Diagnose panel", () => {
       evidence: {
         ...base.evidence,
         find: "order",
-        findState: { query: "order", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" }
+        findState: { ...base.evidence.findState, query: "order", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" }
       }
     });
     const root = createRoot(rootElement);
@@ -1242,7 +1242,6 @@ describe("React Workbench Diagnose panel", () => {
 
     expect(document.querySelector('[data-evidence-id="evt-1"]')?.getAttribute("data-find-current")).toBe("true");
     expect(document.querySelector('[data-evidence-id="evt-1"]')?.getAttribute("aria-selected")).toBe("false");
-    expect(scrollIntoView).toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 
@@ -1297,7 +1296,7 @@ describe("React Workbench Diagnose panel", () => {
       evidence: {
         ...base.evidence,
         find: "status",
-        findState: { query: "status", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" },
+        findState: { ...base.evidence.findState, query: "status", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" },
         investigation: {
           ...base.evidence.investigation,
           filter: appliedFilter,

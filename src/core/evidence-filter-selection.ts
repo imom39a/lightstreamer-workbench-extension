@@ -7,10 +7,12 @@ import {
   type EvidenceIdentity,
   type EvidenceLookupResult,
   type EvidenceReadPoint,
+  type EvidenceQueryRequest,
   type RevealBlocker,
   type TypedFacetValue
 } from "./evidence-filter-contract";
 import { normalizeEvidenceSearchText } from "./evidence-facets";
+import { encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
 import { filterValueMatches } from "./filter-algebra";
 
 export type SelectionRecord = DeterministicEvidenceRecord & Readonly<{ payload?: unknown }>;
@@ -66,76 +68,78 @@ export function lookupEvidence(
   return Object.freeze({ state: "RETAINED", evidence, inScope: isInAround(record, around), matchesFilter: blockingCriteria.length === 0, blockingCriteria: Object.freeze(blockingCriteria) });
 }
 
+/** One ordered projection scan supplies exact navigation while keeping bounded data. */
+export function createEvidenceFindAccumulator(request: EvidenceFindRequest) {
+  let total = 0;
+  let first: SelectionRecord | null = null;
+  let last: SelectionRecord | null = null;
+  let target: SelectionRecord | null = null;
+  let previous: SelectionRecord | null = null;
+  let next: SelectionRecord | null = null;
+  let currentIndex = -1;
+  const matches: EvidenceIdentity[] = [];
+  const results: SelectionRecord[] = [];
+  const size = Math.max(1, Math.min(100, request.size ?? 50));
+  let resultCount = 0;
+  const distance = (record: SelectionRecord) => request.current === undefined ? record.identity.sequence : Math.abs(record.identity.sequence - request.current.sequence);
+  return {
+    add(record: SelectionRecord): void {
+      first ??= record;
+      if (matches.length < 1_000) matches.push(record.identity);
+      if (request.after === undefined || record.identity.sequence > request.after.sequence) {
+        resultCount += 1;
+        if (results.length < size) results.push(record);
+      }
+      if (target !== null && next === null) next = record;
+      if (target === null || distance(record) < distance(target)) {
+        target = record;
+        previous = last;
+        next = null;
+        currentIndex = total;
+      }
+      last = record;
+      total += 1;
+    },
+    result(): EvidenceFindResult {
+      return Object.freeze({
+        text: request.text, total, currentIndex,
+        current: request.current === undefined ? null : target?.identity ?? null,
+        first: first?.identity ?? null, last: last?.identity ?? null,
+        previous: previous?.identity ?? null, next: next?.identity ?? null,
+        matches: Object.freeze(matches), results: Object.freeze(results), hasMore: resultCount > results.length
+      });
+    }
+  };
+}
+
 export function findEvidence(records: readonly SelectionRecord[], request: EvidenceFindRequest, eligible: (record: SelectionRecord) => boolean = () => true): EvidenceFindResult {
   const text = normalizeEvidenceSearchText(request.text);
-  const orderedRecords = [...records].sort((left, right) => left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
-  const firstMatches: EvidenceIdentity[] = [];
-  const nearby: SelectionRecord[] = [];
-  let total = 0;
-  let firstMatch: SelectionRecord | undefined;
-  let lastMatch: SelectionRecord | undefined;
-  let exactCurrent: SelectionRecord | undefined;
-  let previousExact: SelectionRecord | undefined;
-  let nextExact: SelectionRecord | undefined;
-  const addNearby = (record: SelectionRecord): void => {
-    if (request.current === undefined) {
-      if (nearby.length < 2) nearby.push(record);
-      return;
-    }
-    nearby.push(record);
-    nearby.sort((left, right) => Math.abs(left.identity.sequence - request.current!.sequence) - Math.abs(right.identity.sequence - request.current!.sequence)
-      || left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
-    if (nearby.length > 8) nearby.pop();
-  };
-  for (const record of orderedRecords) {
-    if (!eligible(record) || !normalizeEvidenceSearchText(record.searchText).includes(text)) continue;
-    total += 1;
-    firstMatch ??= record;
-    if (firstMatches.length < 1_000) firstMatches.push(record.identity);
-    addNearby(record);
-    if (request.current !== undefined && sameIdentity(record.identity, request.current)) {
-      exactCurrent = record;
-      previousExact = lastMatch;
-    } else if (exactCurrent !== undefined && nextExact === undefined) {
-      nextExact = record;
-    }
-    lastMatch = record;
+  const accumulator = createEvidenceFindAccumulator(request);
+  if (text) for (const record of [...records].sort((a, b) => a.identity.sequence - b.identity.sequence)) {
+    if (eligible(record) && normalizeEvidenceSearchText(record.searchText).includes(text)) accumulator.add(record);
   }
-  const nearbyOrdered = [...nearby].sort((left, right) => left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
-  const fallback = request.current === undefined ? firstMatch : (exactCurrent ?? nearby[0]);
-  const fallbackIndex = fallback === undefined ? -1 : nearbyOrdered.findIndex((record) => sameIdentity(record.identity, fallback.identity));
-  const target = fallback ?? null;
-  const current = request.current === undefined ? null : target?.identity ?? null;
-  const previous = exactCurrent
-    ? previousExact?.identity ?? null
-    : fallbackIndex > 0 ? nearbyOrdered[fallbackIndex - 1]!.identity : null;
-  const next = exactCurrent
-    ? nextExact?.identity ?? null
-    : fallbackIndex >= 0 && fallbackIndex + 1 < nearbyOrdered.length ? nearbyOrdered[fallbackIndex + 1]!.identity : null;
-  const windowRecord = target ?? firstMatch;
-  const windowStart = windowRecord
-    ? Math.max(0, orderedRecords.findIndex((record) => sameIdentity(record.identity, windowRecord.identity)) - 50)
-    : 0;
-  const window = windowRecord === undefined ? [] : orderedRecords.slice(windowStart, windowStart + 100);
-  const nextRecord = next === null ? undefined : orderedRecords.find((record) => sameIdentity(record.identity, next));
-  const nextWindowStart = nextRecord
-    ? Math.max(0, orderedRecords.findIndex((record) => sameIdentity(record.identity, nextRecord.identity)) - 50)
-    : -1;
-  const result: EvidenceFindResult = {
-    text: request.text,
-    total,
-    current,
-    previous,
-    next,
-  };
-  return Object.freeze({
-    ...result,
-    first: firstMatch?.identity ?? null,
-    window: Object.freeze(window),
-    matches: Object.freeze(firstMatches),
-    ...(nextWindowStart >= 0
-      ? { nextWindow: Object.freeze(orderedRecords.slice(nextWindowStart, nextWindowStart + 100)) }
-      : {})
+  return accumulator.result();
+}
+
+/** The reveal page is part of the same read point and query binding as Find. */
+export function withEvidenceFindPage(
+  find: EvidenceFindResult,
+  eligibleRecords: readonly SelectionRecord[],
+  request: EvidenceQueryRequest,
+  readPoint: EvidenceReadPoint
+): EvidenceFindResult {
+  if (request.find?.reveal === false) return find;
+  const ordered = [...eligibleRecords].sort((a, b) => request.page.order === "NEWEST_FIRST"
+    ? b.identity.sequence - a.identity.sequence : a.identity.sequence - b.identity.sequence);
+  const target = find.current ?? find.first;
+  const targetIndex = target ? ordered.findIndex(record => sameIdentity(record.identity, target)) : -1;
+  const offset = targetIndex < 0 ? 0 : Math.max(0, Math.min(ordered.length - request.page.size, targetIndex - Math.floor(request.page.size / 2)));
+  const evidence = targetIndex < 0 ? [] : ordered.slice(offset, offset + request.page.size);
+  const nextCursor = evidence.length > 0 && offset + evidence.length < ordered.length
+    ? encodeEvidenceQueryCursor(readPoint, request, evidence.at(-1)!.identity) : null;
+  return Object.freeze({ ...find,
+    page: Object.freeze({ evidence: Object.freeze(evidence), nextCursor, offset }),
+    window: Object.freeze(request.page.order === "NEWEST_FIRST" ? [...evidence].reverse() : evidence)
   });
 }
 

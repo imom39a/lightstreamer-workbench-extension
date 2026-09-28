@@ -10,7 +10,7 @@ type VisualCase = Readonly<{
   forcedColors?: boolean;
   visualEvidenceOnly?: boolean;
   prototype?: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-parked" | "scenario-discard-confirmation" | "scenario-parked-discard-confirmation" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "captured-draft-changed" | "authored-direct" | "server-injection" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
+  production: { scenario: string; setup: "scope-search" | "scope-search-empty" | "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-parked" | "scenario-discard-confirmation" | "scenario-parked-discard-confirmation" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "captured-draft-changed" | "authored-direct" | "server-injection" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
 }>;
 const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
 
@@ -54,6 +54,16 @@ async function openScenario(page: Page, visual: VisualCase): Promise<void> {
 
 async function prepareProductionState(page: Page, visual: VisualCase): Promise<void> {
   switch (visual.production.setup) {
+    case "scope-search":
+    case "scope-search-empty": {
+      await page.getByRole("button", { name: "Scope", exact: true }).click();
+      await page.getByRole("button", { name: "Search scopes", exact: true }).click();
+      const input = page.getByRole("textbox", { name: "Search scopes", exact: true });
+      await input.fill(visual.production.setup === "scope-search-empty" ? "unavailable-object" : "high-scope-subscription-219");
+      await expect(input).toBeFocused();
+      await expect(page.getByRole("region", { name: "Scope search", exact: true })).toContainText(visual.production.setup === "scope-search-empty" ? "No matching scopes" : "3 matches");
+      return;
+    }
     case "server-injection":
       await expect(page.getByRole("region", { name: "Server Injection Draft" })).toBeVisible();
       return;
@@ -143,7 +153,9 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
       await scenario.getByRole("button", { name: "Add captured update" }).click();
       const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
-      await picker.getByRole("button", { name: "Preview visible set" }).click();
+      const preview = picker.getByRole("button", { name: "Preview visible set" });
+      await preview.focus();
+      await preview.press("Space");
       await expect(picker).toContainText("Will add after confirmation");
       await expect(picker).toContainText("Unavailable");
       return;
@@ -169,6 +181,11 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     }
     case "scenario":
       await expect(page.getByRole("region", { name: "Local Injection Scenario" })).toBeVisible();
+      // Fixture setup may open and close the picker across the first render.
+      // Capture the same final focus target regardless of that scheduling.
+      if (visual.production.scenario === "local-injection-scenario-edit") {
+        await page.getByRole("heading", { name: "Local Injection Scenario", exact: true }).focus();
+      }
       if ([
         "local-injection-scenario-partial",
         "local-injection-scenario-unknown",
@@ -388,7 +405,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expectVisibleKeyboardTarget(page, find);
       await page.keyboard.press("Enter");
       await page.getByRole("textbox", { name: "Find in ordered Evidence" }).fill("complete-retained-find-anchor");
-      await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("1 of 3 matches");
+      await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("3 of 3 matches");
       await expect(page.locator('[data-find-current="true"]')).toBeVisible();
       return;
     }
