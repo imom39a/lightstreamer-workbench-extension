@@ -71,7 +71,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 - Keep focus and selection visibly and programmatically distinct. Passive Capture never moves either.
 - Evidence Up/Down moves row focus and selection together; Context updates without stealing focus. Enter deliberately opens Context.
 - Consume Escape only for the topmost Workbench-owned transient and restore the exact trigger. Unowned Escape remains available to Chrome DevTools.
-- Keep Find, Filter, Jump, and Scope distinct. Control/Command+F is contextual to Evidence or the active document.
+- Keep Find, Filter, Jump, and Scope distinct. Control/Command+F opens Search scopes while Scope owns focus, Evidence Find from Evidence or other Workbench chrome, and document-local Find in an active document.
 - Context menus accelerate object-scoped actions but never provide the only path to a core action.
 - Do not add a command palette, leader-key layer, mnemonic pane mode, remapping system, or second command registry without measured evidence of a concrete bottleneck and a standard amendment.
 
@@ -81,6 +81,9 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 - Separate global/session actions from Scope- or selection-owned actions, and keep destructive actions visually apart from both.
 - Use labelled controls for consequential and unfamiliar actions. A familiar compact icon control still requires an accessible name and discoverable purpose.
 - Keep active Filters, shown/total counts, and a one-step reset visible. Find moves among matches; it never silently changes the visible Evidence set.
+- Evidence Find searches retained Evidence within the current Scope and Filter. Keep the query focused while revealing each match below the sticky ledger header, highlight matching text, and explain matches in hidden fields with a bounded field/value excerpt. **Inspect match** deliberately selects the event and opens Context; Find navigation alone does not replace selection.
+- Keep Find results at one committed read point while Capture continues. Report newer Evidence for explicit refresh and expired retained results for recovery. Closing Find restores the originating Live/Frozen investigation and available scroll anchor. Next/Previous and match counts cover all results, independently of the bounded rendered window.
+- **Search scopes** lives within the existing Scope surface. It searches the complete structural projection, including collapsed branches, and identifies results by type, identity, ancestor path, and lifecycle. Typing and result navigation do not commit Scope; Enter or pointer activation does. Closing restores tree expansion, scroll, and the exact trigger. Search adds no permanent destination or COMMAND-key Topology nodes.
 - Use overflow menus and Context for infrequent controls, advanced Evidence, and raw detail.
 - Do not progressively hide Capture operation, observation Coverage, current Scope, active Filters, selection, textual provenance, material diagnostics, or the final Local Injection Target and action.
 - Preserve a visible route to every core action. Hover, right-click, and shortcuts may accelerate but never exclusively own a capability.
@@ -271,3 +274,15 @@ The stream uses Op / Key or item / Data with a fixed 30px row rhythm. Only Op is
 The historical TLCP and Workbench capture codes remain distinct in a bounded **Codes** reference. U means Item Update regardless of COMMAND ADD/UPDATE/DELETE; command, snapshot and Local annotations do not redefine U. Newer Workbench evidence receives explicit additional meanings, without implying literal wire capture. **Readable** shows application field values and labels decoded JSON strings; **Raw fields** preserves captured types. Large previews are explicitly bounded with full evidence available in Context. Captured values, injection boundaries, chronology, Find, Filter, Scope and selection are unchanged.
 
 This is a Material UI change, approved by the maintainer in Codex thread `01a08ba4-a8cb-7e00-91e4-c44ab0337388`. Dark-only including forced colors remains the preceding explicit theme decision. Production evidence and independent review are recorded in [key/JSON stream verification](agents/key-json-stream-evidence.md). The disposable prototype stays on `prototype/evidence-density-proposals`; production adopts the decision, not its renderer.
+
+
+## Contextual search amendment — 2026-09-28
+
+The maintainer approved implementation, testing, and merge of contextual Evidence
+Find and Search scopes, including read-only MCP companion access, in Codex thread
+`01a0e740-ef84-7932-ba47-acef99639019`. This is a Material UI change within the
+existing Evidence, Scope, and Context surfaces. It adds no permanent destination.
+The rules above govern complete retained matching, deliberate inspection, explicit
+refresh, Scope commitment, and contextual keyboard routing. The existing Dark-only
+and forced-colors theme decision remains in effect. Verification and independent
+review are recorded with the implementation pull request.

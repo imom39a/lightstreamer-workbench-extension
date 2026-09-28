@@ -373,8 +373,8 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
       waitForReady(memoryRuntime, ({ find }) => find?.current !== null && find?.current !== undefined),
       waitForReady(durableRuntime, ({ find }) => find?.current !== null && find?.current !== undefined)
     ]);
-    expect(projection(memoryRuntime).find?.current).toMatchObject({ eventId: "alpha-1" });
-    expect(projection(durableRuntime).find?.current).toMatchObject({ eventId: "alpha-1" });
+    expect(projection(memoryRuntime).find?.current).toMatchObject({ eventId: "alpha-3" });
+    expect(projection(durableRuntime).find?.current).toMatchObject({ eventId: "alpha-3" });
     expect(runtimeFacts(durableRuntime)).toEqual(runtimeFacts(memoryRuntime));
     expect(projection(durableRuntime).find?.total).toBe(2);
 

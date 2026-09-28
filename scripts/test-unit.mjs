@@ -24,7 +24,8 @@ const indexedDbFiles = Object.freeze([
   "tests/filter-impl-09-indexeddb-discovery.test.ts",
   "tests/filter-impl-09-indexeddb-parity.test.ts",
   "tests/filter-impl-09-indexeddb-workload.test.ts",
-  "tests/history-100k-04-indexeddb.test.ts"
+  "tests/history-100k-04-indexeddb.test.ts",
+  "tests/workbench-find.test.ts"
 ]);
 
 function discoverTestFiles(directory) {

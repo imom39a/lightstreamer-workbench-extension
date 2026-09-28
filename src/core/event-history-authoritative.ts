@@ -12,11 +12,11 @@ import {
   type FacetDiscoveryResult,
   type EvidenceQueryTelemetry
 } from "./evidence-filter-contract";
-import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
+import { findEvidence, withEvidenceFindPage, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { discoverFacet, type DiscoveryInstrumentation } from "./evidence-filter-discovery";
-import { canonicalEvidenceSearchText, extractEvidenceFacets, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
+import { canonicalEvidenceSearchText, canonicalEvidenceSearchTextWithExtraction, extractEvidenceFacets, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
 import {
   deserializeJournalEvidenceCandidate,
   journalCandidateSearchText,
@@ -711,23 +711,6 @@ function memoryTimestampRange(index: MemoryQueryIndex, records: ReadonlyMap<numb
   return result;
 }
 
-function memoryFindWindow(
-  index: MemoryQueryIndex,
-  firstSequence: number,
-  lastSequence: number,
-  sequence: number,
-  materialize: (record: DeterministicEvidenceRecord) => DeterministicEvidenceRecord = (record) => record
-): readonly DeterministicEvidenceRecord[] {
-  const lower = Math.max(firstSequence, sequence - 50);
-  const upper = Math.min(lastSequence, lower + 99);
-  const result: DeterministicEvidenceRecord[] = [];
-  for (let current = lower; current <= upper; current += 1) {
-    const record = index.bySequence.get(current);
-    if (record) result.push(materialize(record));
-  }
-  return Object.freeze(result);
-}
-
 function memorySequenceBounds(index: MemoryQueryIndex, firstSequence: number, lastSequence: number): Readonly<{ start: number; end: number }> {
   const lowerBound = (sequence: number): number => {
     let low = 0;
@@ -740,25 +723,6 @@ function memorySequenceBounds(index: MemoryQueryIndex, firstSequence: number, la
     return low;
   };
   return { start: lowerBound(firstSequence), end: lowerBound(lastSequence + 1) };
-}
-
-function memoryFindResultWithIndexedWindow(
-  index: MemoryQueryIndex,
-  records: readonly SelectionRecord[],
-  firstSequence: number,
-  lastSequence: number,
-  request: EvidenceFindRequest,
-  eligible?: (record: SelectionRecord) => boolean,
-  materialize: (record: DeterministicEvidenceRecord) => DeterministicEvidenceRecord = (record) => record
-) {
-  const result = findEvidence(records, request, eligible);
-  const target = result.current?.sequence ?? result.first?.sequence;
-  const nextWindow = result.next === null ? [] : memoryFindWindow(index, firstSequence, lastSequence, result.next.sequence, materialize);
-  return Object.freeze({
-    ...result,
-    window: target === undefined ? Object.freeze([]) : memoryFindWindow(index, firstSequence, lastSequence, target, materialize),
-    ...(nextWindow.length > 0 ? { nextWindow } : {})
-  });
 }
 
 function memoryQueryTelemetry(): MutableEvidenceQueryTelemetry {
@@ -1748,7 +1712,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const entriesBySequence = new Map(evidenceEntriesAtRead.map((entry) => [entry.sequence, entry]));
     const records: SelectionRecord[] = useMaterializedFallback
       ? evidenceEntriesAtRead.map((entry) => {
-          const record = toDeterministicEvidenceRecord(entry, intervalAtRead, false);
+          const record = deterministicRecordCache.get(entry) ?? toDeterministicEvidenceRecord(entry, intervalAtRead, false, memoryQueryIndex.bySequence.get(entry.sequence));
           deterministicRecordCache.set(entry, record);
           if (!memoryQueryIndex.bySequence.has(entry.sequence)) addMemoryQueryRecord(memoryQueryIndex, record);
           return record;
@@ -1757,9 +1721,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const materializeIndexedRecord = (record: DeterministicEvidenceRecord, includePayload = false): DeterministicEvidenceRecord => {
       const entry = committedBySequence.get(record.identity.sequence);
       if (entry === undefined) return record;
-      const materialized = toDeterministicEvidenceRecord(entry, intervalAtRead, includePayload);
-      if (!includePayload) deterministicRecordCache.set(entry, materialized);
-      return materialized;
+      // Accepted entries are immutable. Reuse their canonical projection for
+      // repeated Find/navigation without rebuilding every searchable field.
+      // Hydrated payloads never enter this retention-safe WeakMap.
+      const materialized = deterministicRecordCache.get(entry) ?? toDeterministicEvidenceRecord(entry, intervalAtRead, false, record);
+      deterministicRecordCache.set(entry, materialized);
+      return includePayload ? Object.freeze({ ...materialized, payload: copyCandidate(entry.candidate) }) : materialized;
     };
     telemetry.retainedCount = useMaterializedFallback ? records.length : sequenceBounds.end - sequenceBounds.start;
     if (filter.around?.anchor) {
@@ -1952,8 +1919,28 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
           telemetry.candidateBound = findRecords.length;
           telemetry.projectionReads = findRecords.length;
           telemetry.evidenceCursorReads = findRecords.length;
-          find = memoryFindResultWithIndexedWindow(memoryQueryIndex, findRecords, firstSequence, lastSequence, request.find, eligible, materializeIndexedRecord);
+          find = findEvidence(findRecords, request.find, eligible);
         }
+      }
+      if (find && request.find) {
+        const contextRecords = useMaterializedFallback ? records : memoryQueryIndex.records.slice(sequenceBounds.start, sequenceBounds.end);
+        find = withEvidenceFindPage(find, contextRecords.filter(record => matchesFilter(record) && isInAround(record, around)), request, readPoint);
+        if (find.page) {
+          const evidence = Object.freeze(find.page.evidence.map(record => materializeIndexedRecord(record)));
+          find = Object.freeze({ ...find, page: Object.freeze({ ...find.page, evidence }), window: Object.freeze(request.page.order === "NEWEST_FIRST" ? [...evidence].reverse() : [...evidence]) });
+        }
+        const hydrate = (record: SelectionRecord) => {
+          telemetry.payloadHydrations += 1;
+          telemetry.fullEvidencePayloadHydrations = (telemetry.fullEvidencePayloadHydrations ?? 0) + 1;
+          return materializeIndexedRecord(record, true);
+        };
+        const matchIdentity = find.current ?? find.first;
+        const match = request.find.includeMatchPayload && matchIdentity
+          ? contextRecords.find(record => sameEvidenceIdentity(record.identity, matchIdentity)) : undefined;
+        find = Object.freeze({ ...find,
+          ...(match ? { match: hydrate(match) } : {}),
+          results: Object.freeze((find.results ?? []).map(record => request.includePayload ? hydrate(record) : materializeIndexedRecord(record)))
+        });
       }
       telemetry.elapsedMs = Math.max(0, Date.now() - queryStartedAt);
       return Promise.resolve({
@@ -2517,19 +2504,22 @@ function inEvidenceScope(record: DeterministicEvidenceRecord, around: EvidenceQu
   );
 }
 
-function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: HistoryInterval, includePayload = false): DeterministicEvidenceRecord {
-  const identity = evidenceIdentity(toRef(entry), interval);
+function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: HistoryInterval, includePayload = false, indexed?: DeterministicEvidenceRecord): DeterministicEvidenceRecord {
+  const identity = indexed?.identity ?? evidenceIdentity(toRef(entry), interval);
   if (entry.candidate.kind === "topology-checkpoint") {
     const searchText = journalCandidateSearchText(entry.candidate);
     return Object.freeze({ identity, timestamp: 0, summary: "Topology checkpoint", searchText, facets: Object.freeze({}) });
   }
   const context = { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind };
-  const facets = extractEvidenceFacets(entry.candidate, context).facets;
+  // The compact index already owns the exact contextual facets. Its text is
+  // deliberately partial, so retain canonical text construction while reusing
+  // those immutable facet identities instead of extracting them twice.
+  const facets = indexed?.facets ?? extractEvidenceFacets(entry.candidate, context).facets;
   return Object.freeze({
     identity,
     timestamp: entry.candidate.timestamp,
     summary: entry.candidate.kind,
-    searchText: canonicalEvidenceSearchText(entry.candidate, context),
+    searchText: canonicalEvidenceSearchTextWithExtraction(entry.candidate, context, { facets }),
     facets: Object.freeze(facets),
     ...(includePayload ? { payload: copyCandidate(entry.candidate) } : {})
   });

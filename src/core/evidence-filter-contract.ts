@@ -49,17 +49,26 @@ export type FacetDiscoveryResult = Readonly<{ state: "AVAILABLE"; facet: Evidenc
 export type RevealBlocker = Readonly<{ id: string; criterion: FilterCriterion | UnsupportedCriterion | "free-text" | "around-evidence" }>;
 export type DeterministicEvidenceRecord = Readonly<{ identity: EvidenceIdentity; timestamp: number; summary: string; searchText: string; facets: Readonly<Partial<Record<EvidenceFilterFacet, TypedFacetValue>>>; payload?: unknown }>;
 export type EvidenceLookupResult = Readonly<{ state: "RETAINED"; evidence: DeterministicEvidenceRecord; inScope: boolean; matchesFilter: boolean; blockingCriteria: readonly RevealBlocker[] }> | Readonly<{ state: "NOT_RETAINED" | "OTHER_INTERVAL"; identity: EvidenceIdentity }>;
-export type EvidenceFindRequest = Readonly<{ text: string; current?: EvidenceIdentity; scopeToFilter?: boolean }>;
+export type EvidenceFindRequest = Readonly<{ text: string; current?: EvidenceIdentity; scopeToFilter?: boolean; after?: EvidenceIdentity; size?: number; reveal?: boolean; includeMatchPayload?: boolean }>;
 export type EvidenceFindResult = Readonly<{
   text: string;
   total: number;
   current: EvidenceIdentity | null;
   previous: EvidenceIdentity | null;
   next: EvidenceIdentity | null;
+  /** Zero-based ordinal of the selected match across the complete result. */
+  currentIndex?: number;
+  match?: DeterministicEvidenceRecord;
+  last?: EvidenceIdentity | null;
+  /** Matching records after `after`, separately bounded from the reveal page. */
+  results?: readonly DeterministicEvidenceRecord[];
+  hasMore?: boolean;
+  /** Eligible surrounding rows and their exact offset in the requested order. */
+  page?: Readonly<{ evidence: readonly DeterministicEvidenceRecord[]; nextCursor: string | null; offset: number }>;
   /** Optional bounded compatibility window from the same read point. */
   first?: EvidenceIdentity | null;
   window?: readonly DeterministicEvidenceRecord[];
-  /** Bounded match identities used for local next/previous navigation. */
+  /** Bounded compatibility identities. Never use these for complete navigation. */
   matches?: readonly EvidenceIdentity[];
   /** Bounded window for the next match, when it is not in `window`. */
   nextWindow?: readonly DeterministicEvidenceRecord[];

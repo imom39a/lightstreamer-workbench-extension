@@ -68,7 +68,7 @@ import {
 import { extractEvidenceFacets, canonicalEvidenceSearchText, canonicalEvidenceSearchTextWithExtraction, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
 import { discoverFacet, discoverFacetFromAccounting, discoverFacetFromAggregates, type DiscoveryAccountingEntry, type DiscoveryAggregateEntry } from "./evidence-filter-discovery";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
-import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
+import { findEvidence, createEvidenceFindAccumulator, withEvidenceFindPage, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import {
   appendFacetPostingBlocks, appendSearchIndexBlocks, expandFacetPostingBlock,
   facetPostingToken, facetIdentityParts, indexBlockStart, readFacetPostingBlock, readSearchIndexBlock,
@@ -584,6 +584,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let terminalIntentGeneration = 0;
   let lastNearLimit = false;
   let lastCoherentQuery: EvidenceSnapshot | null = null;
+  const findCache: FindSequenceCache = { entry: null, requestId: 0 };
   let awaitingCount = 0;
   let awaitingBytes = 0;
   // The history owns the current IndexedDB journal exclusively. Keep the
@@ -1566,6 +1567,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     if (lastClearResult && retainedCount === 0 && pending.length === 0 && postClearPending.length === 0 && inFlight.length === 0) {
       return Promise.resolve({ ok: true, value: lastClearResult });
     }
+    findCache.entry = null;
+    findCache.requestId += 1;
     clearInProgress = true;
     clearPromise = waitForIdle().then(async () => {
       if (phase === "CLOSED") return { ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed and cannot be cleared.") };
@@ -1613,6 +1616,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       firstGap = null;
       latestGap = null;
       lastNearLimit = false;
+      findCache.entry = null;
+      findCache.requestId += 1;
       generation += 1;
       rejoinPostClearQueue();
       const result = deepFreeze({ previousInterval, interval });
@@ -1640,6 +1645,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       const result = lastCloseOutcome ?? { ok: true, value: closeResult() };
       return Promise.resolve(result);
     }
+    findCache.entry = null;
+    findCache.requestId += 1;
     closing = true;
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
     ageTimer = null;
@@ -2109,7 +2116,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           tier: options.capacityTier ?? "NORMAL",
           fallback: null,
           terminal: Boolean(terminal),
-          projectionStore: AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections
+          projectionStore: AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections,
+          findCache,
+          findRequestId: request.find ? ++findCache.requestId : 0
         });
     return resultPromise.then((result) => {
       if (result.ok) {
@@ -2293,6 +2302,8 @@ type IndexedDbQueryOptions = Readonly<{
   fallback: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
   terminal: boolean;
   projectionStore: string;
+  findCache: FindSequenceCache;
+  findRequestId: number;
 }>;
 
 function hybridQueryReadPoint(latch: ReadLatch): EvidenceReadPoint {
@@ -2477,7 +2488,10 @@ async function queryMemoryFallback(
       const eligible = request.find.scopeToFilter
         ? (record: SelectionRecord) => matchesFilter(record) && isInAround(record, around)
         : undefined;
-      find = findEvidence(records, request.find, eligible);
+      find = withEvidenceFindPage(findEvidence(records, request.find, eligible), inScopeRecords, request, readPoint);
+      const matchIdentity = find.current ?? find.first;
+      const match = request.find.includeMatchPayload && matchIdentity ? records.find(record => sameQueryIdentity(record.identity, matchIdentity)) : undefined;
+      find = Object.freeze({ ...find, ...(match ? { match: recordWithPayload(match) } : {}), results: Object.freeze((find.results ?? []).map(record => request.includePayload ? recordWithPayload(record) : record)) });
       telemetry.findCursorBound = records.length;
       telemetry.findCursorReads = records.length;
     }
@@ -2601,76 +2615,69 @@ async function queryIndexedDb(
     await validateProjectionCoverage(transaction.objectStore(options.projectionStore), evidenceStore, interval.id, firstSequence, lastSequence, expectedEvidenceCount, telemetry);
     const topologyCheckpointCount = await countTopologyCheckpoints(evidenceStore, firstSequence, lastSequence, telemetry);
     const expectedProjectionCount = expectedEvidenceCount - topologyCheckpointCount;
-    const postingCandidates = await indexedDbPostingCandidates(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings), request.filter, interval.id, firstSequence, lastSequence, telemetry);
+    const findKey = request.find === undefined ? null : JSON.stringify([readPoint, filter, normalizeEvidenceSearchText(request.find.text), request.find.scopeToFilter === true]);
+    const cachedFind = findKey !== null && options.findCache.entry?.key === findKey ? options.findCache.entry : null;
+    const postingCandidates = cachedFind ? null : await indexedDbPostingCandidates(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings), request.filter, interval.id, firstSequence, lastSequence, telemetry);
     const candidateSequences = postingCandidates;
     if (pageCursor !== null && candidateSequences !== null && !candidateSequences.has(pageCursor.anchor.sequence)) {
       return queryFailure("QUERY_FAILED", "The page cursor anchor is not part of the filtered Evidence result.");
     }
     const hasCriteria = Object.values(request.filter.criteria).some((group) => Boolean(group && (group.include.length > 0 || group.exclude.length > 0)));
-    const simpleRecentPage = postingCandidates === null && !hasCriteria && request.filter.text.trim() === "" && request.filter.around === null;
+    const simpleRecentPage = postingCandidates === null && !hasCriteria && request.filter.text.trim() === "" && request.filter.around === null && request.filter.unsupported.length === 0;
     const pageCursorProjection = pageCursor === null
       ? null
       : await validatePageCursorAnchor(transaction.objectStore(options.projectionStore), pageCursor.anchor, interval.id, firstSequence, lastSequence, telemetry);
     if (pageCursorProjection !== null && !matchesProjectionFilter(pageCursorProjection, interval.id, filter, around)) {
       return queryFailure("QUERY_FAILED", "The page cursor anchor is not part of the filtered Evidence result.");
     }
+    const projectionStoreForFind = transaction.objectStore(options.projectionStore);
+    const findIndex = request.find === undefined ? null : cachedFind ?? await readFindSequenceIndex(
+      transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks), projectionStoreForFind,
+      interval, firstSequence, lastSequence, request.find, filter, around,
+      candidateSequences, simpleRecentPage, expectedProjectionCount, findKey!, request.signal, telemetry
+    );
     let projections: QueryProjection[];
     let streamedPage: StreamedProjectionPage | null = null;
     let simplePageHasMore = false;
     if (simpleRecentPage) {
-      const pageRead = await readProjectionPage(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.page, pageCursor?.anchor ?? null, telemetry);
+      const pageRead = await readProjectionPage(projectionStoreForFind, interval.id, firstSequence, lastSequence, request.page, pageCursor?.anchor ?? null, telemetry);
       projections = [...pageRead.projections];
       simplePageHasMore = pageRead.hasMore;
       telemetry.candidateBound = projections.length;
+    } else if (findIndex !== null) {
+      streamedPage = await readFindIndexedPage(projectionStoreForFind, interval, findIndex, request.page, pageCursor?.anchor ?? null, telemetry);
+      projections = [...streamedPage.projections];
+      telemetry.candidateBound = findIndex.inScope;
     } else if (emptyFilterAround) {
       streamedPage = await readAroundProjectionPage(
-        transaction.objectStore(options.projectionStore),
-        interval.id,
-        firstSequence,
-        lastSequence,
-        request.page,
-        pageCursor?.anchor ?? null,
-        around!,
-        request.signal,
-        telemetry
+        projectionStoreForFind, interval.id, firstSequence, lastSequence, request.page,
+        pageCursor?.anchor ?? null, around!, request.signal, telemetry
       );
       projections = [...streamedPage.projections];
       telemetry.candidateBound = streamedPage.inScope;
     } else {
       telemetry.residualScan = request.filter.text.trim() !== "";
       streamedPage = await readEvaluatedProjectionPage(
-        transaction.objectStore(options.projectionStore),
-        interval.id,
-        firstSequence,
-        lastSequence,
-        candidateSequences,
-        request.page,
-        pageCursor?.anchor ?? null,
-        filter,
-        around,
-        request.signal,
-        telemetry
+        projectionStoreForFind, interval.id, firstSequence, lastSequence, candidateSequences,
+        request.page, pageCursor?.anchor ?? null, filter, around, request.signal, telemetry
       );
       projections = [...streamedPage.projections];
       telemetry.candidateBound = candidateSequences?.size ?? expectedEvidenceCount;
       if (!candidateSequences) telemetry.fullRetainedScan = true;
     }
     if (request.filter.around !== null && streamedPage !== null) telemetry.aroundCandidates = streamedPage.inScope;
-    const findResult = request.find === undefined
-      ? null
-      : (await readFindProjectionResult(
-        transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks),
-        transaction.objectStore(options.projectionStore),
-        interval.id,
-        firstSequence,
-        lastSequence,
-        request.find,
-        request.find.scopeToFilter ? filter : null,
-        around,
-        interval,
-        request.signal,
-        telemetry
-      )).result;
+    let findResult = findIndex === null ? null : await readFindSequenceResult(projectionStoreForFind, interval, findIndex, request.find!, telemetry);
+    if (findResult && request.find) {
+      findResult = await readFindPage(projectionStoreForFind, evidenceStore, interval, firstSequence, lastSequence, findResult, request, readPoint, telemetry, findIndex!);
+      const matchIdentity = findResult.current ?? findResult.first;
+      const matchPayload = request.find.includeMatchPayload && matchIdentity
+        ? await readSelectedEvidence(evidenceStore, matchIdentity, interval, firstSequence, lastSequence, telemetry) : null;
+      const match = matchPayload ? queryProjectionFromPayload(matchPayload, interval) : null;
+      findResult = Object.freeze({ ...findResult,
+        ...(match && matchPayload ? { match: Object.freeze({ ...match, payload: copyCandidate(deserializeJournalEvidenceCandidate(matchPayload.replayPayload)) }) } : {}),
+        ...(request.includePayload ? { results: Object.freeze(await hydrateQueryPage(evidenceStore, findResult.results ?? [], interval, telemetry)) } : {})
+      });
+    }
     const anchorProjection = request.filter.around?.anchor === undefined
       ? null
       : await readProjectionByIdentity(transaction.objectStore(options.projectionStore), request.filter.around.anchor, interval, firstSequence, lastSequence, request.filter.around.anchorSequence, telemetry);
@@ -2751,6 +2758,7 @@ async function queryIndexedDb(
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecordsWithPayload, readPoint, request.lookup, filter, around);
       await transactionDone(transaction, "querying Evidence");
       if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
+      if (findIndex && options.findRequestId === options.findCache.requestId) options.findCache.entry = findIndex;
       telemetry.elapsedMs = Date.now() - started;
       return { ok: true, value: querySnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", queryCoverage(options), queryStorage(options), null, lookup, findResult, telemetry) };
     }
@@ -2763,6 +2771,7 @@ async function queryIndexedDb(
     const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
     telemetry.elapsedMs = Date.now() - started;
     if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
+    if (findIndex && options.findRequestId === options.findCache.requestId) options.findCache.entry = findIndex;
     const matchingTotal = simpleRecentPage || emptyFilterAround
       ? expectedProjectionCount
       : streamedPage?.matching ?? 0;
@@ -3525,138 +3534,196 @@ async function findSearchBlocks(
   return candidates;
 }
 
-type FindProjectionScan = Readonly<{
-  result: EvidenceSnapshot["find"];
+type FindSequenceIndex = Readonly<{
+  key: string;
+  // Sequence numbers can exceed Uint32 during a long Panel Session. Two
+  // Float64 vectors cost at most 1.6 MiB at normal 100,000-record retention.
+  matches: Float64Array;
+  eligible: Float64Array | null;
+  leadingMatches: readonly EvidenceIdentity[];
+  matching: number;
+  inScope: number;
 }>;
+type FindSequenceCache = { entry: FindSequenceIndex | null; requestId: number };
 
-/** Finds exact totals and neighbors while retaining only compact identities
- * near the requested current match. Replay payloads are never read here. */
-async function readFindProjectionResult(
-  searchBlocks: IDBObjectStore,
-  store: IDBObjectStore,
-  intervalId: string,
-  first: number,
-  last: number,
-  find: NonNullable<EvidenceQueryRequest["find"]>,
-  scopeFilter: EvidenceQueryRequest["filter"] | null,
-  around: EvidenceQueryRequest["filter"]["around"],
-  interval: HistoryInterval,
-  signal: AbortSignal | undefined,
-  telemetry: QueryTelemetryMutable
-): Promise<FindProjectionScan> {
+/** One exact read point/query owns one compact index. Projection text, facets
+ * and replay payloads are never retained between requests. Existing search
+ * blocks and facet postings still select candidates for every cold query. */
+async function readFindSequenceIndex(
+  searchBlocks: IDBObjectStore, store: IDBObjectStore, interval: HistoryInterval,
+  first: number, last: number, find: NonNullable<EvidenceQueryRequest["find"]>,
+  filter: EvidenceQueryRequest["filter"], around: EvidenceQueryRequest["filter"]["around"],
+  candidates: Set<number> | null, allEligible: boolean, expectedCount: number,
+  key: string, signal: AbortSignal | undefined, telemetry: QueryTelemetryMutable
+): Promise<FindSequenceIndex> {
   const normalized = normalizeEvidenceSearchText(find.text);
-  if (!normalized || last < first) {
-    return { result: Object.freeze({ text: find.text, total: 0, current: null, previous: null, next: null }) };
+  const matches: number[] = [];
+  const eligible: number[] | null = allEligible ? null : [];
+  const leadingMatches: EvidenceIdentity[] = [];
+  let matching = allEligible ? expectedCount : 0;
+  if (last < first) return { key, matches: new Float64Array(), eligible: eligible === null ? null : new Float64Array(), leadingMatches, matching, inScope: 0 };
+  const searchCandidates = normalized ? await findSearchBlocks(searchBlocks, interval.id, first, last, normalized, telemetry) : [];
+  const searchBlockStarts = new Set(searchCandidates.map(block => block.sequence));
+  const blockStarts = new Set<number>();
+  // Filter eligibility is also the reveal context. Read it once rather than
+  // rescanning every filtered row separately for the page, Find and reveal.
+  if (!allEligible) {
+    if (candidates === null) for (let start = indexBlockStart(first); start <= last; start += EVENT_INDEX_BLOCK_SIZE) blockStarts.add(start);
+    else for (const sequence of candidates) if (sequence >= first && sequence <= last) blockStarts.add(indexBlockStart(sequence));
   }
-  const firstMatches: EvidenceIdentity[] = [];
-  const nearby: QueryProjection[] = [];
-  let total = 0;
-  let firstMatch: QueryProjection | null = null;
-  const current = find.current;
-  const distance = (projection: QueryProjection): number => current === undefined ? Number.POSITIVE_INFINITY : Math.abs(projection.sequence - current.sequence);
-  const identityOf = (projection: QueryProjection): EvidenceIdentity => Object.freeze({ intervalId: projection.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId });
-  const isCurrent = (projection: QueryProjection): boolean => current !== undefined
-    && projection.intervalId === current.intervalId && projection.sequence === current.sequence && projection.eventId === current.eventId;
-  const keepNearby = (projection: QueryProjection): void => {
-    if (current === undefined) {
-      if (nearby.length < 2) nearby.push(projection);
-      return;
-    }
-    nearby.push(projection);
-    nearby.sort((left, right) => distance(left) - distance(right) || left.sequence - right.sequence || left.eventId.localeCompare(right.eventId));
-    if (nearby.length > 8) nearby.pop();
-  };
-  const consume = (projection: QueryProjection): void => {
+  if (allEligible || !find.scopeToFilter) for (const start of searchBlockStarts) blockStarts.add(start);
+  const starts = [...blockStarts].sort((a, b) => a - b);
+  let projectionCount = 0;
+  const filterWithoutAround = { ...filter, around: null } as unknown as Filter;
+  // Up to four adjacent blocks share one bounded bulk read. This reduces
+  // browser/database round trips without materializing the retained journal.
+  for (let position = 0; position < starts.length;) {
     if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
-    if (isTopologyCheckpointProjection(projection) || projection.intervalId !== intervalId) return;
-    if (!normalizeEvidenceSearchText(projection.searchText).includes(normalized)) return;
-    if (scopeFilter !== null) {
-      const evaluation = evaluateFilter({ ...scopeFilter, around: null } as unknown as Filter, {
-        timestamp: projection.timestamp,
-        intervalId: projection.intervalId,
-        searchText: projection.searchText,
-        facets: projection.facets as unknown as FilterRecord["facets"]
-      });
-      if (!evaluation.matches || !isInAround({ identity: identityOf(projection), timestamp: projection.timestamp }, around)) return;
-    }
-    total += 1;
-    firstMatch ??= projection;
-    if (firstMatches.length < 1_000) firstMatches.push(identityOf(projection));
-    keepNearby(projection);
-  };
-  const candidates = await findSearchBlocks(searchBlocks, intervalId, first, last, normalized, telemetry);
-  for (const block of candidates) {
-    if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
-    const sequence = block.sequence;
-    const lower = Math.max(first, sequence);
-    const upper = Math.min(last, sequence + EVENT_INDEX_BLOCK_SIZE - 1);
-    if (block.intervalId !== intervalId || block.firstSequence > lower || block.lastSequence < upper) throw new Error("Find index coverage is incomplete.");
-    // One bounded bulk read replaces one browser/database round trip per row.
-    const projections = await requestToPromise<QueryProjection[]>(store.getAll(queryBoundRange(lower, upper), EVENT_INDEX_BLOCK_SIZE), "reading Find block projections");
+    const start = starts[position++]!;
+    let end = start;
+    for (let count = 1; count < 4 && starts[position] === end + EVENT_INDEX_BLOCK_SIZE; count++) end = starts[position++]!;
+    const lower = Math.max(first, start), upper = Math.min(last, end + EVENT_INDEX_BLOCK_SIZE - 1);
+    const projections = await requestToPromise<QueryProjection[]>(store.getAll(queryBoundRange(lower, upper), upper - lower + 1), "reading Find index projections");
     if (projections.length !== upper - lower + 1) throw new Error("Find projection coverage is incomplete.");
+    projectionCount += projections.length;
     const state = { reads: 0, bound: upper - lower + 1 };
-    for (const [index, projection] of projections.entries()) {
+    for (const [offset, projection] of projections.entries()) {
+      if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
       recordProjectionCursorRead(telemetry, state, "Find");
-      telemetry.findCursorReads += 1;
-      validateQueryProjection(projection, intervalId, lower + index);
-      consume(projection);
+      if (searchBlockStarts.has(indexBlockStart(projection.sequence))) telemetry.findCursorReads += 1;
+      validateQueryProjection(projection, interval.id, lower + offset);
+      if (isTopologyCheckpointProjection(projection)) continue;
+      let inScope = allEligible;
+      if (!allEligible && (candidates === null || candidates.has(projection.sequence))) {
+        const evaluation = evaluateFilter(filterWithoutAround, {
+          timestamp: projection.timestamp, intervalId: projection.intervalId,
+          searchText: projection.searchText, facets: projection.facets as unknown as FilterRecord["facets"]
+        });
+        if (evaluation.matches) {
+          matching += 1;
+          inScope = isInAround({ identity: identityOfProjection(projection, interval.id), timestamp: projection.timestamp }, around);
+          if (inScope) eligible!.push(projection.sequence);
+        }
+      }
+      if (normalized && (!find.scopeToFilter || inScope) && searchBlockStarts.has(indexBlockStart(projection.sequence))
+        && normalizeEvidenceSearchText(projection.searchText).includes(normalized)) {
+        matches.push(projection.sequence);
+        if (leadingMatches.length < 1_000) leadingMatches.push(Object.freeze(identityOfProjection(projection, interval.id)));
+      }
     }
   }
-  let exact: QueryProjection | null = null;
-  if (current !== undefined) {
-    exact = nearby.find(isCurrent) ?? null;
-  }
-  const target = exact ?? (current === undefined ? (firstMatch as QueryProjection | null) : nearby[0] ?? null);
-  const orderedNearby = [...nearby].sort((left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId));
-  const targetIndex = target === null ? -1 : orderedNearby.findIndex((projection) => projection.sequence === target.sequence && projection.eventId === target.eventId);
-  const previous = targetIndex > 0 ? identityOf(orderedNearby[targetIndex - 1]!) : null;
-  const next = targetIndex >= 0 && targetIndex + 1 < orderedNearby.length ? identityOf(orderedNearby[targetIndex + 1]!) : null;
-  const base: EvidenceFindResult = Object.freeze({
-    text: find.text,
-    total,
-    current: current === undefined ? null : (target === null ? null : identityOf(target)),
-    previous,
-    next
-  });
-  const firstMatchSequence: number | undefined = (firstMatch as QueryProjection | null)?.sequence;
-  const targetSequence = target === null ? firstMatchSequence : target.sequence;
-  const targetWindow = targetSequence === undefined
-    ? []
-    : await readFindProjectionWindow(store, intervalId, first, last, targetSequence, telemetry);
-  const nextWindow = next === null
-    ? []
-    : await readFindProjectionWindow(store, intervalId, first, last, next.sequence, telemetry);
-  return {
-    result: Object.freeze({
-      ...base,
-      first: firstMatches[0] ?? null,
-      window: Object.freeze(targetWindow.map((projection) => querySelectionRecord(projection, interval))),
-      matches: Object.freeze(firstMatches),
-      ...(nextWindow.length > 0 ? { nextWindow: Object.freeze(nextWindow.map((projection) => querySelectionRecord(projection, interval))) } : {})
-    })
-  };
+  if (projectionCount >= last - first + 1) telemetry.fullRetainedScan = true;
+  return Object.freeze({ key, matches: Float64Array.from(matches), eligible: eligible === null ? null : Float64Array.from(eligible), leadingMatches: Object.freeze(leadingMatches), matching, inScope: eligible?.length ?? expectedCount });
 }
 
+function sequenceLowerBound(sequences: Float64Array, value: number): number {
+  let low = 0, high = sequences.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (sequences[middle]! < value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
 
-function readFindProjectionWindow(store: IDBObjectStore, intervalId: string, first: number, last: number, sequence: number, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
-  const lower = Math.max(first, sequence - 50);
-  const upper = Math.min(last, lower + 99);
-  const range = queryBoundRange(lower, upper);
-  if (range === undefined) return Promise.resolve([]);
-  const result: QueryProjection[] = [];
-  const state = { reads: 0, bound: Math.max(0, upper - lower + 1) };
-  return new Promise((resolve, reject) => {
-    const request = store.openCursor(range);
-    request.onerror = () => reject(request.error ?? new Error("Find context projection cursor failed."));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor || result.length >= 100) { resolve(result); return; }
-      try { recordProjectionCursorRead(telemetry, state, "Find context"); } catch (error) { reject(error); return; }
-      const projection = cursor.value as QueryProjection;
-      try { validateQueryProjection(projection, intervalId, Number(cursor.key)); } catch (error) { reject(error); return; }
-      if (!isTopologyCheckpointProjection(projection) && projection.intervalId === intervalId) result.push(projection);
-      cursor.continue();
-    };
+async function readSequenceProjections(store: IDBObjectStore, sequences: readonly number[], interval: HistoryInterval, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  return Promise.all(sequences.map(async sequence => {
+    const projection = await requestToPromise<QueryProjection | undefined>(store.get(sequence), "reading indexed Find row");
+    telemetry.projectionReads += 1;
+    telemetry.evidenceCursorReads += 1;
+    if (!projection) throw new Error("The indexed Find projection is missing.");
+    validateQueryProjection(projection, interval.id, sequence);
+    if (isTopologyCheckpointProjection(projection)) throw new Error("The indexed Find row is not Evidence.");
+    return projection;
+  }));
+}
+
+async function readFindSequenceResult(store: IDBObjectStore, interval: HistoryInterval, index: FindSequenceIndex, request: NonNullable<EvidenceQueryRequest["find"]>, telemetry: QueryTelemetryMutable): Promise<EvidenceFindResult> {
+  const sequences = index.matches;
+  if (sequences.length === 0) return createEvidenceFindAccumulator(request).result();
+  let currentIndex = request.current === undefined ? 0 : Math.min(sequences.length - 1, sequenceLowerBound(sequences, request.current.sequence));
+  if (request.current !== undefined && currentIndex > 0
+    && Math.abs(sequences[currentIndex - 1]! - request.current.sequence) <= Math.abs(sequences[currentIndex]! - request.current.sequence)) currentIndex -= 1;
+  let resultStart = request.after === undefined ? 0 : sequenceLowerBound(sequences, request.after.sequence);
+  if (request.after !== undefined && sequences[resultStart] === request.after.sequence) resultStart += 1;
+  const resultSequences = Array.from(sequences.slice(resultStart, resultStart + Math.max(1, Math.min(100, request.size ?? 50))));
+  const targetSequences = [...new Set([sequences[0]!, sequences[sequences.length - 1]!, sequences[currentIndex]!,
+    ...(currentIndex > 0 ? [sequences[currentIndex - 1]!] : []),
+    ...(currentIndex + 1 < sequences.length ? [sequences[currentIndex + 1]!] : []), ...resultSequences])];
+  const projections = await readSequenceProjections(store, targetSequences, interval, telemetry);
+  const bySequence = new Map(projections.map(projection => [projection.sequence, querySelectionRecord(projection, interval)]));
+  const identityAt = (position: number): EvidenceIdentity | null => bySequence.get(sequences[position]!)?.identity ?? null;
+  return Object.freeze({ text: request.text, total: sequences.length, currentIndex,
+    current: request.current === undefined ? null : identityAt(currentIndex),
+    first: identityAt(0), last: identityAt(sequences.length - 1), previous: identityAt(currentIndex - 1), next: identityAt(currentIndex + 1),
+    matches: index.leadingMatches, results: Object.freeze(resultSequences.map(sequence => bySequence.get(sequence)!)),
+    hasMore: resultStart + resultSequences.length < sequences.length
+  });
+}
+
+async function readFindIndexedPage(store: IDBObjectStore, interval: HistoryInterval, index: FindSequenceIndex, page: EvidenceQueryRequest["page"], anchor: EvidenceIdentity | null, telemetry: QueryTelemetryMutable): Promise<StreamedProjectionPage> {
+  const sequences = index.eligible!;
+  let start = page.order === "NEWEST_FIRST" ? sequences.length - 1 : 0;
+  if (anchor !== null) {
+    const position = sequenceLowerBound(sequences, anchor.sequence);
+    if (sequences[position] !== anchor.sequence) throw new Error("The page cursor anchor is not part of the filtered Evidence result.");
+    start = position + (page.order === "NEWEST_FIRST" ? -1 : 1);
+  }
+  const selected = page.order === "NEWEST_FIRST"
+    ? Array.from(sequences.slice(Math.max(0, start - page.size + 1), start + 1)).reverse()
+    : Array.from(sequences.slice(start, start + page.size));
+  const hasMore = page.order === "NEWEST_FIRST" ? start - selected.length >= 0 : start + selected.length < sequences.length;
+  return { projections: await readSequenceProjections(store, selected, interval, telemetry), matching: index.matching, inScope: index.inScope, hasMore };
+}
+
+/** Reuse projection pages for the unfiltered case; residual context stays payload-free. */
+async function readFindPage(
+  store: IDBObjectStore, evidenceStore: IDBObjectStore, interval: HistoryInterval,
+  first: number, last: number, find: EvidenceFindResult, request: EvidenceQueryRequest,
+  readPoint: EvidenceReadPoint, telemetry: QueryTelemetryMutable, index: FindSequenceIndex
+): Promise<EvidenceFindResult> {
+  const target = find.current ?? find.first;
+  if (request.find?.reveal === false) return find;
+  if (!target) return withEvidenceFindPage(find, [], request, readPoint);
+  const around = normalizeAround(request.filter.around, readPoint.retainedRange);
+  if (isEmptyQueryFilter(request.filter) && around === null) {
+    const newerSize = request.page.order === "NEWEST_FIRST" ? Math.floor(request.page.size / 2) : request.page.size - Math.floor(request.page.size / 2) - 1;
+    const newer = target.sequence >= last || newerSize === 0
+      ? { projections: [], hasMore: false }
+      : await readProjectionPage(store, interval.id, first, last, { order: "OLDEST_FIRST", size: newerSize }, target, telemetry);
+    const older = await readProjectionPage(store, interval.id, first, target.sequence, { order: "NEWEST_FIRST", size: request.page.size - newer.projections.length }, null, telemetry);
+    const projections = [...newer.projections].reverse().concat(older.projections);
+    if (projections.length < request.page.size && (projections[0]?.sequence ?? last) < last) {
+      const extra = await readProjectionPage(store, interval.id, first, last, { order: "OLDEST_FIRST", size: request.page.size - projections.length }, identityOfProjection(projections[0]!, interval.id), telemetry);
+      projections.unshift(...[...extra.projections].reverse());
+    }
+    const highest = projections[0]?.sequence ?? last;
+    const lowest = projections.at(-1)?.sequence ?? first;
+    const offset = request.page.order === "NEWEST_FIRST"
+      ? last - highest - await countTopologyCheckpoints(evidenceStore, highest + 1, last, telemetry)
+      : lowest - first - await countTopologyCheckpoints(evidenceStore, first, lowest - 1, telemetry);
+    const remaining = request.page.order === "NEWEST_FIRST"
+      ? lowest - first - await countTopologyCheckpoints(evidenceStore, first, lowest - 1, telemetry)
+      : last - highest - await countTopologyCheckpoints(evidenceStore, highest + 1, last, telemetry);
+    const records = projections.map(projection => querySelectionRecord(projection, interval));
+    if (request.page.order === "OLDEST_FIRST") records.reverse();
+    return Object.freeze({ ...find,
+      page: Object.freeze({ evidence: Object.freeze(records), offset, nextCursor: remaining > 0 ? encodeEvidenceQueryCursor(readPoint, request, records.at(-1)!.identity) : null }),
+      window: Object.freeze(request.page.order === "NEWEST_FIRST" ? [...records].reverse() : records)
+    });
+  }
+  const sequences = index.eligible!;
+  const targetPosition = sequenceLowerBound(sequences, target.sequence);
+  if (sequences[targetPosition] !== target.sequence) return withEvidenceFindPage(find, [], request, readPoint);
+  const targetIndex = request.page.order === "NEWEST_FIRST" ? sequences.length - 1 - targetPosition : targetPosition;
+  const offset = Math.max(0, Math.min(sequences.length - request.page.size, targetIndex - Math.floor(request.page.size / 2)));
+  const selected = request.page.order === "NEWEST_FIRST"
+    ? Array.from(sequences.slice(Math.max(0, sequences.length - offset - request.page.size), sequences.length - offset)).reverse()
+    : Array.from(sequences.slice(offset, offset + request.page.size));
+  const records = (await readSequenceProjections(store, selected, interval, telemetry)).map(projection => querySelectionRecord(projection, interval));
+  return Object.freeze({ ...find,
+    page: Object.freeze({ evidence: Object.freeze(records), offset, nextCursor: offset + records.length < sequences.length ? encodeEvidenceQueryCursor(readPoint, request, records.at(-1)!.identity) : null }),
+    window: Object.freeze(request.page.order === "NEWEST_FIRST" ? [...records].reverse() : records)
   });
 }
 

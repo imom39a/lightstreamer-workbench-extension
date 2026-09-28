@@ -1,11 +1,20 @@
 import { AGENT_MAX_BYTES, AGENT_PROTOCOL_VERSION, AGENT_TOOLS, validateAgentCall, type AgentArguments, type AgentPermission } from "../../agent/protocol";
 import { toBulkShareableEventEnvelope, type LightstreamerEventEnvelope } from "../../core/event-envelope";
 import type { EvidenceIdentity, EvidenceReadPoint, DeterministicEvidenceRecord } from "../../core/evidence-filter-contract";
-import type { AgentRuntime, AgentDraftInput } from "./agent-runtime";
+import { createScopeSearchIndex, searchScopes, type ScopeSearchIndex, type ScopeSearchNode } from "../../core/scope-search";
+import type { AgentRuntime, AgentDraftInput, AgentQueryBoundary, AgentScopeSearchSnapshot } from "./agent-runtime";
 import { cloneCredentialSafe as omitCredentialFields } from "./topology-export";
+
+const SEARCH_CURSOR_LIFETIME_MS = 5 * 60 * 1000;
+type EvidenceSearch = { at: EvidenceReadPoint; after: EvidenceIdentity; boundary: AgentQueryBoundary; within: "page" | "current-investigation"; text: string; size: number; includePayload: boolean; pageEpoch: unknown; expiresAt: number };
+type ScopeSearch = { index: ScopeSearchIndex; snapshot: Omit<AgentScopeSearchSnapshot, "nodes">; text: string; size: number; expiresAt: number };
 
 export function createAgentService(runtime: AgentRuntime, panelSessionId: string, permission: () => AgentPermission) {
   const cursors = new Map<string, { at: EvidenceReadPoint; cursor: string; scopeId?: string; text?: string; size: number; includePayload: boolean }>();
+  const evidenceSearches = new Map<string, EvidenceSearch>();
+  // Multiple page cursors share one bounded Topology snapshot rather than copying it.
+  const scopeSearches = new Map<string, ScopeSearch>();
+  const scopeCursors = new Map<string, { searchId: string; offset: number }>();
   const requests = new Map<string, { signature: string; kind: "local" | "scenario"; draftId?: string; value: unknown }>();
   let prepared: { token: string; fingerprint: string; kind: "local" | "scenario"; consumed: boolean } | null = null;
   let busy = false;
@@ -38,7 +47,59 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
     switch (name) {
       case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, permission: permission(), ...runtime.status() as object, capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local")).map(tool => tool.name) };
       case "list_scope": return runtime.scopes(Number(args.offset ?? 0), Number(args.limit ?? 50));
+      case "search_scope": {
+        const saved = args.cursor ? scopeCursors.get(String(args.cursor)) : undefined;
+        if (args.cursor && !saved) throw new Error("Search cursor expired. Start a new search.");
+        const searchId = saved?.searchId ?? crypto.randomUUID();
+        let search = saved ? scopeSearches.get(searchId) : undefined;
+        if (saved) {
+          if (!search || search.expiresAt <= Date.now()) throw new Error("Search cursor expired. Start a new search.");
+          const status = runtime.status() as { pageEpoch: string | null; history: { interval: { id: string }; retainedRange: { first: { sequence: number } } | null } };
+          const first = search.snapshot.history.retainedFirstSequence;
+          if (status.pageEpoch !== search.snapshot.pageEpoch || status.history.interval.id !== search.snapshot.history.intervalId
+            || (first !== null && (status.history.retainedRange === null || status.history.retainedRange.first.sequence > first))) {
+            throw new Error("Scope search snapshot expired after page change, Clear or retention. Start a new search.");
+          }
+        } else {
+          const { nodes, ...snapshot } = runtime.scopeSearchSnapshot();
+          search = { index: createScopeSearchIndex(cloneCredentialSafe(nodes) as readonly ScopeSearchNode[]), snapshot, text: String(args.text).trim(), size: Number(args.limit ?? 25), expiresAt: Date.now() + SEARCH_CURSOR_LIFETIME_MS };
+        }
+        const result = searchScopes(search!.index, search!.text, { offset: saved?.offset ?? 0, limit: search!.size });
+        let nextCursor: string | null = null;
+        if (result.hasNext) {
+          scopeSearches.set(searchId, search!);
+          if (scopeSearches.size > 8) scopeSearches.delete(scopeSearches.keys().next().value!);
+          nextCursor = crypto.randomUUID();
+          scopeCursors.set(nextCursor, { searchId, offset: result.offset + result.matches.length });
+          if (scopeCursors.size > 128) scopeCursors.delete(scopeCursors.keys().next().value!);
+        }
+        return { snapshot: search!.snapshot, boundary: "ALL_STRUCTURAL_TOPOLOGY", match: "CASE_INSENSITIVE_SUBSTRING", text: search!.text, total: result.total, offset: result.offset, nextCursor, scopes: result.matches.map(({ node, path, ancestorIds, matchedFields }) => ({ scopeId: node.id, kind: node.kind, label: node.label, detail: node.detail, lifecycle: node.lifecycle, retired: node.retired, path, ancestorIds, matchedFields })) };
+      }
       case "get_scope": return cloneCredentialSafe(runtime.scope(String(args.scopeId)));
+      case "search_evidence": {
+        const saved = args.cursor ? evidenceSearches.get(String(args.cursor)) : undefined;
+        if (args.cursor && (!saved || saved.expiresAt <= Date.now())) throw new Error("Search cursor expired. Start a new search.");
+        const pageEpoch = (runtime.status() as { pageEpoch: unknown }).pageEpoch;
+        if (saved && saved.pageEpoch !== pageEpoch) throw new Error("Search cursor expired after page change. Start a new search.");
+        const within = saved?.within ?? (args.within === "current-investigation" ? "current-investigation" : "page");
+        const boundary = saved?.boundary ?? structuredClone(runtime.queryBoundary(args.scopeId as string | undefined, within === "current-investigation"));
+        const text = saved?.text ?? String(args.text).trim();
+        const size = saved?.size ?? Number(args.limit ?? 25);
+        const includePayload = saved?.includePayload ?? args.includePayload === true;
+        const result = await runtime.query({ ...boundary, at: saved?.at ?? "LATEST_COMMITTED", size: 1, includePayload, find: { text, scopeToFilter: true, reveal: false, size, ...(saved ? { after: saved.after } : {}) } });
+        if (!result.find) throw new Error("Evidence search is unavailable at this read point.");
+        const records = result.find.results ?? [];
+        let nextCursor: string | null = null;
+        if (result.find.hasMore && records.length > 0) {
+          nextCursor = crypto.randomUUID();
+          evidenceSearches.set(nextCursor, { boundary, within, text, size, includePayload, pageEpoch, at: result.readPoint, after: records.at(-1)!.identity, expiresAt: saved?.expiresAt ?? Date.now() + SEARCH_CURSOR_LIFETIME_MS });
+          if (evidenceSearches.size > 128) evidenceSearches.delete(evidenceSearches.keys().next().value!);
+        }
+        return { search: { text, within, ...cloneCredentialSafe(boundary) as object, match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" }, readPoint: result.readPoint, total: result.find.total, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor, evidence: records.map(record => {
+          const evidence = safeRecord(record);
+          return { ...evidence, match: safeMatchExplanation(evidence, text) };
+        }) };
+      }
       case "query_evidence": {
         let query = { scopeId: args.scopeId as string | undefined, text: args.text as string | undefined, size: Number(args.limit ?? 25), includePayload: args.includePayload === true, at: "LATEST_COMMITTED" as "LATEST_COMMITTED" | EvidenceReadPoint, cursor: undefined as string | undefined };
         if (args.cursor) {
@@ -138,14 +199,15 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
   }
   return {
     async call(name: string, args: unknown) {
+      const generation = grantGeneration;
       const result = await call(name, args);
       // Grants can be revoked while a read awaits storage. Do not disclose its result.
-      if (permission() === "off") throw new Error("Agent access was revoked.");
+      if (permission() === "off" || generation !== grantGeneration) throw new Error("Agent access was revoked.");
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > AGENT_MAX_BYTES) throw new Error("Response exceeds 512 KiB. Narrow the query, lower its limit, or omit payloads. Mutations are not retried; inspect their existing outcome.");
       return result;
     },
     refreshOperations,
-    revoke() { grantGeneration++; if (prepared?.kind === "scenario") runtime.control("pause"); }
+    revoke() { grantGeneration++; cursors.clear(); evidenceSearches.clear(); scopeCursors.clear(); scopeSearches.clear(); if (prepared?.kind === "scenario") runtime.control("pause"); }
   };
 }
 
@@ -156,6 +218,31 @@ function safeRecord(record: DeterministicEvidenceRecord) {
   const { raw: _raw, ...semantic } = payload ?? {};
   return { identity: record.identity, timestamp: record.timestamp, facets: cloneCredentialSafe(record.facets), ...(payload ? { payload: cloneCredentialSafe(semantic) } : {}) };
 }
+
+/** Explain only the exported representation: canonical searchText/summary may contain secrets. */
+function safeMatchExplanation(evidence: ReturnType<typeof safeRecord>, query: string) {
+  const needle = query.toLowerCase();
+  const fields: Array<{ field: string; excerpt: string }> = [];
+  let remaining = 4096;
+  function visit(value: unknown, path: string, depth = 0): void {
+    if (fields.length >= 3 || depth > 16 || remaining-- <= 0) return;
+    if (value !== null && typeof value === "object") {
+      for (const [key, entry] of Object.entries(value)) {
+        visit(entry, path ? `${path}.${key}` : key, depth + 1);
+        if (fields.length >= 3 || remaining <= 0) break;
+      }
+    } else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      const text = String(value);
+      const found = text.toLowerCase().indexOf(needle);
+      if (found < 0) return;
+      const start = Math.max(0, found - 32), end = Math.min(text.length, start + 160);
+      fields.push({ field: path.slice(0, 200), excerpt: `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}` });
+    }
+  }
+  visit(evidence, "");
+  return { state: fields.length > 0 ? "EXPLAINED" : "NO_SHAREABLE_EXCERPT", fields };
+}
+
 function safeDraft(local: ReturnType<AgentRuntime["local"]>) {
   if (!local.draft) return local;
   const { rawText: _raw, source: _source, preflightFingerprint: _fingerprint, ...draft } = local.draft;

@@ -23,6 +23,8 @@ Version 2 inspects the current Panel Session for the selected tab. Scope, Ordere
 - Captures client, subscription, listener, item update, snapshot, COMMAND lifecycle, `sendMessage`, and `ClientMessageListener` outcome events into temporary session-scoped Event History for the current Panel Session.
 - Shows Runtime Scope, Ordered Evidence, and Context in one React workspace.
 - Keeps Capture, Coverage, Scope, Filter, Find, selection, and Live or Frozen independent.
+- Finds retained Evidence within the current Scope and Filter, reveals each matching event, and explains the matching field. **Inspect match** opens its Context; **Refresh results** includes newer Capture without moving the current result automatically.
+- Searches runtime Scope by substring across collapsed and off-screen branches, with object paths to distinguish similar identities. Enter or click chooses Scope; typing does not change it. Control/Command+F follows Scope, Evidence, or the active editor.
 - Keeps current-session Evidence through its Committed Evidence Boundary. The panel renders a limited set of rows at one time.
 - Traces COMMAND `ADD`, `UPDATE`, and `DELETE` Evidence while internal derived state powers Draft validation, Scenarios, Checkpoints, and lifecycle diagnostics.
 - Keeps one protected **Local Injection Draft** for one target. Create it from captured Evidence or from a live COMMAND Scope. Captured Drafts compare Source and Draft by default; edit, validate, and inject directly from that preview.

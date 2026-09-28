@@ -54,7 +54,11 @@ try {
     cwd: directory, env: { LSEW_AGENT_CONNECTION: "" }, stderr: "inherit"
   }));
   assert.equal(clients[0].getServerVersion().version, metadata.version);
-  assert((await clients[0].listTools()).tools.some(tool => tool.name === "prepare_scenario"));
+  const advertised = (await clients[0].listTools()).tools;
+  assert(advertised.some(tool => tool.name === "prepare_scenario"));
+  for (const name of ["search_evidence", "search_scope"]) {
+    assert.equal(advertised.find(tool => tool.name === name)?.annotations?.readOnlyHint, true, `${name} is discoverable and read-only in the installed artifact`);
+  }
   panel = new WebSocket(`ws://127.0.0.1:${port}/workbench`, { headers: { Origin: `chrome-extension://${id}` } });
   const queue = [], readers = [];
   panel.on("message", data => { const message = JSON.parse(data.toString()); const read = readers.shift(); if (read) read(message); else queue.push(message); });
@@ -72,6 +76,16 @@ try {
   const request = await next();
   panel.send(JSON.stringify({ id: request.id, result: { pageEpoch: "installed-package-runtime" } }));
   assert.match(JSON.stringify(await call), /installed-package-runtime/);
+  for (const name of ["search_evidence", "search_scope"]) {
+    const search = clients[0].callTool({ name, arguments: { panelSessionId: "npm-package-panel", text: "needle", limit: 1 } });
+    const request = await next();
+    assert.equal(request.name, name);
+    assert.deepEqual(request.args, { panelSessionId: "npm-package-panel", text: "needle", limit: 1 });
+    panel.send(JSON.stringify({ id: request.id, result: { total: 1002, nextCursor: "frozen-search-cursor" } }));
+    assert.match(JSON.stringify(await search), /frozen-search-cursor/);
+    const invalid = await clients[0].callTool({ name, arguments: { panelSessionId: "npm-package-panel", text: "needle", limit: 101 } });
+    assert.equal(invalid.isError, true, `${name} validates its bound before panel routing`);
+  }
   const forbidden = await clients[0].callTool({ name: "execute_server_injection", arguments: {} });
   assert.equal(forbidden.isError, true);
 } finally {

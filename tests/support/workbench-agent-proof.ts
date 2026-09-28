@@ -28,6 +28,16 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     const pageUrl = await evaluateByValue<string>(page, "location.origin + location.pathname");
     assert.equal(status.inspectedPage.urlWithoutQuery, pageUrl);
     assert.equal(status.permission, "local", "A normal connection grants inspection and Local Injection without settings.");
+    assert.ok(status.capabilities.includes("search_evidence") && status.capabilities.includes("search_scope"));
+    const scopeSearch = await call("search_scope", { panelSessionId, text: "SCENARIO.MUTATE-REINJECT", limit: 100 });
+    assert.ok(scopeSearch.scopes.some((entry: any) => entry.kind === "item" && entry.label === "scenario.mutate-reinject"), "MCP Scope search finds structural objects regardless of tree expansion.");
+    const evidenceSearch = await call("search_evidence", { panelSessionId, text: "SCENARIO.MUTATE-REINJECT", limit: 1, includePayload: true });
+    assert.ok(evidenceSearch.total > 0 && evidenceSearch.evidence.length === 1, "MCP Evidence search uses case-insensitive canonical matching.");
+    if (evidenceSearch.nextCursor) {
+      const next = await call("search_evidence", { panelSessionId, cursor: evidenceSearch.nextCursor });
+      assert.deepEqual(next.readPoint, evidenceSearch.readPoint);
+      assert.notEqual(next.evidence[0].identity.eventId, evidenceSearch.evidence[0].identity.eventId);
+    }
     const query = await call("query_evidence", { panelSessionId, limit: 100, includePayload: true });
     const source = query.evidence.findLast((row: any) => row.payload?.kind === "item-update" && row.payload?.source === "server" && row.payload?.listener?.id && row.payload?.item?.name === "scenario.mutate-reinject");
     assert.ok(source, "Agent can query current listener-based official-client Evidence.");
@@ -81,6 +91,17 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     assert.equal(status.permission, "local", "Inspection plus Local Injection requires no permission selection.");
     const query = await call("query_evidence", { panelSessionId, limit: 100, includePayload: true });
     assert.ok(query.evidence.some((entry: any) => entry.payload?.item?.name === "cdp-same-tab-four"));
+    assert.ok(status.capabilities.includes("search_evidence") && status.capabilities.includes("search_scope"));
+    const scopes = await call("search_scope", { panelSessionId, text: "CDP-SAME-TAB-CLIENT", limit: 100 });
+    assert.ok(scopes.scopes.some((entry: any) => entry.kind === "client" && entry.label === "cdp-same-tab-client"), JSON.stringify(scopes));
+    const found = await call("search_evidence", { panelSessionId, text: "CDP-SAME-TAB", limit: 1, includePayload: true });
+    assert.ok(found.total > 1 && found.nextCursor, "The installed companion can paginate retained Evidence search.");
+    const continued = await call("search_evidence", { panelSessionId, cursor: found.nextCursor });
+    assert.deepEqual(continued.readPoint, found.readPoint);
+    assert.ok(continued.evidence[0].identity.sequence > found.evidence[0].identity.sequence);
+    assert.equal(continued.search.within, "page");
+    const current = await call("search_evidence", { panelSessionId, text: "CDP-SAME-TAB", within: "current-investigation", limit: 1 });
+    assert.equal(current.search.within, "current-investigation");
     await client.close(); broker.close();
     await headerState(panel, "Waiting");
     broker = await startPortableBroker({ auth: "off", port: DEFAULT_COMPANION_PORT }, extensionId);

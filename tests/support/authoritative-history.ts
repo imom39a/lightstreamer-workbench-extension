@@ -30,7 +30,7 @@ import {
 import { canonicalEvidenceSearchText, extractEvidenceFacets } from "../../src/core/evidence-facets";
 import { typedFacetValue } from "../../src/core/evidence-filter-contract";
 import { discoverFacet } from "../../src/core/evidence-filter-discovery";
-import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "../../src/core/evidence-filter-selection";
+import { findEvidence, withEvidenceFindPage, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "../../src/core/evidence-filter-selection";
 import { evaluateFilter, type FilterInput, type FilterRecord } from "../../src/core/filter-algebra";
 
 export type AuthoritativeHistoryOfferDecision = "commit" | "refuse";
@@ -282,8 +282,11 @@ export function createAuthoritativeHistory(
     const gated = <T>(value: T): Promise<T> => compatibilityRead
       ? compatibilityRead.then(() => value)
       : Promise.resolve(value);
-    const readPoint = queryReadPoint();
-    if (request.at !== "LATEST_COMMITTED" && !sameReadPoint(request.at, readPoint)) {
+    const latestReadPoint = queryReadPoint();
+    const readPoint = request.at === "LATEST_COMMITTED" ? latestReadPoint : request.at;
+    if (readPoint.interval.id !== latestReadPoint.interval.id
+      || (readPoint.committedEvidenceBoundary?.sequence ?? 0) > (latestReadPoint.committedEvidenceBoundary?.sequence ?? 0)
+      || (readPoint.retainedRange !== null && (latestReadPoint.retainedRange === null || readPoint.retainedRange.first.sequence < latestReadPoint.retainedRange.first.sequence))) {
       return gated(queryFailure("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable."));
     }
     if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > 100) {
@@ -291,7 +294,7 @@ export function createAuthoritativeHistory(
     }
 
     const records: SelectionRecord[] = currentEvidence.flatMap((entry) => {
-      if (entry.candidate.kind === "topology-checkpoint") return [];
+      if (entry.candidate.kind === "topology-checkpoint" || entry.sequence > (readPoint.committedEvidenceBoundary?.sequence ?? 0) || entry.sequence < (readPoint.retainedRange?.first.sequence ?? 1)) return [];
       const identity = Object.freeze({
         intervalId: entry.intervalId,
         pageId: interval.id,
@@ -369,7 +372,12 @@ export function createAuthoritativeHistory(
     const lookup = request.lookup === undefined
       ? null
       : lookupEvidence(records, readPoint, request.lookup, filter, around);
-    const find = request.find === undefined ? null : findEvidence(request.find.scopeToFilter ? inScope : records, request.find);
+    let find = request.find === undefined ? null : withEvidenceFindPage(findEvidence(request.find.scopeToFilter ? inScope : records, request.find), inScope, request, readPoint);
+    if (find && request.find?.includeMatchPayload) {
+      const matchIdentity = find.current ?? find.first;
+      const match = records.find(record => record.identity.eventId === matchIdentity?.eventId);
+      if (match) find = Object.freeze({ ...find, match });
+    }
     return gated({
       ok: true,
       value: Object.freeze({

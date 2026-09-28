@@ -133,6 +133,48 @@ marker. Do not delete a whole browser profile or another application's host.
 Leftover registration is unused by the new extension, which no longer requests
 `nativeMessaging`.
 
+## Search Evidence and Scope
+
+`search_scope` searches the complete structural Topology, including collapsed
+branches, by case-insensitive substring in labels, identities, types, ancestor
+paths, details and lifecycle. Results include the exact `scopeId` and ancestor
+path. Use that ID with `get_scope` or `search_evidence`; searching never changes
+the human's selected Scope.
+
+`search_evidence` applies the same canonical Find matching as the panel across
+retained Evidence. Its `within` boundary is explicit:
+
+- `page` (default) searches the page without the human's Filter. An optional
+  `scopeId` narrows it to that exact structural Scope.
+- `current-investigation` captures the human's current Scope and Filter and
+  applies Find text independently. Both boundaries remain fixed during paging,
+  even if the human later changes their investigation.
+
+For example, after identifying the intended Panel Session:
+
+```json
+{"panelSessionId":"chosen-panel","text":"row-42","within":"current-investigation","limit":25}
+```
+
+Both search tools return up to 100 matches per page and an opaque `nextCursor`
+when more matches exist. Continue with **only** `panelSessionId` and `cursor`.
+Evidence searches preserve their read point, total and order while Capture adds
+events; Scope searches preserve their Topology snapshot. All matches remain
+reachable, including beyond 1,000 results. Start a new search to include newer
+Evidence or Topology. Cursors expire after five minutes, bounded cursor-cache
+eviction, retention removes the captured range, Clear, page change or access
+revocation. An expired cursor requires a fresh search.
+
+Neither search moves the human's Scope, Filter, Find, selection or Capture.
+Evidence payloads require `includePayload:true`. Match explanations use only
+fields permitted in the response; a canonical match in omitted payload data,
+Client Message text or recognized credentials may have `NO_SHAREABLE_EXCERPT`.
+Raw capture text and the internal search index are never returned. Existing
+`query_evidence` and `get_evidence` remain available for general retained reads
+and exact Evidence lookup. Check `get_status.capabilities` before using new
+tools with an older loaded extension; both the extension and companion need
+the search update.
+
 ## Verification and publication
 
 `npm run agent:test:package` packs and installs the artifact outside the source
