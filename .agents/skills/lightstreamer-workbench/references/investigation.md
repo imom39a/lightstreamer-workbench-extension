@@ -149,9 +149,8 @@ still make a complete reconstruction unavailable; report that limitation.
 
 ## Availability in current releases
 
-The investigation workflow is present in this repository's source skill. The
-published `lightstreamer-workbench-agent@0.1.0` package and published Workbench
-extension 2.0.4 predate these tools. Use a matching source-built extension and
-companion to exercise them; confirm the available names with
-`get_status.capabilities`. The existing npm setup, companion process and
-authentication configuration do not change for this workflow.
+Use compatible extension and companion builds for this workflow; confirm the
+available names with `get_status.capabilities`. Installing the npm companion
+does not update the Chrome extension. If the loaded extension lacks a needed
+tool, use a matching extension build before proceeding. The npm setup,
+companion process and authentication configuration are unchanged.

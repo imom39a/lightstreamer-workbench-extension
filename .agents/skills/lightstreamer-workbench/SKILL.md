@@ -11,9 +11,8 @@ console and network behavior. Workbench delivery and application behavior are
 separate observations.
 
 Use only tools listed by the connected Panel Session's `get_status.capabilities`.
-The investigation and candidate-validation workflow in this source skill needs a
-matching extension and companion build; the published 0.1.0 companion predates
-these additions.
+The investigation and candidate-validation workflow needs compatible extension
+and companion builds. Installing a newer companion does not update the extension.
 
 ## Connect and identify
 

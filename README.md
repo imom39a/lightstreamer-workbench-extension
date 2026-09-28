@@ -82,8 +82,9 @@ Your configured agent app launches it automatically; no separate terminal or
 hosted server is needed. It connects to open Workbench panels over localhost
 without native registration.
 See the [common companion setup](agent/README.md) for npm configuration, local
-package testing and migration from the removed native connection. The package
-is prepared for publication; npm launch commands require its first publication.
+package testing and migration from the removed native connection. The npm
+companion and Chrome extension are distributed separately; use an extension
+build that includes Agent access and the capabilities your agent needs.
 
 Agent access enables inspection and Local Injection automatically in each open
 Panel Session. The header shows **Waiting** until the companion is ready, **On**

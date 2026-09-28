@@ -14,8 +14,8 @@ npm.cmd --version
 npx.cmd --yes lightstreamer-workbench-agent@0.1.0 setup
 ```
 
-The npm command becomes available after publication. Before publication, install
-the verified tarball using the [local installation instructions](README.md#local-installation-and-source-development).
+For offline use, install the verified tarball using the
+[local installation instructions](README.md#local-installation-and-source-development).
 `npm.cmd`/`npx.cmd` avoid PowerShell execution-policy restrictions on `.ps1` shims;
 you do not need to weaken that policy. The common MCP JSON uses `npx`. If your
 agent cannot resolve it, use the path returned by `Get-Command npx.cmd`.
@@ -24,11 +24,12 @@ After saving the MCP configuration, start/reconnect that server in your agent
 app. The app launches the companion automatically; no separate PowerShell
 window, manually running server, Windows service or Chrome native host is needed.
 
-The source-only `describe_stream`, `wait_for_evidence` and
-`validate_agent_candidate` tools require a matching source-built companion and
-extension. Published companion 0.1.0 and extension 2.0.4 predate them; see
-[Evidence-guided experiments](README.md#evidence-guided-experiments-in-source-builds).
-The setup command and Windows connection path are unchanged.
+The companion includes `describe_stream`, `wait_for_evidence`,
+`validate_agent_candidate`, `search_evidence` and `search_scope`. These also
+require a compatible extension; check `get_status.capabilities`. Build and load
+the extension from `main` if the installed Store version lacks them; see
+[Evidence-guided experiments](README.md#evidence-guided-experiments).
+The setup command and Windows connection path are the same for these tools.
 
 If the client cannot launch npm shims, use a stable package installation and
 print an absolute Node configuration:

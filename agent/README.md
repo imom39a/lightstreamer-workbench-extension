@@ -10,9 +10,12 @@ not Node inside WSL or a container.
 
 ## Connect with npm
 
-The first public release is `lightstreamer-workbench-agent@0.1.0`, owned by the
-`imom39a` npm account. The extension must include Agent access;
-the published 2.0.4 extension predates it.
+The first npm release is `lightstreamer-workbench-agent@0.1.0`, maintained by
+`imom39a`. It includes the experiment and search tools described below and the
+Workbench agent skill. Use a matching extension build with Agent access; npm
+publication does not update the Chrome extension. If your installed extension
+lacks these capabilities, build and load the extension from this repository's
+`main` branch using the source-development instructions below.
 
 Run the same command in macOS Terminal or Windows PowerShell:
 
@@ -107,16 +110,13 @@ companion does not persist Evidence or log payloads; redaction is not a general
 secret detector. Local Injection invokes app listeners, which may cause other
 application effects. Server Injection is not exposed to agents.
 
-## Evidence-guided experiments in source builds
+## Evidence-guided experiments
 
-This repository's current source adds bounded stream discovery, event waiting,
-and non-mutating candidate validation. The published
-`lightstreamer-workbench-agent@0.1.0` package and published Workbench extension
-2.0.4 predate these tools. They are available only when the companion and
-extension are built from matching source that contains them; check
-`get_status.capabilities` for the connected panel's actual tool list. Existing
-npm setup, the single MCP companion process, and authentication settings stay
-the same.
+The companion includes bounded stream discovery, event waiting, non-mutating
+candidate validation, and Evidence/Scope search. The connected extension must
+also implement them: check `get_status.capabilities` for the panel's actual
+tool list. The npm setup, single MCP companion process, and authentication
+settings are the same for these tools.
 
 The investigation sequence is: discover a bounded profile with `describe_stream`,
 query explicit Evidence examples with `query_evidence`, validate a source-grounded
