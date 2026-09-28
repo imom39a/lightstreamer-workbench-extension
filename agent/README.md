@@ -90,8 +90,9 @@ agent's skill directory when you want the investigation workflow guidance.
 Each Panel Session enables inspection and Local Injection by default. The header
 shows **Agent access Waiting** until the companion connection is ready, **On**
 once connected with access granted, and **Off** when disabled. On means access
-is ready, not that an agent is actively using it. Connection details stay under **More actions → Agent setup instructions**.
-Click Waiting or On to turn access off, or Off to enable it.
+is ready, not that an agent is actively using it. Clicking the header status opens
+**More actions → Agent access and setup** without changing access. Use the
+on/off control in that section; setup instructions stay there too.
 Turning access off revokes the grant, stops retries and pauses an agent Scenario;
 closing the panel ends the grant. A new panel uses defaults. Connection retries have a 15-second maximum
 backoff. Reconnection never repeats an Injection or resumes a Scenario. Unknown

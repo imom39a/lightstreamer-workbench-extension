@@ -16,15 +16,16 @@ and loopback connection. The extension no longer requests `nativeMessaging`.
 Each mounted Panel Session owns its grant, connection, query cursors, prepared
 document and bounded operation ledger. Following the maintainer's explicit
 friction-free access decision, opening a panel automatically enables inspection
-and Local Injection. A compact control beside View in the header revokes access
-and cancels retries. Following the 2026-09-28 readiness correction, it shows
+and Local Injection. A compact status shortcut beside View in the header opens
+Agent access and setup under More actions. Following the 2026-09-28 correction, it shows
 Waiting while enabled but not ready, On only after
 the companion handshake grants access, and Off when disabled. On indicates a
 usable companion connection, not connected-agent presence or activity. The
-toggle's pressed state continues to express enabled intent; both Waiting and
-On can be turned off without changing the automatic reconnect contract.
+header is navigation, not a toggle: it never changes the grant. The on/off
+control lives in More; turning access off revokes the grant and cancels retries.
+Opening the shortcut focuses that control, and Back restores the originating shortcut.
 The maintainer also removed the Advanced connection settings block on 2026-09-28.
-More actions contains setup instructions only. The current panel uses port 24817,
+More actions contains the on/off control and setup instructions. The current panel uses port 24817,
 authentication off, and inspection plus Local Injection together; authentication
 and read-only enforcement remain internal for future controls. Access belongs to
 the current Panel Session; a new panel uses the defaults. The broker routes exact sessions

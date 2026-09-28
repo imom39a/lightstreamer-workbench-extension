@@ -30,7 +30,7 @@ import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { UNAVAILABLE_ANALYTICS, type AnalyticsClient } from "../../analytics/client";
 import { UsageAnalytics } from "./usage-analytics";
-import { AgentAccess, AgentAccessToggle } from "./agent-access";
+import { AgentAccess, AgentAccessStatus } from "./agent-access";
 import type { AgentConnection } from "../agent-connection";
 import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
@@ -731,6 +731,10 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   const facetReturnKey = useRef<EvidenceFacetKey | null>(null);
   const facetSearchInput = useRef<HTMLInputElement | null>(null);
   const moreActionsTrigger = useRef<HTMLButtonElement | null>(null);
+  const actionsReturnTrigger = useRef<HTMLButtonElement | null>(null);
+  const agentAccessDetails = useRef<HTMLDetailsElement | null>(null);
+  const agentAccessControl = useRef<HTMLButtonElement | null>(null);
+  const actionsFocusAgent = useRef(false);
   const notificationsTrigger = useRef<HTMLButtonElement | null>(null);
   const evidenceModeTrigger = useRef<HTMLButtonElement | null>(null);
   const diagnosticDismissButtons = useRef(new Map<string, HTMLButtonElement>());
@@ -1565,7 +1569,17 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     }
   }, [evidence.filterMutation, filterSubmitVersion, snapshot.version]);
 
-  const openActions = () => {
+  const focusActions = () => {
+    if (actionsFocusAgent.current && agentAccessDetails.current) {
+      agentAccessDetails.current.open = true;
+      agentAccessControl.current?.focus();
+    } else contextLens.current?.focus();
+  };
+
+  const openActions = (trigger: HTMLButtonElement, agent = false) => {
+    actionsReturnTrigger.current = trigger;
+    actionsFocusAgent.current = agent;
+    if (contextMode === "actions") { focusActions(); return; }
     actionsEvidenceScrollTop.current = evidenceLedger.current?.scrollTop ?? 0;
     actionsContextScrollTop.current = contextBody.current?.scrollTop ?? 0;
     pendingActionsFocus.current = true;
@@ -1769,7 +1783,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
 
   useLayoutEffect(() => {
     if (!pendingActionsFocus.current || contextMode !== "actions") return;
-    contextLens.current?.focus();
+    focusActions();
     pendingActionsFocus.current = false;
   }, [contextMode, contextCollapsed, snapshot.contextId]);
 
@@ -1789,7 +1803,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     window.requestAnimationFrame(() => {
       if (evidenceLedger.current) evidenceLedger.current.scrollTop = actionsEvidenceScrollTop.current;
       if (contextBody.current) contextBody.current.scrollTop = actionsContextScrollTop.current;
-      moreActionsTrigger.current?.focus();
+      (actionsReturnTrigger.current ?? moreActionsTrigger.current)?.focus();
     });
   }, [contextMode, snapshot.contextId]);
 
@@ -1951,13 +1965,13 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
         <strong className="workbench-react__operating-capture">Capture {captureOperation}</strong>
         <span className="workbench-react__operating-coverage" data-condition={coverage.toLowerCase()}>Coverage {coverage}</span>
         <span className="workbench-react__operating-view">View {evidenceMode}{newerCount ? ` · ${newerCount.toLocaleString()} newer` : ""}</span>
-        <AgentAccessToggle connection={agentConnection} />
+        <AgentAccessStatus connection={agentConnection} disabled={!workspaceAvailable} expanded={workspaceAvailable && contextMode === "actions"} onOpen={trigger => openActions(trigger, true)} />
         <div className="workbench-react__operating-actions">
           <button type="button" aria-label="Back investigation" disabled={!snapshot.evidence.restoration.canBack} onClick={() => dispatch(runtime, { type: "back-investigation" })}>Back</button>
           <button type="button" aria-label="Forward investigation" disabled={!snapshot.evidence.restoration.canForward} onClick={() => dispatch(runtime, { type: "forward-investigation" })}>Forward</button>
           <button className="workbench-react__evidence-operation" type="button" ref={findTrigger} disabled={notificationsOpen} aria-expanded={findOpen && !notificationsOpen} onClick={(event) => findOpen ? closeFind() : openFind(event.currentTarget)}>Find</button>
           <button className="workbench-react__evidence-operation" type="button" ref={filterTrigger} disabled={notificationsOpen} aria-expanded={filterOpen && !notificationsOpen} aria-controls="workbench-filter" onClick={(event) => filterOpen ? closeFilter() : openFilter(event.currentTarget)}>Filter</button>
-          <button ref={moreActionsTrigger} type="button" disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-context" : undefined} aria-expanded={workspaceAvailable && contextMode === "actions"} onClick={openActions}>More actions</button>
+          <button ref={moreActionsTrigger} type="button" disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-context" : undefined} aria-expanded={workspaceAvailable && contextMode === "actions"} onClick={event => openActions(event.currentTarget)}>More actions</button>
         </div>
       </header>
       {findOpen && !notificationsOpen ? <div className="workbench-react__find" role="search" aria-label="Find in ordered Evidence">
@@ -2142,7 +2156,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? `Selected Evidence · ${selected.source}` : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div>{contextMode !== "actions" ? <button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button> : null}{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
           <div className="workbench-react__context-body" ref={contextBody}>
             {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
-              <AgentAccess connection={agentConnection} />
+              <AgentAccess connection={agentConnection} detailsRef={agentAccessDetails} controlRef={agentAccessControl} />
               <p>The current Panel Session owns one temporary Event History using <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong>. Closing attempts controlled erasure; abnormal termination relies on guarded cleanup, and residual data may remain until the extension next runs.</p>
               <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}). Client Message bodies and outcome text are always redacted from this bulk copy.</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading retained Evidence: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy retained scoped Evidence</button>}</section>
               <section className="workbench-react__operations-danger"><h3>Clear retained Evidence</h3><p>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>{snapshot.retention.clearState === "confirming" ? <div className="workbench-react__confirmation"><strong>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button className="workbench-react__confirmation-primary" type="button" onClick={() => dispatch(runtime, { type: "confirm-clear-history" })}>Clear retained events</button><button type="button" onClick={() => dispatch(runtime, { type: "cancel-clear-history" })}>Keep Evidence</button></div></div> : <button type="button" onClick={() => dispatch(runtime, { type: "request-clear-history" })}>Clear retained Evidence…</button>}</section>

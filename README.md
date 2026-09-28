@@ -85,11 +85,12 @@ is prepared for publication; npm launch commands require its first publication.
 
 Agent access enables inspection and Local Injection automatically in each open
 Panel Session. The header shows **Waiting** until the companion is ready, **On**
-when connected, and **Off** when disabled. Click Waiting or On to revoke access
-and stop retries. Authentication is off by default: any local process can use a connected
+when connected, and **Off** when disabled. Clicking the status opens
+**More actions → Agent access and setup**, where you can turn access on or off.
+Turning it off revokes access and stops retries. Authentication is off: any local process can use a connected
 panel's grant or impersonate the companion. Requested Evidence can reach your
 agent's model provider. Setup guidance remains
-under **More actions → Agent setup instructions**, without authentication or
+under **More actions → Agent access and setup**, without authentication or
 permission controls. The panel uses port 24817 with inspection and Local Injection
 together; underlying fine-grained controls are retained for later. Server Injection is not
 available to agents. Node 22.12+ and the Agent-enabled extension are required.

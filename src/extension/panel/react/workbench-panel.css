@@ -730,7 +730,7 @@
   .workbench-react[data-geometry="normal"] .workbench-react__operating-actions { gap: 2px; }
   .workbench-react[data-geometry="normal"] .workbench-react__operating-actions > button { padding-inline: 2px; }
 }
-@media (max-width: 800px) {
+@media (max-width: 799px) {
   .workbench-react[data-geometry="normal"] .workbench-react__operating,
   .workbench-react[data-geometry="shallow"] .workbench-react__operating {
     grid-template-areas:

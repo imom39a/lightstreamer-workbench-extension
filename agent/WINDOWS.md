@@ -43,7 +43,9 @@ have different loopback environments and do not automatically reach that Chrome.
 Open the intended tab's Workbench panel. **Agent access Waiting** means access
 is enabled but the companion connection is not ready. It changes to **On**
 automatically when connected; no Connect button is needed. **Off** means access
-is disabled; click it to enable access. Ask the
+is disabled. Click the header status to open **More actions → Agent access and setup**;
+use the on/off control there to enable or disable access. The header itself
+does not toggle access. Ask the
 agent for `list_panel_sessions`; then identify the exact tab with `get_status`.
 An empty list means no connected panel. Start/reconnect Workbench's MCP server
 in the agent app, which launches the companion for you. If it is already running, check

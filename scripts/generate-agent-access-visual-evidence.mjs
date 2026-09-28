@@ -27,7 +27,8 @@ scenes.push(
   { id: "wide-dark-high-volume", width: 1440, height: 900, theme: "dark", agent: "error", scenario: "frozen-high-volume" },
   { id: "normal-dark-forced", width: 900, height: 700, theme: "dark", agent: "error", forced: true },
   { id: "dock-761-normal", width: 761, height: 700, theme: "dark", agent: "error" },
-  { id: "dock-761-shallow", width: 761, height: 320, theme: "light", agent: "error" }
+  { id: "dock-761-shallow", width: 761, height: 320, theme: "light", agent: "error" },
+  { id: "dock-800-context", width: 800, height: 556, theme: "dark", agent: "error", scenario: "integrated-activity-main" }
 );
 try {
   execFileSync("tar", ["-x", "-C", reference], { input: execFileSync("git", ["archive", base], { cwd: root, maxBuffer: 128 * 1024 * 1024 }) });
@@ -56,12 +57,21 @@ try {
       await page.goto(`http://127.0.0.1:${port}/?scenario=${scene.scenario ?? "live-selected"}&theme=${scene.theme}&agent=${scene.agent}`);
       await page.locator('html[data-react-scene-ready="true"]').waitFor();
       const toggle = page.locator(".workbench-react__agent-access");
-      if (scene.off) await toggle.click();
+      if (scene.off) {
+        await toggle.click();
+        if (variant === "current") {
+          await page.getByRole("button", { name: "Turn agent access off", exact: true }).click();
+          await page.getByRole("button", { name: "Back to prior investigation" }).click();
+        }
+      }
       if (scene.forced) await page.emulateMedia({ forcedColors: "active" });
       if (scene.view === "instructions") {
-        await page.getByRole("button", { name: "More actions", exact: true }).click();
-        const summary = page.locator("summary").filter({ hasText: "Agent setup instructions" });
-        await summary.focus(); await page.keyboard.press("Enter");
+        if (variant === "current") await toggle.click();
+        else {
+          await page.getByRole("button", { name: "More actions", exact: true }).click();
+          const summary = page.locator("summary").filter({ hasText: "Agent setup instructions" });
+          await summary.focus(); await page.keyboard.press("Enter");
+        }
       } else await toggle.focus();
       const png = await page.screenshot({ animations: "disabled", caret: "hide" });
       images.push(`data:image/png;base64,${png.toString("base64")}`);

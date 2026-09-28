@@ -66,7 +66,7 @@ async function main() {
       ...(auth === "required" ? { env: { [PAIRING_ENV]: `wb1:${port}:${randomNonce()}` } } : {})
     };
     process.stdout.write(JSON.stringify({ port, auth, mcpServers: { "lightstreamer-workbench": config }, next: auth === "off" && port === DEFAULT_COMPANION_PORT
-      ? "Add this MCP configuration to your agent app. Starting its MCP server launches the companion automatically; no separate terminal or service is needed. Open Workbench: Agent access Waiting changes to On when ready. Connected agents can inspect and inject locally. Click Waiting or On to turn access off. No credentials, pairing or permission selection are needed. Any local process can use a connected panel grant. Setup writes no files or registry entries."
+      ? "Add this MCP configuration to your agent app. Starting its MCP server launches the companion automatically; no separate terminal or service is needed. Open Workbench: Agent access Waiting changes to On when ready. Connected agents can inspect and inject locally. Click the header status to open Agent access and setup under More actions; use its on/off control to change access. No credentials, pairing or permission selection are needed. Any local process can use a connected panel grant. Setup writes no files or registry entries."
       : "This retained protocol configuration is not supported by the current panel UI. Run setup without auth or port overrides and remove any old LSEW_AGENT_CONNECTION environment entry. The panel uses port 24817 with authentication off and inspection plus Local Injection." }, null, 2) + "\n");
     return;
   }

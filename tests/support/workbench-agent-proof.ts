@@ -51,7 +51,7 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     await call("finish_agent_document", { panelSessionId, token: scenario.token });
     const after = await call("query_evidence", { panelSessionId, limit: 100, includePayload: true });
     assert.ok(after.evidence.some((row: any) => row.payload?.synthetic), "Agent can read marked Local Evidence after commit.");
-    await click(panel, "button", "Agent access On");
+    await setAgentAccess(panel, false);
     await settle(() => call("list_panel_sessions"), result => result.length === 0);
     console.log(`Agent browser proof passed (npm companion, no installation): real MCP stdio → Chrome panel → official Lightstreamer listener → verified app DOM, duplicate suppression, ordered Scenario and revocation.`);
   } finally {
@@ -90,19 +90,19 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     assert.equal(restored[0].panelSessionId, panelSessionId, "A companion restart reconnects the same panel without UI interaction.");
     await headerState(panel, "On");
     assert.equal((await call("get_status", { panelSessionId })).permission, "local");
-    await click(panel, "button", "Agent access On");
+    await setAgentAccess(panel, false);
     await headerState(panel, "Off");
     await settle(() => call("list_panel_sessions"), result => result.length === 0);
     await new Promise(resolve => setTimeout(resolve, 1200));
     assert.deepEqual(await call("list_panel_sessions"), [], "Explicit Off stays off beyond the reconnect interval.");
-    await click(panel, "button", "Agent access Off");
+    await setAgentAccess(panel, true);
     await settle(() => call("list_panel_sessions"), result => result.length === 1);
     await headerState(panel, "On");
     assert.equal((await call("get_status", { panelSessionId })).permission, "local");
-    await click(panel, "button", "More actions"); await click(panel, "summary", "Agent setup instructions");
+    await click(panel, "button", "More actions"); await click(panel, "summary", "Agent access and setup");
     assert.equal(await evaluateByValue(panel, "Boolean(document.querySelector('[aria-label=\"Companion port\"], [aria-label=\"Agent permissions\"]'))"), false);
     await click(panel, "button", "Back to prior investigation");
-    await click(panel, "button", "Agent access On");
+    await setAgentAccess(panel, false);
     await headerState(panel, "Off");
     console.log("Portable Chrome proof passed: Waiting → On → Waiting → On → Off; exact page, retained Evidence, full local grant, no settings, restart and revocation.");
   } finally { await client.close(); broker.close(); }
@@ -110,6 +110,14 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
 
 async function headerState(panel: CdpClient, state: "Waiting" | "On" | "Off") {
   await waitForCondition(panel, `document.querySelector('.workbench-react__agent-access')?.textContent.trim() === ${JSON.stringify("Agent access " + state)}`, `Agent access ${state}`, 20000);
+}
+
+async function setAgentAccess(panel: CdpClient, enabled: boolean) {
+  const before = await evaluateByValue<string>(panel, "document.querySelector('.workbench-react__agent-access').textContent.trim()");
+  await click(panel, "button", before);
+  assert.equal(await evaluateByValue(panel, "document.querySelector('.workbench-react__agent-access').textContent.trim()"), before, "The header opens More without changing access.");
+  await click(panel, "button", `Turn agent access ${enabled ? "on" : "off"}`);
+  await click(panel, "button", "Back to prior investigation");
 }
 
 async function settle(read: () => Promise<any>, done: (value: any) => boolean) {

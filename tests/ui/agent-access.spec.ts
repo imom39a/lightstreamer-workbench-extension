@@ -1,9 +1,20 @@
 import { expect, test, type Page } from "@playwright/test";
 import axe from "axe-core";
 
+test("Header agent status opens More without changing access and restores its origin", async ({ page }) => {
+  await page.goto("/?scenario=live-selected&agent=ready");
+  const status = page.getByRole("button", { name: "Agent access On", exact: true });
+  await status.focus(); await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Turn agent access off", exact: true })).toBeFocused();
+  await expect(status).toBeVisible();
+  await expect(status).not.toHaveAttribute("aria-pressed");
+  await page.getByRole("button", { name: "Back to prior investigation" }).click();
+  await expect(status).toBeFocused();
+});
+
 async function openInstructions(page: Page) {
   await page.getByRole("button", { name: "More actions", exact: true }).click();
-  const summary = page.locator("summary").filter({ hasText: "Agent setup instructions" });
+  const summary = page.locator("summary").filter({ hasText: "Agent access and setup" });
   await summary.focus(); await page.keyboard.press("Enter");
   return summary.locator("..");
 }
@@ -14,7 +25,7 @@ async function accessible(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
-for (const width of [700, 760, 761, 800, 801, 846]) {
+for (const width of [700, 760, 761, 799, 800, 801, 846]) {
  for (const height of [700, 320]) {
  for (const state of ["ready", "error"] as const) {
   test(`Header controls remain reachable at dock transition width ${width} height ${height} ${state}`, async ({ page }, info) => {
@@ -30,7 +41,10 @@ for (const width of [700, 760, 761, 800, 801, 846]) {
     }))).toBe(true);
     const toggle = page.getByRole("button", { name: `Agent access ${label}`, exact: true });
     await toggle.focus(); await page.keyboard.press("Enter");
-    await expect(page.getByRole("button", { name: "Agent access Off", exact: true })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Turn agent access off", exact: true })).toBeFocused();
+    await expect(toggle).toBeVisible();
+    await page.getByRole("button", { name: "Back to prior investigation" }).click();
+    await expect(toggle).toBeFocused();
   });
  }
  }
@@ -44,7 +58,7 @@ for (const [name, width, height] of [["compact", 563, 700], ["normal", 900, 700]
       await page.goto(`/?scenario=live-selected&theme=${theme}&agent=ready`);
       await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
       const toggle = page.getByRole("button", { name: "Agent access On", exact: true });
-      await expect(toggle).toHaveAttribute("aria-pressed", "true");
+      await expect(toggle).not.toHaveAttribute("aria-pressed");
       await expect(page.getByRole("button", { name: "Connect agent", exact: true })).toHaveCount(0);
       const header = page.locator(".workbench-react__operating");
       expect(await header.evaluate(element => {
@@ -57,10 +71,15 @@ for (const [name, width, height] of [["compact", 563, 700], ["normal", 900, 700]
       expect(await toggle.evaluate(element => { const b = element.getBoundingClientRect(); return document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2) === element; })).toBe(true);
       await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-header.png`) });
       await page.keyboard.press("Enter");
+      const offControl = page.getByRole("button", { name: "Turn agent access off", exact: true });
+      await expect(offControl).toBeFocused();
+      await expect(toggle).toBeVisible();
+      await page.keyboard.press("Space");
       const off = page.getByRole("button", { name: "Agent access Off", exact: true });
-      await expect(off).toHaveAttribute("aria-pressed", "false"); await expect(off).toBeFocused();
-      await page.keyboard.press("Space"); await expect(toggle).toBeFocused();
-      const instructions = await openInstructions(page);
+      await expect(off).toBeVisible();
+      await expect(page.getByRole("button", { name: "Turn agent access on", exact: true })).toBeFocused();
+      await page.keyboard.press("Enter"); await expect(offControl).toBeFocused();
+      const instructions = page.locator("#workbench-agent-access");
       await expect(instructions.getByRole("status")).toContainText("inspection and Local Injection allowed");
       await expect(instructions.getByRole("combobox")).toHaveCount(0);
       await expect(instructions.getByText("Advanced connection settings", { exact: true })).toHaveCount(0);
@@ -73,9 +92,11 @@ for (const [name, width, height] of [["compact", 563, 700], ["normal", 900, 700]
       await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-instructions.png`) });
       await accessible(page);
       await page.getByRole("button", { name: "Back to prior investigation" }).click();
+      await expect(toggle).toBeFocused();
       await page.emulateMedia({ forcedColors: "active" });
       await toggle.focus(); await page.keyboard.press("Enter");
-      await expect(off).toBeFocused();
+      await expect(offControl).toBeFocused();
+      await expect(toggle).toBeVisible();
       await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-forced.png`) });
       expect(errors).toEqual([]);
     });
@@ -89,22 +110,24 @@ test(`Missing companion waits automatically: ${name} ${theme}`, async ({ page },
   await page.setViewportSize({ width, height }); await page.emulateMedia({ colorScheme: theme });
   await page.goto(`/?scenario=live-selected&theme=${theme}&agent=error`);
   const waiting = page.getByRole("button", { name: "Agent access Waiting", exact: true });
-  await expect(waiting).toHaveAttribute("aria-pressed", "true");
+  await expect(waiting).not.toHaveAttribute("aria-pressed");
   await waiting.focus();
   await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-waiting-header.png`) });
   await accessible(page);
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("button", { name: "Agent access Off", exact: true })).toBeFocused();
-  await page.keyboard.press("Space"); await expect(waiting).toBeFocused();
   const access = await openInstructions(page);
   await expect(access.getByRole("status")).toContainText("Connection retries automatically");
   await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-waiting-instructions.png`) });
   await waiting.click();
+  await expect(page.getByRole("button", { name: "Turn agent access off", exact: true })).toBeFocused();
+  await expect(waiting).toBeVisible();
+  await page.keyboard.press("Space");
   await expect(access.getByRole("status")).toContainText("Agent access is off");
   await page.getByRole("button", { name: "Back to prior investigation" }).click();
   await page.emulateMedia({ forcedColors: "active" });
   await page.getByRole("button", { name: "Agent access Off", exact: true }).click();
-  await expect(waiting).toBeFocused();
+  await expect(page.getByRole("button", { name: "Turn agent access on", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(waiting).toBeVisible();
   await page.screenshot({ path: info.outputPath(`agent-${name}-${theme}-waiting-forced.png`) });
   await accessible(page);
 });

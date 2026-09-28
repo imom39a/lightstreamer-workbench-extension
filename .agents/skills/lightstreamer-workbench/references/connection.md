@@ -31,8 +31,9 @@ For Waiting, start/reconnect the configured MCP server in the agent app; if it
 is already running, check the extension ID, port and authentication mode. Startup order
 does not matter: auth-off connections retry with backoff capped at 15 seconds.
 If the user turned access Off, ask them to enable it; do not override that choice.
-Setup guidance is under **More actions → Agent setup
-instructions**. Do not open a separate profile and claim it is the original session.
+The header status opens **More actions → Agent access and setup** without
+changing access; the on/off control and setup guidance live there.
+Do not open a separate profile and claim it is the original session.
 
 ## Access boundary
 

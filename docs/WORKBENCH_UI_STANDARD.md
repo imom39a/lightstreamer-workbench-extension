@@ -240,11 +240,14 @@ inspection plus Local Injection as the default, and approved one compact
 2026-09-28 readiness correction supersedes the original enabled-only label:
 **Waiting** means enabled but not yet ready, **On** means the companion connection
 is ready with access granted, and **Off** means disabled. On does not assert
-agent presence or activity. The pressed state represents enabled intent, so both
-Waiting and On can be turned off. Authentication and fine-grained permissions are not exposed in the current UI;
+agent presence or activity. The maintainer's later 2026-09-28 correction makes
+the header a status shortcut, not an access toggle: activation opens and focuses
+**More actions → Agent access and setup** without changing access. Back restores
+focus to the originating shortcut. Authentication and fine-grained permissions are not exposed in the current UI;
 connected agents receive inspection plus Local Injection together.
-Off revokes access and cancels automatic retries. Only setup instructions belong under More actions, not an Advanced connection
-settings form. The current panel uses port 24817 and authentication off. Retained
+Off revokes access and cancels automatic retries. The on/off control and setup
+instructions belong under More actions, not an Advanced connection settings form.
+The current panel uses port 24817 and authentication off. Retained
 underlying auth/permission capabilities are reserved for later controls. Reconnection never repeats an Injection or resumes a Scenario;
 all exact-target, protected-document and delivery rules above remain unchanged.
 

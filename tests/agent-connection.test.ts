@@ -6,7 +6,7 @@ import { connectPortable, type CompanionChannel } from "../src/agent/portable-ch
 import { beginPanelPairing } from "../src/agent/panel-pairing";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { AgentAccessToggle } from "../src/extension/panel/react/agent-access";
+import { AgentAccess, AgentAccessStatus } from "../src/extension/panel/react/agent-access";
 
 vi.mock("../src/agent/panel-pairing", () => ({ beginPanelPairing: vi.fn() }));
 vi.mock("../src/agent/portable-channel", () => ({ connectPortable: vi.fn() }));
@@ -30,10 +30,17 @@ describe("per-panel agent grants", () => {
     const mount = document.body.appendChild(document.createElement("div"));
     const root = createRoot(mount);
     try {
-      await act(async () => root.render(createElement(AgentAccessToggle, { connection: f.connection })));
+      const onOpen = vi.fn();
+      await act(async () => root.render(createElement("div", null,
+        createElement(AgentAccessStatus, { connection: f.connection, onOpen }),
+        createElement(AgentAccess, { connection: f.connection }))));
       const button = mount.querySelector("button")!;
+      const control = mount.querySelector("details button") as HTMLButtonElement;
       expect(button.textContent).toBe("Agent access Waiting");
-      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(button.hasAttribute("aria-pressed")).toBe(false);
+      await act(async () => button.click());
+      expect(onOpen).toHaveBeenCalledWith(button);
+      expect(f.connection.getSnapshot().enabled).toBe(true);
       vi.mocked(connectPortable).mockRejectedValue(new Error("not started"));
       await act(async () => { f.connection.connect(); await vi.advanceTimersByTimeAsync(0); });
       expect(f.connection.getSnapshot().status).toBe("waiting");
@@ -52,14 +59,14 @@ describe("per-panel agent grants", () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); read({ type: "ready" }); });
       expect(button.textContent).toBe("Agent access On");
       await act(async () => closed());
-      await act(async () => button.click());
+      await act(async () => control.click());
       expect(button.textContent).toBe("Agent access Off");
-      expect(button.getAttribute("aria-pressed")).toBe("false");
+      expect(control.textContent).toBe("Turn agent access on");
       const attempts = vi.mocked(connectPortable).mock.calls.length;
       await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
       expect(connectPortable).toHaveBeenCalledTimes(attempts);
       expect(button.textContent).toBe("Agent access Off");
-      await act(async () => button.click());
+      await act(async () => control.click());
       expect(button.textContent).toBe("Agent access Waiting");
       await act(async () => read({ type: "ready" }));
       expect(button.textContent).toBe("Agent access On");
