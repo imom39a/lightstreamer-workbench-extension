@@ -42,8 +42,16 @@ export type UnsupportedCriterion = Readonly<{ id: string; label: string; reason:
 export type EvidenceIdentity = Readonly<{ intervalId: string; pageId: string; ownerId: string; sequence: number; eventId: string }>;
 export const MAX_EVIDENCE_PAGE_SIZE = 100;
 export type EvidenceReadPoint = Readonly<{ interval: Readonly<{ id: string; ordinal: number }>; committedEvidenceBoundary: EvidenceIdentity | null; retainedRange: Readonly<{ first: EvidenceIdentity; last: EvidenceIdentity }> | null }>;
-export type EvidencePageRequest = Readonly<{ order: "NEWEST_FIRST" | "OLDEST_FIRST"; size: number; cursor?: string }>;
-export type FacetDiscoveryRequest = Readonly<{ facet: EvidenceFilterFacet; search?: string; size: number; cursor?: string }>;
+export type EvidencePageRequest = Readonly<{
+  order: "NEWEST_FIRST" | "OLDEST_FIRST"; size: number; cursor?: string;
+  /** Internal byte-budget paging may resize a page while retaining the same keyset anchor. */
+  adaptiveSize?: boolean;
+}>;
+export type FacetDiscoveryRequest = Readonly<{
+  facet: EvidenceFilterFacet; search?: string; size: number; cursor?: string;
+  /** Exact matching values for agent summaries; default UI discovery excludes this facet and pins active values. */
+  scopeToFilter?: boolean;
+}>;
 export type FacetCount = Readonly<{ value: TypedFacetValue; count: number; pinned: boolean }>;
 export type FacetDiscoveryResult = Readonly<{ state: "AVAILABLE"; facet: EvidenceFilterFacet; values: readonly FacetCount[]; distinctTotal: number; nextCursor: string | null; baseEvidenceCount: number }> | Readonly<{ state: "UNAVAILABLE"; facet: EvidenceFilterFacet; reason: "ZERO_BASE" | "NO_CONCRETE_VALUES" | "DISCOVERY_FAILED" | "UNSUPPORTED_AT_READ_POINT"; values: readonly []; distinctTotal: null; nextCursor: null; baseEvidenceCount: number | null }>;
 export type RevealBlocker = Readonly<{ id: string; criterion: FilterCriterion | UnsupportedCriterion | "free-text" | "around-evidence" }>;

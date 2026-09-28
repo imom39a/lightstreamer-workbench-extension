@@ -7,6 +7,41 @@ matching extension and companion build.
 
 ## Discover, inspect and validate
 
+Read-contract version 2 shares Scope, typed `where` filters and stable `at` read
+points across records and summaries. `where` supports `kind`, `mode`, `key`,
+`operation`, `phase` and `provenance`: arrays are OR within one facet, AND across
+facets. For other canonical facets use advanced `filter.criteria` instead of
+`where`. Exact Item Update field names go in `fields`; this is not a JSON-path
+language or arbitrary application-field predicate engine.
+
+For “which keys occurred in this Subscription?”, a bounded workflow is:
+
+1. Resolve its exact `scopeId` with `search_scope`, narrowing `kind` to
+   `subscription` and `parentScopeId` to its known direct parent when needed.
+2. Call `summarize_evidence` with that Scope, `where:{kind:["ITEM-UPDATE"]}` and
+   `facet:"key"`. No facet means counts only. Inspect `coverage`, `evaluation`,
+   `distinctTotal` and `nextCursor`; complete key enumeration may need additional
+   **summary** pages, not event pages. Counts refer to retained Evidence records,
+   not unique Logical Updates or currently active rows. The same key can occur
+   under more than one item; resolve an item Scope for item-specific questions.
+3. Request examples with `query_evidence`, the same Scope/read point,
+   `where:{key:["<observed key>"]}`, `fields:["<declared field>"]` and a small
+   `limit`. Replace placeholders with discovered values.
+4. Use an example's exact `identity` in `get_evidence` only when more selected
+   fields or its full permitted envelope are needed. The same identity is a
+   valid source for candidate validation and preparation.
+
+All default compact results have an 8192-byte serialized MCP result budget,
+including compatibility text and structured data. `maxBytes` explicitly chooses
+4096–65536 bytes. A page can contain fewer records than its `limit` to fit.
+Read any omissions rather than treating omitted values as null or absent.
+`fields` and `includePayload:true` are alternative requests, not combinable.
+`QUERY_OPTIONS_CHANGED` means start a new query without the cursor; a cursor
+cannot be narrowed or have its payload policy changed. Never raise budgets or
+enumerate all events merely to compute counts available through a summary.
+
+For field-shape discovery and reproduction:
+
 1. Use `list_scope` / `get_scope` to read the exact Workbench `scopeId`,
    Subscription's declared fields and item identities. `describe_stream` can
    profile a bounded matching Evidence sample:
@@ -21,19 +56,20 @@ matching extension and companion build.
    A sample never proves that an unshown field,
    operation or event does not exist.
 2. Use `query_evidence` with the relevant typed `filter`, `at` read point and
-   `order` to inspect the exact representative records. Include payloads only
-   when field values are needed. This tranche supports free text and canonical
+   `order` to inspect the exact representative records. Select `fields` when
+   field values are needed. This tranche supports free text and canonical
    Evidence-facet filters, not predicates over Item Update payload field values.
-   To discover available canonical values, call `query_evidence` with the exact
-   `panelSessionId`, optional `scopeId`, `limit: 1` and
-   `discover: [{facet: "kind", limit: 10}, {facet: "mode", limit: 10}]`.
-   Each available `discoveries.<facet>.values[].value` supplies `facet`, `type`,
+   To discover available canonical values, call `summarize_evidence` with the exact
+   `panelSessionId`, exact `scopeId` (or explicit `within:"page"`), `facet:"kind"`
+   or `facet:"mode"`, and a small `limit`.
+   Each available `values[].value` supplies `facet`, `type`,
    `value` and `label`. Copy those four fields into a criterion and add
    `polarity: "include"` or `"exclude"`; do not copy its internal `identity`.
-   Facet discovery has its own `nextCursor`: continue it inside the same
-   `discover` entry with `cursor`, pinning `at` to the returned read point and
-   preserving the original scope/filter. Evidence-page continuation instead
-   uses only `{panelSessionId, cursor: result.nextCursor}`.
+   Summary and Evidence continuation both use only
+   `{panelSessionId, cursor: result.nextCursor}`. Start fresh with the same `at`
+   to change the facet or filters. Legacy `query_evidence.discover` follows the
+   panel's Filter-picker semantics (it excludes the facet being discovered);
+   do not use it for exact filtered counts.
    Choose source Evidence deliberately; a profile is a discovery aid, not an
    executable plan. Treat observed mode, provenance and phase as raw canonical
    facet values, not inferred application meaning.

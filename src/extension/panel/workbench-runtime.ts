@@ -1079,7 +1079,7 @@ class Runtime implements WorkbenchRuntime {
         at: input.at, scope: input.scope ?? (input.scopeId ? structuralEvidenceScope(target) : { kind: "PAGE" }),
         filter: input.filter ?? { ...createFilter(), text: input.text ?? "" },
         ...(input.find ? { find: input.find } : {}),
-        page: { order: input.order ?? "OLDEST_FIRST", size: input.size, ...(input.cursor ? { cursor: input.cursor } : {}) },
+        page: { order: input.order ?? "OLDEST_FIRST", size: input.size, ...(input.cursor ? { cursor: input.cursor } : {}), ...(input.adaptivePage ? { adaptiveSize: true } : {}) },
         discover: input.discover ?? [], includePayload: input.includePayload, signal: input.signal,
         ...(input.lookup ? { lookup: input.lookup } : {})
       });

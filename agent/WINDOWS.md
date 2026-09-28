@@ -32,11 +32,16 @@ window, manually running server, Windows service or Chrome native host is needed
 
 After publication, `npx.cmd` is the Windows fallback for the pinned npm setup.
 The companion includes `describe_stream`, `wait_for_evidence`,
-`validate_agent_candidate`, `search_evidence` and `search_scope`. These also
+`validate_agent_candidate`, `search_evidence`, `search_scope` and `summarize_evidence`. These also
 require a compatible extension; check `get_status.capabilities`. Build and load
 the extension from `main` if the installed Store version lacks them; see
 [Evidence-guided experiments](README.md#evidence-guided-experiments).
 The setup command and Windows connection path are the same for these tools.
+Efficient reads require `get_status.readContract.version === 2`. If it is absent,
+reload the matching extension build and restart the MCP server in the agent app
+to refresh its tool schemas. Do not paginate an old connection's full envelopes
+to work around missing filters. The [efficient read guide](READS.md) shows the
+Scope → summary → selected fields workflow; it is identical on Windows.
 
 If the client cannot launch npm shims, use a stable package installation and
 print an absolute Node configuration:

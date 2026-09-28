@@ -24,6 +24,7 @@ export type AgentQueryInput = Readonly<{
   scope?: StructuralEvidenceScope;
   text?: string;
   size: number;
+  adaptivePage?: boolean;
   at: "LATEST_COMMITTED" | EvidenceReadPoint;
   cursor?: string;
   includePayload: boolean;

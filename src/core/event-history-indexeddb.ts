@@ -2726,9 +2726,9 @@ async function queryIndexedDb(
       try {
         const discoveryFilter: EvidenceQueryRequest["filter"] = {
           ...request.filter,
-          criteria: Object.fromEntries(Object.entries(request.filter.criteria).filter(([facet]) => facet !== discovery.facet))
+          criteria: discovery.scopeToFilter ? request.filter.criteria : Object.fromEntries(Object.entries(request.filter.criteria).filter(([facet]) => facet !== discovery.facet))
       };
-      if (canUseFacetAggregate(request.filter, discovery.facet)) {
+      if (canUseFacetAggregate(request.filter, discovery.scopeToFilter ? "" : discovery.facet)) {
         const aggregateCatalog = await readFacetAggregates(aggregateStore, interval.id, discovery.facet, telemetry);
         const aggregateEntries = await validateAggregateFacetPostings(postingStore, evidenceStore, discovery.facet, interval.id, currentFirstSequence, currentLastSequence, firstSequence, lastSequence, aggregateCatalog, telemetry);
         const result = discoverFacetFromAggregates(aggregateEntries, expectedProjectionCount, request.filter, readPoint, discovery, {

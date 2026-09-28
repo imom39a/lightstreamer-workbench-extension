@@ -27,7 +27,7 @@ async function fixture() {
   let permission: AgentPermission = "local";
   const service = createAgentService(runtime.agent!, "panel-1", () => permission);
   const call = (name: string, args: Record<string, unknown> = {}) => service.call(name, { panelSessionId: "panel-1", ...args }) as Promise<any>;
-  const query = await call("query_evidence", { includePayload: true });
+  const query = await call("query_evidence", { within: "page", includePayload: true, maxBytes: 65536 });
   const evidence = query.evidence.find((row: any) => row.identity.eventId === "event-6").identity;
   const pageEpoch = (await call("get_status")).pageEpoch;
   return { history, runtime, execute, call, evidence, pageEpoch, service, grant(value: AgentPermission) { permission = value; } };
@@ -36,7 +36,7 @@ describe("Workbench agent domain API", () => {
   it("queries the retained history without moving the user's investigation and preserves a stable cursor", async () => {
     const { runtime, call } = await fixture();
     const before = runtime.getSnapshot();
-    const first = await call("query_evidence", { limit: 2 });
+    const first = await call("query_evidence", { within: "page", limit: 2 });
     expect(first.evidence).toHaveLength(2);
     const second = await call("query_evidence", { cursor: first.nextCursor });
     expect(second.readPoint).toEqual(first.readPoint);
@@ -134,7 +134,7 @@ describe("Workbench agent domain API", () => {
   it("redacts Client Message bodies and removes duplicate raw payload text", async () => {
     const { call, history } = await fixture();
     await history.offer({ ...event(7, "client-message-processed"), direction: "outbound", source: "application", clientMessage: { id: "message-1", pageEpoch: "page-1", message: "private-body", messageState: "available", sequence: "UNORDERED_MESSAGES", delayTimeout: null, enqueueWhileDisconnected: false, listenerProvided: true, outcome: "processed", outcomeAvailability: "available", response: "private-response" }, raw: { duplicate: "private-body" } }).settled;
-    const result = await call("query_evidence", { includePayload: true });
+    const result = await call("query_evidence", { within: "page", includePayload: true, maxBytes: 65536 });
     expect(JSON.stringify(result)).not.toContain("private-body");
     expect(JSON.stringify(result)).not.toContain("private-response");
     expect(JSON.stringify(result)).toContain("[REDACTED:client-message-body]");

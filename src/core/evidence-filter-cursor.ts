@@ -16,7 +16,9 @@ function cursorQueryBinding(request: EvidenceQueryRequest): string {
     filter: request.filter,
     find: request.find ?? null,
     lookup: request.lookup ?? null,
-    page: { order: request.page.order, size: request.page.size }
+    page: request.page.adaptiveSize
+      ? { order: request.page.order, adaptiveSize: true }
+      : { order: request.page.order, size: request.page.size }
   });
 }
 
@@ -25,7 +27,8 @@ export type EvidenceQueryCursor = Readonly<{ anchor: EvidenceIdentity }>;
 /**
  * Cursors are keyset anchors, never offsets.  The read point and complete
  * query binding remain part of the token so a cursor cannot be reused after a
- * clear, boundary change, filter change, or page-shape change.
+ * clear, boundary change, filter change, or page-shape change. Only explicitly
+ * adaptive queries may resize a page to satisfy an external byte budget.
  */
 export function encodeEvidenceQueryCursor(readPoint: EvidenceReadPoint, request: EvidenceQueryRequest, anchor: EvidenceIdentity): string {
   return encodeURIComponent(JSON.stringify({ v: 3, anchor, query: cursorQueryBinding(request), point: cursorBoundary(readPoint) }));

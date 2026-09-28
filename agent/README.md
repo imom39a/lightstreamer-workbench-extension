@@ -133,13 +133,15 @@ also implement them: check `get_status.capabilities` for the panel's actual
 tool list. The npm setup, single MCP companion process, and authentication
 settings are the same for these tools.
 
-The investigation sequence is: discover a bounded profile with `describe_stream`,
-query explicit Evidence examples with `query_evidence`, validate a source-grounded
+The investigation sequence is: find the exact Subscription/item with `search_scope`,
+count matching Evidence or distinct keys with `summarize_evidence`, request a few
+examples and selected `fields` with `query_evidence`, then validate a source-grounded
 Draft or ordered Scenario with `validate_agent_candidate`, prepare it through
 `prepare_local_injection` or `prepare_scenario`, then run and inspect its Evidence
 references. Read the packaged skill's `references/investigation.md` for the
 candidate and checkpoint shape, bounded wait outcomes, and application-side
-verification procedure.
+verification procedure. Use `describe_stream` only when a bounded field-shape
+profile is needed, not to count keys or enumerate the stream.
 
 When `wait_for_evidence` is available, anchor it to an `after` read point and the
 current page epoch. It accepts the same typed filters as `query_evidence`, waits
@@ -187,7 +189,7 @@ the human's selected Scope.
 `search_evidence` applies the same canonical Find matching as the panel across
 retained Evidence. Its `within` boundary is explicit:
 
-- `page` (default) searches the page without the human's Filter. An optional
+- `page` searches the page without the human's Filter. An optional
   `scopeId` narrows it to that exact structural Scope.
 - `current-investigation` captures the human's current Scope and Filter and
   applies Find text independently. Both boundaries remain fixed during paging,
@@ -201,6 +203,13 @@ For example, after identifying the intended Panel Session:
 ```json
 {"panelSessionId":"chosen-panel","text":"row-42","within":"current-investigation","limit":25}
 ```
+
+Fresh Evidence reads require `scopeId` or explicit `within`; accidental
+unscoped queries fail with `SCOPE_REQUIRED`. Read-contract version 2 defaults
+to compact metadata, not full envelopes. `where` narrows canonical facets,
+`fields` selects exact Item Update field names, and `summarize_evidence` returns
+counts/distinct values without events. See [efficient read contracts](READS.md)
+for examples, composition, budgets and migration.
 
 Both search tools return up to 100 matches per page and an opaque `nextCursor`
 when more matches exist. Continue with **only** `panelSessionId` and `cursor`.
@@ -219,7 +228,10 @@ Raw capture text and the internal search index are never returned. Existing
 `query_evidence` and `get_evidence` remain available for general retained reads
 and exact Evidence lookup. Check `get_status.capabilities` before using new
 tools with an older loaded extension; both the extension and companion need
-the search update.
+the search update. Efficient reads additionally require
+`get_status.readContract.version === 2`. Reload the matching extension and restart
+the MCP connection so the client refreshes its tool schemas; do not work around
+an old connection by paging through the whole history.
 
 ## Verification and publication
 

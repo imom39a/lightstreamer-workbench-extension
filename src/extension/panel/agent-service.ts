@@ -1,4 +1,4 @@
-import { AGENT_MAX_BYTES, AGENT_PROTOCOL_VERSION, AGENT_TOOLS, validateAgentCall, type AgentArguments, type AgentPermission } from "../../agent/protocol";
+import { AGENT_MAX_BYTES, AGENT_PROTOCOL_VERSION, AGENT_READ_CONTRACT, AGENT_TOOLS, validateAgentCall, type AgentArguments, type AgentPermission } from "../../agent/protocol";
 import { toBulkShareableEventEnvelope, type LightstreamerEventEnvelope } from "../../core/event-envelope";
 import type { EvidenceIdentity, EvidenceReadPoint, DeterministicEvidenceRecord } from "../../core/evidence-filter-contract";
 import { createScopeSearchIndex, searchScopes, type ScopeSearchIndex, type ScopeSearchNode } from "../../core/scope-search";
@@ -8,15 +8,18 @@ import type { AgentRuntime, AgentDraftInput, AgentQueryBoundary, AgentScopeSearc
 import { cloneCredentialSafe as omitCredentialFields } from "./topology-export";
 import { describeAgentStreams } from "./agent-stream-description";
 import { waitForAgentEvidence } from "./agent-evidence-wait";
+import { FACET_DESCRIPTORS } from "../../core/evidence-facets";
+import { agentToolResultBytes } from "../../agent/tool-result";
 import type { HistoryStatus } from "../../core/event-history-authoritative";
 
 const SEARCH_CURSOR_LIFETIME_MS = 5 * 60 * 1000;
-type EvidenceSearch = { at: EvidenceReadPoint; after: EvidenceIdentity; boundary: AgentQueryBoundary; within: "page" | "current-investigation"; text: string; size: number; includePayload: boolean; pageEpoch: unknown; expiresAt: number };
-type ScopeSearch = { index: ScopeSearchIndex; snapshot: Omit<AgentScopeSearchSnapshot, "nodes">; text: string; size: number; expiresAt: number };
+type EvidenceSearch = { at: EvidenceReadPoint; after: EvidenceIdentity; boundary: AgentQueryBoundary; within: "page" | "current-investigation"; scopeId?: string; text: string; size: number; includePayload: boolean; fields?: string[]; maxBytes: number; pageEpoch: unknown; expiresAt: number };
+type ScopeSearch = { index: ScopeSearchIndex; snapshot: Omit<AgentScopeSearchSnapshot, "nodes">; text: string; size: number; maxBytes: number; kind?: string; parentScopeId?: string; expiresAt: number };
 
 export function createAgentService(runtime: AgentRuntime, panelSessionId: string, permission: () => AgentPermission) {
-  const cursors = new Map<string, { at: EvidenceReadPoint; cursor: string; query?: Omit<AgentQueryInput, "cursor" | "at">; scopeId?: string; text?: string; size?: number; includePayload?: boolean }>();
+  const cursors = new Map<string, { at: EvidenceReadPoint; cursor: string; query?: Omit<AgentQueryInput, "cursor" | "at">; fields?: string[]; maxBytes?: number; pageEpoch?: unknown }>();
   const evidenceSearches = new Map<string, EvidenceSearch>();
+  const summaries = new Map<string, { query: AgentQueryInput; facet: string; cursor: string; limit: number; maxBytes: number; at: EvidenceReadPoint; pageEpoch: unknown }>();
   // Multiple page cursors share one bounded Topology snapshot rather than copying it.
   const scopeSearches = new Map<string, ScopeSearch>();
   const scopeCursors = new Map<string, { searchId: string; offset: number }>();
@@ -25,11 +28,11 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
   let prepared: { token: string; fingerprint: string; kind: "local" | "scenario"; consumed: boolean } | null = null;
   let busy = false;
   let grantGeneration = 0;
-  const saveNextCursor = (query: AgentQueryInput, readPoint: EvidenceReadPoint, cursor: string | null): string | null => {
+  const saveNextCursor = (query: AgentQueryInput, readPoint: EvidenceReadPoint, cursor: string | null, fields?: string[], maxBytes?: number): string | null => {
     if (!cursor) return null;
     const opaque = crypto.randomUUID();
     const { at: _at, cursor: _cursor, ...boundQuery } = query;
-    cursors.set(opaque, { query: boundQuery, at: readPoint, cursor });
+    cursors.set(opaque, { query: boundQuery, at: readPoint, cursor, fields, maxBytes, pageEpoch: (runtime.status() as { pageEpoch: unknown }).pageEpoch });
     if (cursors.size > 128) cursors.delete(cursors.keys().next().value!);
     return opaque;
   };
@@ -59,7 +62,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
     refreshOperations();
     if (requests.size >= 256 && ["execute_local_injection", "control_scenario"].includes(name) && !(typeof args.requestId === "string" && requests.has(args.requestId)) && !["pause", "stop"].includes(String(args.action))) throw new Error("This Panel Session reached its 256-operation agent limit. Existing outcomes remain readable; pause and stop remain available.");
     switch (name) {
-      case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, permission: permission(), ...runtime.status() as object, capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local") && (tool.name !== "validate_agent_candidate" || typeof runtime.validateCandidate === "function") && (tool.name !== "prepare_scenario" || typeof runtime.prepareScenarioPlan === "function")).map(tool => tool.name) };
+      case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, readContract: AGENT_READ_CONTRACT, panelSessionId, permission: permission(), ...runtime.status() as object, capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local") && (tool.name !== "validate_agent_candidate" || typeof runtime.validateCandidate === "function") && (tool.name !== "prepare_scenario" || typeof runtime.prepareScenarioPlan === "function")).map(tool => tool.name) };
       case "list_scope": return runtime.scopes(Number(args.offset ?? 0), Number(args.limit ?? 50));
       case "search_scope": {
         const saved = args.cursor ? scopeCursors.get(String(args.cursor)) : undefined;
@@ -76,9 +79,19 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
           }
         } else {
           const { nodes, ...snapshot } = runtime.scopeSearchSnapshot();
-          search = { index: createScopeSearchIndex(cloneCredentialSafe(nodes) as readonly ScopeSearchNode[]), snapshot, text: String(args.text).trim(), size: Number(args.limit ?? 25), expiresAt: Date.now() + SEARCH_CURSOR_LIFETIME_MS };
+          const index = createScopeSearchIndex(cloneCredentialSafe(nodes) as readonly ScopeSearchNode[]);
+          const entries = index.entries.filter(entry => (args.kind === undefined || entry.node.kind === args.kind) && (args.parentScopeId === undefined || entry.node.parentId === args.parentScopeId));
+          search = { index: { entries, totalNodes: entries.length }, snapshot, text: String(args.text).trim(), size: Number(args.limit ?? 25), maxBytes: Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes), kind: args.kind as string | undefined, parentScopeId: args.parentScopeId as string | undefined, expiresAt: Date.now() + SEARCH_CURSOR_LIFETIME_MS };
         }
-        const result = searchScopes(search!.index, search!.text, { offset: saved?.offset ?? 0, limit: search!.size });
+        let size = search!.size;
+        let result = searchScopes(search!.index, search!.text, { offset: saved?.offset ?? 0, limit: size });
+        const response = () => ({ snapshot: search!.snapshot, boundary: "ALL_STRUCTURAL_TOPOLOGY", match: "CASE_INSENSITIVE_SUBSTRING", text: search!.text, kind: search!.kind, parentScopeId: search!.parentScopeId, total: result.total, offset: result.offset, nextCursor: result.hasNext ? "00000000-0000-0000-0000-000000000000" : null, scopes: result.matches.map(({ node, path, ancestorIds, matchedFields }) => ({ scopeId: node.id, kind: node.kind, label: node.label, detail: node.detail, lifecycle: node.lifecycle, retired: node.retired, path, ancestorIds, matchedFields })) });
+        while (agentToolResultBytes(response()) > search!.maxBytes) {
+          if (size <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One Scope match exceeds maxBytes. Narrow search or start fresh without cursor to change options.");
+          size = Math.max(1, Math.floor(size / 2));
+          result = searchScopes(search!.index, search!.text, { offset: saved?.offset ?? 0, limit: size });
+        }
+        search!.size = size;
         let nextCursor: string | null = null;
         if (result.hasNext) {
           scopeSearches.set(searchId, search!);
@@ -87,7 +100,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
           scopeCursors.set(nextCursor, { searchId, offset: result.offset + result.matches.length });
           if (scopeCursors.size > 128) scopeCursors.delete(scopeCursors.keys().next().value!);
         }
-        return { snapshot: search!.snapshot, boundary: "ALL_STRUCTURAL_TOPOLOGY", match: "CASE_INSENSITIVE_SUBSTRING", text: search!.text, total: result.total, offset: result.offset, nextCursor, scopes: result.matches.map(({ node, path, ancestorIds, matchedFields }) => ({ scopeId: node.id, kind: node.kind, label: node.label, detail: node.detail, lifecycle: node.lifecycle, retired: node.retired, path, ancestorIds, matchedFields })) };
+        return { ...response(), nextCursor };
       }
       case "get_scope": return cloneCredentialSafe(runtime.scope(String(args.scopeId)));
       case "search_evidence": {
@@ -96,37 +109,94 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         const pageEpoch = (runtime.status() as { pageEpoch: unknown }).pageEpoch;
         if (saved && saved.pageEpoch !== pageEpoch) throw new Error("Search cursor expired after page change. Start a new search.");
         const within = saved?.within ?? (args.within === "current-investigation" ? "current-investigation" : "page");
+        if (!saved && within === "current-investigation" && args.where !== undefined) throw new Error("INVALID_ARGUMENT: current-investigation already owns its Filter; start fresh with an explicit scopeId or within:page to add where.");
         const boundary = saved?.boundary ?? structuredClone(runtime.queryBoundary(args.scopeId as string | undefined, within === "current-investigation"));
         const text = saved?.text ?? String(args.text).trim();
         const size = saved?.size ?? Number(args.limit ?? 25);
         const includePayload = saved?.includePayload ?? args.includePayload === true;
-        const result = await runtime.query({ ...boundary, at: saved?.at ?? "LATEST_COMMITTED", size: 1, includePayload, find: { text, scopeToFilter: true, reveal: false, size, ...(saved ? { after: saved.after } : {}) } });
-        if (result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: Evidence search cannot evaluate this investigation. Remove the unsupported Filter criterion or explicitly search within: page.");
-        if (!result.find) throw new Error("Evidence search is unavailable at this read point.");
-        const records = result.find.results ?? [];
-        let nextCursor: string | null = null;
-        if (result.find.hasMore && records.length > 0) {
-          nextCursor = crypto.randomUUID();
-          evidenceSearches.set(nextCursor, { boundary, within, text, size, includePayload, pageEpoch, at: result.readPoint, after: records.at(-1)!.identity, expiresAt: saved?.expiresAt ?? Date.now() + SEARCH_CURSOR_LIFETIME_MS });
-          if (evidenceSearches.size > 128) evidenceSearches.delete(evidenceSearches.keys().next().value!);
+        const fields = saved?.fields ?? args.fields as string[] | undefined;
+        const maxBytes = saved?.maxBytes ?? Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes);
+        const readFilter = saved ? boundary.filter : makeReadQuery(runtime, within === "current-investigation" ? { ...args, text: undefined } : args).filter ?? boundary.filter;
+        const searchBoundary = { ...boundary, filter: readFilter };
+        let pageSize = size;
+        let at: EvidenceReadPoint | "LATEST_COMMITTED" = saved?.at ?? (args.at as EvidenceReadPoint | "LATEST_COMMITTED" | undefined) ?? "LATEST_COMMITTED";
+        for (;;) {
+          const result = await runtime.query({ ...searchBoundary, at, size: 1, includePayload: includePayload || Boolean(fields?.length), find: { text, scopeToFilter: true, reveal: false, size: pageSize, ...(saved ? { after: saved.after } : {}) } });
+          if (result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: Evidence search cannot evaluate this investigation. Remove the unsupported Filter criterion or explicitly search within: page.");
+          if (!result.find) throw new Error("Evidence search is unavailable at this read point.");
+          const records = result.find.results ?? [];
+          const evidence = records.map(record => { const projected = projectReadRecord(record, includePayload, fields); return { ...projected, match: safeMatchExplanation(projected, text) }; });
+          const response = { search: { text, within, ...((saved?.scopeId ?? args.scopeId) ? { scopeId: saved?.scopeId ?? args.scopeId } : {}), match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" }, readPoint: result.readPoint, total: result.find.total, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor: result.find.hasMore ? "00000000-0000-0000-0000-000000000000" : null, evidence };
+          if (agentToolResultBytes(response) <= maxBytes) {
+            let nextCursor: string | null = null;
+            if (result.find.hasMore && records.length > 0) {
+              nextCursor = crypto.randomUUID();
+              evidenceSearches.set(nextCursor, { boundary: searchBoundary, within, scopeId: saved?.scopeId ?? args.scopeId as string | undefined, text, size: pageSize, includePayload, fields, maxBytes, pageEpoch, at: result.readPoint, after: records.at(-1)!.identity, expiresAt: saved?.expiresAt ?? Date.now() + SEARCH_CURSOR_LIFETIME_MS });
+              if (evidenceSearches.size > 128) evidenceSearches.delete(evidenceSearches.keys().next().value!);
+            }
+            return { ...response, nextCursor };
+          }
+          if (pageSize <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One search match exceeds maxBytes. Request fewer fields or narrow the search; start fresh without cursor to change options.");
+          pageSize = Math.max(1, Math.floor(pageSize / 2));
+          at = result.readPoint;
         }
-        return { search: { text, within, ...cloneCredentialSafe(boundary) as object, match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" }, readPoint: result.readPoint, total: result.find.total, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor, evidence: records.map(record => {
-          const evidence = safeRecord(record);
-          return { ...evidence, match: safeMatchExplanation(evidence, text) };
-        }) };
       }
       case "query_evidence": {
-        let query = makeQuery(args);
+        let query = makeReadQuery(runtime, args);
+        let fields = args.fields as string[] | undefined;
+        let maxBytes = Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes);
         if (args.cursor) {
           const suppliedQueryKeys = Object.keys(args).filter(key => !["panelSessionId", "cursor"].includes(key));
           if (suppliedQueryKeys.length) throw new Error("Continue a query with only its cursor; query arguments are bound to the first page.");
           const saved = cursors.get(String(args.cursor));
           if (!saved) throw new Error("Query cursor expired. Start a new query.");
-          query = saved.query ? { ...saved.query, at: saved.at, cursor: saved.cursor } : { scopeId: saved.scopeId, text: saved.text, size: saved.size ?? 25, includePayload: saved.includePayload ?? false, at: saved.at, cursor: saved.cursor };
+          if (saved.pageEpoch !== (runtime.status() as { pageEpoch: unknown }).pageEpoch) throw new Error("Query cursor expired after page change. Start fresh without cursor.");
+          query = { ...saved.query!, at: saved.at, cursor: saved.cursor };
+          fields = saved.fields;
+          maxBytes = saved.maxBytes ?? maxBytes;
         }
-        const result = await runtime.query({ ...query, signal });
-        const nextCursor = saveNextCursor(query, result.readPoint, result.page.nextCursor);
-        return { readPoint: result.readPoint, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, discoveries: cloneCredentialSafe(Object.fromEntries(result.discoveries)), nextCursor, evidence: boundedRecords(result.page.evidence), omissions: omissions(query.includePayload) };
+        let size = query.size;
+        for (;;) {
+          const result = await runtime.query({ ...query, size, includePayload: query.includePayload || Boolean(fields?.length), signal });
+          if (args.within === "current-investigation" && result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: The current investigation cannot be evaluated completely. Start fresh with within:page or an exact scopeId before making a count or absence claim.");
+          const response = { readPoint: result.readPoint, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, discoveries: cloneCredentialSafe(Object.fromEntries(result.discoveries)), nextCursor: result.page.nextCursor ? "00000000-0000-0000-0000-000000000000" : null, evidence: result.page.evidence.map(record => projectReadRecord(record, query.includePayload, fields)), omissions: omissions(query.includePayload) };
+          if (agentToolResultBytes(response) <= maxBytes) {
+            return { ...response, nextCursor: saveNextCursor({ ...query, size }, result.readPoint, result.page.nextCursor, fields, maxBytes) };
+          }
+          if (size <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One Evidence record or query metadata exceeds maxBytes. Narrow the query or request fewer fields; start fresh without cursor to change options.");
+          size = Math.max(1, Math.floor(size / 2));
+          query = { ...query, at: result.readPoint };
+        }
+      }
+      case "summarize_evidence": {
+        const saved = args.cursor ? summaries.get(String(args.cursor)) : undefined;
+        if (args.cursor && (!saved || saved.pageEpoch !== (runtime.status() as { pageEpoch: unknown }).pageEpoch)) throw new Error("Summary cursor expired. Start fresh without cursor.");
+        const query = saved?.query ?? makeReadQuery(runtime, args);
+        const facet = saved?.facet ?? args.facet as string | undefined;
+        const maxBytes = saved?.maxBytes ?? Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes);
+        const effective = saved ? { ...query, at: saved.at } : query;
+        let size = saved?.limit ?? Number(args.limit ?? 25);
+        let at = effective.at;
+        for (;;) {
+          const discovery = facet ? [{ facet, size, scopeToFilter: true, ...(saved ? { cursor: saved.cursor } : {}) }] : undefined;
+          const result = await runtime.query({ ...effective, at, size: 1, includePayload: false, ...(discovery ? { discover: discovery } : {}), signal });
+          if (args.within === "current-investigation" && result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: The current investigation cannot be evaluated completely. Start fresh with within:page or an exact scopeId before making a count or absence claim.");
+          const found = facet ? result.discoveries.get(facet) : undefined;
+          const response = { readPoint: result.readPoint, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage,
+            countMeaning: "Evidence records, not current COMMAND rows", values: found?.values.map(entry => ({ value: { facet: entry.value.facet, type: entry.value.type, value: entry.value.value, label: entry.value.label }, count: entry.count })) ?? [], distinctTotal: found?.distinctTotal ?? null,
+            ...(facet ? { facet, discoveryState: found?.state ?? "UNAVAILABLE", baseEvidenceCount: found?.baseEvidenceCount ?? null, ...(found?.state === "UNAVAILABLE" ? { reason: found.reason } : {}) } : {}), nextCursor: found?.nextCursor ? "00000000-0000-0000-0000-000000000000" : null as string | null };
+          if (agentToolResultBytes(response) <= maxBytes) {
+            if (found?.nextCursor) {
+              response.nextCursor = crypto.randomUUID();
+              summaries.set(response.nextCursor, { query: effective, facet: facet!, cursor: found.nextCursor, limit: size, maxBytes, at: result.readPoint, pageEpoch: (runtime.status() as { pageEpoch: unknown }).pageEpoch });
+              if (summaries.size > 128) summaries.delete(summaries.keys().next().value!);
+            }
+            return response;
+          }
+          if (size <= 1 || !facet) throw new Error("RESULT_BUDGET_EXCEEDED: Summary exceeds maxBytes. Narrow the query or request fewer facet values; start fresh without cursor to change options.");
+          size = Math.max(1, Math.floor(size / 2));
+          at = result.readPoint;
+        }
       }
       case "describe_stream": {
         const query = makeQuery(args, 100, true, "NEWEST_FIRST");
@@ -159,8 +229,12 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         } finally { signal?.removeEventListener("abort", cancel); waits.delete(controller); }
       }
       case "get_evidence": {
-        const result = await runtime.query({ at: "LATEST_COMMITTED", size: 1, includePayload: true, lookup: args.evidence as EvidenceIdentity, signal });
-        return { readPoint: result.readPoint, coverage: result.coverage, lookup: result.lookup?.state === "RETAINED" ? { state: "RETAINED", evidence: safeRecord(result.lookup.evidence) } : result.lookup };
+        const includePayload = args.includePayload === true;
+        const fields = args.fields as string[] | undefined;
+        const result = await runtime.query({ at: "LATEST_COMMITTED", size: 1, includePayload: includePayload || Boolean(fields?.length), lookup: args.evidence as EvidenceIdentity, signal });
+        const response = { readPoint: result.readPoint, coverage: result.coverage, lookup: result.lookup?.state === "RETAINED" ? { state: "RETAINED", evidence: projectReadRecord(result.lookup.evidence, includePayload, fields) } : result.lookup };
+        if (agentToolResultBytes(response) > Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes)) throw new Error("RESULT_BUDGET_EXCEEDED: Exact Evidence exceeds maxBytes. Request fewer fields or omit payload.");
+        return response;
       }
       case "query_diagnostics": {
         const result = await runtime.diagnostics(args.after as Parameters<AgentRuntime["diagnostics"]>[0]);
@@ -270,7 +344,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       return result;
     },
     refreshOperations,
-    revoke() { grantGeneration++; cursors.clear(); evidenceSearches.clear(); scopeCursors.clear(); scopeSearches.clear(); for (const wait of waits) wait.abort(); if (prepared?.kind === "scenario") runtime.control("pause"); }
+    revoke() { grantGeneration++; cursors.clear(); evidenceSearches.clear(); summaries.clear(); scopeCursors.clear(); scopeSearches.clear(); for (const wait of waits) wait.abort(); if (prepared?.kind === "scenario") runtime.control("pause"); }
   };
 }
 
@@ -284,7 +358,7 @@ function safeRecord(record: DeterministicEvidenceRecord, payloadBudget = 256 * 1
   return { identity: record.identity, timestamp: record.timestamp, facets: cloneCredentialSafe(record.facets), ...(payload ? { payload: cloneCredentialSafe(semantic) } : {}) };
 }
 /** Explain only the exported representation: canonical searchText/summary may contain secrets. */
-function safeMatchExplanation(evidence: ReturnType<typeof safeRecord>, query: string) {
+function safeMatchExplanation(evidence: object, query: string) {
   const needle = query.toLowerCase();
   const fields: Array<{ field: string; excerpt: string }> = [];
   let remaining = 4096;
@@ -314,6 +388,47 @@ function boundedRecords(records: readonly DeterministicEvidenceRecord[]) {
     if ("payload" in safe) remaining = Math.max(0, remaining - new TextEncoder().encode(JSON.stringify(safe.payload)).byteLength);
     return safe;
   });
+}
+function projectReadRecord(record: DeterministicEvidenceRecord, includePayload: boolean, fields?: readonly string[]) {
+  const facets = Object.fromEntries(Object.entries(record.facets).map(([key, value]) => [key, ["client", "session", "subscription", "item", "listener"].includes(key) ? value?.label : value?.value]));
+  const compact = { identity: record.identity, timestamp: record.timestamp, ...facets };
+  if (fields?.length) {
+    const original = record.payload as LightstreamerEventEnvelope | undefined;
+    const safe = original ? toBulkShareableEventEnvelope(original) : undefined;
+    const update = safe?.update;
+    const projected = Object.fromEntries(fields.map(name => {
+      const originalHasValue = original?.update?.fields && Object.hasOwn(original.update.fields, name);
+      const safeHasValue = update?.fields && Object.hasOwn(update.fields, name);
+      const state = originalHasValue && !safeHasValue ? "redacted" : original?.update?.fieldValueStates?.[name] ?? (safeHasValue ? "concrete" : "unavailable");
+      const value = update?.fields?.[name];
+      const sanitized = state === "concrete" && value !== undefined ? cloneCredentialSafe({ [name]: value }) as Record<string, unknown> : null;
+      return [name, state === "concrete" && value !== undefined
+        ? Object.hasOwn(sanitized!, name) ? { state, value: sanitized![name] } : { state: "redacted" }
+        : { state }];
+    }));
+    return { ...compact, fields: projected };
+  }
+  if (includePayload) {
+    const safe = safeRecord(record);
+    return { ...compact, ...("payload" in safe ? { payload: safe.payload } : {}), ...("payloadOmitted" in safe ? { payloadOmitted: safe.payloadOmitted, payloadBytes: safe.payloadBytes } : {}) };
+  }
+  return compact;
+}
+
+function makeReadQuery(runtime: AgentRuntime, args: AgentArguments): AgentQueryInput {
+  const query = makeQuery(args);
+  if (args.within === undefined && args.where === undefined) return query;
+  if (args.within === "current-investigation" && (args.where !== undefined || args.filter !== undefined || args.text !== undefined)) throw new Error("INVALID_ARGUMENT: current-investigation already owns its Filter; start fresh with an explicit scopeId or within:page to change filtering.");
+  const boundary = structuredClone(runtime.queryBoundary(args.scopeId as string | undefined, args.within === "current-investigation"));
+  const where = args.where as Record<string, string[]> | undefined;
+  const criteria = { ...boundary.filter.criteria, ...query.filter?.criteria } as Record<string, { include: ReturnType<typeof createTypedFilterValue>[]; exclude: ReturnType<typeof createTypedFilterValue>[] }>;
+  for (const [facet, values] of Object.entries(where ?? {})) {
+    const descriptor = FACET_DESCRIPTORS.find(candidate => candidate.key === facet);
+    if (!descriptor) throw new Error(`Unsupported Evidence facet: ${facet}`);
+    criteria[facet] = { include: values.map(value => createTypedFilterValue(facet, descriptor.valueType, value, value)), exclude: [] };
+  }
+  const filter = canonicalizeFilter({ ...boundary.filter, text: args.text !== undefined || (args.filter as { text?: string } | undefined)?.text !== undefined ? query.filter!.text : boundary.filter.text, criteria, around: (args.filter as { around?: Filter["around"] } | undefined)?.around ?? boundary.filter.around });
+  return { ...query, scope: boundary.scope, filter };
 }
 function safeDraft(local: ReturnType<AgentRuntime["local"]>) {
   if (!local.draft) return local;
@@ -356,6 +471,7 @@ function makeQuery(args: AgentArguments, defaultLimit = 25, forcePayload = false
   return {
     ...(typeof args.scopeId === "string" ? { scopeId: args.scopeId } : {}),
     size: Number(args.limit ?? defaultLimit),
+    adaptivePage: true,
     at: (args.at as EvidenceReadPoint | "LATEST_COMMITTED" | undefined) ?? "LATEST_COMMITTED",
     ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}),
     includePayload: forcePayload || args.includePayload === true,
