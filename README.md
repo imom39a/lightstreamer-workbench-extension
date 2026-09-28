@@ -10,9 +10,7 @@ Lightstreamer Workbench is an open-source Chrome DevTools extension. Use it to i
 
 ## Project Status
 
-Version `2.0.2` is the current public release. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf). You can also build the source and load `dist/` as an unpacked extension.
-
-This repository contains the `2.0.4` release candidate. Version `2.0.3` is currently published; the new package becomes available after Chrome Web Store review and publication.
+Install Lightstreamer Workbench from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf), or build the source and load `dist/` as an unpacked extension. Store availability and repository candidates can differ; check Chrome extension details for the version installed in your browser.
 
 Version 2 inspects the current Panel Session for the selected tab. Scope, Ordered Evidence, and Context are in one workspace. The public [roadmap](https://imom39a.github.io/lightstreamer-workbench-extension/roadmap/) lists planned work without release dates.
 
@@ -131,7 +129,7 @@ Keep the core model based on Lightstreamer terms. Do not add application-specifi
 
 Lightstreamer Workbench keeps captured event data, including Client Message bodies and Injection Drafts, in one temporary Event History for the Panel Session. The extension does not send this data to the maintainers or an analytics service. Complete History ends at the current History Interval's Committed Evidence Boundary. Workbench masks Lightstreamer client IP addresses before the panel receives them. The panel cannot show the exact address. Bulk retained-Evidence copies always redact Client Message bodies and outcome text; complete local raw Evidence remains a deliberate per-event action. You can inspect a retired Scope, but you cannot use it for Injection.
 
-The repository candidate adds usage analytics, enabled by default in configured production builds. It sends fixed feature names, foreground engagement, coarse outcomes, and a random installation identifier to Google Analytics. Turn it off under **More actions → Help & resources → Usage analytics**; this removes the saved analytics identifier. Captured data and typed text stay local. See [analytics setup and reports](docs/USAGE_ANALYTICS.md). The public website remains static HTML and CSS without analytics, cookies, or JavaScript. Read the [privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) for more information.
+The repository candidate adds usage analytics, enabled by default in configured production builds. It sends fixed feature names, foreground engagement, coarse outcomes, and a random installation identifier to Google Analytics. Turn it off under **More actions → Help & resources → Usage analytics**; this removes the saved analytics identifier. Captured data and typed text stay in the browser unless Agent access sends requested Evidence to the local MCP client and its configured model provider. See [analytics setup and reports](docs/USAGE_ANALYTICS.md). The public website remains static HTML and CSS without analytics, cookies, or JavaScript. Read the [privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) for more information.
 
 The extension needs broad page access to observe the Lightstreamer Web Client before the application creates clients or Subscriptions. Use Workbench only on pages that you have permission to inspect. Do not share screenshots or logs that contain secrets, customer data, tokens, or proprietary payloads.
 

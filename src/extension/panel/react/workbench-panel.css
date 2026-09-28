@@ -309,6 +309,8 @@
 .workbench-react__usage-analytics summary { cursor: pointer; }
 .workbench-react__usage-analytics[open] { display: grid; gap: 7px; }
 .workbench-react__usage-analytics label { display: flex; gap: 6px; align-items: center; }
+.workbench-react__agent-setup { margin: 0; padding-left: 22px; color: var(--wb-muted); overflow-wrap: anywhere; }
+.workbench-react__agent-setup li + li { margin-top: 7px; }
 .workbench-react__confirmation { display: grid; gap: 7px; border-left: 3px solid var(--wb-warning); background: var(--wb-warning-soft); color: var(--wb-text); padding: 8px; }
 .workbench-react__confirmation > div { display: flex; flex-wrap: wrap; gap: 6px; }
 .workbench-react button.workbench-react__confirmation-primary:focus-visible { outline: 3px solid var(--wb-focus); outline-offset: 2px; box-shadow: 0 0 0 1px var(--wb-warning-soft); }

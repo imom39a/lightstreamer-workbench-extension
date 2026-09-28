@@ -155,3 +155,7 @@ Clear, Review, Inject locally, Send Client Message once, Scenario, and export ac
 | Server Injection unavailable | Select a live official public-API client with a current Session, and close any protected Local Draft or Scenario first. Reload with DevTools open if the page bridge is stale. |
 
 For more recovery procedures, see [Troubleshooting]({{site}}docs/troubleshooting/). Remove private data before you post a report. This data includes production payloads, private URLs, tokens, customer data, and screenshots that contain secrets.
+
+## Use an MCP agent
+
+An MCP agent can query the selected Panel Session's Evidence and prepare a reviewed Local Injection. Follow [Agent access]({{site}}docs/agent-access/) for source setup, connection, the Evidence-guided workflow, and its data boundary. Verify the inspected application's response separately.

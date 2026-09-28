@@ -40,3 +40,7 @@ Confirm that the target Subscription is live. Confirm that the selected Evidence
 Check the version on the [Release notes]({{site}}releases/) page. Then check the version in Chrome extension details. Version 2.0.0 is the first Store release with the current workspace.
 
 If the problem continues, use [Support]({{site}}support/). Remove private data from all payloads before you post them.
+
+## An MCP agent cannot find a Workbench panel
+
+Confirm the MCP server is started in the agent application and that Chrome and Node run on the same computer. Open the intended Workbench panel, then call `list_panel_sessions`. **Waiting** means the panel is enabled but has no ready companion connection; **Off** means Agent access is disabled. Use **More actions → Agent access and setup** to enable it. The header status opens this section but does not toggle access. See [Agent access]({{site}}docs/agent-access/) for setup and the complete connection boundary.

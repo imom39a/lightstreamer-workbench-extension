@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below accompanies the 2.0.4 release candidate. Publish it only with the matching package and privacy disclosures. The versioned release records later in this file describe their original packages.
+The description below accompanies the 2.0.5 repository candidate. The extension package and MCP companion are prepared but have not been uploaded to the Chrome Web Store or published to npm. Publish only after the package, privacy disclosures, and companion publication are ready. The versioned release records later in this file describe their original packages.
 
 ```text
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
@@ -67,6 +67,8 @@ Key features:
 - Create one protected Local Injection Draft from captured Evidence or from a live COMMAND Scope.
 - Edit raw JSON and validate the Draft. Captured Drafts compare Source and Draft by default, then inject directly from that preview.
 - Use a Local Injection Scenario for ordered Steps, immutable reviewed Runs, serial controls, Checkpoints, and results for each Step.
+- Connect a local MCP companion to inspect a Panel Session's Scope, Evidence, diagnostics, and Local Injection Scenario results. Agents can profile and query streams, validate candidates, prepare Scenarios, and inspect Scenario traces. They cannot perform Server Injection, clear Event History, or evaluate arbitrary page code.
+- When a panel opens, Agent access is on by default with inspection and Local Injection available together. There is no read-only mode. The header shows On, Waiting, or Off and opens the access control under More actions → Agent access and setup. Authentication is off; any local process that can reach the companion can use the connected panel's grant. Run Chrome and the Node.js 22.12+ companion on the same computer.
 - Deliver an Item Update to the exact live Subscription in the inspected page. Workbench reports delivered, failed, partial, unknown, and stale-target results.
 - Create a protected Server Injection Draft from captured Client Message Evidence, author one for an exact live client and Session, or start from an application-owned Message Recipe.
 - Review every LightstreamerClient.sendMessage argument, then send the Client Message once through the inspected application's normal client-to-server path.
@@ -75,7 +77,7 @@ Key features:
 - Keep one temporary Event History for each Panel Session. IndexedDB can keep 100,000 records or 256 MiB. The memory fallback can keep 25,000 records or 128 MiB.
 - Use the Committed Evidence Boundary to find the end of complete History. Retention removes the oldest accepted prefix while Capture continues and reports the resulting Evidence Gap explicitly.
 - A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
-- Usage analytics helps improve feature adoption and reliability. It sends fixed feature names, engagement time, coarse outcomes, and a random installation identifier to Google Analytics. It is on by default and can be turned off in More actions → Help & resources → Usage analytics. Captured data, inspected URLs, and typed text stay local.
+- Configured production builds use usage analytics for fixed feature names, engagement time, coarse outcomes, and a random installation identifier. It is on by default and can be turned off in More actions → Help & resources → Usage analytics. Captured Evidence and typed text are excluded from analytics; separate Agent access can send requested Evidence to a local MCP client and its configured model provider.
 - No advertising, account sign-in, or maintainer-operated collection backend.
 - Help links open the project documentation, privacy policy, and support page.
 
@@ -122,13 +124,13 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.4
+2.0.5
 ```
 
 What's new:
 
 ```text
-Full-key JSON Evidence stream and capture reliability improvements.
+MCP agent access, full-key JSON Evidence, and capture reliability improvements.
 
 - Compact historical operation codes with a Codes reference panel.
 - Complete single-line keys and horizontally scrollable data; only Op stays pinned.
@@ -141,19 +143,19 @@ Full-key JSON Evidence stream and capture reliability improvements.
 ## Privacy Practices Draft
 
 ```text
-Lightstreamer Workbench processes inspected-page Lightstreamer event data in the browser extension context. Each Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 25,000 records or 128 MiB. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session and reports the storage change and failure reason. The extension does not send captured Evidence to the maintainers, an analytics service, or another external service.
+Lightstreamer Workbench processes inspected-page Lightstreamer event data in the browser extension context. Each Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 25,000 records or 128 MiB. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session and reports the storage change and failure reason. Workbench does not send captured Evidence to maintainers or an analytics service. Agent access separately sends requested Evidence to a local MCP client and may send it to that client's configured model provider. Client Message bodies remain redacted in agent results.
 
 Complete History ends at the current History Interval's Committed Evidence Boundary. Retention removes the oldest accepted prefix while Capture continues and reports the resulting Evidence Gap explicitly. Clear makes an exact History Interval cut. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
 
-The analytics candidate sends fixed Workbench feature names, foreground engagement time, coarse outcomes, extension version, event time, and a random installation identifier to Google Analytics 4. Analytics is enabled by default in configured builds. More actions → Help & resources → Usage analytics provides a persistent off switch. Turning it off stops collection and removes the identifier and analytics session. Captured Evidence, payloads, inspected URLs, search text, clipboard/export content, and raw errors are never sent. Workbench does not sell data, use analytics for advertising, require sign-in, or operate a maintainer collection server.
+The analytics candidate sends fixed Workbench feature names, foreground engagement time, coarse outcomes, extension version, event time, and a random installation identifier to Google Analytics 4. Analytics is enabled by default in configured builds. More actions → Help & resources → Usage analytics provides a persistent off switch. Turning it off stops collection and removes the identifier and analytics session. Captured Evidence, payloads, inspected URLs, search text, clipboard/export content, and raw errors are excluded from analytics. Agent access is separate: it sends requested Evidence to the local MCP client and may send it to that client's configured model provider. Agent access is on by default for inspection and Local Injection; authentication is off. Any local process that can reach the companion may use a connected panel's grant. Workbench does not sell data, use analytics for advertising, require sign-in, or operate a maintainer collection server.
 
-Workbench uses host and page access to observe the official Lightstreamer Web Client. It also uses this access for Local Injection in the inspected page. Local Injection does not contact the Lightstreamer Server. Workbench creates a JSON or offline HTML export only when the user requests it. Each export excludes credentials and creates a local download.
+Workbench uses host and page access to observe the official Lightstreamer Web Client. It also uses this access for Local Injection in the inspected page. Local Injection does not contact the Lightstreamer Server. Workbench creates a JSON or offline HTML export only when the user requests it. Each export excludes credentials and creates a local download. Agent access uses a loopback connection on port 24817 and requires no additional Chrome permission. Access is enabled by default in an open panel, with authentication off. Any local process that can reach the companion can use the panel grant. Requested Evidence can reach the configured MCP client's model provider.
 ```
 
 Privacy questionnaire note:
 
 ```text
-For the analytics candidate, declare collection of user activity and the pseudonymous installation identifier in the dashboard's applicable categories. Describe the fixed product events, Google Analytics recipient, default-on behavior, and off switch. Do not claim that all data stays on the device. Captured website content, message bodies, credentials, browsing history, search text, and raw errors remain excluded from collection. Explain storage permission for preferences/identity and https://www.google-analytics.com/* host access for Measurement Protocol. Keep dashboard answers, listing, and policy consistent before publishing. Earlier no-analytics releases retain their original disclosures.
+For the analytics candidate, declare collection of user activity and the pseudonymous installation identifier in the dashboard's applicable categories. Describe the fixed product events, Google Analytics recipient, default-on behavior, and off switch. Do not claim that all data stays on the device. Captured website content, message bodies, credentials, browsing history, search text, and raw errors are excluded from analytics. Disclose separately that Agent access can send requested Evidence to the local MCP client and its configured model provider. State that Agent access is on by default for inspection and Local Injection, authentication is off, and any local process with access to the loopback companion can use a connected panel grant. Explain storage permission for preferences/identity and https://www.google-analytics.com/* host access for Measurement Protocol. Keep dashboard answers, listing, and policy consistent before publishing. Earlier no-analytics releases retain their original disclosures.
 ```
 
 Single purpose description:
@@ -179,6 +181,15 @@ Page access is required to run packaged instrumentation at document_start before
 ```text
 No account is required. Open DevTools on a page using the official Lightstreamer Web Client and select Lightstreamer Workbench. Capture appears in Ordered Evidence. For Local Injection, create a Draft from an Item Update and choose Inject locally. For Server Injection, clone captured Client Message Evidence or author one for a live client, review the sendMessage arguments, then choose Send Client Message once. Usage analytics is under More actions > Help & resources and can be turned off.
 ```
+
+For prepublication MCP review, sign in to GitHub and download the `workbench-mcp-release-bundle` artifact from the latest successful Agent companion workflow run on `main`. Extract the artifact wrapper ZIP, then extract `lightstreamer-workbench-mcp-v2.0.5.zip`. Verify `release-manifest.json` and its `source.commit`. Extract `extension/lightstreamer-workbench-v2.0.5.zip` and load it unpacked; record the unpacked extension ID. From the extracted MCP bundle root, install `agent/lightstreamer-workbench-agent-0.1.0.tgz` and print local setup:
+
+```sh
+npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.0.tgz
+node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
+```
+
+Copy the printed MCP configuration into the test agent app and start its stdio server. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate is prepared but has not been uploaded to the Chrome Web Store.
 
 ## Version 2.0.2 Release Checklist (historical)
 
@@ -214,7 +225,7 @@ No account is required. Open DevTools on a page using the official Lightstreamer
 - [ ] Confirm staged publishing during the later Store review submission.
 - [x] Obtain the Material UI visual-QA disposition; maintainer approval is still required before Store review submission.
 
-## Version 2.0.4 Preparation Checklist
+## Version 2.0.4 Preparation Checklist (historical)
 
 - [x] Include all maintainer-authorized pending changes and the prior capture reliability, filter and dark-mode fixes.
 - [x] Confirm package, lockfile and manifest version `2.0.4`, with unchanged permissions.
@@ -228,3 +239,13 @@ No account is required. Open DevTools on a page using the official Lightstreamer
 - [ ] Verify the Store's actual review/publication status.
 
 The maintainer explicitly authorized this release. The Chrome session currently requires the Mac to be unlocked; version 2.0.4 has not been uploaded or submitted. Detailed verification is recorded in [`key-json-stream-evidence.md`](../docs/agents/key-json-stream-evidence.md).
+
+## Version 2.0.5 Preparation Checklist
+
+- [x] Prepare the listing and privacy disclosures for the 2.0.5 repository candidate.
+- [x] Prepare the MCP reviewer steps using a local companion tarball and matching unpacked extension.
+- [ ] Confirm npm publication before using the version-pinned `npx` setup.
+- [ ] Upload the matching extension package after the release checks and authorization are complete.
+- [ ] Verify the actual Chrome Web Store review and publication status.
+
+The 2.0.5 candidate is prepared but has not been uploaded to the Chrome Web Store. This checklist does not authorize a Store upload or submission.

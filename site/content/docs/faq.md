@@ -39,3 +39,7 @@ Yes. The [public GitHub repository]({{github}}) uses the Apache-2.0 license.
 ## Is this an official Lightstreamer product?
 
 No. Lightstreamer Workbench supports the official Lightstreamer Web Client. This project is independent and is not affiliated with Lightstreamer.
+
+## Can an MCP agent use Workbench?
+
+Yes. Agent access can query Evidence and prepare or run deliberate Local Injection through the open Panel Session. It cannot use Server Injection or run arbitrary page code. The first companion package is not yet published to npm. Use the [source setup guide]({{site}}docs/agent-access/) until registry publication is confirmed.

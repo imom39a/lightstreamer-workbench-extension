@@ -6,6 +6,8 @@ on:
     paths:
       - ".github/workflows/agent-companion.yml"
       - "package*.json"
+      - "public/manifest.json"
+      - "RELEASE.md"
       - "agent/**"
       - ".agents/skills/lightstreamer-workbench/**"
       - "src/agent/**"
@@ -14,6 +16,8 @@ on:
       - "src/extension/panel/react/workbench-panel.tsx"
       - "src/extension/panel/react/workbench-panel.css"
       - "scripts/*agent*.mjs"
+      - "scripts/package-mcp-release.mjs"
+      - "scripts/package-mcp-release.test.mjs"
       - "tests/agent-*.test.ts"
       - "tests/support/workbench-agent-proof.ts"
       - "tests/extension-panel.browser.spec.ts"
@@ -118,9 +122,35 @@ jobs:
           LSEW_AGENT_PACKAGE_TARBALL: release/${{ needs.package.outputs.filename }}
         run: npm run agent:test:extension
 
+  release-bundle:
+    needs: [package, portable]
+    name: Assemble downloadable MCP release bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - run: node --test scripts/package-mcp-release.test.mjs
+      - uses: actions/download-artifact@v6
+        with:
+          name: workbench-agent-npm
+          path: release
+      - name: Package the exact-source extension ZIP
+        run: npm run release:zip -- --skip-typecheck --skip-tests
+      - name: Combine verified portable artifacts
+        run: node scripts/package-mcp-release.mjs
+      - uses: actions/upload-artifact@v6
+        with:
+          name: workbench-mcp-release-bundle
+          path: release/lightstreamer-workbench-mcp-v*.zip
+          if-no-files-found: error
+
   publish:
     name: Publish the verified npm artifact
-    needs: [package, portable]
+    needs: [package, portable, release-bundle]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.package.outputs.publish == 'true'
     runs-on: ubuntu-latest
     environment: npm

@@ -6,6 +6,7 @@ const routes = [
   "docs/",
   "docs/developer-guide/",
   "docs/getting-started/",
+  "docs/agent-access/",
   "docs/workspace/",
   "docs/evidence/",
   "docs/command-state/",
@@ -111,6 +112,25 @@ test("developer guide covers the complete inspection and Local Injection workflo
   await expectNoHorizontalOverflow(page);
 });
 
+test("Agent access explains local setup, Windows, bundled skill, and the trust boundary", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("docs/agent-access/");
+  await expect(page.getByRole("heading", { name: "Agent access" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Windows setup" })).toBeVisible();
+  await expect(page.getByText("workbench-mcp-release-bundle")).toBeVisible();
+  await expect(page.getByText("skills/lightstreamer-workbench/SKILL.md")).toBeVisible();
+  await expect(page.getByText("authentication off", { exact: false })).toBeVisible();
+  await expect(page.getByText("Do not retry an Injection blindly.")).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await attachScreenshot(page, testInfo, "agent-access-desktop");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Agent access" })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await attachScreenshot(page, testInfo, "agent-access-mobile");
+});
+
 test("customer policy and support routes stay first-party", async ({ page }) => {
   await page.goto("support/");
   await expect(page.getByRole("heading", { name: "Support" })).toBeVisible();
@@ -121,7 +141,7 @@ test("customer policy and support routes stay first-party", async ({ page }) => 
 
   await page.goto("privacy/");
   await expect(page.getByRole("heading", { name: "Privacy policy" })).toBeVisible();
-  await expect(page.getByText("Current Chrome Web Store release:")).toBeVisible();
+  await expect(page.getByText("Chrome Web Store builds:")).toBeVisible();
   await expect(page.getByText("Public website:")).toBeVisible();
   await expect(page.locator('a[href*="PRIVACY.md"], a[href*="SECURITY.md"]')).toHaveCount(0);
 });

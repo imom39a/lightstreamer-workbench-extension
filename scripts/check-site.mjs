@@ -13,6 +13,7 @@ const requiredRoutes = [
   "docs/index.html",
   "docs/developer-guide/index.html",
   "docs/getting-started/index.html",
+  "docs/agent-access/index.html",
   "docs/workspace/index.html",
   "docs/evidence/index.html",
   "docs/command-state/index.html",

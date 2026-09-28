@@ -41,6 +41,22 @@ The package step fails if `package.json` and `public/manifest.json` do not use t
 
 The local packager also enforces the Workbench release budget: the stored ZIP must remain below 1 MiB. Inspect the ZIP root, run its integrity check, and record the final byte count with the release evidence.
 
+## MCP Candidate Bundle
+
+The companion workflow prepares one downloadable bundle after the same npm tarball passes its Windows, macOS, and Linux checks. The local command expects the matching extension ZIP, npm tarball, and `release/agent-release.json` to exist:
+
+```bash
+npm run release:zip -- --skip-typecheck --skip-tests
+node scripts/prepare-agent-release.mjs
+npm run agent:pack
+git restore -- agent/package.json
+npm run release:mcp-bundle
+```
+
+The planner writes `release/agent-release.json` and stamps `agent/package.json` with the selected version and current commit before packing. The restore command returns only that generated metadata to the committed source state; run this sequence from a clean checkout. The bundle is `release/lightstreamer-workbench-mcp-v<extension-version>.zip`. It contains the extension ZIP, companion tarball, `release-manifest.json`, `SHA256SUMS`, and a short `README.txt`. The manifest records each embedded relative path, byte size, SHA-256 digest, version, and full source commit. Packaging reads the ZIP-root extension manifest and npm tarball metadata and fails if their versions or `gitHead` disagree with the plan and checked-out source, or if tracked files are modified. The `workbench-mcp-release-bundle` CI artifact is available beside the existing `workbench-agent-npm` artifact after all three platform checks pass.
+
+The bundle state is `prepared-unpublished` at assembly time. It records whether guarded npm publication is planned; if planned, the existing publish job still waits for all three platform checks and successful bundle assembly. Bundle assembly itself does not publish, and this workflow does not publish the extension to the Chrome Web Store. For this candidate, the companion version stays at `0.1.0` and `AGENT_NPM_PUBLISH_ENABLED` remains false.
+
 ## Version 2.0.1 Preparation Record
 
 Version 2.0.1 is a Non-UI maintenance release of the verified 2.0.0 extension. It changes the package version metadata only; it does not change extension runtime behavior, permissions, data handling, UI, Capture, Event History, or Local Injection semantics. The post-2.0.0 product-source delta is empty. The only intervening repository change updates the internal feature-opportunity assessment and does not ship in the extension package.
