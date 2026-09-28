@@ -1,5 +1,5 @@
 {
-  "name": "@lightstreamer-workbench/agent",
+  "name": "lightstreamer-workbench-agent",
   "version": "0.1.0",
   "description": "MCP companion for Lightstreamer Workbench: one Node runtime for Windows, macOS and Linux",
   "type": "module",

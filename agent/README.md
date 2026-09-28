@@ -10,15 +10,14 @@ not Node inside WSL or a container.
 
 ## Connect with npm
 
-The package is prepared for npm publication; the commands below become available
-once `@lightstreamer-workbench/agent@0.1.0` is published. Use the source/tarball
-instructions below before publication. The extension must include Agent access;
+The first public release is `lightstreamer-workbench-agent@0.1.0`, owned by the
+`imom39a` npm account. The extension must include Agent access;
 the published 2.0.4 extension predates it.
 
 Run the same command in macOS Terminal or Windows PowerShell:
 
 ```sh
-npx --yes @lightstreamer-workbench/agent@0.1.0 setup
+npx --yes lightstreamer-workbench-agent@0.1.0 setup
 ```
 
 Copy the printed `mcpServers` entry into your agent's MCP configuration. Its
@@ -29,7 +28,7 @@ standard JSON form is identical on both platforms:
   "mcpServers": {
     "lightstreamer-workbench": {
       "command": "npx",
-      "args": ["--yes", "@lightstreamer-workbench/agent@0.1.0", "mcp"]
+      "args": ["--yes", "lightstreamer-workbench-agent@0.1.0", "mcp"]
     }
   }
 }
@@ -59,7 +58,7 @@ For offline deployments, install a downloaded tarball into a stable directory:
 
 ```sh
 npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.0.tgz
-node ./workbench-companion/node_modules/@lightstreamer-workbench/agent/dist/cli.mjs setup --local
+node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local
 ```
 
 `--local` prints absolute Node and CLI paths. Keep those paths stable. This is
@@ -144,9 +143,38 @@ Evidence, exact inspected-page identity, and optional authentication.
 suppression, Scenario Steps and the application's displayed result.
 CI builds one tarball and tests that exact artifact on Windows, macOS and Linux.
 
-Before publishing, run those checks plus type checking, the full unit/browser
-regression gates, and `npm run docs:check`. Inspect `npm pack ./agent --dry-run`
-and verify npm scope ownership. Publish the reviewed tarball with
-`npm publish release/lightstreamer-workbench-agent-0.1.0.tgz --access public`.
+### Automatic releases from main
+
+The `agent-companion.yml` GitHub Actions workflow watches companion source,
+package files, bundled skill, dependency manifests, connection integration and
+their tests. A matching push to `main` selects the next patch version from npm,
+builds one tarball, and tests that exact tarball on Windows, macOS and Linux.
+Only after all three pass does the `npm` environment publish it through npm
+trusted publishing with provenance. Other branches and pull requests only test.
+Manual workflow dispatch on `main` can retry a failed run.
+
+The source `agent/package.json` version is the minimum release version. Ordinary
+changes automatically publish `0.1.1`, `0.1.2`, and so on. Set a higher source
+version for a deliberate minor or major release. CI sets the chosen version in
+the artifact without writing version-only commits back to main. The installed
+CLI reports that artifact version and prints its exact version in setup output.
+The package's `gitHead` identifies the source commit. Retrying a commit already
+published skips publication, and registry/network failures stop version selection.
+Runs are serialized to prevent two builds allocating the same patch version.
+
+The one-time bootstrap is a reviewed public `0.1.0` tarball publication, followed
+by a trusted publisher for GitHub user `imom39a`, repository
+`lightstreamer-workbench-extension`, workflow `agent-companion.yml`, environment
+`npm`, with direct publishing allowed. The environment permits only `main`.
+Set repository variable `AGENT_NPM_PUBLISH_ENABLED=true` after bootstrap;
+`false` pauses publishing while keeping cross-platform verification enabled.
+No npm token is stored in GitHub. See
+[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+For an authorized manual bootstrap, inspect the cross-platform CI artifact and
+publish that tested tarball with
+`npm publish release/lightstreamer-workbench-agent-0.1.0.tgz --access public --ignore-scripts`.
+The extension's Chrome Web Store release is a separate operation with its own
+full unit, browser, visual and package gates.
 Publishing requires a maintainer npm login with access to the scope; preparing
 or testing a tarball does not publish it. The Chrome extension release is separate.

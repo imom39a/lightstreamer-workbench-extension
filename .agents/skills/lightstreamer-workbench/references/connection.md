@@ -9,7 +9,7 @@ use a connected panel's grant or impersonate the companion. Authentication is
 optional, not a prerequisite for investigating an open panel with access enabled.
 The companion and Chrome must run on the same host; WSL/containers/remote agents
 need a host-side process and are not implicitly the same loopback connection.
-Use the npm package `@lightstreamer-workbench/agent` on every platform. Its
+Use the npm package `lightstreamer-workbench-agent` on every platform. Its
 `setup` command prints version-pinned npm configuration; `setup --local` prints
 absolute Node/package paths for an already installed artifact. The common guide
 is `README.md` in the package (`agent/README.md` in source); Windows launcher

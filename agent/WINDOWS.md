@@ -11,7 +11,7 @@ Install Node.js 22.12+ with npm, then verify the commands your agent needs:
 ```powershell
 node --version
 npm.cmd --version
-npx.cmd --yes @lightstreamer-workbench/agent@0.1.0 setup
+npx.cmd --yes lightstreamer-workbench-agent@0.1.0 setup
 ```
 
 The npm command becomes available after publication. Before publication, install

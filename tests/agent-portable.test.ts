@@ -16,6 +16,7 @@ import { connectPortable } from "../src/agent/portable-channel";
 import { beginPanelPairing } from "../src/agent/panel-pairing";
 import { PAIRING_ENV, parsePairingCode, pairingProof, proofText, randomNonce, verifyPairingProof, createPairingKey, pairingCommitment, pairingTranscript, derivePairingSecret, comparisonCode } from "../src/agent/pairing";
 import { AGENT_MAX_BYTES } from "../src/agent/protocol";
+import metadata from "../agent/package.json";
 
 const extensionId = "a".repeat(32), origin = `chrome-extension://${extensionId}`;
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -270,7 +271,7 @@ describe("installer-free companion", () => {
     const setup = JSON.parse(execFileSync(process.execPath, [cli, "setup", "--local", "--port", String(port), "--extension-id", extensionId, ...(auth === "required" ? ["--auth", "required"] : [])], { encoding: "utf8" }));
     const config = setup.mcpServers["lightstreamer-workbench"];
     const npmSetup = JSON.parse(execFileSync(process.execPath, [cli, "setup"], { encoding: "utf8" }));
-    expect(npmSetup.mcpServers["lightstreamer-workbench"]).toMatchObject({ command: "npx", args: ["--yes", "@lightstreamer-workbench/agent@0.1.0", "mcp", "--extension-id", "kfpgbhfphbhkebglopimjhfnnmbifocf", "--auth", "off", "--port", "24817"] });
+    expect(npmSetup.mcpServers["lightstreamer-workbench"]).toMatchObject({ command: "npx", args: ["--yes", `${metadata.name}@${metadata.version}`, "mcp", "--extension-id", "kfpgbhfphbhkebglopimjhfnnmbifocf", "--auth", "off", "--port", "24817"] });
     const credential = config.env?.[PAIRING_ENV];
     if (auth === "required") expect(parsePairingCode(credential).port).toBe(port);
     else expect(config.env).toBeUndefined();

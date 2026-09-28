@@ -22,10 +22,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: agent-companion-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   package:
     name: Build one npm artifact
     runs-on: ubuntu-latest
+    outputs:
+      filename: ${{ steps.release.outputs.filename }}
+      version: ${{ steps.release.outputs.version }}
+      publish: ${{ steps.release.outputs.publish }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -33,11 +41,24 @@ jobs:
           node-version: 22.12.0
           cache: npm
       - run: npm ci
+      - run: node --test scripts/prepare-agent-release.test.mjs
+      - name: Select release version
+        id: release
+        env:
+          PUBLISH_ENABLED: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AGENT_NPM_PUBLISH_ENABLED == 'true' }}
+        run: |
+          if [ "$PUBLISH_ENABLED" = "true" ]; then
+            node scripts/prepare-agent-release.mjs --release
+          else
+            node scripts/prepare-agent-release.mjs
+          fi
       - run: npm run agent:pack
       - uses: actions/upload-artifact@v6
         with:
           name: workbench-agent-npm
-          path: release/*.tgz
+          path: |
+            release/*.tgz
+            release/agent-release.json
           if-no-files-found: error
 
   portable:
@@ -50,11 +71,19 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          name: workbench-agent-npm
+          path: release
       - uses: actions/setup-node@v6
         with:
           node-version: 22.12.0
           cache: npm
       - run: npm ci
+      - name: Use the artifact version for all platform checks
+        shell: bash
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const plan = JSON.parse(fs.readFileSync("release/agent-release.json")); const file = "agent/package.json"; const metadata = JSON.parse(fs.readFileSync(file)); if (metadata.name !== plan.name || plan.sha !== process.env.GITHUB_SHA) throw new Error("Artifact source mismatch"); fs.writeFileSync(file, JSON.stringify({...metadata, version: plan.version, gitHead: plan.sha}, null, 2) + "\n");'
       - run: npm run typecheck
       - name: Prove automatic connection, optional authentication, process startup and MCP routing
         run: npx vitest run tests/agent-portable.test.ts tests/agent-connection.test.ts tests/agent-runtime.test.ts --maxWorkers=1
@@ -70,7 +99,9 @@ jobs:
           $workbenchSetup = & $workbenchNode $workbenchCli setup --extension-id $workbenchExtensionId | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Setup failed.' }
           $entry = $workbenchSetup.mcpServers.'lightstreamer-workbench'
-          if ($entry.command -ne 'npx' -or $entry.args[0] -ne '--yes' -or $entry.args[1] -ne '@lightstreamer-workbench/agent@0.1.0' -or $entry.env -or $workbenchSetup.auth -ne 'off') { throw 'Default setup must not require credentials.' }
+          $metadata = Get-Content agent/package.json | ConvertFrom-Json
+          $packageSpec = "$($metadata.name)@$($metadata.version)"
+          if ($entry.command -ne 'npx' -or $entry.args[0] -ne '--yes' -or $entry.args[1] -ne $packageSpec -or $entry.env -or $workbenchSetup.auth -ne 'off') { throw 'Default setup must not require credentials.' }
           $authenticatedSetup = & $workbenchNode $workbenchCli setup --auth required --extension-id $workbenchExtensionId | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $authenticatedSetup.mcpServers.'lightstreamer-workbench'.env.LSEW_AGENT_CONNECTION -notmatch '^wb1:24817:[a-f0-9]{64}$') { throw 'Optional authentication configuration failed.' }
           $package = npm.cmd pack ./agent --dry-run --json | ConvertFrom-Json
@@ -82,11 +113,36 @@ jobs:
           path: .cache/lsew-browsers
           key: chrome-for-testing-agent-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm run fixture:browser:install
+      - name: Prove the installed npm package and real Chrome connection
+        env:
+          LSEW_AGENT_PACKAGE_TARBALL: release/${{ needs.package.outputs.filename }}
+        run: npm run agent:test:extension
+
+  publish:
+    name: Publish the verified npm artifact
+    needs: [package, portable]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.package.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
       - uses: actions/download-artifact@v6
         with:
           name: workbench-agent-npm
           path: release
-      - name: Prove the installed npm package and real Chrome connection
+      - name: Publish with npm trusted publishing
         env:
-          LSEW_AGENT_PACKAGE_TARBALL: release/lightstreamer-workbench-agent-0.1.0.tgz
-        run: npm run agent:test:extension
+          AGENT_TARBALL: release/${{ needs.package.outputs.filename }}
+        run: npm publish "$AGENT_TARBALL" --access public --provenance --ignore-scripts
+      - name: Verify registry version
+        env:
+          AGENT_VERSION: ${{ needs.package.outputs.version }}
+        run: npm view "lightstreamer-workbench-agent@$AGENT_VERSION" version dist.integrity
