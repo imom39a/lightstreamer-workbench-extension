@@ -42,4 +42,4 @@ No. Lightstreamer Workbench supports the official Lightstreamer Web Client. This
 
 ## Can an MCP agent use Workbench?
 
-Yes. Agent access can query Evidence and prepare or run deliberate Local Injection through the open Panel Session. It cannot use Server Injection or run arbitrary page code. The first companion package is not yet published to npm. Use the [source setup guide]({{site}}docs/agent-access/) until registry publication is confirmed.
+Yes. Agent access can query Evidence and prepare or run deliberate Local Injection through the open Panel Session. It cannot use Server Injection or run arbitrary page code. Install the published companion with npm and follow the [Agent access setup guide]({{site}}docs/agent-access/). The extension must include Agent access; load a matching unpacked build if your installed version does not.

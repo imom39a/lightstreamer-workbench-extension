@@ -1,87 +1,64 @@
 # Windows MCP companion
 
-Windows and macOS use the same npm package, Node source and loopback connection.
-Follow [the common setup guide](README.md#before-npm-publication) first. There is no
-Windows build, native host, registry entry or administrator requirement.
+Use Windows Node.js 22.12+ and npm when Chrome runs on Windows. The companion
+and Chrome must share the same loopback network; Node inside WSL, a container,
+or a remote host does not automatically connect to Windows Chrome. No native
+host, registry entry, Windows service, or administrator permission is needed.
 
-## PowerShell
+## PowerShell setup
 
-Install Node.js 22.12+ with npm. Until npm publication is confirmed, install the
-tarball from the matching local release bundle and print an absolute local
-configuration. Load the matching extension archive as unpacked and use its ID:
-
-```powershell
-npm.cmd --version
-$workbenchExtensionId = 'YOUR_UNPACKED_EXTENSION_ID'
-npm.cmd install --prefix .\workbench-companion .\agent\lightstreamer-workbench-agent-0.1.0.tgz
-$workbenchNode = (Get-Command node.exe).Source
-$workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs').Path
-& $workbenchNode $workbenchCli setup --local --extension-id $workbenchExtensionId
-```
-
-From the extracted MCP bundle root, install the bundle's tarball using the
-[local installation instructions](README.md#local-installation-and-source-development).
-`npm.cmd`/`npx.cmd` avoid PowerShell execution-policy restrictions on `.ps1` shims;
-you do not need to weaken that policy. The pinned `npx.cmd` setup applies after
-the package is published. If the agent cannot resolve it then, use the path
-returned by `Get-Command npx.cmd`.
-Restart a GUI agent after installing Node so it receives the updated PATH.
-After saving the local MCP configuration, start/reconnect that server in your agent
-app. The app launches the companion automatically; no separate PowerShell
-window, manually running server, Windows service or Chrome native host is needed.
-
-After publication, `npx.cmd` is the Windows fallback for the pinned npm setup.
-The companion includes `describe_stream`, `wait_for_evidence`,
-`validate_agent_candidate`, `search_evidence`, `search_scope` and `summarize_evidence`. These also
-require a compatible extension; check `get_status.capabilities`. Build and load
-the extension from `main` if the installed Store version lacks them; see
-[Evidence-guided experiments](README.md#evidence-guided-experiments).
-The setup command and Windows connection path are the same for these tools.
-Efficient reads require `get_status.readContract.version === 2`. If it is absent,
-reload the matching extension build and restart the MCP server in the agent app
-to refresh its tool schemas. Do not paginate an old connection's full envelopes
-to work around missing filters. The [efficient read guide](READS.md) shows the
-Scope → summary → selected fields workflow; it is identical on Windows.
-
-If the client cannot launch npm shims, use a stable package installation and
-print an absolute Node configuration:
+Follow the [common setup guide](README.md#set-up). PowerShell can block the
+`npx.ps1` shim, so use `npx.cmd` without changing your execution policy:
 
 ```powershell
-$workbenchNode = (Get-Command node.exe).Source
-$workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs').Path
-& $workbenchNode $workbenchCli setup --local --extension-id $workbenchExtensionId
+npx.cmd --yes lightstreamer-workbench-agent@latest setup
 ```
 
-Paths with spaces are separate JSON argument entries, not a shell command string.
-For a portable Node ZIP, invoke its absolute `node.exe` path with the same CLI.
-Use Windows Node when Chrome runs on Windows. WSL, containers and remote hosts
-have different loopback environments and do not automatically reach that Chrome.
+If you loaded Workbench as an unpacked extension, include its ID from
+`chrome://extensions`:
+
+```powershell
+npx.cmd --yes lightstreamer-workbench-agent@latest setup --extension-id YOUR_UNPACKED_EXTENSION_ID
+```
+
+Copy the printed `mcpServers` entry into your agent application's configuration.
+Start or reconnect that MCP server, then open the intended Workbench DevTools
+panel. Ask the agent for `list_panel_sessions` and use `get_status` to confirm
+the exact tab. The agent application launches the companion; keep no separate
+PowerShell window open for it.
+
+If the application cannot find `npx`, use the full path returned by
+`(Get-Command npx.cmd).Source` as the entry's `command`. Keep each argument in
+a separate JSON array entry. Restart the application after installing Node so
+it receives the updated PATH.
+
+## Offline tarball
+
+If you received a matching release bundle, extract it and load its extension
+ZIP as unpacked. From the extracted bundle root, install its companion tarball
+into a stable directory:
+
+```powershell
+$workbenchTarball = (Resolve-Path '.\agent\lightstreamer-workbench-agent-*.tgz').Path
+npm.cmd install --prefix .\workbench-companion $workbenchTarball
+$workbenchNode = (Get-Command node.exe).Source
+$workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs').Path
+& $workbenchNode $workbenchCli setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
+```
+
+Keep the installed directory in place; `--local` prints its absolute Node and
+CLI paths. This is the same npm runtime as the registry package.
 
 ## Connection troubleshooting
 
-Open the intended tab's Workbench panel. **Agent access Waiting** means access
-is enabled but the companion connection is not ready. It changes to **On**
-automatically when connected; no Connect button is needed. **Off** means access
-is disabled. Click the header status to open **More actions → Agent access and setup**;
-use the on/off control there to enable or disable access. The header itself
-does not toggle access. Ask the
-agent for `list_panel_sessions`; then identify the exact tab with `get_status`.
-An empty list means no connected panel. Start/reconnect Workbench's MCP server
-in the agent app, which launches the companion for you. If it is already running, check
-that the extension includes Agent access and setup names its actual extension ID.
-For unpacked extensions, copy the ID from `chrome://extensions` into setup's
-`--extension-id` argument. Default setup targets the official Store extension.
+**Waiting** means panel access is enabled but the companion is not connected.
+Start or reconnect the configured MCP server and check that the extension ID
+matches the loaded build. **Off** means access is disabled; use **More actions →
+Agent access and setup** to enable it. **On** means the connection is ready,
+not that an agent is actively using it.
 
-The panel uses port 24817 with authentication off and inspection plus Local
-Injection available together. Remove old custom port or authentication settings
-from the MCP entry using the common migration instructions. If another process
-owns port 24817, identify it before making changes; do not terminate an unrelated
-process. There is no authentication, permission or port form in More actions.
-
-## Switch an existing setup to auth off
-
-Follow [the common migration procedure](README.md#switch-an-existing-setup-to-auth-off).
-Remove the old `LSEW_AGENT_CONNECTION` setting from your MCP JSON or TOML as well
-as replacing the command. Existing credentials keep authentication enabled.
-Stop matching clients and disconnect panels before restarting so the old broker
-can exit. A reconnect never replays an Injection or resumes a Scenario.
+The panel and companion use port 24817 with authentication off. If you have an
+older MCP entry, remove custom port settings and `LSEW_AGENT_CONNECTION`, then
+restart the MCP server and reload the panel. Existing credentials are not
+silently ignored. Do not retry an Injection after an unknown outcome without
+inspecting its operation or Scenario trace.

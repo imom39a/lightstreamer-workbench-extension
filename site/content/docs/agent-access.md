@@ -9,20 +9,19 @@ Workbench can share one open Panel Session with an MCP client. The agent can ins
 
 The MCP companion runs as a local Node process. The MCP client starts it when it starts the configured stdio server. The companion starts or reuses a loopback broker at `127.0.0.1:24817`. Open Workbench panels connect to that broker automatically while the panel is open. You do not need a native installer, a hosted service, a background service, or a separate terminal to run a daemon.
 
-## Prepare the source build
+## Install the companion
 
-Until the npm package is published, use the matching local release bundle or source checkout. Do not use the version-pinned `npx` command yet: the package is not available from the npm registry.
-
-Sign in to GitHub, open the [Agent companion workflow runs](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml), filter to the `main` branch, choose its latest successful run, and download the `workbench-mcp-release-bundle` artifact. GitHub downloads this artifact as a wrapper ZIP. Extract the wrapper ZIP, then extract the named `lightstreamer-workbench-mcp-v2.0.5.zip` bundle inside it. Check `release-manifest.json` in the MCP bundle root and verify its `source.commit` before using the artifacts. The MCP bundle contains `extension/lightstreamer-workbench-v2.0.5.zip` and `agent/lightstreamer-workbench-agent-0.1.0.tgz`. Extract the extension ZIP into its own directory and load that directory from `chrome://extensions`. Copy the unpacked extension ID. From the extracted MCP bundle root, install the tarball into a stable directory and print a local MCP configuration. If you cannot sign in or download the workflow artifact, build the extension and companion from a source checkout using the commands below.
+Install Node.js 22.12+ and run the published package's setup command:
 
 ```sh
-npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.0.tgz
-node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
+npx --yes lightstreamer-workbench-agent@latest setup
 ```
 
-Copy the printed `mcpServers` entry into your MCP client's configuration. `--local` prints an absolute Node and package path. Keep the installed package directory in place. The official Store extension is not required for this local candidate setup.
+On Windows PowerShell, use `npx.cmd` instead of `npx`. Setup prints an `mcpServers` entry; copy it into your MCP client's configuration. The entry pins the exact package version. Setup does not change agent settings or install a background service.
 
-To build the same local package from source, run these commands from the repository root:
+The extension must include **Agent access and setup** under **More actions**. If your installed Store version lacks it, sign in to GitHub and download `workbench-mcp-release-bundle` from the latest successful `main` run of the [Agent companion workflow](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). Extract the artifact wrapper and bundle, then unpack the extension ZIP into its own directory and load it from `chrome://extensions`. Use an extension and companion from the same release or source revision. Add `--extension-id YOUR_UNPACKED_EXTENSION_ID` to the setup command, using the ID Chrome assigned to that unpacked extension.
+
+For a source checkout, build the matching extension and companion from the repository root:
 
 ```sh
 npm ci
@@ -31,9 +30,7 @@ npm run agent:build
 node agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Load the generated `dist/` directory as an unpacked extension and use its actual extension ID. Do not send private application Evidence when sharing the local package or build.
-
-After npm publication is confirmed, use the version-pinned setup command `npx --yes lightstreamer-workbench-agent@0.1.0 setup` and copy its output. Keep the package version pinned in the MCP entry.
+Load `dist/` as an unpacked extension. `--local` prints absolute Node and CLI paths; keep the checkout in place while using that configuration. Do not share private application Evidence in a build or release artifact.
 
 ## Connect and choose a panel
 
@@ -84,10 +81,8 @@ For platform-specific launcher details, see [Windows setup](https://github.com/i
 
 ## Windows setup
 
-Use Windows Node.js when Chrome runs on Windows. Do not run the companion under WSL or in a container; those environments do not share Chrome's loopback address. Install Node.js 22.12 or later with npm. In PowerShell, use `npm.cmd` and `npx.cmd` to avoid execution-policy restrictions on `.ps1` shims. Do not change the PowerShell execution policy.
+Use Windows Node.js when Chrome runs on Windows. WSL, containers, and remote hosts do not automatically share Chrome's loopback network. In PowerShell, run `npx.cmd --yes lightstreamer-workbench-agent@latest setup` and add `--extension-id YOUR_UNPACKED_EXTENSION_ID` when using an unpacked build. `npx.cmd` avoids `.ps1` execution-policy restrictions; there is no need to change that policy.
 
-From the extracted MCP bundle root, install the tarball with `npm.cmd install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.0.tgz`, then run `node.exe ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID`. Copy the printed entry into your agent app. If that app cannot find Node, use the full paths from `(Get-Command node.exe).Source` and `(Get-Command npm.cmd).Source`. Restart the agent app after installing Node so it receives the updated PATH.
+If the agent application cannot find `npx`, use `(Get-Command npx.cmd).Source` as the MCP command and keep each argument separate. Restart the agent application after installing Node so it receives the new PATH. See the [Windows companion guide](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/agent/WINDOWS.md) for offline tarball installation and connection troubleshooting.
 
-After npm publication, use `npx.cmd --yes lightstreamer-workbench-agent@0.1.0 setup`. If the app cannot find `npx`, use the path from `(Get-Command npx.cmd).Source` as its command and keep each argument in a separate configuration entry. Check that the extension is loaded and its Agent access status is not Off. When the status is Waiting, start or reconnect the configured MCP server in the agent app. `list_panel_sessions` returns connected panels; use the exact session before calling `get_status`.
-
-The companion package contains the `lightstreamer-workbench` skill at `skills/lightstreamer-workbench/SKILL.md`. Install that folder in your MCP client's agent-skill directory or ask the client to load that file. It describes the Evidence-guided investigation flow and bounded operation rules.
+The npm package contains the `lightstreamer-workbench` skill at `skills/lightstreamer-workbench/SKILL.md`. Install that folder in your MCP client's agent-skill directory or ask the client to load it for the Evidence-guided investigation workflow.
