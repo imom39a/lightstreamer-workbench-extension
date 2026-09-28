@@ -299,8 +299,10 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
       filter: emptyFilter(),
       find: { text }
     });
+    // A selected Bloom block covers this complete tiny retained range.
+    // Indexed acceleration does not imply fewer rows were actually examined.
     const shortFind = await find("lph");
-    expect(shortFind).toMatchObject({ ok: true, value: { find: { total: 3 }, telemetry: { shortFindFallback: false, fullRetainedScan: false, findCursorBound: 4, findCursorReads: 4 } } });
+    expect(shortFind).toMatchObject({ ok: true, value: { find: { total: 3 }, telemetry: { shortFindFallback: false, fullRetainedScan: true, findCursorBound: 4, findCursorReads: 4 } } });
     await expect(find("ALPHA")).resolves.toMatchObject({ ok: true, value: { find: { total: 3 } } });
     const shortNormalizedFind = await find("it");
     expect(shortNormalizedFind).toMatchObject({ ok: true, value: { find: { total: 4 }, telemetry: { shortFindFallback: true, fullRetainedScan: true, retainedCount: 4, cursorWorkBound: 4 } } });
@@ -356,7 +358,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
         ok: true,
         value: {
           find: { total: 3, matches: [{ eventId: "order-1" }, { eventId: "order-2" }, { eventId: "order-3" }] },
-          telemetry: { findCursorBound: 20, findCursorReads: 20, shortFindFallback: false, fullRetainedScan: false }
+          telemetry: { findCursorBound: 20, findCursorReads: 20, shortFindFallback: false, fullRetainedScan: true }
         }
       });
     } finally {
@@ -407,7 +409,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
         ok: true,
         value: {
           find: { total: 1, matches: [{ eventId: "history-100k-07-small-lifecycle-1-small-lifecycle-128" }] },
-          telemetry: { fullRetainedScan: false, shortFindFallback: false }
+          telemetry: { fullRetainedScan: true, shortFindFallback: false }
         }
       });
     } finally {

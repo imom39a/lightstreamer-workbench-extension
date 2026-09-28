@@ -343,7 +343,10 @@ test("cancelled IndexedDB Find cannot publish a partial index or replace the pre
     const original = FakeObjectStore.prototype.getAll;
     const spy = vi.spyOn(FakeObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
       const pending = original.apply(this, args);
-      if (this.name === "queryProjections") pending.addEventListener("success", () => controller.abort(), { once: true });
+      const range = args[0];
+      if (this.name === "searchBlocks" && range instanceof IDBKeyRange && typeof range.upper === "number" && range.upper < 0) {
+        pending.addEventListener("success", () => controller.abort(), { once: true });
+      }
       return pending;
     });
     const cancelled = await history.query!({ ...request, at: first.value.readPoint, find: { ...request.find, text: "keep-category" }, signal: controller.signal });

@@ -87,6 +87,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         const size = saved?.size ?? Number(args.limit ?? 25);
         const includePayload = saved?.includePayload ?? args.includePayload === true;
         const result = await runtime.query({ ...boundary, at: saved?.at ?? "LATEST_COMMITTED", size: 1, includePayload, find: { text, scopeToFilter: true, reveal: false, size, ...(saved ? { after: saved.after } : {}) } });
+        if (result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: Evidence search cannot evaluate this investigation. Remove the unsupported Filter criterion or explicitly search within: page.");
         if (!result.find) throw new Error("Evidence search is unavailable at this read point.");
         const records = result.find.results ?? [];
         let nextCursor: string | null = null;

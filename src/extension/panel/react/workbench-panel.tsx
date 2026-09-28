@@ -688,6 +688,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   const pendingEvidenceFocus = useRef<string | null>(null);
   const pendingTimelineReveal = useRef<string | null>(null);
   const pendingScopeFocus = useRef<string | null>(null);
+  const pendingScopeSearchReveal = useRef<string | null>(null);
   const pendingScopeEntryFocus = useRef(false);
   const pendingContextFocus = useRef(false);
   const pendingRetainedBoundaryFocus = useRef<"oldest" | "newest" | null>(null);
@@ -1275,6 +1276,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     scopeSearchOrigin.current = origin;
     pendingScopeEntryFocus.current = false;
     pendingScopeFocus.current = null;
+    pendingScopeSearchReveal.current = null;
     setScopeSearchOpen(true);
     setScopeSearchFocusRequest(value => value + 1);
   };
@@ -1296,7 +1298,10 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
       while (parent) { next.delete(parent); parent = scopeNodeById.get(parent)?.parentId; }
       return next;
     });
-    if (geometry === "wide") pendingScopeFocus.current = scopeId;
+    if (geometry === "wide") {
+      pendingScopeFocus.current = scopeId;
+      pendingScopeSearchReveal.current = scopeId;
+    }
     dispatch(runtime, { type: "set-scope-focus", scopeId });
     commitScope(scopeId);
   };
@@ -1852,13 +1857,14 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     if (scopeSearchOpen) return;
     const nodeId = pendingScopeFocus.current;
     if (!nodeId) return;
-    // Search can choose a node inside a collapsed or unmounted branch. The
-    // expanded tree is now committed, so reveal its virtual window first.
-    revealScopeNode(nodeId);
+    // Search can choose a node inside a collapsed or unmounted branch. Reveal
+    // after expansion commits, without turning passive tree focus into scrolling.
+    if (pendingScopeSearchReveal.current === nodeId) revealScopeNode(nodeId);
     const node = scopeNodesById.current.get(nodeId);
     if (!node) return;
     node.focus();
     pendingScopeFocus.current = null;
+    pendingScopeSearchReveal.current = null;
   }, [snapshot.scope.focusedNodeId, renderedScopeWindowStart, scopeWindowSize, scopeSearchOpen, visibleScopeNodes]);
 
   useLayoutEffect(() => {

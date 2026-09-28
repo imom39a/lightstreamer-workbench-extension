@@ -67,13 +67,13 @@ import {
 } from "./event-history-authoritative";
 import { extractEvidenceFacets, canonicalEvidenceSearchText, canonicalEvidenceSearchTextWithExtraction, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
 import { discoverFacet, discoverFacetFromAccounting, discoverFacetFromAggregates, type DiscoveryAccountingEntry, type DiscoveryAggregateEntry } from "./evidence-filter-discovery";
-import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
+import { canonicalizeFilter, evaluateFilter, filterValueMatches, type Filter, type FilterRecord } from "./filter-algebra";
 import { findEvidence, createEvidenceFindAccumulator, withEvidenceFindPage, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import {
   appendFacetPostingBlocks, appendSearchIndexBlocks, expandFacetPostingBlock,
   facetPostingToken, facetIdentityParts, indexBlockStart, readFacetPostingBlock, readSearchIndexBlock,
-  searchBlockMayContain, EVENT_INDEX_BLOCK_SIZE, FACET_POSTING_NAMESPACE,
-  type SearchIndexBlock, type FacetPosting as FacetPostingRecord
+  searchBlockMayContain, readSearchIndexRowsBlock, trimSearchIndexRowsBlock, EVENT_INDEX_BLOCK_SIZE, FACET_POSTING_NAMESPACE,
+  type SearchIndexBlock, type SearchIndexRowsBlock, type FacetPosting as FacetPostingRecord
 } from "./indexeddb/event-index-blocks";
 import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor, type EvidenceQueryCursor } from "./evidence-filter-cursor";
 import {
@@ -2145,6 +2145,27 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   };
 }
 
+/** Optional exact rows never replace startup's canonical journal checks.
+ * Validate every present block before the adapter is exposed; missing legacy
+ * rows remain valid and use canonical projections when queried. */
+async function validateExactSearchRows(store: IDBObjectStore, control: ControlRecord | undefined): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = store.openCursor(queryBoundRange(-Number.MAX_SAFE_INTEGER, -1));
+    request.onerror = () => reject(request.error ?? new Error("Exact search startup validation failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(); return; }
+      void (async () => {
+        const rows = readSearchIndexRowsBlock(cursor.value);
+        if (!control || cursor.key !== rows.sequence || rows.intervalId !== control.interval.id) throw new Error("Exact search block belongs to an unavailable interval.");
+        const bloom = readSearchIndexBlock(await requestToPromise<unknown>(store.get(-rows.sequence), "validating exact search block coverage"));
+        if (rows.intervalId !== bloom.intervalId || rows.firstSequence < bloom.firstSequence || rows.lastSequence !== bloom.lastSequence) throw new Error("Exact search block coverage is incomplete.");
+        cursor.continue();
+      })().catch(reject);
+    };
+  });
+}
+
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
   const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readonly");
   try {
@@ -2162,6 +2183,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings),
       transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates)
     );
+    await validateExactSearchRows(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks), control);
     await transactionDone(transaction, "loading Event History");
     if (database.queryProjectionMigrationRequired || migration !== undefined) {
       await ensureQueryProjections(database, control, panelSessionId);
@@ -2612,7 +2634,8 @@ async function queryIndexedDb(
       telemetry.aroundIndexReads += 1;
       telemetry.aroundCursorBound = telemetry.retainedCount;
     }
-    await validateProjectionCoverage(transaction.objectStore(options.projectionStore), evidenceStore, interval.id, firstSequence, lastSequence, expectedEvidenceCount, telemetry);
+    await validateProjectionCoverage(transaction.objectStore(options.projectionStore), evidenceStore, interval.id, firstSequence, lastSequence, expectedEvidenceCount, telemetry,
+      currentFirstSequence, currentLastSequence);
     const topologyCheckpointCount = await countTopologyCheckpoints(evidenceStore, firstSequence, lastSequence, telemetry);
     const expectedProjectionCount = expectedEvidenceCount - topologyCheckpointCount;
     const findKey = request.find === undefined ? null : JSON.stringify([readPoint, filter, normalizeEvidenceSearchText(request.find.text), request.find.scopeToFilter === true]);
@@ -2816,16 +2839,45 @@ function recordProjectionCursorRead(telemetry: QueryTelemetryMutable, local: { r
  * they are actually read, and authoritative startup validation remains the
  * fail-closed payload/index reconciliation boundary.
  */
-async function validateProjectionCoverage(store: IDBObjectStore, evidence: IDBObjectStore, _intervalId: string, first: number, last: number, expected: number, telemetry: QueryTelemetryMutable): Promise<void> {
-  const range = last < first ? undefined : queryBoundRange(first, last);
-  const [total, evidenceTotal, rangeTotal, rangeEvidenceTotal] = await Promise.all([
-    requestToPromise<number>(store.count(), "validating query projection coverage"),
-    requestToPromise<number>(evidence.count(), "validating query projection coverage"),
-    last < first ? Promise.resolve(0) : requestToPromise<number>(store.count(range), "validating query projection range coverage"),
-    last < first ? Promise.resolve(0) : requestToPromise<number>(evidence.count(range), "validating Evidence range coverage")
+async function validateProjectionCoverage(store: IDBObjectStore, evidence: IDBObjectStore, _intervalId: string, first: number, last: number, expected: number, telemetry: QueryTelemetryMutable, currentFirst: number, currentLast: number): Promise<void> {
+  const currentExpected = Math.max(0, currentLast - currentFirst + 1);
+  const endpoint = (source: IDBObjectStore, direction: IDBCursorDirection) => currentExpected === 0
+    ? Promise.resolve(undefined)
+    : requestToPromise<IDBCursor | null>(source.openKeyCursor(undefined, direction), "validating query coverage endpoint").then(cursor => cursor?.key);
+  if (first === currentFirst && last === currentLast) {
+    // Complete current-range counts plus outer keys prove range coverage
+    // without repeating the same O(retained) count with a range argument.
+    const [total, evidenceTotal, firstKey, lastKey, evidenceFirst, evidenceLast] = await Promise.all([
+      requestToPromise<number>(store.count(), "validating query projection coverage"),
+      requestToPromise<number>(evidence.count(), "validating query projection coverage"),
+      endpoint(store, "next"), endpoint(store, "prev"), endpoint(evidence, "next"), endpoint(evidence, "prev")
+    ]);
+    telemetry.projectionCoverageReads += currentExpected === 0 ? 2 : 6;
+    if (total !== expected || evidenceTotal !== expected || (currentExpected > 0
+      && (firstKey !== currentFirst || lastKey !== currentLast || evidenceFirst !== currentFirst || evidenceLast !== currentLast))) {
+      throw new Error("The query projection store does not exactly cover Evidence records.");
+    }
+    return;
+  }
+  // Older Find points remain valid while Capture appends. Count the requested
+  // subset and its complement separately, visiting every current row once per
+  // store. This retains the independent subset proof, checks missing/extra
+  // newer rows, and avoids counting the large prefix twice on every Next.
+  const ranges = (last < first ? [[currentFirst, currentLast]] : [
+    [currentFirst, Math.min(currentLast, first - 1)],
+    [Math.max(currentFirst, first), Math.min(currentLast, last)],
+    [Math.max(currentFirst, last + 1), currentLast]
+  ]).filter(([lower, upper]) => lower! <= upper!);
+  const [counts, endpoints] = await Promise.all([
+    Promise.all(ranges.flatMap(([lower, upper]) => [
+      requestToPromise<number>(store.count(queryBoundRange(lower!, upper!)), "validating query projection partition coverage"),
+      requestToPromise<number>(evidence.count(queryBoundRange(lower!, upper!)), "validating Evidence partition coverage")
+    ])),
+    Promise.all([endpoint(store, "next"), endpoint(store, "prev"), endpoint(evidence, "next"), endpoint(evidence, "prev")])
   ]);
-  telemetry.projectionCoverageReads = (telemetry.projectionCoverageReads ?? 0) + 4;
-  if (total !== evidenceTotal || rangeTotal !== expected || rangeEvidenceTotal !== expected || rangeTotal !== rangeEvidenceTotal) {
+  telemetry.projectionCoverageReads += counts.length + (currentExpected === 0 ? 0 : 4);
+  if (ranges.some(([lower, upper], index) => counts[index * 2] !== upper! - lower! + 1 || counts[index * 2 + 1] !== upper! - lower! + 1)
+    || (currentExpected > 0 && (endpoints[0] !== currentFirst || endpoints[1] !== currentLast || endpoints[2] !== currentFirst || endpoints[3] !== currentLast))) {
     throw new Error("The query projection store does not exactly cover Evidence records.");
   }
 }
@@ -3504,7 +3556,7 @@ function readProjectionByIdentity(store: IDBObjectStore, identity: EvidenceIdent
   });
 }
 
-async function findSearchBlocks(
+async function readFindSearchBlocks(
   store: IDBObjectStore, intervalId: string, first: number, last: number,
   normalized: string, telemetry: QueryTelemetryMutable
 ): Promise<SearchIndexBlock[]> {
@@ -3524,13 +3576,13 @@ async function findSearchBlocks(
       || block.firstSequence > Math.max(first, block.sequence) || block.lastSequence < Math.min(last, block.sequence + EVENT_INDEX_BLOCK_SIZE - 1)) {
       throw new Error("Find block coverage is incomplete.");
     }
-    if (searchBlockMayContain(block, normalized)) candidates.push(block);
+    candidates.push(block);
   }
-  if (Array.from(normalized).length < 3) {
+  if (normalized && Array.from(normalized).length < 3) {
     telemetry.shortFindFallback = true;
     telemetry.fullRetainedScan = true;
   }
-  telemetry.findCursorBound = candidates.reduce((total, block) => total + Math.min(last, block.sequence + EVENT_INDEX_BLOCK_SIZE - 1) - Math.max(first, block.sequence) + 1, 0);
+  telemetry.findCursorBound = candidates.filter(block => normalized && searchBlockMayContain(block, normalized)).reduce((total, block) => total + Math.min(last, block.sequence + EVENT_INDEX_BLOCK_SIZE - 1) - Math.max(first, block.sequence) + 1, 0);
   return candidates;
 }
 
@@ -3562,8 +3614,9 @@ async function readFindSequenceIndex(
   const leadingMatches: EvidenceIdentity[] = [];
   let matching = allEligible ? expectedCount : 0;
   if (last < first) return { key, matches: new Float64Array(), eligible: eligible === null ? null : new Float64Array(), leadingMatches, matching, inScope: 0 };
-  const searchCandidates = normalized ? await findSearchBlocks(searchBlocks, interval.id, first, last, normalized, telemetry) : [];
-  const searchBlockStarts = new Set(searchCandidates.map(block => block.sequence));
+  const blocks = await readFindSearchBlocks(searchBlocks, interval.id, first, last, normalized, telemetry);
+  const blockByStart = new Map(blocks.map(block => [block.sequence, block]));
+  const searchBlockStarts = new Set(blocks.filter(block => normalized && searchBlockMayContain(block, normalized)).map(block => block.sequence));
   const blockStarts = new Set<number>();
   // Filter eligibility is also the reveal context. Read it once rather than
   // rescanning every filtered row separately for the page, Find and reveal.
@@ -3573,46 +3626,81 @@ async function readFindSequenceIndex(
   }
   if (allEligible || !find.scopeToFilter) for (const start of searchBlockStarts) blockStarts.add(start);
   const starts = [...blockStarts].sort((a, b) => a - b);
-  let projectionCount = 0;
-  const filterWithoutAround = { ...filter, around: null } as unknown as Filter;
-  // Up to four adjacent blocks share one bounded bulk read. This reduces
-  // browser/database round trips without materializing the retained journal.
+  let rowCount = 0;
+  const canonicalFilter = canonicalizeFilter({ ...filter, around: null } as unknown as Filter);
+  const criteria = Object.entries(canonicalFilter.criteria);
+  const criterionMatches = (observed: FilterRecord["facets"][string], criterion: (typeof criteria)[number][1]): boolean =>
+    (criterion.include.length === 0 || Boolean(observed && criterion.include.some(wanted => filterValueMatches(observed, wanted))))
+    && !(observed && criterion.exclude.some(wanted => filterValueMatches(observed, wanted)));
+  const consume = (sequence: number, eventId: string, timestamp: number, text: string, evidence: boolean, matchesCriteria: boolean): void => {
+    if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+    rowCount += 1;
+    if (searchBlockStarts.has(indexBlockStart(sequence))) telemetry.findCursorReads += 1;
+    if (!evidence) return;
+    let inScope = allEligible;
+    if (!allEligible && (candidates === null || candidates.has(sequence)) && canonicalFilter.unsupported.length === 0
+      && (!canonicalFilter.text || text.includes(canonicalFilter.text))) {
+      if (matchesCriteria) {
+        matching += 1;
+        inScope = around === null || (around.intervalId === interval.id && timestamp >= around.start && timestamp < around.end);
+        if (inScope) eligible!.push(sequence);
+      }
+    }
+    if (normalized && (!find.scopeToFilter || inScope) && searchBlockStarts.has(indexBlockStart(sequence)) && text.includes(normalized)) {
+      matches.push(sequence);
+      if (leadingMatches.length < 1_000) leadingMatches.push(Object.freeze({ intervalId: interval.id, pageId: interval.id, ownerId: "memory-event-history", sequence, eventId }));
+    }
+  };
+  // Exact row blocks use column dictionaries instead of cloning the same rich
+  // facet objects for every row. Four blocks bound transient read memory.
   for (let position = 0; position < starts.length;) {
     if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
     const start = starts[position++]!;
     let end = start;
     for (let count = 1; count < 4 && starts[position] === end + EVENT_INDEX_BLOCK_SIZE; count++) end = starts[position++]!;
-    const lower = Math.max(first, start), upper = Math.min(last, end + EVENT_INDEX_BLOCK_SIZE - 1);
-    const projections = await requestToPromise<QueryProjection[]>(store.getAll(queryBoundRange(lower, upper), upper - lower + 1), "reading Find index projections");
-    if (projections.length !== upper - lower + 1) throw new Error("Find projection coverage is incomplete.");
-    projectionCount += projections.length;
-    const state = { reads: 0, bound: upper - lower + 1 };
-    for (const [offset, projection] of projections.entries()) {
-      if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
-      recordProjectionCursorRead(telemetry, state, "Find");
-      if (searchBlockStarts.has(indexBlockStart(projection.sequence))) telemetry.findCursorReads += 1;
-      validateQueryProjection(projection, interval.id, lower + offset);
-      if (isTopologyCheckpointProjection(projection)) continue;
-      let inScope = allEligible;
-      if (!allEligible && (candidates === null || candidates.has(projection.sequence))) {
-        const evaluation = evaluateFilter(filterWithoutAround, {
-          timestamp: projection.timestamp, intervalId: projection.intervalId,
-          searchText: projection.searchText, facets: projection.facets as unknown as FilterRecord["facets"]
-        });
-        if (evaluation.matches) {
-          matching += 1;
-          inScope = isInAround({ identity: identityOfProjection(projection, interval.id), timestamp: projection.timestamp }, around);
-          if (inScope) eligible!.push(projection.sequence);
-        }
+    const rawRows = await requestToPromise<unknown[]>(searchBlocks.getAll(queryBoundRange(-end, -start), 4), "reading exact Find blocks");
+    const rowsByStart = new Map<number, SearchIndexRowsBlock>();
+    for (const value of rawRows) {
+      const rows = readSearchIndexRowsBlock(value);
+      const metadata = blockByStart.get(-rows.sequence);
+      if (!metadata || rows.intervalId !== interval.id || rows.firstSequence < metadata.firstSequence || rows.lastSequence !== metadata.lastSequence) {
+        throw new Error("Exact Find block coverage is incomplete.");
       }
-      if (normalized && (!find.scopeToFilter || inScope) && searchBlockStarts.has(indexBlockStart(projection.sequence))
-        && normalizeEvidenceSearchText(projection.searchText).includes(normalized)) {
-        matches.push(projection.sequence);
-        if (leadingMatches.length < 1_000) leadingMatches.push(Object.freeze(identityOfProjection(projection, interval.id)));
+      rowsByStart.set(-rows.sequence, rows);
+    }
+    for (let blockStart = start; blockStart <= end; blockStart += EVENT_INDEX_BLOCK_SIZE) {
+      const lower = Math.max(first, blockStart), upper = Math.min(last, blockStart + EVENT_INDEX_BLOCK_SIZE - 1);
+      const rows = rowsByStart.get(blockStart);
+      if (rows && rows.firstSequence <= lower && rows.lastSequence >= upper) {
+        // Scope and structured predicates operate on dictionary codes. Repeated
+        // client/session/subscription values are compared once per block, and
+        // no per-row facet object is needed even for compound investigations.
+        const masks = criteria.map(([facet, criterion]) => {
+          const column = rows.facets.find(candidate => candidate.facet === facet);
+          return { codes: column?.codes, allowed: [criterionMatches(undefined, criterion),
+            ...(column?.values ?? []).map(observed => criterionMatches(observed as unknown as FilterRecord["facets"][string], criterion))] };
+        });
+        for (let sequence = lower; sequence <= upper; sequence++) {
+          const row = sequence - rows.firstSequence;
+          consume(sequence, rows.eventIds[row]!, rows.timestamps[row]!, rows.texts[row]!, rows.evidence[row] === 1,
+            masks.every(mask => mask.allowed[mask.codes?.[row] ?? 0]));
+        }
+      } else {
+        // A journal created before exact blocks, or an appended legacy block
+        // with only an exact suffix, keeps the canonical projection fallback.
+        const projections = await requestToPromise<QueryProjection[]>(store.getAll(queryBoundRange(lower, upper), upper - lower + 1), "reading legacy Find projections");
+        if (projections.length !== upper - lower + 1) throw new Error("Find projection coverage is incomplete.");
+        const state = { reads: 0, bound: upper - lower + 1 };
+        for (const [offset, projection] of projections.entries()) {
+          recordProjectionCursorRead(telemetry, state, "Find");
+          validateQueryProjection(projection, interval.id, lower + offset);
+          consume(projection.sequence, projection.eventId, projection.timestamp, normalizeEvidenceSearchText(projection.searchText), !isTopologyCheckpointProjection(projection),
+            criteria.every(([facet, criterion]) => criterionMatches(projection.facets[facet] as FilterRecord["facets"][string], criterion)));
+        }
       }
     }
   }
-  if (projectionCount >= last - first + 1) telemetry.fullRetainedScan = true;
+  if (rowCount >= last - first + 1) telemetry.fullRetainedScan = true;
   return Object.freeze({ key, matches: Float64Array.from(matches), eligible: eligible === null ? null : Float64Array.from(eligible), leadingMatches: Object.freeze(leadingMatches), matching, inScope: eligible?.length ?? expectedCount });
 }
 
@@ -3948,9 +4036,22 @@ async function applyJournalRetentionTrim(
       try {
         const block = readSearchIndexBlock(cursor.value);
         if (block.intervalId !== interval.id) throw new Error("Find block retention crossed a History Interval.");
-        if (block.lastSequence <= cutoffSequence) cursor.delete();
-        else if (block.firstSequence <= cutoffSequence) cursor.update({ ...block, firstSequence: cutoffSequence + 1 });
-        cursor.continue();
+        const rowsRequest = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).get(-block.sequence);
+        rowsRequest.onsuccess = () => {
+          try {
+            if (rowsRequest.result !== undefined) {
+              const rows = readSearchIndexRowsBlock(rowsRequest.result);
+              if (rows.intervalId !== interval.id || rows.lastSequence !== block.lastSequence || rows.firstSequence < block.firstSequence) throw new Error("Exact Find retention coverage is incomplete.");
+              const trimmed = trimSearchIndexRowsBlock(rows, cutoffSequence + 1);
+              if (trimmed === null) transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).delete(rows.sequence);
+              else transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).put(trimmed);
+            }
+            if (block.lastSequence <= cutoffSequence) cursor.delete();
+            else if (block.firstSequence <= cutoffSequence) cursor.update({ ...block, firstSequence: cutoffSequence + 1 });
+            cursor.continue();
+          } catch (error) { reject(error); }
+        };
+        rowsRequest.onerror = () => reject(rowsRequest.error ?? new Error("Exact Find retention read failed."));
       } catch (error) { reject(error); }
     };
   });

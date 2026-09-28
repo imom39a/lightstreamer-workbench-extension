@@ -130,6 +130,23 @@ describe("MCP companion search", () => {
     expect((await call("search_scope", { text: "instrument-new" })).total).toBeGreaterThan(0);
   });
 
+  it("rejects an unsupported current Filter without returning out-of-Scope matches or changing the investigation", async () => {
+    const { runtime, call } = await fixture([
+      event(1),
+      event(2, { client: { id: "other-client", sessionId: "other-session", status: "CONNECTED:WS-STREAMING" } })
+    ]);
+    const scope = runtime.getSnapshot().scope.nodes.find(node => node.kind === "client" && node.label === "client-1")!;
+    runtime.dispatch({ type: "set-scope", scopeId: scope.id });
+    runtime.dispatch({ type: "apply-filter-mutations", expectedRevision: runtime.getSnapshot().evidence.investigation.filter.revision,
+      operations: [{ type: "add-unsupported", criterion: { id: "future-criterion", reason: "Unsupported imported Filter" } }] });
+    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.loading).toBe(false));
+    const before = investigation(runtime);
+    await expect(call("search_evidence", { text: "needle", within: "current-investigation", limit: 1 })).rejects.toThrow("UNSUPPORTED_FILTER");
+    expect(investigation(runtime)).toEqual(before);
+    // The explicitly unfiltered page boundary remains available for recovery.
+    expect((await call("search_evidence", { text: "needle", within: "page" })).total).toBe(2);
+  });
+
   it("expires both search continuations on retention and Clear", async () => {
     const { history, call } = await fixture(undefined, { maxRetainedCount: 6 });
     const evidence = await call("search_evidence", { text: "needle", limit: 1 });

@@ -75,6 +75,8 @@ export function createAuthoritativeHistory(
   let intervalOrdinal = 1;
   let interval = intervalFor(intervalOrdinal);
   let currentEvidence: CommittedEvidence[] = [];
+  const currentEvidenceBySequence = new Map<number, CommittedEvidence>();
+  let queryProjections = new WeakMap<CommittedEvidence, SelectionRecord>();
   let nextSequence = 1;
   let offerNumber = 0;
   let notAccepted = 0;
@@ -134,6 +136,7 @@ export function createAuthoritativeHistory(
       candidate: copied
     });
     currentEvidence.push(evidence);
+    currentEvidenceBySequence.set(evidence.sequence, evidence);
     allEvidence.push(evidence);
     return toRef(evidence);
   }
@@ -295,6 +298,8 @@ export function createAuthoritativeHistory(
 
     const records: SelectionRecord[] = currentEvidence.flatMap((entry) => {
       if (entry.candidate.kind === "topology-checkpoint" || entry.sequence > (readPoint.committedEvidenceBoundary?.sequence ?? 0) || entry.sequence < (readPoint.retainedRange?.first.sequence ?? 1)) return [];
+      const cached = queryProjections.get(entry);
+      if (cached) return [cached];
       const identity = Object.freeze({
         intervalId: entry.intervalId,
         pageId: interval.id,
@@ -314,7 +319,7 @@ export function createAuthoritativeHistory(
         const label = event.item.name ?? String(event.item.position);
         facets.item = typedFacetValue("item", "legacy-label", label, label);
       }
-      return [Object.freeze({
+      const record = Object.freeze({
         identity,
         timestamp: event.timestamp,
         summary: event.kind,
@@ -324,9 +329,10 @@ export function createAuthoritativeHistory(
           listenerOwner: identity.ownerId,
           summary: event.kind
         }),
-        facets: Object.freeze(facets),
-        payload: copyCandidate(event)
-      })];
+        facets: Object.freeze(facets)
+      });
+      queryProjections.set(entry, record);
+      return [record];
     });
     const around = normalizeAround(request.filter.around, readPoint.retainedRange);
     const filter = around === request.filter.around
@@ -369,20 +375,28 @@ export function createAuthoritativeHistory(
         });
       }
     }
+    const hydrate = (record: SelectionRecord): SelectionRecord => {
+      const entry = currentEvidenceBySequence.get(record.identity.sequence)!;
+      return Object.freeze({ ...record, payload: copyCandidate(entry.candidate) });
+    };
+    const selected = request.lookup === undefined
+      ? undefined
+      : records.find(record => record.identity.sequence === request.lookup!.sequence);
     const lookup = request.lookup === undefined
       ? null
-      : lookupEvidence(records, readPoint, request.lookup, filter, around);
+      : lookupEvidence(selected ? [hydrate(selected)] : [], readPoint, request.lookup, filter, around);
     let find = request.find === undefined ? null : withEvidenceFindPage(findEvidence(request.find.scopeToFilter ? inScope : records, request.find), inScope, request, readPoint);
     if (find && request.find?.includeMatchPayload) {
       const matchIdentity = find.current ?? find.first;
       const match = records.find(record => record.identity.eventId === matchIdentity?.eventId);
-      if (match) find = Object.freeze({ ...find, match });
+      if (match) find = Object.freeze({ ...find, match: hydrate(match) });
     }
+    if (find && request.includePayload) find = Object.freeze({ ...find, results: Object.freeze((find.results ?? []).map(hydrate)) });
     return gated({
       ok: true,
       value: Object.freeze({
         readPoint,
-        page: Object.freeze({ evidence: Object.freeze(page), nextCursor }),
+        page: Object.freeze({ evidence: Object.freeze(request.includePayload ? page.map(hydrate) : page), nextCursor }),
         totals: Object.freeze({ matching: matching.length, inScope: inScope.length }),
         discoveries: new Map(discoveries),
         lookup,
@@ -405,6 +419,8 @@ export function createAuthoritativeHistory(
     intervalOrdinal += 1;
     interval = intervalFor(intervalOrdinal);
     currentEvidence = [];
+    currentEvidenceBySequence.clear();
+    queryProjections = new WeakMap();
     const result = Object.freeze({ previousInterval, interval });
     publish(
       Object.freeze({

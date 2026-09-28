@@ -70,16 +70,18 @@ describe("release packaging verification gate", () => {
     expect(testRunner).toContain('["--maxWorkers=2"]');
     expect(testRunner).toContain('"--no-file-parallelism", "--maxWorkers=1"');
     expect(testRunner).toContain("if (ordinaryStatus !== 0) process.exit(ordinaryStatus);");
-    expect(testRunner).toContain("process.exit(isolatedStatus);");
+    expect(testRunner).toContain("if (isolatedStatus !== 0) process.exit(isolatedStatus);");
+    expect(testRunner).toContain('"serialized heavy-work suite"');
+    expect(testRunner).toContain("process.exit(heavyWorkStatus);");
   });
 
-  it("discovers a complete disjoint two-phase test plan", () => {
+  it("discovers a complete disjoint plan with isolated storage and timing-sensitive heavy work", () => {
     const result = spawnSync(process.execPath, [join(projectRoot, "scripts/test-unit.mjs"), "--print-plan"], {
       cwd: projectRoot,
       encoding: "utf8"
     });
     expect(result.status, result.stderr).toBe(0);
-    const plan = JSON.parse(result.stdout) as { ordinary: string[]; isolated: string[] };
+    const plan = JSON.parse(result.stdout) as { ordinary: string[]; isolated: string[]; heavyWork: string[] };
     expect(plan.isolated).toEqual(expect.arrayContaining([
       "tests/authoritative-event-history-contract.test.ts",
       "tests/authoritative-event-history-indexeddb.test.ts",
@@ -92,12 +94,28 @@ describe("release packaging verification gate", () => {
       "tests/filter-impl-07-schema.test.ts",
       "tests/filter-impl-09-indexeddb-discovery.test.ts",
       "tests/filter-impl-09-indexeddb-parity.test.ts",
-      "tests/filter-impl-09-indexeddb-workload.test.ts"
-     ]));
+      "tests/filter-impl-09-indexeddb-workload.test.ts",
+      "tests/history-100k-02-indexeddb.test.ts"
+    ]));
+    expect(plan.heavyWork).toEqual([
+      "tests/activity-timeline-projection.test.ts",
+      "tests/command-state.test.ts",
+      "tests/event-history-performance-runner.test.ts",
+      "tests/event-history-performance-script.test.ts",
+      "tests/filter-impl-04-memory-performance.test.ts",
+      "tests/filter-impl-05-memory.test.ts",
+      "tests/filter-impl-06-memory-performance.test.ts",
+      "tests/local-injection-scenario-assertions.test.ts",
+      "tests/production-extension-build.test.ts",
+      "tests/release-package-script.test.ts",
+      "tests/workbench-runtime-performance.test.ts",
+      "tests/workbench-runtime.test.ts"
+    ]);
     const discovered = discoverUnitTestFiles(join(projectRoot, "tests"));
-    expect(plan.ordinary).toHaveLength(discovered.length - plan.isolated.length);
-    expect(new Set([...plan.ordinary, ...plan.isolated])).toEqual(new Set(discovered));
-     expect(new Set(plan.isolated).size).toBe(plan.isolated.length);
+    const classified = [...plan.ordinary, ...plan.isolated, ...plan.heavyWork];
+    expect(plan.ordinary).toHaveLength(discovered.length - plan.isolated.length - plan.heavyWork.length);
+    expect(new Set(classified)).toEqual(new Set(discovered));
+    expect(new Set(classified).size).toBe(classified.length);
   });
 
   it("writes deterministic raw-DEFLATE entries with valid headers and contents", () => {

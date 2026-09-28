@@ -38,7 +38,9 @@ jobs:
     name: Panel UI browser gate
     runs-on: ubuntu-24.04
     container: mcr.microsoft.com/playwright:v1.62.1-noble
-    timeout-minutes: 10
+    # Covers the full browser matrix, visual evidence, and serialized performance
+    # contracts; measured operation budgets remain unchanged.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout

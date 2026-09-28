@@ -150,6 +150,9 @@ retained Evidence. Its `within` boundary is explicit:
   applies Find text independently. Both boundaries remain fixed during paging,
   even if the human later changes their investigation.
 
+An unsupported current Filter rejects the search without returning matches.
+Remove the unsupported criterion or explicitly choose `within:"page"`.
+
 For example, after identifying the intended Panel Session:
 
 ```json

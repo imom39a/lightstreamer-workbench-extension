@@ -39,8 +39,11 @@ function candidate(sequence: number, count: number): LightstreamerEventEnvelope 
   };
 }
 
-async function run(adapter: Adapter, samples: number) {
-  const count = adapter === "indexeddb" ? 100_000 : 25_000;
+async function run(adapter: Adapter, samples: number, retainedCount?: number, liveAppend = false) {
+  const productionCount = adapter === "indexeddb" ? 100_000 : 25_000;
+  const count = retainedCount ?? productionCount;
+  const initialCount = liveAppend ? count - 10 : count;
+  assert(Number.isSafeInteger(count) && count >= 2_000 && count % 2 === 0 && count <= productionCount, "Retained fixture count must be even, at least 2,000 and no larger than the adapter's production limit.");
   const sessionId = `evidence-search-perf-${adapter}-${crypto.randomUUID()}`;
   const history: EventHistory = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: sessionId, capacityTier: "NORMAL" })
@@ -60,32 +63,38 @@ async function run(adapter: Adapter, samples: number) {
   const startedAt = performance.now();
   let seedMs = 0;
   try {
-    for (let start = 1; start <= count; start += 256) {
-      const receipts = Array.from({ length: Math.min(256, count - start + 1) }, (_, index) => history.offer(candidate(start + index, count)));
+    for (let start = 1; start <= initialCount; start += 256) {
+      const receipts = Array.from({ length: Math.min(256, initialCount - start + 1) }, (_, index) => history.offer(candidate(start + index, count)));
       assert(receipts.every(({ intake }) => intake === "QUEUED"), `${adapter}: every fixture must enter the production acceptance path`);
       const settled = await Promise.all(receipts.map(({ settled }) => settled));
       assert(settled.every(({ outcome }) => outcome === "BECAME_EVIDENCE"), `${adapter}: all fixture events must commit`);
       progress.accepted += settled.length;
-      if (start % 10_240 === 1 || progress.accepted >= count * .98) console.info(`search-performance ${adapter}: accepted ${Math.min(count, start + 255)}/${count}`);
+      if (start % 10_240 === 1 || progress.accepted >= count * .98) console.info(`search-performance ${adapter}: accepted ${progress.accepted}/${count}`);
     }
     seedMs = performance.now() - startedAt;
     progress.seedMs = seedMs;
     progress.phase = "querying";
-    const status = history.status();
-    assert(status.retained === count && status.accepted === count && status.notAccepted === 0, `${adapter}: fixture must be fully retained at the production limit`);
-    assert(status.capacity.tier === (adapter === "indexeddb" ? "NORMAL" : "LOWER"), `${adapter}: wrong production retention tier`);
-    assert(status.retention?.evicted.count === 0, `${adapter}: search proof cannot silently omit evicted events`);
+    const seededStatus = history.status();
+    assert(seededStatus.retained === initialCount && seededStatus.accepted === initialCount && seededStatus.notAccepted === 0, `${adapter}: initial fixture must be fully retained`);
+    assert(seededStatus.capacity.tier === (adapter === "indexeddb" ? "NORMAL" : "LOWER"), `${adapter}: wrong production retention tier`);
+    assert(seededStatus.retention?.evicted.count === 0, `${adapter}: search proof cannot silently omit evicted events`);
     assert(history.storage.mode === adapter, `${adapter}: unexpected storage fallback`);
-    console.info(`search-performance ${adapter}: full fixture ready; query measurements begin next`);
+    console.info(`search-performance ${adapter}: ${initialCount}-record fixture ready; query measurements begin next`);
+    const beforeQueries = Reflect.get(globalThis, "__evidenceSearchPerformanceBeforeQueries") as (() => Promise<void>) | undefined;
+    if (typeof beforeQueries === "function") await beforeQueries();
     // An opened panel already owns an ordinary Evidence read point before Find.
     // Resolve an actual adapter identity without warming any Find query.
     const ready = await history.query!({ at: "LATEST_COMMITTED", page: { order: "NEWEST_FIRST", size: 1 }, filter: emptyFilter() });
     assert(ready.ok && ready.value.page.evidence.length === 1, `${adapter}: initial Evidence page must be available`);
     const firstIdentity = { ...ready.value.page.evidence[0]!.identity, sequence: 1, eventId: eventId(1) };
     const measure = async (operation: string, sample: number, request: EvidenceQueryRequest): Promise<EvidenceSnapshot> => {
+      const beforeMeasure = Reflect.get(globalThis, "__evidenceSearchPerformanceBeforeMeasure") as ((operation: string, sample: number) => Promise<void>) | undefined;
+      const afterMeasure = Reflect.get(globalThis, "__evidenceSearchPerformanceAfterMeasure") as ((operation: string, sample: number) => Promise<void>) | undefined;
+      if (typeof beforeMeasure === "function") await beforeMeasure(operation, sample);
       const before = performance.now();
       const result = await history.query!(request);
       const elapsedMs = performance.now() - before;
+      if (typeof afterMeasure === "function") await afterMeasure(operation, sample);
       if (!result.ok) progress.failure = { operation, sample, elapsedMs, problem: result.problem };
       assert(result.ok, `${adapter}/${operation}: ${!result.ok ? JSON.stringify(result.problem) : ""}`);
       const value = result.value;
@@ -103,6 +112,37 @@ async function run(adapter: Adapter, samples: number) {
       console.info(`search-performance ${adapter} ${operation} sample ${sample}: ${elapsedMs.toFixed(1)} ms`);
       return value;
     };
+
+    if (liveAppend) {
+      const base: EvidenceQueryRequest = {
+        at: "LATEST_COMMITTED", page: { order: "NEWEST_FIRST", size: 60 }, filter: emptyFilter(),
+        find: { text: "all-search-token", scopeToFilter: true, includeMatchPayload: true,
+          current: { ...firstIdentity, sequence: initialCount - 1, eventId: eventId(initialCount - 1) } }
+      };
+      const beforeAppend = await measure("pre-append-broad-query", 1, base);
+      assert(beforeAppend.find?.total === initialCount && beforeAppend.find.next?.sequence === initialCount, "Pre-append Find must include the complete initial fixture");
+      const appendStarted = performance.now();
+      const receipts = Array.from({ length: 10 }, (_, index) => history.offer(candidate(initialCount + index + 1, count)));
+      assert(receipts.every(receipt => receipt.intake === "QUEUED"), "Live appended records must enter normal capture acceptance");
+      const settled = await Promise.all(receipts.map(receipt => receipt.settled));
+      assert(settled.every(receipt => receipt.outcome === "BECAME_EVIDENCE"), "Live appended records must commit");
+      seedMs += performance.now() - appendStarted;
+      progress.seedMs = seedMs;
+      progress.accepted += settled.length;
+      const afterAppend = await measure("latched-next-after-live-append", 1, {
+        ...base, at: beforeAppend.readPoint, find: { ...base.find!, current: beforeAppend.find.next }
+      });
+      assert(afterAppend.find?.total === initialCount && afterAppend.find.last?.sequence === initialCount
+        && afterAppend.find.current?.sequence === initialCount && afterAppend.find.next === null, "Latched Find must exclude newly appended records while navigating its final match");
+      assert(afterAppend.readPoint.committedEvidenceBoundary?.sequence === initialCount, "Live append must preserve the latched readpoint");
+      for (const record of [...afterAppend.page.evidence, ...(afterAppend.find.page?.evidence ?? [])]) {
+        assert(record.identity.sequence <= initialCount, "Live append leaked newer rows into latched context");
+      }
+      if (adapter === "indexeddb") assert(afterAppend.telemetry?.findCursorReads === 0, "Live append must preserve the unchanged latched Find index");
+    }
+    const status = history.status();
+    assert(status.retained === count && status.accepted === count && status.notAccepted === 0 && status.retention?.evicted.count === 0,
+      `${adapter}: complete fixture must remain retained without omission`);
 
     for (let sample = 1; sample <= samples; sample += 1) {
       const base: EvidenceQueryRequest = {
@@ -145,9 +185,10 @@ async function run(adapter: Adapter, samples: number) {
     }
     progress.phase = "complete";
     return {
-      adapter, samples, retainedCount: count, acceptedCount: status.accepted, seedMs, capacity: status.capacity,
+      adapter, samples, retainedCount: count, atProductionRetentionLimit: count === productionCount, liveAppend,
+      firstColdOperation: liveAppend ? "pre-append-broad-query" : "initial-broad-query", acceptedCount: status.accepted, seedMs, capacity: status.capacity,
       canonicalBytes: status.capacity.measurements?.retainedBytes ?? null, measurements,
-      correctness: { exactRetention: true, completeMatchCount: true, beyond1000: true, lateNavigation: true, filteredPage: true, boundedResponses: true, boundedPayloadHydration: true },
+      correctness: { exactRetention: true, completeMatchCount: true, beyond1000: true, lateNavigation: true, filteredPage: true, boundedResponses: true, boundedPayloadHydration: true, ...(liveAppend ? { latchedLiveAppend: true } : {}) },
       elapsedMs: performance.now() - startedAt
     };
   } catch (error) {
