@@ -7,11 +7,11 @@ Connect an MCP agent to inspect Evidence and test Local Injections in an open Wo
 - An agent app that supports local stdio MCP servers.
 - Chrome, Node, and the agent app on the same computer.
 
-The npm companion remains unavailable after its September 29, 2026 unpublish. Companion 0.1.3 is being prepared for the [public GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3). It bounds serialized MCP replies to 8 KiB by default, supports up to 64 KiB when a tool offers `maxBytes`, and keeps cached Evidence query results out of operational status. The companion does not install the Chrome extension. See [Release notes]({{site}}releases/) for extension availability.
+The npm companion remains unavailable after its September 29, 2026 unpublish. Companion 0.1.3 passed Windows, macOS, and Linux checks and is available in the [public GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3). It bounds serialized MCP replies to 8 KiB by default, supports up to 64 KiB when a tool offers `maxBytes`, and keeps cached Evidence query results out of operational status. The companion does not install the Chrome extension. See [Release notes]({{site}}releases/) for extension availability.
 
 ## Set up MCP
 
-1. Once the release is published, download the exact CI-tested [`lightstreamer-workbench-agent-0.1.3.tgz`](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.3/lightstreamer-workbench-agent-0.1.3.tgz), then install it into a directory you will keep:
+1. Download the exact CI-tested [`lightstreamer-workbench-agent-0.1.3.tgz`](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.3/lightstreamer-workbench-agent-0.1.3.tgz), then install it into a directory you will keep:
 
    macOS or Linux:
 
@@ -37,7 +37,7 @@ The npm companion remains unavailable after its September 29, 2026 unpublish. Co
 
 The agent app starts the companion. Workbench connects automatically. Keep the install directory in place because the printed configuration uses its local path. No separate terminal, hosted service, or native installer is needed after setup.
 
-If your extension lacks **Agent access and setup**, use a matching unpacked build. Follow the [release-bundle and source instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent); use the extension ID assigned by Chrome. Extension 2.0.6 is being prepared; 2.0.4 remains the current Store version while it is prepared.
+If your extension lacks **Agent access and setup**, use a matching unpacked build. Follow the [release-bundle and source instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent); use the extension ID assigned by Chrome. Extension 2.0.6 is pending Chrome Web Store review and will publish automatically after approval; 2.0.4 remains public until then.
 
 ## Check the connection
 

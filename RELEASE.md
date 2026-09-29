@@ -134,7 +134,19 @@ The 2.0.5 revision was submitted through Chrome Web Store API v2 with `DEFAULT_P
 
 Version 2.0.6 is a Non-UI MCP maintenance release based on verified product source `6feda64a28f3d0253f1c48f26f51370a48cd8646`. It removes cached Evidence from operational status, enforces serialized response budgets for every MCP tool, and pages large discovery and diagnostic lists. Companion 0.1.3 supplies the matching response guard and global pagination fixes. Extension permissions, Capture, Local Injection semantics, and the configured analytics boundary are unchanged.
 
-On September 29, 2026 the Store API confirmed 2.0.4 published and 2.0.5 pending review. At the maintainer's request, the pending 2.0.5 submission was canceled before preparing this replacement. The configured Store ZIP and public companion tarball must be verified before submitting 2.0.6 with automatic public publishing after approval. npm publication remains disabled during the post-unpublish package-name hold.
+On September 29, 2026 the Store API confirmed 2.0.4 published and 2.0.5 pending review. At the maintainer's request, the pending 2.0.5 submission was canceled before preparing this replacement. npm publication remains disabled during the post-unpublish package-name hold.
+
+The release source is `3d2fed499d6c097eef3a360a033cd40ab77785a0`. `npm run release:package` passed type checking, 1,891 tests with one skipped, the configured production build, and the extension audit. `npm run test:site` passed all eight browser tests and the site/analytics checks; `npm run docs:check` passed.
+
+The configured Store ZIP is `release/lightstreamer-workbench-v2.0.6.zip`, 509,102 bytes, SHA-256 `64928ae2dc4ea543272213180e17a6c7e2d644daceb56276e04aa4ab0815c2b3`. All 26 archive entries passed integrity checking; the ZIP-root, built, and public manifests agree on 2.0.6. The manifest differs from 2.0.5 only by version. The packaged background contains the configured analytics values. The Store API accepted this exact ZIP with `uploadState: SUCCEEDED` and `crxVersion: 2.0.6`.
+
+Companion 0.1.3 passed the [release workflow](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36630718715), including installed-artifact and response-budget checks on Windows, macOS, and Linux and bundle assembly. A version-specific release-test fixture initially prevented assembly; the final source derives its integration fixtures from package metadata and passes all 12 packaging/preparation tests. Rebuilding from that final source produced the byte-identical Store ZIP above.
+
+The exact tested tarball is published in [MCP companion 0.1.3](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3), tagged at the release source commit. Its `gitHead` matches that commit and its SHA-256 is `9d99c852f876399284101c200555ba1260b6144ce9124a75c9985c40a22d31e9`. An anonymous download matched the digest, and installation plus local MCP setup succeeded. The public release also includes the matching bundle, release plan, and `SHA256SUMS`. The bundle SHA-256 is `0f5ce8c1435ed0acb6a200d2f95c114a94156278e9ded5d814c347cc891c899c`. Its extension ZIP has analytics disabled and differs from the configured Store ZIP only in `extension/background.js`.
+
+Version 2.0.6 was submitted on September 29, 2026 through Chrome Web Store API v2 with `DEFAULT_PUBLISH`, blocking on warnings and requesting 100% distribution. A subsequent status read confirmed 2.0.6 `PENDING_REVIEW` and 2.0.4 `PUBLISHED`. Google has not yet approved 2.0.6.
+
+The Mac was locked, so the Store dashboard description and reviewer fields could not be refreshed. The submission retains the existing 2.0.5 feature description and 0.1.2 reviewer link; the public setup guide now identifies 0.1.3, and that older GitHub release starts with a notice directing current setup and Store review to 0.1.3. The maintained 2.0.6 text in [`store-listing/LISTING.md`](store-listing/LISTING.md) is ready for a later dashboard update; it was not saved to the Store during this submission.
 
 ## Usage analytics release contract
 
