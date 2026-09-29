@@ -64,7 +64,16 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
       { facet: "observationPath", polarity: "include", type: "enum", value: "LISTENER" }
     ] };
     const boundary = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, filter: serverListenerFilter, limit: 100, order: "NEWEST_FIRST" });
-    const profile = await call("describe_stream", { panelSessionId, scopeId: liveItem.scopeId, filter: serverListenerFilter, at: boundary.readPoint, limit: 100, order: "NEWEST_FIRST" });
+    const profileArgs = { panelSessionId, scopeId: liveItem.scopeId, filter: serverListenerFilter, at: boundary.readPoint, limit: 100, order: "NEWEST_FIRST" };
+    const profileReply = await client.callTool({ name: "describe_stream", arguments: profileArgs });
+    assertMcpReplyBudget("describe_stream", profileArgs, profileReply);
+    let profile: any;
+    if (profileReply.isError) {
+      assert.equal((profileReply.structuredContent as any)?.error?.code, "RESULT_BUDGET_EXCEEDED");
+      // A single wide profile can exceed the default. Deliberately request a
+      // larger bounded result at the same read point; do not raise every read.
+      profile = await call("describe_stream", { ...profileArgs, maxBytes: 65536 });
+    } else profile = profileReply.structuredContent;
     assert.ok(profile.streams.length > 0, "Stream description profiles the exact live item at a stable read point.");
     let source: any = null;
     for (const example of profile.streams.flatMap((stream: any) => stream.examples)) {
@@ -117,8 +126,13 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
       await waitForCondition(page, `document.querySelector('#message-text').textContent === ${JSON.stringify(message)} && Number(document.querySelector('#update-count').textContent) === ${baselineCount + 1 + ordinal}`, "Scenario Step changes the inspected app exactly once");
     }
     await call("control_scenario", { panelSessionId, runId: scenario.scenario.run.id, requestId: "browser-checkpoint", action: "step" });
-    const trace = await settle(() => call("get_scenario_trace", { panelSessionId }), result => result.phase === "complete");
-    assert.ok(trace.run.trace.some((entry: any) => entry.kind === "checkpoint" && entry.checkpointId === "evidence-check"));
+    let trace = await settle(() => call("get_scenario_trace", { panelSessionId }), result => result.phase === "complete");
+    let checkpointFound = trace.run.trace.some((entry: any) => entry.kind === "checkpoint" && entry.checkpointId === "evidence-check");
+    while (!checkpointFound && trace.nextOffset !== null) {
+      trace = await call("get_scenario_trace", { panelSessionId, offset: trace.nextOffset });
+      checkpointFound = trace.run.trace.some((entry: any) => entry.kind === "checkpoint" && entry.checkpointId === "evidence-check");
+    }
+    assert.ok(checkpointFound, "The paged trace retains the final Checkpoint.");
     await call("finish_agent_document", { panelSessionId, token: scenario.token });
     const after = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, where: { provenance: ["LOCAL"] }, limit: 10, includePayload: true, maxBytes: 65536 });
     assert.ok(after.evidence.some((row: any) => row.payload?.synthetic), "Agent can read marked Local Evidence after commit.");

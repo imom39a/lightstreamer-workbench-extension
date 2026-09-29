@@ -332,7 +332,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
           if (agentToolResultBytes(response) <= budget) {
             return { ...response, nextCursor: saveNextCursor({ ...query, size, includePayload: false }, result.readPoint, result.page.nextCursor) };
           }
-          if (size <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One stream description exceeds the response budget. Narrow the Scope or use query_evidence.");
+          if (size <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One stream description exceeds maxBytes. Request a larger maxBytes up to 65536, or inspect selected fields with query_evidence.");
           size = Math.max(1, Math.floor(size / 2));
           at = result.readPoint;
         }
