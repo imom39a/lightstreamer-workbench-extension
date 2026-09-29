@@ -11,6 +11,15 @@ const sha = "c".repeat(40);
 const agentVersion = "7.4.2";
 const extension = { version: "2.0.5", manifestVersion: "2.0.5", file: "extension/lightstreamer-workbench-v2.0.5.zip", size: 18, sha256: "a".repeat(64) };
 const agent = { name: "lightstreamer-workbench-agent", version: agentVersion, sha, file: `agent/lightstreamer-workbench-agent-${agentVersion}.tgz`, size: 17, sha256: "b".repeat(64) };
+// The pure manifest tests above use fixed arbitrary versions. Bundle integration
+// fixtures must follow the checked-out source package and manifest instead.
+const sourceExtension = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+const sourceAgent = JSON.parse(await readFile(new URL("../agent/package.json", import.meta.url), "utf8"));
+const extensionVersion = sourceExtension.version;
+const extensionFile = `extension/${sourceExtension.name}-v${extensionVersion}.zip`;
+const companionVersion = sourceAgent.version;
+const companionFile = `agent/${sourceAgent.name}-${companionVersion}.tgz`;
+const wrongVersion = version => version === "0.0.0" ? "0.0.1" : "0.0.0";
 
 test("release manifest binds artifact paths, versions and exact source SHA", () => {
   const manifest = makeReleaseManifest({ extension, agent, sourceSha: sha });
@@ -32,21 +41,21 @@ test("release manifest fails closed on mismatched provenance, versions or dirty 
 test("bundle validates archive metadata and contains checksummed artifacts and instructions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mcp-release-test-"));
   try {
-    const extensionZip = makeZip({ "manifest.json": { manifest_version: 3, version: "2.0.5" } });
-    const agentTgz = makeTgz({ name: agent.name, version: agentVersion, gitHead: sha });
+    const extensionZip = makeZip({ "manifest.json": { manifest_version: 3, version: extensionVersion } });
+    const agentTgz = makeTgz({ name: sourceAgent.name, version: companionVersion, gitHead: sha });
     await writeInputs(directory, extensionZip, agentTgz, sha);
     const { output, manifest } = await createReleaseBundle({ releaseDir: directory, sourceSha: sha });
     const entries = readZipEntries(await readFile(output));
     assert.deepEqual([...entries.keys()].sort(), [
-      "README.txt", "SHA256SUMS", agent.file, extension.file, "release-manifest.json"
+      "README.txt", "SHA256SUMS", companionFile, extensionFile, "release-manifest.json"
     ]);
-    assert.deepEqual(entries.get(extension.file), extensionZip);
-    assert.deepEqual(entries.get(agent.file), agentTgz);
+    assert.deepEqual(entries.get(extensionFile), extensionZip);
+    assert.deepEqual(entries.get(companionFile), agentTgz);
     const emittedManifest = JSON.parse(entries.get("release-manifest.json"));
-    assert.equal(emittedManifest.extension.file, extension.file);
+    assert.equal(emittedManifest.extension.file, extensionFile);
     assert.equal(emittedManifest.extension.size, extensionZip.length);
     assert.equal(emittedManifest.extension.sha256, digest(extensionZip));
-    assert.equal(emittedManifest.mcp.file, agent.file);
+    assert.equal(emittedManifest.mcp.file, companionFile);
     assert.equal(emittedManifest.mcp.size, agentTgz.length);
     assert.equal(emittedManifest.mcp.sha256, digest(agentTgz));
     assert.equal(emittedManifest.state, "prepared-unpublished");
@@ -61,15 +70,15 @@ test("bundle validates archive metadata and contains checksummed artifacts and i
 test("bundle rejects stale ZIP version and stale npm gitHead", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mcp-release-invalid-test-"));
   try {
-    const staleExtension = makeZip({ "manifest.json": { manifest_version: 3, version: "2.0.4" } });
-    const staleAgent = makeTgz({ name: agent.name, version: agentVersion, gitHead: "d".repeat(40) });
+    const staleExtension = makeZip({ "manifest.json": { manifest_version: 3, version: wrongVersion(extensionVersion) } });
+    const staleAgent = makeTgz({ name: sourceAgent.name, version: companionVersion, gitHead: "d".repeat(40) });
     await writeInputs(directory, staleExtension, staleAgent, sha);
     await assert.rejects(createReleaseBundle({ releaseDir: directory, sourceSha: sha }), /Extension ZIP manifest/);
-    const matchingExtension = makeZip({ "manifest.json": { manifest_version: 3, version: "2.0.5" } });
-    await writeFile(join(directory, "lightstreamer-workbench-v2.0.5.zip"), matchingExtension);
+    const matchingExtension = makeZip({ "manifest.json": { manifest_version: 3, version: extensionVersion } });
+    await writeFile(join(directory, extensionFile.split("/").at(-1)), matchingExtension);
     await assert.rejects(createReleaseBundle({ releaseDir: directory, sourceSha: sha }), /npm tarball package metadata/);
-    const wrongPackageVersion = makeTgz({ name: agent.name, version: "7.4.1", gitHead: sha });
-    await writeFile(join(directory, agent.file.split("/").at(-1)), wrongPackageVersion);
+    const wrongPackageVersion = makeTgz({ name: sourceAgent.name, version: wrongVersion(companionVersion), gitHead: sha });
+    await writeFile(join(directory, companionFile.split("/").at(-1)), wrongPackageVersion);
     await assert.rejects(createReleaseBundle({ releaseDir: directory, sourceSha: sha }), /npm tarball package metadata/);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -79,8 +88,8 @@ test("bundle rejects stale ZIP version and stale npm gitHead", async () => {
 test("bundle records guarded publication intent without publishing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mcp-release-intent-test-"));
   try {
-    const extensionZip = makeZip({ "manifest.json": { manifest_version: 3, version: "2.0.5" } });
-    const agentTgz = makeTgz({ name: agent.name, version: agentVersion, gitHead: sha });
+    const extensionZip = makeZip({ "manifest.json": { manifest_version: 3, version: extensionVersion } });
+    const agentTgz = makeTgz({ name: sourceAgent.name, version: companionVersion, gitHead: sha });
     await writeInputs(directory, extensionZip, agentTgz, sha, true);
     const { manifest } = await createReleaseBundle({ releaseDir: directory, sourceSha: sha });
     assert.equal(manifest.state, "prepared-unpublished");
@@ -91,8 +100,8 @@ test("bundle records guarded publication intent without publishing", async () =>
 });
 
 async function writeInputs(directory, extensionZip, agentTgz, sourceSha, publish = false) {
-  const plan = { name: agent.name, version: agentVersion, filename: `lightstreamer-workbench-agent-${agentVersion}.tgz`, sha: sourceSha, publish };
-  await writeFile(join(directory, "lightstreamer-workbench-v2.0.5.zip"), extensionZip);
+  const plan = { name: sourceAgent.name, version: companionVersion, filename: companionFile.split("/").at(-1), sha: sourceSha, publish };
+  await writeFile(join(directory, extensionFile.split("/").at(-1)), extensionZip);
   await writeFile(join(directory, plan.filename), agentTgz);
   await writeFile(join(directory, "agent-release.json"), JSON.stringify(plan));
 }
