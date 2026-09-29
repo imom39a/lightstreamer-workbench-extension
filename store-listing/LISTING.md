@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below accompanies the 2.0.5 repository candidate. The Chrome Web Store still publishes 2.0.4. The MCP companion was briefly published, then unpublished on September 29, 2026; npm currently returns 404 for it. A tested 0.1.2 companion is available in the matching GitHub Actions release bundle. Submit 2.0.5 for Store review only after a public companion installation path and its setup guide are verified. The versioned release records later in this file describe their original packages.
+The description below accompanies the 2.0.5 Store draft. The Chrome Web Store still publishes 2.0.4. The MCP companion was briefly published to npm, then unpublished on September 29, 2026; npm currently returns 404 for it. The tested 0.1.2 tarball is available in a public GitHub release with a verified local installation path. The versioned release records later in this file describe their original packages.
 
 ```text
 New in 2.0.5: Connect a local MCP agent to inspect a Panel Session, query bounded Evidence, and prepare and run reviewed Local Injection Scenarios. Open Agent access and setup from the panel header. The extension no longer requests the nativeMessaging permission.
@@ -179,17 +179,17 @@ Page access is required to run packaged instrumentation at document_start before
 ## Reviewer Test Instructions
 
 ```text
-No account is required. Open DevTools on a page using the official Lightstreamer Web Client and select Lightstreamer Workbench. Capture appears in Ordered Evidence. For Local Injection, create a Draft from an Item Update and choose Inject locally. For Server Injection, clone captured Client Message Evidence or author one for a live client, review the sendMessage arguments, then choose Send Client Message once. Usage analytics is under More actions > Help & resources and can be turned off.
+No account required. On a page using the official Lightstreamer Web Client, open DevTools > Lightstreamer Workbench. Ordered Evidence captures updates; select one for Local Injection. Server Injection reviews one Client Message before send. Agent access starts on. To test MCP, install companion 0.1.2 from https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.2 using the setup guide at https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/.
 ```
 
-For prepublication MCP review, extract the configured Store candidate `release/lightstreamer-workbench-v2.0.5.zip` and load it unpacked; record its assigned extension ID. For the companion, sign in to GitHub and download the `workbench-mcp-release-bundle` artifact from [the verified main-branch workflow run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36547823118). Extract the artifact wrapper ZIP, then extract `lightstreamer-workbench-mcp-v2.0.5.zip`. Verify `release-manifest.json`, its `source.commit`, and the companion tarball digest. The bundle's extension ZIP lacks the configured production analytics stream and is not byte-identical to the Store candidate; use the Store candidate for release review. From the extracted MCP bundle root, install the companion tarball and print local setup:
+For prepublication MCP review, extract the configured Store candidate `release/lightstreamer-workbench-v2.0.5.zip` and load it unpacked; record its assigned extension ID. Download [`lightstreamer-workbench-agent-0.1.2.tgz`](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.2/lightstreamer-workbench-agent-0.1.2.tgz) from the [public companion release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.2). Its SHA-256 is `6a7a30a0def5838743aa40d732142849673e8977a85cd6eaa5a39688fca84ae1`; the release tag targets the tested source commit. From the download directory, install the tarball and print local setup:
 
 ```sh
-npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.2.tgz
+npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.2.tgz
 node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Copy the printed MCP configuration into the test agent app and start its stdio server. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate was uploaded as a Chrome Web Store draft on September 29, 2026; it has not been submitted for review.
+Copy the printed MCP configuration into the test agent app and start its stdio server. Keep the installation directory in place. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate was uploaded as a Chrome Web Store draft on September 29, 2026; it has not been submitted for review.
 
 ## Version 2.0.2 Release Checklist (historical)
 
@@ -247,9 +247,10 @@ The maintainer explicitly authorized this release. The Chrome session currently 
 - [x] Verify the configured Store ZIP, release checks, and package provenance recorded in `RELEASE.md`.
 - [x] Upload the 2.0.5 package as an unpublished Store draft.
 - [x] Replace the fourth Store screenshot with Agent access and save the release note in the description.
-- [ ] Verify a durable public MCP companion installation path and setup guide before Store review.
-- [ ] Confirm npm publication and the version-pinned `npx` setup.
+- [x] Verify the public MCP companion release download, digest, local installation, and setup guide before Store review.
 - [x] Upload the matching extension package.
 - [ ] Verify the actual Chrome Web Store review and publication status.
+
+Restore version-pinned `npx` setup after npm publication resumes; it is not required for this Store submission because the public tarball and local setup are verified.
 
 The 2.0.5 candidate is being prepared for the Store. The npm companion is currently unavailable, so Store review submission remains pending.

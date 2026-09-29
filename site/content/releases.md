@@ -1,6 +1,6 @@
 ## MCP companion — 0.1.2 candidate
 
-Version 0.1.0 was first published on September 28, 2026, then unpublished on September 29. The npm package is currently unavailable. Candidate 0.1.2 passed Windows, macOS, and Linux checks and is in the [Agent companion workflow bundle](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). It includes the agent skill. The Chrome extension is released separately.
+Version 0.1.0 was first published on September 28, 2026, then unpublished on September 29. The npm package is currently unavailable. Version 0.1.2 passed Windows, macOS, and Linux checks and is available as a [public GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.2). It includes the agent skill. The Chrome extension is released separately.
 
 - Find Subscriptions and items with Scope search.
 - Count records and distinct keys before reading examples.
@@ -11,7 +11,7 @@ Follow [MCP setup]({{site}}docs/agent-access/) to connect a matching local build
 
 ## Extension 2.0.5 — MCP support
 
-This candidate adds Agent access and the version-2 read contract. Chrome Web Store publication is separate from npm publication.
+This candidate adds Agent access and the version-2 read contract. The 2.0.5 Chrome Web Store package is uploaded as an unpublished draft; 2.0.4 remains public.
 
 For the matching unpacked build, download `workbench-mcp-release-bundle` from a successful main-branch [Agent companion workflow run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). The bundle contains the extension, companion, and a manifest that identifies the source commit. See the [bundle instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent) for installation.
 
