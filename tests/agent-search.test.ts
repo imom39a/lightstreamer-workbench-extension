@@ -55,6 +55,7 @@ describe("MCP companion search", () => {
     expect(() => validateAgentCall("search_evidence", { panelSessionId: "p", text: "needle", within: "current-investigation", scopeId: "x" })).toThrow("already defines Scope");
   });
 
+  // This checks pagination semantics over 1,002 records; Windows CI needs more than Vitest's default test budget.
   it("pages every match beyond 1,000 at one read point while Capture appends", async () => {
     const { history, runtime, call } = await fixture(Array.from({ length: 1002 }, (_, index) => event(index + 1)));
     const before = investigation(runtime);
@@ -78,7 +79,7 @@ describe("MCP companion search", () => {
     expect(identities.at(-1)).toBe("search-event-1002");
     expect(investigation(runtime)).toEqual(before);
     expect((await call("search_evidence", { within: "page", text: "search-needle" })).total).toBe(1003);
-  });
+  }, 15_000);
 
   it("freezes the current Scope and Filter independently of Find and preserves the human investigation", async () => {
     const { runtime, call } = await fixture([
