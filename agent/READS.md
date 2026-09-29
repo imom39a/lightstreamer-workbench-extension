@@ -123,6 +123,11 @@ execution reply is never permission to repeat execution with a new request ID;
 inspect the existing receipt with `get_operation`. Operation receipts remain
 reserved for duplicate suppression even when the session reaches its limit.
 
+`validate_agent_candidate` evaluates the complete ordered plan. If its detailed
+result is too large, it returns the overall verdict and member counts with an
+explicit omission. Increase `maxBytes` to retrieve details when they fit; do not
+validate fragments and assume that proves the original plan is valid.
+
 ## Verification
 
 The compact-query regressions use the real panel service and Event History.

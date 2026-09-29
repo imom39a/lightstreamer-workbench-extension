@@ -1,4 +1,5 @@
-import { AGENT_PROTOCOL_VERSION, type AgentPermission } from "../../agent/protocol";
+import { AGENT_PROTOCOL_VERSION, AGENT_RESPONSE_CONTRACT, type AgentPermission } from "../../agent/protocol";
+import { agentToolResultBytes } from "../../agent/tool-result";
 import { connectPortable, type CompanionChannel } from "../../agent/portable-channel";
 import type { CompanionAuth } from "../../agent/portable-config";
 import { beginPanelPairing, type PanelPairing, type PairingDisplay } from "../../agent/panel-pairing";
@@ -92,7 +93,7 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
           if (value.name !== "get_status") return result;
           const inspectedPage = await describeInspectedPage();
           if ((result as { pageEpoch: string }).pageEpoch !== (runtime.agent!.status() as { pageEpoch: string }).pageEpoch) throw new Error("The inspected page changed while resolving its identity. Query status again.");
-          return { ...result as object, inspectedPage };
+          return appendInspectedPageStatus(result as object, inspectedPage);
         });
         void response.then(result => reply({ id: requestId, result }), error => reply({ id: requestId, error: error instanceof Error ? error.message : "Workbench operation failed." })).finally(() => {
           if (pendingReads.get(requestId) === controller) pendingReads.delete(requestId);
@@ -134,13 +135,28 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
   return connection;
 }
 
-function describeInspectedPage(): Promise<{ chromeTabId: number; urlWithoutQuery: string | null }> {
+type InspectedPageIdentity = { chromeTabId: number; urlWithoutQuery: string | null };
+export function appendInspectedPageStatus(status: object, inspectedPage: InspectedPageIdentity) {
+  const full = { ...status, inspectedPage };
+  if (agentToolResultBytes(full) <= AGENT_RESPONSE_CONTRACT.defaultMaxBytes) return full;
+  if (inspectedPage.urlWithoutQuery === null) throw new Error("RESULT_BUDGET_EXCEEDED: Operational status exceeds the MCP response budget.");
+  let origin: string | null = null;
+  try { origin = new URL(inspectedPage.urlWithoutQuery).origin; } catch { /* Opaque and extension URLs may have no parseable origin. */ }
+  const omitted = "The inspected path exceeded the status response budget. Identify this tab by chromeTabId or inspect its URL in Chrome.";
+  const compact = { ...status, inspectedPage: { chromeTabId: inspectedPage.chromeTabId, origin, urlWithoutQuery: null, urlOmitted: omitted } };
+  if (agentToolResultBytes(compact) <= AGENT_RESPONSE_CONTRACT.defaultMaxBytes) return compact;
+  const minimal = { ...status, inspectedPage: { chromeTabId: inspectedPage.chromeTabId, urlWithoutQuery: null, urlOmitted: omitted } };
+  if (agentToolResultBytes(minimal) <= AGENT_RESPONSE_CONTRACT.defaultMaxBytes) return minimal;
+  throw new Error("RESULT_BUDGET_EXCEEDED: Operational status exceeds the MCP response budget even after omitting the inspected URL.");
+}
+
+function describeInspectedPage(): Promise<InspectedPageIdentity> {
   // Fixed read-only expression, never code supplied by the agent. Query/hash are not shared.
   return new Promise(resolve => {
     const complete = (url: string | null) => resolve({ chromeTabId: chrome.devtools.inspectedWindow.tabId, urlWithoutQuery: url });
     const timer = setTimeout(() => complete(null), 1500);
     chrome.devtools.inspectedWindow.eval("location.origin + location.pathname", (value, exception) => {
-      clearTimeout(timer); complete(!exception && typeof value === "string" ? value.slice(0, 4096) : null);
+      clearTimeout(timer); complete(!exception && typeof value === "string" ? value : null);
     });
   });
 }

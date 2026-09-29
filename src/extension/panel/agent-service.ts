@@ -94,6 +94,24 @@ function compactOversizedAgentResult(name: string, args: AgentArguments, result:
   }
   return null;
 }
+
+/** Summarize the result of a complete ordered validation, never a subset. */
+export function summarizeCandidateValidation(result: unknown) {
+  const value = result as Record<string, unknown>;
+  const members = Array.isArray(value.members) ? value.members as Record<string, unknown>[] : [];
+  const steps = Array.isArray(value.steps) ? value.steps as Record<string, unknown>[]
+    : Array.isArray(value.candidates) ? value.candidates as Record<string, unknown>[] : [];
+  const checkpoints = Array.isArray(value.checkpoints) ? value.checkpoints as Record<string, unknown>[] : [];
+  return {
+    valid: value.valid, ...(value.reason !== undefined ? { reason: value.reason } : {}),
+    pageEpoch: value.pageEpoch, target: value.target, limitations: value.limitations,
+    memberCount: members.length || steps.length + checkpoints.length,
+    stepCount: steps.length, checkpointCount: checkpoints.length,
+    invalidStepCount: steps.filter(step => step.valid === false).length,
+    invalidCheckpointCount: checkpoints.filter(checkpoint => checkpoint.valid === false).length,
+    detailsOmitted: "Member diagnostics and replayability exceeded the response budget. Use maxBytes for details; this verdict covers the complete ordered plan."
+  };
+}
 type EvidenceSearch = { at: EvidenceReadPoint; after: EvidenceIdentity; boundary: AgentQueryBoundary; within: "page" | "current-investigation"; scopeId?: string; text: string; size: number; includePayload: boolean; fields?: string[]; maxBytes: number; pageEpoch: unknown; expiresAt: number };
 type ScopeSearch = { index: ScopeSearchIndex; snapshot: Omit<AgentScopeSearchSnapshot, "nodes">; text: string; size: number; maxBytes: number; kind?: string; parentScopeId?: string; expiresAt: number };
 
@@ -394,7 +412,9 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
               ? { kind: "scenario" as const, plan: scenarioPlan(args) }
               : { kind: "draft" as const, draft: args.draft as AgentDraftInput };
             if (input.kind === "draft") validateDraftSource(input.draft);
-            return cloneCredentialSafe(await runtime.validateCandidate(input, String(args.pageEpoch), stillAuthorized));
+            const validation = cloneCredentialSafe(await runtime.validateCandidate(input, String(args.pageEpoch), stillAuthorized));
+            const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
+            return agentToolResultBytes(validation) <= budget ? validation : summarizeCandidateValidation(validation);
           }
           if (name === "prepare_scenario") {
             const plan = scenarioPlan(args);
@@ -511,6 +531,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       if (agentToolResultBytes(result) <= budget) return result;
       const compact = compactOversizedAgentResult(name, input, result, budget);
       if (compact && agentToolResultBytes(compact) <= budget) return compact;
+      if (name === "validate_agent_candidate") throw new Error("RESULT_BUDGET_EXCEEDED: Whole-plan validation reason, target or limitations exceed the response budget. Use maxBytes up to 65536 or inspect the candidate in Workbench.");
       throw new Error(name === "execute_local_injection" || name === "control_scenario"
         ? "DELIVERY_UNKNOWN: The operation may have executed, but its response exceeded the agent budget. Inspect its existing requestId; do not retry with a new id."
         : "RESULT_BUDGET_EXCEEDED: Response exceeds the agent budget. Request a smaller page or inspect the exact object in Workbench.");

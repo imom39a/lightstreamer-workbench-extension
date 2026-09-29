@@ -61,7 +61,11 @@ describe("MCP read budget backstop", () => {
         const serialized = JSON.stringify(result);
         expect(new TextEncoder().encode(serialized).byteLength, `${tool.name} must have a serialized default budget`).toBeLessThanOrEqual(8192);
         expect(serialized, `${tool.name} must not leak the oversized source`).not.toContain("oversized-private-data");
-        expect((result.structuredContent as { error?: unknown } | undefined)?.error, `${tool.name} must fail for response size, not invalid fixture arguments`).not.toMatchObject({ code: "INVALID_ARGUMENT" });
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent, `${tool.name} reports an actionable budget failure`).toMatchObject({ error: {
+          code: ["execute_local_injection", "control_scenario"].includes(tool.name) ? "DELIVERY_UNKNOWN" : "RESULT_BUDGET_EXCEEDED",
+          automaticRetry: false
+        } });
       }
     } finally { await client.close(); await server.close(); }
   });
