@@ -11,7 +11,7 @@ Follow [MCP setup]({{site}}docs/agent-access/) to connect a matching local build
 
 ## Extension 2.0.5 — MCP support
 
-This candidate adds Agent access and the version-2 read contract. The 2.0.5 Chrome Web Store package is uploaded as an unpublished draft; 2.0.4 remains public.
+This update adds Agent access and the version-2 read contract. Version 2.0.5 was submitted to the Chrome Web Store on September 29, 2026 and is pending review. It is set to publish publicly after approval; 2.0.4 remains public until then.
 
 For the matching unpacked build, download `workbench-mcp-release-bundle` from a successful main-branch [Agent companion workflow run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). The bundle contains the extension, companion, and a manifest that identifies the source commit. See the [bundle instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent) for installation.
 
