@@ -4,7 +4,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 import { JSDOM } from "jsdom";
 
-import { GITHUB_REPOSITORY_URL, SITE_BASE_PATH, SITE_URL } from "../site/site.config.mjs";
+import { GITHUB_REPOSITORY_URL, SITE_BASE_PATH, SITE_GA_MEASUREMENT_ID, SITE_URL } from "../site/site.config.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const outputRoot = resolve(projectRoot, "site-dist");
@@ -29,6 +29,12 @@ const requiredRoutes = [
   "roadmap/index.html"
 ];
 const failures = [];
+if (!/^G-[A-Z0-9]+$/.test(SITE_GA_MEASUREMENT_ID)) failures.push("Website GA4 measurement ID is not configured");
+if (SITE_GA_MEASUREMENT_ID === "G-SHFQ6R7KZK") failures.push("Website must not use the Chrome extension GA4 stream");
+const analyticsAsset = await readFile(resolve(outputRoot, "assets/site-analytics.js"), "utf8").catch(() => "");
+if (!analyticsAsset.includes(SITE_GA_MEASUREMENT_ID) || analyticsAsset.includes("__SITE_GA_MEASUREMENT_ID__")) {
+  failures.push("Website analytics asset must contain the dedicated measurement ID");
+}
 
 try {
   const socialCard = await readFile(resolve(outputRoot, "assets/og.png"));
@@ -58,9 +64,27 @@ for (const file of htmlFiles) {
   if (!document.querySelector("main")) failures.push(`${route} is missing a main landmark`);
   if (route !== "404.html" && !document.querySelector("header.site-header")) failures.push(`${route} is missing the site header`);
   if (route !== "404.html" && !document.querySelector("footer.site-footer")) failures.push(`${route} is missing the site footer`);
-  if (document.querySelector("script")) failures.push(`${route} contains executable JavaScript`);
+  if (!document.body.classList.contains("site-page")) failures.push(`${route} is missing the selected documentation layout`);
+  if (!document.querySelector("aside.a-sidebar nav[aria-label='Guides']")) failures.push(`${route} is missing the desktop guide index`);
+  if (!document.querySelector("details.a-mobile-index > summary")) failures.push(`${route} is missing the mobile guide index`);
+  if (!document.querySelector("main#main-content")) failures.push(`${route} is missing the skip-link destination`);
+  if (document.querySelector(".hero, .capability-card, .final-cta, .p-switcher")) failures.push(`${route} contains a retired marketing or prototype surface`);
+  if (route === "index.html" && !document.querySelector(`img[src="${SITE_BASE_PATH}assets/app-workspace-context.png"]`)) {
+    failures.push("Home must show the real Workbench workspace screenshot");
+  }
+  if (route === "index.html" || route.startsWith("docs/")) {
+    const currentPath = route === "index.html" ? SITE_BASE_PATH : `${SITE_BASE_PATH}${route.replace(/index\.html$/, "")}`;
+    if (!document.querySelector(`aside.a-sidebar a[aria-current="page"][href="${currentPath}"]`)) {
+      failures.push(`${route} must mark its current guide link in the desktop index`);
+    }
+  }
+  const scripts = [...document.querySelectorAll("script")];
+  const expectedScript = `${SITE_BASE_PATH}assets/site-analytics.js`;
+  if (route === "404.html" ? scripts.length > 0 : scripts.length !== 1 || scripts[0]?.getAttribute("src") !== expectedScript || !scripts[0]?.hasAttribute("defer")) {
+    failures.push(`${route} must contain only the deferred local website analytics script`);
+  }
   if (/Lightstreamer Event Workbench|synthetic replay|re-inject/i.test(source)) failures.push(`${route} contains retired product language`);
-  if (/<script[^>]+(?:google-analytics\.com|googletagmanager)|dataLayer\s*=/i.test(source)) failures.push(`${route} contains analytics or tracking code`);
+  if (/<script[^>]+(?:google-analytics\.com|googletagmanager)|dataLayer\s*=/i.test(source)) failures.push(`${route} embeds external analytics or tracking code`);
   const canonical = document.querySelector('link[rel="canonical"]')?.href;
   if (route !== "404.html" && !canonical?.startsWith(SITE_URL)) failures.push(`${route} has an invalid canonical URL`);
 
@@ -94,7 +118,7 @@ if (failures.length) {
   throw new Error(`Invalid public site:\n${failures.join("\n")}`);
 }
 
-console.log(`Verified ${htmlFiles.length} static pages: isolated routes, local assets, canonical policy links, and no executable tracking code.`);
+console.log(`Verified ${htmlFiles.length} public pages: documentation layout, isolated routes, local assets, canonical policy links, and one guarded website analytics script.`);
 
 async function listFiles(directory) {
   const files = [];

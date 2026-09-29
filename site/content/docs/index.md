@@ -1,18 +1,18 @@
-Use Workbench with applications that use the official Lightstreamer Web Client.
+Use this directory to open a specific Workbench guide. For an overview of the workspace, start on the [home page]({{site}}).
 
-## Start here
+## Begin
 
-- [Getting started]({{site}}docs/getting-started/) — install the extension and capture activity.
-- [Developer guide]({{site}}docs/developer-guide/) — choose an investigation or test procedure.
-- [MCP setup]({{site}}docs/agent-access/) — connect an agent on macOS, Windows, or Linux.
+- [Getting started]({{site}}docs/getting-started/) — install Workbench, check Capture and Coverage, and inspect a first Session.
+- [Inspect activity]({{site}}docs/developer-guide/) — find and read captured Item Updates.
 
-## Reference
+## Test behavior
 
-- [Workspace]({{site}}docs/workspace/) and [Ordered Evidence]({{site}}docs/evidence/).
-- [COMMAND lifecycles]({{site}}docs/command-state/).
-- [Local Injection]({{site}}docs/local-injection/) and [Server Injection]({{site}}docs/server-injection/).
-- [Export and privacy]({{site}}docs/export-and-privacy/).
+- [Local Injection]({{site}}docs/local-injection/) — deliver an Item Update to the inspected page.
+- [Server Injection]({{site}}docs/server-injection/) — review and send a Client Message.
+- [MCP setup]({{site}}docs/agent-access/) — connect an agent to an open Panel Session.
 
-## Help
+## Investigate and resolve
 
-Use [Troubleshooting]({{site}}docs/troubleshooting/) for a problem, [FAQ]({{site}}docs/faq/) for product limits, or [Support]({{site}}support/) to contact the project.
+- [Workspace]({{site}}docs/workspace/), [Ordered Evidence]({{site}}docs/evidence/), and [COMMAND lifecycles]({{site}}docs/command-state/) explain the captured data.
+- [Export and privacy]({{site}}docs/export-and-privacy/) explains how to save and share Evidence.
+- [Troubleshooting]({{site}}docs/troubleshooting/), [FAQ]({{site}}docs/faq/), and [Support]({{site}}support/) help with problems and product limits.

@@ -26,6 +26,6 @@ Configured production builds enable usage analytics by default. They send fixed 
 
 Use **More actions → Help & resources → Usage analytics** to turn this off. Turning it off removes the saved identifier and analytics session.
 
-Analytics excludes captured Evidence, payloads, inspected URLs, search text, Drafts, and raw errors. Agent access is separate from analytics. This website has no analytics, cookies, or tracking scripts.
+Extension analytics excludes captured Evidence, payloads, inspected URLs, search text, Drafts, and raw errors. Agent access is separate from analytics. The published website uses a separate Google Analytics stream for page visits. It can set first-party analytics cookies. The website does not send Workbench Evidence to Analytics. Use the [website control]({{site}}privacy/#website-analytics) to turn off website analytics in this browser.
 
 Read the [Privacy policy]({{site}}privacy/) for the complete data policy.

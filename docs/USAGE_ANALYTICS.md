@@ -8,6 +8,13 @@ Configured production builds enable GA4 usage analytics by default. More actions
 | --- | --- | --- |
 | Listing visits and installs | Store-managed `541917230`, account `397908666` | Store-managed; cannot add extension instrumentation here |
 | Product engagement | Lightstreamer Event Workbench Usage `547418482`, account `402536926` | Chrome extension usage `15339538535`; `G-SHFQ6R7KZK` |
+| Public website visits | Lightstreamer Event Workbench Usage `547418482`, account `402536926` | GitHub Pages website `15864929658`; `G-SY4DYL8WH5` |
+
+### Website stream (separate site change)
+
+The [GitHub Pages website stream](https://analytics.google.com/analytics/web/#/a402536926p547418482/admin/streams/table/15864929658) is configured for `https://imom39a.github.io/lightstreamer-workbench-extension/`. Enhanced Measurement was verified Off in the Google Analytics UI, so it does not add scroll, click, or form events. The site sends one explicit `page_view` per loaded page with `app_surface=website`; GA4 can also collect its standard session and engagement information. The website uses the site's public JavaScript tag, not the extension's Measurement Protocol stream or secret. Live website receipt is unverified until deployment.
+
+### Extension stream
 
 Use the [Workbench usage property](https://analytics.google.com/analytics/web/#/a402536926p547418482/reports/reportinghub) for feature and journey reports. Store visits, installs, and listing engagement are separate measurements; their user identities are not joined.
 
@@ -72,7 +79,7 @@ The worker accepts only its own panel's messages and denies advertising consent.
 
 There is no persistent event queue or retry. Bounds are 64 pending requests, 120 events per minute, and five seconds per network request. Engagement excludes hidden/unfocused time and stops one minute after the last foreground interaction. Passive Capture does not keep users engaged. Multiple panels share an analytics session, while Chrome focus determines foreground time.
 
-The [privacy policy](../PRIVACY.md) and [ADR 0015](adr/0015-measure-extension-usage-with-a-closed-analytics-vocabulary.md) define the release boundary. The website and offline exports remain free of analytics scripts.
+The [privacy policy](../PRIVACY.md) and [ADR 0015](adr/0015-measure-extension-usage-with-a-closed-analytics-vocabulary.md) define the extension release boundary. The published website has a separate GA4 web stream for page visits. Offline exports remain free of analytics scripts.
 
 ## Verification record
 
@@ -84,7 +91,7 @@ An independent reviewer inspected 22 analytics-specific images plus nine accepte
 
 The initial analytics QA package retained the then-current `2.0.2` workspace version and was never a distribution candidate. The current `2.0.3` package verification and Chrome Web Store state are recorded in [RELEASE.md](../RELEASE.md); use that record for release decisions.
 
-`npm run test:ui:extension` passed authentic two-panel Capture and isolated disposal. `npm run fixture:test:browser` passed the Local Injection transport proof and nine official-client browser checks, including Server Injection and Scenario delivery. `npm run site:check` passed static-page isolation and no executable site tracking; `npm run docs:check` passed.
+`npm run test:ui:extension` passed authentic two-panel Capture and isolated disposal. `npm run fixture:test:browser` passed the Local Injection transport proof and nine official-client browser checks, including Server Injection and Scenario delivery. At the time of this review, `npm run site:check` passed static-page isolation and no executable site tracking; `npm run docs:check` passed. The website now has its own page-visit script.
 
 All 15 event types passed strict Google validation. Three deliberately collected synthetic events appeared in the usage property's DebugView: `panel_opened`, `page_view`, and `feature_used`. The received feature event showed `feature=evidence`, `action=select`, and `extension_version=analytics-qa`. This proves receipt with the configured stream and key; it is not production-user engagement data. The Store-managed property is unchanged.
 

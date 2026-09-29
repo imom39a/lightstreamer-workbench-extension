@@ -7,6 +7,7 @@ import { marked, Renderer } from "marked";
 import {
   CHROME_WEB_STORE_URL,
   GITHUB_REPOSITORY_URL,
+  SITE_GA_MEASUREMENT_ID,
   SITE_BASE_PATH,
   SITE_URL,
   canonicalUrl,
@@ -17,9 +18,9 @@ const projectRoot = resolve(import.meta.dirname, "..");
 const outputRoot = resolve(projectRoot, "site-dist");
 const contentRoot = resolve(projectRoot, "site/content");
 const pages = [
-  page("index.md", "index.html", "Lightstreamer Workbench for Chrome DevTools", "Inspect Lightstreamer activity and test Item Updates or Client Messages in Chrome DevTools.", "home"),
+  page("index.md", "index.html", "Lightstreamer Workbench", "Inspect Lightstreamer activity and test Item Updates or Client Messages in Chrome DevTools.", "home"),
   page("docs/index.md", "docs/index.html", "Documentation", "Install Lightstreamer Workbench and learn how to inspect Lightstreamer activity.", "docs"),
-  page("docs/developer-guide.md", "docs/developer-guide/index.html", "Developer guide", "Use Workbench to capture, inspect, diagnose, and test Lightstreamer activity.", "docs"),
+  page("docs/developer-guide.md", "docs/developer-guide/index.html", "Inspect activity", "Use Workbench to capture, inspect, diagnose, and test Lightstreamer activity.", "docs"),
   page("docs/getting-started.md", "docs/getting-started/index.html", "Getting started", "Install Workbench, open its DevTools panel, and capture your first Lightstreamer session.", "docs"),
   page("docs/agent-access.md", "docs/agent-access/index.html", "Agent access", "Connect an MCP client to a Workbench panel and inspect Evidence or prepare deliberate Local Injection.", "docs"),
   page("docs/workspace.md", "docs/workspace/index.html", "The Workbench workspace", "Use Runtime Scope, Ordered Evidence, and Context in one workspace.", "docs"),
@@ -33,6 +34,25 @@ const pages = [
   page("roadmap.md", "roadmap/index.html", "Roadmap", "Planned work for Lightstreamer Workbench.", "page"),
   page("releases.md", "releases/index.html", "Release notes", "Extension and MCP companion versions, features, and installation links.", "page"),
   page("support.md", "support/index.html", "Support", "Get help, report a bug, request a feature, or ask a question.", "page")
+];
+const documentationGroups = [
+  ["Use Workbench", [
+    ["Getting started", "docs/getting-started/"],
+    ["Inspect activity", "docs/developer-guide/"],
+    ["Workspace", "docs/workspace/"],
+    ["Evidence", "docs/evidence/"],
+    ["COMMAND lifecycles", "docs/command-state/"]
+  ]],
+  ["Test behavior", [
+    ["Local Injection", "docs/local-injection/"],
+    ["Server Injection", "docs/server-injection/"],
+    ["Agent access", "docs/agent-access/"]
+  ]],
+  ["Reference", [
+    ["Export and privacy", "docs/export-and-privacy/"],
+    ["Troubleshooting", "docs/troubleshooting/"],
+    ["FAQ", "docs/faq/"]
+  ]]
 ];
 
 await rm(outputRoot, { recursive: true, force: true });
@@ -54,6 +74,7 @@ await writePage(
 
 await Promise.all([
   copy("site/assets/site.css", "assets/site.css"),
+  writeSiteAnalytics(),
   copy("docs/assets/logo.svg", "assets/logo.svg"),
   copy("docs/assets/mascot.png", "assets/mascot.png"),
   copy("docs/assets/app-ordered-evidence-context.png", "assets/app-ordered-evidence-context.png"),
@@ -80,6 +101,11 @@ async function copy(source, output) {
   const target = resolve(outputRoot, output);
   await mkdir(dirname(target), { recursive: true });
   await copyFile(resolve(projectRoot, source), target);
+}
+
+async function writeSiteAnalytics() {
+  const source = await readFile(resolve(projectRoot, "site/assets/site-analytics.js"), "utf8");
+  await writeFile(resolve(outputRoot, "assets/site-analytics.js"), source.replaceAll("__SITE_GA_MEASUREMENT_ID__", SITE_GA_MEASUREMENT_ID));
 }
 
 async function writePage(definition, source) {
@@ -128,14 +154,12 @@ function renderMarkdown(source) {
 function renderDocument(definition, body) {
   const canonical = canonicalUrl(definition.output === "index.html" ? "" : definition.output.replace(/index\.html$/, ""));
   const home = definition.layout === "home";
-  const docs = definition.layout === "docs";
-  const mainClass = home ? "home" : docs ? "article-shell docs-shell" : "article-shell";
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>${escapeHtml(definition.title)} · Lightstreamer Workbench</title>
+    <title>${escapeHtml(definition.title)}${home ? "" : " · Lightstreamer Workbench"}</title>
     <meta name="description" content="${escapeHtml(definition.description)}">
     <link rel="canonical" href="${canonical}">
     <meta property="og:type" content="website">
@@ -147,47 +171,56 @@ function renderDocument(definition, body) {
     <meta name="twitter:card" content="summary_large_image">
     <link rel="icon" href="${sitePath("assets/logo.svg")}" type="image/svg+xml">
     <link rel="stylesheet" href="${sitePath("assets/site.css")}">
+    <script src="${sitePath("assets/site-analytics.js")}" defer></script>
   </head>
-  <body>
-    <a class="skip-link" href="#main-content">Skip to content</a>
+  <body class="site-page">
+    <a class="a-skip" href="#main-content">Skip to content</a>
     ${renderHeader(definition.output)}
-    <main id="main-content" class="${mainClass}">
-      ${home ? body : `${renderArticleIntro(definition)}${docs ? renderDocsNavigation(definition.output) : ""}<article class="article-content">${body}</article>`}
-    </main>
-    ${renderFooter()}
+    <div class="a-shell">
+      ${renderSidebar(definition.output)}
+      <div class="a-content-column">
+        ${renderMobileNavigation(definition.output)}
+        <main id="main-content" class="a-main${home ? " a-home-main" : ""}">
+          ${home ? body : `${renderArticleIntro(definition)}<article class="article-content">${body}</article>`}
+        </main>
+        ${renderFooter()}
+      </div>
+    </div>
   </body>
 </html>\n`;
 }
 
 function renderHeader(currentOutput) {
-  const nav = [
-    ["Developer guide", sitePath("docs/developer-guide/"), currentOutput === "docs/developer-guide/index.html"],
-    ["MCP setup", sitePath("docs/agent-access/"), currentOutput === "docs/agent-access/index.html"],
-    ["GitHub", GITHUB_REPOSITORY_URL, false]
-  ];
-  return `<header class="site-header"><div class="site-header__inner"><a class="brand" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="38" height="38"><span>Lightstreamer Workbench</span></a><nav aria-label="Primary">${nav.map(([label, href, current]) => `<a href="${href}"${current ? ' aria-current="page"' : ""}${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav><a class="button button--compact" href="${CHROME_WEB_STORE_URL}" target="_blank" rel="noopener noreferrer">Add to Chrome</a></div></header>`;
+  return `<header class="site-header a-header"><div class="a-header-inner"><a class="a-brand" href="${sitePath()}" aria-label="Lightstreamer Workbench home"><span>Lightstreamer <strong>Workbench</strong></span></a><nav class="a-header-links" aria-label="Site"><a href="${sitePath()}"${currentOutput === "index.html" ? ' aria-current="page"' : ""}>Overview</a><a href="${GITHUB_REPOSITORY_URL}" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a></nav></div></header>`;
 }
 
 function renderArticleIntro(definition) {
   return `<header class="article-intro"><h1>${escapeHtml(definition.title)}</h1></header>`;
 }
 
-function renderDocsNavigation(currentOutput) {
-  const links = pages.filter(({ layout }) => layout === "docs");
-  return `<nav class="docs-navigation" aria-label="Documentation"><strong>Documentation</strong>${links.map((entry) => `<a href="${sitePath(entry.output.replace(/index\.html$/, ""))}"${entry.output === currentOutput ? ' aria-current="page"' : ""}>${escapeHtml(entry.title)}</a>`).join("")}</nav>`;
+function navLink(label, path, currentOutput) {
+  const output = path ? `${path}index.html` : "index.html";
+  return `<a href="${sitePath(path)}"${currentOutput === output ? ' aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
+}
+
+function renderSidebar(currentOutput) {
+  return `<aside class="a-sidebar" aria-label="Documentation navigation"><div class="a-sidebar-inner"><p class="a-sidebar-label">Documentation</p><nav aria-label="Guides">${navLink("Overview", "", currentOutput)}${navLink("All guides", "docs/", currentOutput)}${documentationGroups.map(([group, links]) => `<div class="a-nav-group"><p>${group}</p>${links.map(([label, path]) => navLink(label, path, currentOutput)).join("")}</div>`).join("")}</nav></div></aside>`;
+}
+
+function renderMobileNavigation(currentOutput) {
+  const links = [["Overview", ""], ["All guides", "docs/"], ...documentationGroups.flatMap(([, entries]) => entries)];
+  return `<details class="a-mobile-index"><summary>Browse documentation</summary><nav aria-label="Mobile documentation navigation">${links.map(([label, path]) => navLink(label, path, currentOutput)).join("")}</nav></details>`;
 }
 
 function renderFooter() {
   const links = [
-    ["Developer guide", sitePath("docs/developer-guide/")],
-    ["Documentation", sitePath("docs/")],
+    ["Releases", sitePath("releases/")],
+    ["Support", sitePath("support/")],
     ["Privacy", sitePath("privacy/")],
     ["Security", sitePath("security/")],
-    ["Support", sitePath("support/")],
-    ["Release notes", sitePath("releases/")],
     ["Source", GITHUB_REPOSITORY_URL]
   ];
-  return `<footer class="site-footer"><div><a class="brand brand--footer" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="32" height="32"><span>Lightstreamer Workbench</span></a><p>Open-source Chrome DevTools extension for the official Lightstreamer Web Client.</p><p class="fine-print">This project is independent and is not affiliated with Lightstreamer. The source uses the Apache-2.0 license.</p></div><nav aria-label="Footer">${links.map(([label, href]) => `<a href="${href}"${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav></footer>`;
+  return `<footer class="site-footer a-footer"><span>Lightstreamer Workbench</span><nav aria-label="Footer">${links.map(([label, href]) => `<a href="${href}"${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav></footer>`;
 }
 
 function renderSitemap() {
@@ -197,7 +230,7 @@ function renderSitemap() {
 }
 
 function renderNotFound() {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page not found · Lightstreamer Workbench</title><link rel="stylesheet" href="${sitePath("assets/site.css")}"></head><body><main class="not-found"><img src="${sitePath("assets/logo.svg")}" alt="" width="48" height="48"><p class="eyebrow">404</p><h1>This page does not exist.</h1><p>Open the home page or the documentation.</p><p><a class="button" href="${sitePath()}">Home</a> <a class="button button--secondary" href="${sitePath("docs/")}">Documentation</a></p></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page not found · Lightstreamer Workbench</title><link rel="stylesheet" href="${sitePath("assets/site.css")}"></head><body class="site-page"><a class="a-skip" href="#main-content">Skip to content</a>${renderHeader("404.html")}<div class="a-shell">${renderSidebar("404.html")}<div class="a-content-column">${renderMobileNavigation("404.html")}<main id="main-content" class="a-main"><p class="a-eyebrow">404</p><h1>This page does not exist.</h1><p>Open the <a href="${sitePath()}">overview</a> or <a href="${sitePath("docs/")}">browse the guides</a>.</p></main>${renderFooter()}</div></div></body></html>`;
 }
 
 function escapeHtml(value) {

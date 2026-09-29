@@ -19,7 +19,7 @@
     "site:build": "node scripts/build-site.mjs",
     "site:check": "npm run site:build && node scripts/check-site.mjs",
     "site:serve": "node scripts/site-server.mjs",
-    "test:site": "npm run site:check && playwright test --config playwright.site.config.ts",
+    "test:site": "npm run site:check && node --test tests/site/site-analytics.test.mjs && playwright test --config playwright.site.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test-unit.mjs",
     "test:release": "vitest run --no-file-parallelism --maxWorkers=1",
