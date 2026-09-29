@@ -29,13 +29,17 @@
         <a href="{{site}}docs/developer-guide/"><span>Inspect activity</span><span>Find a Session, Subscription, or Item Update in captured Evidence.</span><span aria-hidden="true">→</span></a>
         <a href="{{site}}docs/local-injection/"><span>Test an Item Update</span><span>Deliver a Local Injection to the page without a backend change.</span><span aria-hidden="true">→</span></a>
         <a href="{{site}}docs/server-injection/"><span>Send a Client Message</span><span>Review a Server Injection sent through the client's current Session.</span><span aria-hidden="true">→</span></a>
-        <a href="{{site}}docs/agent-access/"><span>Connect an agent</span><span>Give an MCP agent access to a connected Panel Session.</span><span aria-hidden="true">→</span></a>
       </div>
     </div>
   </section>
 
+  <section class="a-home-section" aria-labelledby="a-agent-title">
+    <div class="a-section-heading"><span class="a-section-number">04</span><h2 id="a-agent-title">Connect an MCP agent</h2></div>
+    <div class="a-section-body"><p>The local Node companion lets an agent inspect a connected Panel Session, query Evidence, and run reviewed Local Injections. Open More actions → Agent access and setup in Workbench. Requested Evidence may reach your model provider. Follow the <a href="{{site}}docs/agent-access/">MCP setup guide</a>.</p></div>
+  </section>
+
   <section class="a-home-section a-note-section" aria-labelledby="a-data-title">
-    <div class="a-section-heading"><span class="a-section-number">04</span><h2 id="a-data-title">Data in this session</h2></div>
-    <div class="a-section-body"><p>Workbench keeps temporary Evidence in the browser. An export is a deliberate download. Agent access can share requested data with your model provider. See <a href="{{site}}docs/export-and-privacy/">export and privacy</a> before sharing Evidence.</p></div>
+    <div class="a-section-heading"><span class="a-section-number">05</span><h2 id="a-data-title">Data in this session</h2></div>
+    <div class="a-section-body"><p>Workbench keeps temporary Evidence in the browser. An export is a deliberate download. See <a href="{{site}}docs/export-and-privacy/">export and privacy</a> for storage and sharing details.</p></div>
   </section>
 </div>

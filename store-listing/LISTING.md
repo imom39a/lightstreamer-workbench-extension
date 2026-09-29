@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below accompanies the 2.0.5 repository candidate. The extension package and MCP companion are prepared but have not been uploaded to the Chrome Web Store or published to npm. Publish only after the package, privacy disclosures, and companion publication are ready. The versioned release records later in this file describe their original packages.
+The description below accompanies the 2.0.5 repository candidate. The Chrome Web Store still publishes 2.0.4. The MCP companion was briefly published, then unpublished on September 29, 2026; npm currently returns 404 for it. A tested 0.1.2 companion is available in the matching GitHub Actions release bundle. Submit 2.0.5 for Store review only after a public companion installation path and its setup guide are verified. The versioned release records later in this file describe their original packages.
 
 ```text
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
@@ -130,14 +130,12 @@ Version:
 What's new:
 
 ```text
-MCP agent access, full-key JSON Evidence, and capture reliability improvements.
+Agent access for inspecting a connected Panel Session and testing Local Injections through a local MCP companion.
 
-- Compact historical operation codes with a Codes reference panel.
-- Complete single-line keys and horizontally scrollable data; only Op stays pinned.
-- Readable JSON and Raw fields with preserved captured types and bounded inline previews.
-- Consistent Off / Include / Exclude filters and dark-only appearance.
-- Improved IndexedDB commit throughput, larger memory fallback, and clearer storage diagnostics.
-- Correct grouped COMMAND edit validation and clean content-bridge retirement after extension reloads.
+- Search Scope, summarize and query retained Evidence, and wait for matching updates with bounded responses.
+- Inspect stream shape and review source-grounded Local Injection Drafts and Scenarios before execution.
+- Agent access starts on when a panel opens and can be turned off under More actions. Agent tools do not expose Server Injection, Event History clearing, or arbitrary page code.
+- The local loopback companion replaces native host access, so the extension no longer requests the nativeMessaging permission.
 ```
 
 ## Privacy Practices Draft
@@ -182,14 +180,14 @@ Page access is required to run packaged instrumentation at document_start before
 No account is required. Open DevTools on a page using the official Lightstreamer Web Client and select Lightstreamer Workbench. Capture appears in Ordered Evidence. For Local Injection, create a Draft from an Item Update and choose Inject locally. For Server Injection, clone captured Client Message Evidence or author one for a live client, review the sendMessage arguments, then choose Send Client Message once. Usage analytics is under More actions > Help & resources and can be turned off.
 ```
 
-For prepublication MCP review, sign in to GitHub and download the `workbench-mcp-release-bundle` artifact from the latest successful Agent companion workflow run on `main`. Extract the artifact wrapper ZIP, then extract `lightstreamer-workbench-mcp-v2.0.5.zip`. Verify `release-manifest.json` and its `source.commit`. Extract `extension/lightstreamer-workbench-v2.0.5.zip` and load it unpacked; record the unpacked extension ID. From the extracted MCP bundle root, install `agent/lightstreamer-workbench-agent-0.1.0.tgz` and print local setup:
+For prepublication MCP review, extract the configured Store candidate `release/lightstreamer-workbench-v2.0.5.zip` and load it unpacked; record its assigned extension ID. For the companion, sign in to GitHub and download the `workbench-mcp-release-bundle` artifact from [the verified main-branch workflow run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36547823118). Extract the artifact wrapper ZIP, then extract `lightstreamer-workbench-mcp-v2.0.5.zip`. Verify `release-manifest.json`, its `source.commit`, and the companion tarball digest. The bundle's extension ZIP lacks the configured production analytics stream and is not byte-identical to the Store candidate; use the Store candidate for release review. From the extracted MCP bundle root, install the companion tarball and print local setup:
 
 ```sh
-npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.0.tgz
+npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.2.tgz
 node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Copy the printed MCP configuration into the test agent app and start its stdio server. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate is prepared but has not been uploaded to the Chrome Web Store.
+Copy the printed MCP configuration into the test agent app and start its stdio server. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate has not been uploaded to the Chrome Web Store.
 
 ## Version 2.0.2 Release Checklist (historical)
 
@@ -244,8 +242,9 @@ The maintainer explicitly authorized this release. The Chrome session currently 
 
 - [x] Prepare the listing and privacy disclosures for the 2.0.5 repository candidate.
 - [x] Prepare the MCP reviewer steps using a local companion tarball and matching unpacked extension.
-- [ ] Confirm npm publication before using the version-pinned `npx` setup.
-- [ ] Upload the matching extension package after the release checks and authorization are complete.
+- [x] Verify the configured Store ZIP, release checks, and package provenance recorded in `RELEASE.md`.
+- [ ] Confirm npm publication and the version-pinned `npx` setup.
+- [ ] Upload the matching extension package.
 - [ ] Verify the actual Chrome Web Store review and publication status.
 
-The 2.0.5 candidate is prepared but has not been uploaded to the Chrome Web Store. This checklist does not authorize a Store upload or submission.
+The 2.0.5 candidate is being prepared for the Store. The npm companion is currently unavailable, so Store review submission remains pending.

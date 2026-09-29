@@ -85,7 +85,9 @@ test("desktop home is a documentation overview with real task routes", async ({ 
   await expect(main.locator('.a-task-list a[href="/lightstreamer-workbench-extension/docs/developer-guide/"]')).toContainText("Inspect activity");
   await expect(main.locator('.a-task-list a[href="/lightstreamer-workbench-extension/docs/local-injection/"]')).toContainText("Test an Item Update");
   await expect(main.locator('.a-task-list a[href="/lightstreamer-workbench-extension/docs/server-injection/"]')).toContainText("Send a Client Message");
-  await expect(main.locator('.a-task-list a[href="/lightstreamer-workbench-extension/docs/agent-access/"]')).toContainText("Connect an agent");
+  await expect(main.getByRole("heading", { name: "Connect an MCP agent" })).toBeVisible();
+  await expect(main.getByRole("link", { name: "MCP setup guide" })).toHaveAttribute("href", "/lightstreamer-workbench-extension/docs/agent-access/");
+  await expect(main).toContainText("Requested Evidence may reach your model provider");
   await expect(main).not.toContainText("Debug Lightstreamer in Chrome DevTools.");
   await expect(page.getByRole("navigation", { name: "Guides" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
@@ -142,7 +144,8 @@ test("Agent access gives one current cross-platform setup and a concise trust bo
   const article = page.locator(".article-content");
   await expect(article).toContainText("Authentication is off");
   await expect(article).toContainText("Do not repeat an Injection with an unknown result");
-  await expect(article).not.toContainText(/until.*publish|after.*publication|not.*published|not available from the npm registry/i);
+  await expect(article).toContainText("currently unavailable");
+  await expect(article).toContainText("After npm publication resumes");
   expect((await article.innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(750);
   await expectNoHorizontalOverflow(page);
   await expectNoSeriousAxeViolations(page, testInfo);

@@ -1,17 +1,17 @@
-## MCP companion 0.1.0 — published
+## MCP companion — 0.1.2 candidate
 
-The [npm package](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.0) was first published on September 28, 2026. It supports macOS, Windows, and Linux and includes the agent skill. Use the [MCP setup guide]({{site}}docs/agent-access/) for the current package. The Chrome extension is released separately.
+Version 0.1.0 was first published on September 28, 2026, then unpublished on September 29. The npm package is currently unavailable. Candidate 0.1.2 passed Windows, macOS, and Linux checks and is in the [Agent companion workflow bundle](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). It includes the agent skill. The Chrome extension is released separately.
 
 - Find Subscriptions and items with Scope search.
 - Count records and distinct keys before reading examples.
 - Select fields and limit response size.
 - Validate and run Local Injections or Scenarios.
 
-Follow [MCP setup]({{site}}docs/agent-access/) to connect. The npm package does not install or update the Chrome extension.
+Follow [MCP setup]({{site}}docs/agent-access/) to connect a matching local build. The companion does not install or update the Chrome extension.
 
 ## Extension 2.0.5 — MCP support
 
-This build adds Agent access and the version-2 read contract. Chrome Web Store publication is separate from npm publication.
+This candidate adds Agent access and the version-2 read contract. Chrome Web Store publication is separate from npm publication.
 
 For the matching unpacked build, download `workbench-mcp-release-bundle` from a successful main-branch [Agent companion workflow run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). The bundle contains the extension, companion, and a manifest that identifies the source commit. See the [bundle instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent) for installation.
 
