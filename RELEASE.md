@@ -63,6 +63,8 @@ The bundle state is `prepared-unpublished` at assembly time. It records whether 
 
 The source `agent/package.json` version is the minimum release version. On a publishing run, `scripts/prepare-agent-release.mjs` selects the next unused patch version from npm unless source declares a higher version. CI stamps that version and the source commit into the artifact without a version-only source commit. A retry of an already published commit skips publication; a registry lookup failure stops version selection. Workflow runs are serialized per branch. A manual workflow dispatch on `main` can retry a failed release when the repository variable remains enabled.
 
+An npm unpublish tombstone still reserves every former version; the release planner counts those versions when selecting a new patch. After a full unpublish, keep publication disabled during npm's 24-hour package-name hold. Never attempt to reuse a former version; see the [npm unpublish policy](https://docs.npmjs.com/policies/unpublish/).
+
 Before a planned npm release, review the package README, confirm that the extension compatibility guidance is current, enable the variable, and land the reviewed change on `main`. Wait for package, all three platform checks, release-bundle assembly, publish, and registry verification. Confirm the package's README and dist-tag on npm, then restore the variable to `false`. The Chrome Web Store release has its own gates and authority above. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for publisher configuration.
 
 ## Version 2.0.1 Preparation Record

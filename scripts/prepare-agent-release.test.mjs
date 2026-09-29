@@ -19,10 +19,16 @@ test("rerunning an already published source commit never publishes another patch
   assert.deepEqual(planRelease(metadata, registry({ "0.1.3": { version: "0.1.3", gitHead: sha } }), sha),
     { name: metadata.name, version: "0.1.3", sha, publish: false });
 });
+test("a fully unpublished package still reserves its former versions", () => {
+  const tombstone = { name: metadata.name, time: { unpublished: { versions: ["0.1.0", "0.1.1"] } } };
+  assert.equal(planRelease(metadata, tombstone, sha).version, "0.1.2");
+  assert.equal(planRelease({ ...metadata, version: "0.1.2" }, tombstone, sha).version, "0.1.2");
+});
 test("invalid versions, commit identities and mismatched registry data fail closed", () => {
   assert.throws(() => planRelease({ ...metadata, version: "0.1" }, null, sha));
   assert.throws(() => planRelease(metadata, null, "main"));
   assert.throws(() => planRelease(metadata, { name: "other", versions: {} }, sha));
+  assert.throws(() => planRelease(metadata, { name: metadata.name, time: { unpublished: { versions: null } } }, sha));
 });
 test("only an actual registry 404 means unpublished; auth/server/network failures abort", async () => {
   assert.equal(await readRegistry(metadata.name, async () => ({ status: 404 })), null);

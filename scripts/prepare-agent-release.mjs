@@ -14,13 +14,19 @@ function compare(a, b) {
 export function planRelease(metadata, registry, sha) {
   if (!stable.test(metadata.version)) throw new Error("Agent releases require a stable major.minor.patch version.");
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Expected the full source commit SHA.");
-  if (registry && (registry.name !== metadata.name || !registry.versions || typeof registry.versions !== "object")) {
+  const liveVersions = registry?.versions;
+  const unpublishedVersions = registry?.time?.unpublished?.versions;
+  if (registry && (registry.name !== metadata.name
+    || (liveVersions === undefined && unpublishedVersions === undefined)
+    || (liveVersions !== undefined && (!liveVersions || typeof liveVersions !== "object" || Array.isArray(liveVersions)))
+    || (unpublishedVersions !== undefined && (!Array.isArray(unpublishedVersions) || !unpublishedVersions.every(version => typeof version === "string"))))) {
     throw new Error("Unexpected npm registry package response.");
   }
-  const versions = registry?.versions ?? {};
+  const versions = liveVersions ?? {};
   const previous = Object.values(versions).find(entry => entry.gitHead === sha && stable.test(entry.version));
   if (previous) return { name: metadata.name, version: previous.version, sha, publish: false };
-  const newest = Object.keys(versions).filter(version => stable.test(version)).sort(compare).at(-1);
+  const newest = [...Object.keys(versions), ...(unpublishedVersions ?? [])]
+    .filter(version => stable.test(version)).sort(compare).at(-1);
   const version = !newest || compare(metadata.version, newest) > 0
     ? metadata.version
     : newest.replace(/\d+$/, patch => String(Number(patch) + 1));
