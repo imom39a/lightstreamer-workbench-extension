@@ -84,6 +84,12 @@ candidate. Mutation and delivery rules are unchanged.
   not the requested `limit`. Diagnostic pages similarly use `nextAfter` and
   Scenario pages use `nextOffset`. These offset/boundary pages are separate
   from the opaque Evidence cursors described below.
+- For many connected panels or pending pairings, call `list_panel_sessions` or
+  `get_pairing_requests` with `offset:0` to request a byte-bounded page of
+  `items`, `total`, `offset` and `nextOffset`. Follow `nextOffset` until null.
+  Calls without `offset` or `limit` retain their array response; if that array
+  exceeds the budget, switch to paging. These connection lists are live, so
+  restart discovery if panels connect or disconnect during enumeration.
 - `limit` is a maximum of 100, not a promised page size. Pages shrink to fit the
   budget. A record that cannot fit yields `RESULT_BUDGET_EXCEEDED`; select fewer
   fields or deliberately choose a larger budget. Do not silently truncate values.

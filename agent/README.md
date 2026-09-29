@@ -70,6 +70,9 @@ from the repository root. Load `dist/` as an unpacked extension, then run
 After pulling a newer revision, rebuild both artifacts, reload the extension
 in `chrome://extensions`, and restart the MCP server in your client.
 `agent:build` alone does not rebuild or reload the panel that serves Evidence.
+The shared broker can also outlive an MCP client. To replace it during an
+upgrade, first stop all Workbench MCP clients and close all Workbench DevTools
+panels, then allow 30 seconds for the idle broker to exit before reconnecting.
 
 ## What the agent can do
 

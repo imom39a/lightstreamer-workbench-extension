@@ -1,10 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { AGENT_PROTOCOL_VERSION, validateAgentCall } from "../protocol";
+import { AGENT_PROTOCOL_VERSION, AGENT_RESPONSE_CONTRACT, validateAgentCall } from "../protocol";
 import type { Message } from "../protocol";
+import { agentToolResultBytes } from "../tool-result";
 
 export interface BrokerPeer {
   send(value: Message): void;
   close(): void;
+}
+
+function globalListResult(name: string, items: readonly unknown[], args: Message) {
+  const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
+  if (args.offset === undefined && args.limit === undefined) {
+    if (agentToolResultBytes(items) > budget) throw new Error(`RESULT_BUDGET_EXCEEDED: ${name} exceeds the response budget. Request a page with offset:0 and limit:50, then continue at nextOffset.`);
+    return items;
+  }
+  const offset = Number(args.offset ?? 0);
+  let size = Number(args.limit ?? 50);
+  for (;;) {
+    const pageItems = items.slice(offset, offset + size);
+    const nextOffset = offset + pageItems.length < items.length ? offset + pageItems.length : null;
+    const page = { items: pageItems, total: items.length, offset, nextOffset };
+    if (agentToolResultBytes(page) <= budget) return page;
+    if (size <= 1) throw new Error(`RESULT_BUDGET_EXCEEDED: One ${name} entry exceeds maxBytes. Request a larger maxBytes, up to 65536.`);
+    size = Math.max(1, Math.floor(size / 2));
+  }
 }
 
 /** Transports enforce their configured connection policy before joining. Routing never owns Capture or grants. */
@@ -46,8 +65,12 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
           if (typeof message.id !== "string" || typeof message.name !== "string") { peer.close(); return; }
           try {
             validateAgentCall(message.name, message.args);
-            if (message.name === "list_panel_sessions") { send(peer, { id: message.id, result: [...panels.values()].map(panel => panel.session) }); return; }
-            if (message.name === "get_pairing_requests") { send(peer, { id: message.id, result: pairing?.list() ?? [] }); return; }
+            if (message.name === "list_panel_sessions") { send(peer, { id: message.id, result: globalListResult(message.name, [...panels.values()].map(panel => panel.session), message.args as Message) }); return; }
+            if (message.name === "get_pairing_requests") {
+              const listed = pairing?.list() ?? [];
+              if (!Array.isArray(listed)) throw new Error("Pairing request list is unavailable.");
+              send(peer, { id: message.id, result: globalListResult(message.name, listed, message.args as Message) }); return;
+            }
             if (message.name === "confirm_pairing") {
               if (!pairing) throw new Error("Pairing approval is only used when standalone authentication is required. Use list_panel_sessions for connected panels.");
               const id = message.id;

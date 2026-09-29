@@ -124,7 +124,7 @@ jobs:
       - name: Guard context budgets with IndexedDB and the installed artifact
         env:
           LSEW_AGENT_TEST_CLI: test-results/agent-package/node_modules/lightstreamer-workbench-agent/dist/cli.mjs
-        run: npx vitest run tests/agent-mcp-budget.test.ts tests/agent-response-pagination.test.ts tests/agent-candidate-budget.test.ts tests/agent-status-budget.test.ts --maxWorkers=1 --no-file-parallelism
+        run: npx vitest run tests/agent-mcp-budget.test.ts tests/agent-response-pagination.test.ts tests/agent-candidate-budget.test.ts tests/agent-global-pagination.test.ts tests/agent-status-budget.test.ts --maxWorkers=1 --no-file-parallelism
 
   release-bundle:
     needs: [package, portable]
