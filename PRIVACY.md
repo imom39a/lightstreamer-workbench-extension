@@ -8,7 +8,7 @@ Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extensio
 
 - **Repository candidate with the Usage analytics control:** configured builds collect the limited product-usage data described below. The current repository candidate is not a statement about the version available in the Chrome Web Store.
 - **Chrome Web Store builds:** features and analytics behavior depend on the installed version. Check Chrome extension details and the release notes for its version. Do not infer Store availability from this repository candidate.
-- **Public website:** static HTML and CSS. It has no analytics, cookies, JavaScript, advertising, account sign-in, or remote error logging.
+- **Public website:** static pages with one analytics script on the official GitHub Pages origin. It measures page visits with a separate Google Analytics 4 web stream. It has no advertising, account sign-in, or remote error logging.
 
 The repository candidate also captures inspected-page Client Messages and implements deliberate Server Injection. This candidate is not a statement that the Chrome Web Store package has been published.
 
@@ -21,6 +21,16 @@ Events contain fixed Workbench action and screen names, coarse Capture and Injec
 The preference and identifier use extension-local storage. The analytics session uses browser-session storage and expires after thirty minutes without reported activity. These records are separate from captured Event History. Opt-out stops sending, aborts an active request where possible, discards queued events, and removes the identifier and analytics session. It does not retract events already received by Google. Enabling analytics later starts fresh without uploading a backlog. No event queue is saved to disk. Missing configuration or unavailable storage pauses collection without blocking Workbench.
 
 Google receives HTTPS analytics requests and the network IP address used to contact its service. Workbench does not include inspected-page IP addresses or geographic information in those requests. Google processes received analytics data under its [privacy policy](https://policies.google.com/privacy) and the property's retention settings. Workbench does not sell analytics data.
+
+## Website analytics
+
+The published website uses a separate Google Analytics 4 web stream to count page visits. The site loads the Google tag only at `https://imom39a.github.io/lightstreamer-workbench-extension/`. It sends one `page_view` event per page load, with the page path and title and `app_surface=website`. Google Analytics can also collect standard session and engagement information. The site removes query strings and fragments from the reported page URL and does not report a referrer. The website stream has Enhanced Measurement off. The site does not send captured Workbench Evidence, search text, form content, or extension usage events to this stream.
+
+Google's tag can set first-party analytics cookies to distinguish visits. Google also receives the network IP address and ordinary browser and device information when the tag contacts its service. Advertising signals, advertising storage, advertising user data, and advertising personalization are disabled in the site tag. See [Google's data collection description](https://support.google.com/analytics/answer/11593727) and [privacy policy](https://policies.google.com/privacy).
+
+You can turn off website analytics in this browser. The preference is stored in this site's browser storage. Turning it off prevents later site analytics requests and removes the site's analytics cookies where the browser permits. It does not retract data already received by Google. It does not change the extension's separate usage-analytics preference. Local previews, forks, and offline exports do not load the Google tag.
+
+<button type="button" class="button button--secondary" data-site-analytics-toggle hidden>Turn off website analytics</button> <span data-site-analytics-status role="status">Website analytics runs only on the published site.</span>
 
 ## Inspected-page data
 
@@ -87,6 +97,8 @@ The extension uses local runtime state to connect the DevTools panel, service wo
 ## Network access
 
 Configured builds with usage analytics contact `https://www.google-analytics.com/mp/collect` from the extension service worker while analytics is enabled. No remote analytics script is loaded. Earlier v2 packages without the Usage analytics control do not contact an analytics provider. The inspected page can separately communicate with Lightstreamer servers and application services. This traffic belongs to the inspected page, not to a Workbench maintainer service.
+
+The published website loads `https://www.googletagmanager.com/gtag/js` and sends page-visit data to Google Analytics while website analytics is on. This site behavior is separate from the extension service worker.
 
 Local Injection delivers an Item Update through a captured listener or the inspected page's local delivery path. It does not contact the Lightstreamer Server.
 

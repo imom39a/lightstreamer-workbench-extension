@@ -7,6 +7,7 @@ import { marked, Renderer } from "marked";
 import {
   CHROME_WEB_STORE_URL,
   GITHUB_REPOSITORY_URL,
+  SITE_GA_MEASUREMENT_ID,
   SITE_BASE_PATH,
   SITE_URL,
   canonicalUrl,
@@ -54,6 +55,7 @@ await writePage(
 
 await Promise.all([
   copy("site/assets/site.css", "assets/site.css"),
+  writeSiteAnalytics(),
   copy("docs/assets/logo.svg", "assets/logo.svg"),
   copy("docs/assets/mascot.png", "assets/mascot.png"),
   copy("docs/assets/app-ordered-evidence-context.png", "assets/app-ordered-evidence-context.png"),
@@ -80,6 +82,11 @@ async function copy(source, output) {
   const target = resolve(outputRoot, output);
   await mkdir(dirname(target), { recursive: true });
   await copyFile(resolve(projectRoot, source), target);
+}
+
+async function writeSiteAnalytics() {
+  const source = await readFile(resolve(projectRoot, "site/assets/site-analytics.js"), "utf8");
+  await writeFile(resolve(outputRoot, "assets/site-analytics.js"), source.replaceAll("__SITE_GA_MEASUREMENT_ID__", SITE_GA_MEASUREMENT_ID));
 }
 
 async function writePage(definition, source) {
@@ -147,6 +154,7 @@ function renderDocument(definition, body) {
     <meta name="twitter:card" content="summary_large_image">
     <link rel="icon" href="${sitePath("assets/logo.svg")}" type="image/svg+xml">
     <link rel="stylesheet" href="${sitePath("assets/site.css")}">
+    <script src="${sitePath("assets/site-analytics.js")}" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>

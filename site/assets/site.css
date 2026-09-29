@@ -205,6 +205,9 @@ pre code {
   background: #202a24;
 }
 
+button.button { cursor: pointer; }
+[data-site-analytics-toggle][hidden] { display: none; }
+
 .home {
   overflow: hidden;
 }

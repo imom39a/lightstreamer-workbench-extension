@@ -59,7 +59,8 @@ test("every stable public route is isolated, canonical, and navigable", async ({
       "href",
       new RegExp(`^https://imom39a\\.github\\.io/lightstreamer-workbench-extension/${route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
     );
-    await expect(page.locator("script"), route).toHaveCount(0);
+    await expect(page.locator("script[src]"), route).toHaveCount(1);
+    await expect(page.locator("script[src]")).toHaveAttribute("src", "/lightstreamer-workbench-extension/assets/site-analytics.js");
     await expect(page.locator('a[href*="/blob/main/PRIVACY.md"], a[href*="/blob/main/SECURITY.md"], a[href*="/blob/main/README.md"], a[href*="/blob/main/RELEASE.md"]'), route).toHaveCount(0);
     await expect(page.locator("body"), route).not.toContainText(/coming soon|prelaunch|preview documentation|0\.1\.5/i);
   }
@@ -154,6 +155,9 @@ test("customer policy and support routes stay first-party", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "Privacy policy" })).toBeVisible();
   await expect(page.getByText("Chrome Web Store builds:")).toBeVisible();
   await expect(page.getByText("Public website:")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Website analytics" })).toBeVisible();
+  await expect(page.locator("[data-site-analytics-toggle]")).toBeHidden();
+  await expect(page.locator("[data-site-analytics-status]")).toHaveText("Website analytics runs only on the published site.");
   await expect(page.locator('a[href*="PRIVACY.md"], a[href*="SECURITY.md"]')).toHaveCount(0);
 });
 

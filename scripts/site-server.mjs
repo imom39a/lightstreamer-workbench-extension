@@ -29,6 +29,7 @@ server.listen(port, "127.0.0.1", () => {
 function contentType(path) {
   switch (extname(path)) {
     case ".css": return "text/css; charset=utf-8";
+    case ".js": return "text/javascript; charset=utf-8";
     case ".html": return "text/html; charset=utf-8";
     case ".png": return "image/png";
     case ".svg": return "image/svg+xml";

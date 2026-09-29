@@ -1,6 +1,8 @@
 # Public site source
 
-The first-party Lightstreamer Workbench site is a static, zero-JavaScript GitHub Pages artifact. Markdown content lives in `site/content/`; shared policy content comes from root `PRIVACY.md` and `SECURITY.md`; current product screenshots come from `docs/assets/`.
+The first-party Lightstreamer Workbench site is a static GitHub Pages artifact. Markdown content lives in `site/content/`; shared policy content comes from root `PRIVACY.md` and `SECURITY.md`; current product screenshots come from `docs/assets/`.
+
+The only site JavaScript is `site/assets/site-analytics.js`. It loads the dedicated GA4 website stream (`G-SY4DYL8WH5`) only at the official HTTPS GitHub Pages origin and base path. The website stream has Enhanced Measurement off. Local preview, forks, and offline exports do not load the Google tag. The script sends one `page_view` per document with URL query and fragment removed, no referrer, and `app_surface=website`; GA4 can also collect standard session and engagement information. The privacy page has a browser-local opt-out control. The extension uses a separate stream.
 
 ```bash
 npm run site:build
