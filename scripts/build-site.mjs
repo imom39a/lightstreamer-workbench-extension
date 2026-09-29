@@ -80,7 +80,7 @@ await Promise.all([
   copy("docs/assets/app-ordered-evidence-context.png", "assets/app-ordered-evidence-context.png"),
   copy("docs/assets/app-workspace-context.png", "assets/app-workspace-context.png"),
   copy("docs/assets/app-local-injection-editor.png", "assets/app-local-injection-editor.png"),
-  copy("docs/assets/app-notifications.png", "assets/app-notifications.png"),
+  copy("docs/assets/app-agent-access.png", "assets/app-agent-access.png"),
   copy("docs/assets/app-server-injection.png", "assets/app-server-injection.png"),
   copy("docs/assets/real-app-gallery.png", "assets/real-app-gallery.png"),
   copy("site/assets/og.png", "assets/og.png")

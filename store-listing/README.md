@@ -9,7 +9,7 @@ Screenshots, 1280x800 PNG:
 1. `screenshots/01-workspace-context.png`
 2. `screenshots/02-ordered-evidence-context.png`
 3. `screenshots/03-local-injection-editor.png`
-4. `screenshots/04-notifications.png`
+4. `screenshots/04-agent-access.png`
 5. `screenshots/05-server-injection.png`
 
 Promotional images:
@@ -39,7 +39,7 @@ Generated product/site artwork:
 - `../docs/assets/app-workspace-context.png` - web-ready real app screenshot generated from `screenshots/01-workspace-context.png`
 - `../docs/assets/app-ordered-evidence-context.png` - web-ready real app screenshot generated from `screenshots/02-ordered-evidence-context.png`
 - `../docs/assets/app-local-injection-editor.png` - web-ready real app screenshot generated from `screenshots/03-local-injection-editor.png`
-- `../docs/assets/app-notifications.png` - web-ready real app screenshot generated from `screenshots/04-notifications.png`
+- `../docs/assets/app-agent-access.png` - web-ready real app screenshot generated from `screenshots/04-agent-access.png`
 - `../docs/assets/app-server-injection.png` - web-ready real app screenshot generated from `screenshots/05-server-injection.png`
 
 ## Regenerate Screenshots
