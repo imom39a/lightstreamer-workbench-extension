@@ -29,8 +29,8 @@ const screenshots = [
     scene: "local-injection"
   },
   {
-    file: "04-notifications.png",
-    scene: "notifications"
+    file: "04-agent-access.png",
+    scene: "agent-access"
   },
   {
     file: "05-server-injection.png",
@@ -98,13 +98,14 @@ import { createInMemoryEventHistory } from ${source("src/core/event-history-auth
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 import { getWorkbenchScenario } from ${source("tests/support/workbench-scenarios.ts")};
+import { agentConnectionFixture } from ${source("tests/support/agent-connection-fixture.ts")};
 
 const scene = new URLSearchParams(window.location.search).get("scene") ?? "workspace-context";
 const scenarioId = {
   "workspace-context": "live-selected",
   "timeline-detail": "local-injection-json",
   "local-injection": "local-injection-large",
-  "notifications": "diagnostics-stress",
+  "agent-access": "live-selected",
   "server-injection": "server-injection-review"
 }[scene];
 if (!scenarioId) throw new Error("Unknown store-listing scenario: " + scene);
@@ -145,7 +146,7 @@ for (const message of scenario.captureMessages ?? []) {
   runtime.dispatch({ type: "ingest-capture-message", message });
 }
 const reactRoot = createRoot(root);
-reactRoot.render(createElement(WorkbenchPanel, { runtime }));
+reactRoot.render(createElement(WorkbenchPanel, { runtime, agentConnection: scene === "agent-access" ? agentConnectionFixture() : undefined }));
 
 await new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame)));
 if (scenario.selectedScope) {
@@ -195,10 +196,17 @@ await new Promise((resolveReady) => setTimeout(resolveReady, 160));
 if (scene === "workspace-context") {
   await waitForEvidenceStream();
 }
-if (scene === "notifications") {
-  const notifications = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim().startsWith("Notifications"));
-  if (!(notifications instanceof HTMLButtonElement)) throw new Error("Store-listing Notifications control did not render.");
-  notifications.click();
+if (scene === "agent-access") {
+  const agentControl = document.querySelector(".workbench-react__agent-access");
+  if (!(agentControl instanceof HTMLButtonElement) || !agentControl.textContent?.includes("On")) {
+    throw new Error("Store-listing Agent access status did not render ready.");
+  }
+  agentControl.click();
+  await new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame)));
+  const details = document.querySelector("#workbench-agent-access");
+  if (!(details instanceof HTMLDetailsElement) || !details.open) {
+    throw new Error("Store-listing Agent access setup did not open.");
+  }
   await new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame)));
 }
 document.documentElement.dataset.sceneReady = "true";
@@ -358,8 +366,8 @@ async function generateRealAppPreviewAssets() {
       output: resolve(docsAssetsDir, "app-local-injection-editor.png")
     },
     {
-      source: resolve(projectRoot, "store-listing/screenshots/04-notifications.png"),
-      output: resolve(docsAssetsDir, "app-notifications.png")
+      source: resolve(projectRoot, "store-listing/screenshots/04-agent-access.png"),
+      output: resolve(docsAssetsDir, "app-agent-access.png")
     },
     {
       source: resolve(projectRoot, "store-listing/screenshots/05-server-injection.png"),
@@ -541,7 +549,10 @@ async function runChromeScreenshot(url, outputPath) {
     const pageErrors = [];
     page.on("pageerror", (error) => pageErrors.push(error));
     await page.goto(url, { waitUntil: "load" });
-    await page.locator('html[data-scene-ready="true"]').waitFor({ state: "attached", timeout: 15_000 });
+    await page.locator('html[data-scene-ready="true"]').waitFor({ state: "attached", timeout: 15_000 }).catch((error) => {
+      if (pageErrors.length > 0) throw new Error(`Store-listing scene emitted a page error: ${pageErrors[0].message}`, { cause: error });
+      throw error;
+    });
     if (pageErrors.length > 0) throw new Error(`Store-listing scene emitted a page error: ${pageErrors[0].message}`);
     await page.screenshot({ path: outputPath, animations: "disabled" });
   } finally {

@@ -39,6 +39,11 @@ If your extension lacks **Agent access and setup**, use a matching unpacked buil
 
 ## Check the connection
 
+<figure>
+  <img src="{{site}}assets/app-agent-access.png" alt="Workbench panel showing Agent access On and the expanded Agent access and setup controls under More actions." width="960" height="600">
+  <figcaption>The header reports connection readiness. Open it to review the setup link, local access control, and data-sharing guidance.</figcaption>
+</figure>
+
 | Header status | Meaning |
 | --- | --- |
 | **On** | Connected and ready. This does not mean an agent is active. |

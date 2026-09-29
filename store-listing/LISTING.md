@@ -49,6 +49,8 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 The description below accompanies the 2.0.5 repository candidate. The Chrome Web Store still publishes 2.0.4. The MCP companion was briefly published, then unpublished on September 29, 2026; npm currently returns 404 for it. A tested 0.1.2 companion is available in the matching GitHub Actions release bundle. Submit 2.0.5 for Store review only after a public companion installation path and its setup guide are verified. The versioned release records later in this file describe their original packages.
 
 ```text
+New in 2.0.5: Connect a local MCP agent to inspect a Panel Session, query bounded Evidence, and prepare and run reviewed Local Injection Scenarios. Open Agent access and setup from the panel header. The extension no longer requests the nativeMessaging permission.
+
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
 
 It captures clients, Sessions, Subscriptions, listeners, Item Updates, snapshots, and COMMAND key lifecycles. The workspace has Runtime Scope, Ordered Evidence, and Context.
@@ -94,8 +96,8 @@ Remove every legacy screenshot that shows the retired three-section interface be
    - Caption: Inspect the complete raw Evidence, Source, and Lightstreamer runtime context for an event.
 3. `screenshots/03-local-injection-editor.png`
    - Caption: Compare, edit, validate, and inject one protected Local Injection Draft from the same preview.
-4. `screenshots/04-notifications.png`
-   - Caption: Review active Workbench conditions and recent Lightstreamer diagnostics in Notifications.
+4. `screenshots/04-agent-access.png`
+   - Caption: Connect a local MCP agent to inspect Evidence and prepare reviewed Local Injection Scenarios.
 5. `screenshots/05-server-injection.png`
    - Caption: Review the exact client, Session, and sendMessage arguments before one deliberate Client Message send.
 
@@ -187,7 +189,7 @@ npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent
 node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Copy the printed MCP configuration into the test agent app and start its stdio server. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate has not been uploaded to the Chrome Web Store.
+Copy the printed MCP configuration into the test agent app and start its stdio server. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate was uploaded as a Chrome Web Store draft on September 29, 2026; it has not been submitted for review.
 
 ## Version 2.0.2 Release Checklist (historical)
 
@@ -243,8 +245,11 @@ The maintainer explicitly authorized this release. The Chrome session currently 
 - [x] Prepare the listing and privacy disclosures for the 2.0.5 repository candidate.
 - [x] Prepare the MCP reviewer steps using a local companion tarball and matching unpacked extension.
 - [x] Verify the configured Store ZIP, release checks, and package provenance recorded in `RELEASE.md`.
+- [x] Upload the 2.0.5 package as an unpublished Store draft.
+- [x] Replace the fourth Store screenshot with Agent access and save the release note in the description.
+- [ ] Verify a durable public MCP companion installation path and setup guide before Store review.
 - [ ] Confirm npm publication and the version-pinned `npx` setup.
-- [ ] Upload the matching extension package.
+- [x] Upload the matching extension package.
 - [ ] Verify the actual Chrome Web Store review and publication status.
 
 The 2.0.5 candidate is being prepared for the Store. The npm companion is currently unavailable, so Store review submission remains pending.
