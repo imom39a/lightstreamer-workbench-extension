@@ -170,7 +170,7 @@ jobs:
           path: release
       - name: Publish with npm trusted publishing
         env:
-          AGENT_TARBALL: release/${{ needs.package.outputs.filename }}
+          AGENT_TARBALL: ./release/${{ needs.package.outputs.filename }}
         run: npm publish "$AGENT_TARBALL" --access public --provenance --ignore-scripts
       - name: Verify registry version
         env:
