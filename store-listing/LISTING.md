@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below accompanies the 2.0.5 Store draft. The Chrome Web Store still publishes 2.0.4. The MCP companion was briefly published to npm, then unpublished on September 29, 2026; npm currently returns 404 for it. The tested 0.1.2 tarball is available in a public GitHub release with a verified local installation path. The versioned release records later in this file describe their original packages.
+The description below accompanies the 2.0.5 Store revision pending review. The Chrome Web Store still publishes 2.0.4. The MCP companion was briefly published to npm, then unpublished on September 29, 2026; npm currently returns 404 for it. The tested 0.1.2 tarball is available in a public GitHub release with a verified local installation path. The versioned release records later in this file describe their original packages.
 
 ```text
 New in 2.0.5: Connect a local MCP agent to inspect a Panel Session, query bounded Evidence, and prepare and run reviewed Local Injection Scenarios. Open Agent access and setup from the panel header. The extension no longer requests the nativeMessaging permission.
@@ -189,7 +189,7 @@ npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.2
 node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Copy the printed MCP configuration into the test agent app and start its stdio server. Keep the installation directory in place. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate was uploaded as a Chrome Web Store draft on September 29, 2026; it has not been submitted for review.
+Copy the printed MCP configuration into the test agent app and start its stdio server. Keep the installation directory in place. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate was submitted for Store review on September 29, 2026 with automatic public publishing after approval; it remains pending review.
 
 ## Version 2.0.2 Release Checklist (historical)
 
@@ -249,6 +249,7 @@ The maintainer explicitly authorized this release. The Chrome session currently 
 - [x] Replace the fourth Store screenshot with Agent access and save the release note in the description.
 - [x] Verify the public MCP companion release download, digest, local installation, and setup guide before Store review.
 - [x] Upload the matching extension package.
+- [x] Submit the revision for Store review with automatic public publishing after approval.
 - [ ] Verify the actual Chrome Web Store review and publication status.
 
 Restore version-pinned `npx` setup after npm publication resumes; it is not required for this Store submission because the public tarball and local setup are verified.
