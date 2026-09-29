@@ -1,4 +1,4 @@
-# Windows MCP companion
+# Windows launcher notes
 
 Use Windows Node.js 22.12+ and npm when Chrome runs on Windows. The companion
 and Chrome must share the same loopback network; Node inside WSL, a container,
@@ -49,7 +49,7 @@ $workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\lightstreamer-
 Keep the installed directory in place; `--local` prints its absolute Node and
 CLI paths. This is the same npm runtime as the registry package.
 
-## Connection troubleshooting
+## Chrome and Node must share the computer
 
 **Waiting** means panel access is enabled but the companion is not connected.
 Start or reconnect the configured MCP server and check that the extension ID
@@ -62,3 +62,5 @@ older MCP entry, remove custom port settings and `LSEW_AGENT_CONNECTION`, then
 restart the MCP server and reload the panel. Existing credentials are not
 silently ignored. Do not retry an Injection after an unknown outcome without
 inspecting its operation or Scenario trace.
+
+Do not stop an unrelated process that uses port 24817.

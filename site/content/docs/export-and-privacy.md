@@ -1,25 +1,31 @@
-## Scoped exports
+## Export Evidence
 
-Workbench can create a versioned JSON snapshot or an offline HTML report for the current Scope. Workbench creates an export only when you request it. An export is a local download.
+1. Select the Scope you want to export.
+2. Open **More actions → Export current Scope**.
+3. Select JSON or offline HTML.
+4. Review the redaction options.
+5. Create the export.
 
-Workbench always excludes credentials. You can also remove server addresses, masked client IP information, item names, COMMAND keys, field names, and captured identifiers.
+An export is a local download. Workbench excludes credentials and Client Message bodies from structural exports. Full Evidence requires an explicit choice and can contain private application data.
 
-Structural JSON and HTML exports do not include Client Message bodies. **Copy retained scoped Evidence** always redacts Client Message bodies, processed responses, and denial text. Complete raw Evidence for one selected message remains a deliberate local action and can contain application data.
+**Copy retained scoped Evidence** also redacts Client Message bodies, processed responses, and denial text. A complete raw copy of one event can contain application data.
 
-You must explicitly include complete Evidence. Captured application payloads can contain private or proprietary data.
+## Agent access
 
-## Local storage boundary
+Requested Evidence can pass to your local MCP client and its model provider. Local access has no authentication. Read [MCP setup]({{site}}docs/agent-access/#access-and-data) before connecting an agent.
 
-Captured clients, Sessions, Subscriptions, updates, field values, Client Messages, diagnostics, Sources, and Local or Server Drafts stay in the browser extension context unless you use Agent access. Agent access sends requested Evidence to a local MCP client and may send it to that client's configured model provider. Access is on by default when the panel opens, with inspection and Local Injection together; authentication is off, so any local process that can reach the companion may use the connected panel's grant. The header shows **On**, **Waiting**, or **Off** and opens the access control under **More actions**. Read the [Agent access guide]({{site}}docs/agent-access/) before you connect an agent. Workbench does not send captured Evidence to maintainers or an analytics service.
+## Temporary storage
 
-One Panel Session owns one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 25,000 records or 128 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session. The footer shows the current storage mode, and Notifications records the failure reason.
+Each Panel Session owns its Event History. A new panel starts empty. A controlled Close attempts erasure. An abnormal stop can leave residual data until the extension runs again.
 
-Complete History ends at the current History Interval's Committed Evidence Boundary. Clear ends the current interval. Clear does not restart Capture after a terminal stop. A controlled Close tries to erase the Event History. An abnormal stop can prevent this action. Residual data can remain until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen remain independent. The memory fallback does not reduce Coverage by itself.
+See [retained history]({{site}}docs/evidence/#retained-history) for capacity, rolling retention, and storage failure behavior.
 
-## Usage analytics boundary
+## Usage analytics
 
-Configured production builds send fixed feature names, foreground engagement, coarse outcomes, extension version, event time, and a random installation identifier to Google Analytics. Open **More actions → Help & resources → Usage analytics** to turn this off. Opting out removes the saved analytics identifier and session and does not upload a backlog if analytics is enabled again later.
+Configured production builds enable usage analytics by default. They send fixed feature names, foreground engagement, coarse outcomes, version, time, and a random installation identifier to Google Analytics.
 
-Captured Evidence, payloads, inspected URLs, Lightstreamer addresses, search text, clipboard or export content, Drafts, raw errors, and stack traces are excluded from analytics. Agent access is separate: it can share requested Evidence with the local MCP client and its configured model provider. Workbench has no maintainer-operated collection backend, advertising, or account sign-in. The public website does not use analytics, cookies, forms, or tracking scripts. Read the [Privacy policy]({{site}}privacy/) for the complete data boundary.
+Use **More actions → Help & resources → Usage analytics** to turn this off. Turning it off removes the saved identifier and analytics session.
 
-Read the [Privacy policy]({{site}}privacy/) before you share an export or inspect production data.
+Analytics excludes captured Evidence, payloads, inspected URLs, search text, Drafts, and raw errors. Agent access is separate from analytics. This website has no analytics, cookies, or tracking scripts.
+
+Read the [Privacy policy]({{site}}privacy/) for the complete data policy.

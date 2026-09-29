@@ -31,7 +31,7 @@ const pages = [
   page("docs/troubleshooting.md", "docs/troubleshooting/index.html", "Troubleshooting", "Resolve missing Capture, limited coverage, retired targets, and storage fallback.", "docs"),
   page("docs/faq.md", "docs/faq/index.html", "Frequently asked questions", "Answers about supported clients, Capture, COMMAND state, Local Injection, and storage.", "docs"),
   page("roadmap.md", "roadmap/index.html", "Roadmap", "Planned work for Lightstreamer Workbench.", "page"),
-  page("releases.md", "releases/index.html", "Release notes", "What shipped in the current Lightstreamer Workbench 2.0 release.", "page"),
+  page("releases.md", "releases/index.html", "Release notes", "Extension and MCP companion versions, features, and installation links.", "page"),
   page("support.md", "support/index.html", "Support", "Get help, report a bug, request a feature, or ask a question.", "page")
 ];
 
@@ -103,6 +103,8 @@ function stripFirstHeading(source) {
 
 function renderMarkdown(source) {
   const renderer = new Renderer();
+  const renderCode = renderer.code.bind(renderer);
+  renderer.code = (token) => renderCode(token).replace("<pre>", '<pre tabindex="0">');
   const usedSlugs = new Map();
   renderer.heading = function ({ tokens, depth }) {
     const text = this.parser.parseInline(tokens);
@@ -159,16 +161,15 @@ function renderDocument(definition, body) {
 
 function renderHeader(currentOutput) {
   const nav = [
-    ["Capabilities", `${sitePath()}#capabilities`, false],
     ["Developer guide", sitePath("docs/developer-guide/"), currentOutput === "docs/developer-guide/index.html"],
-    ["Documentation", sitePath("docs/"), currentOutput.startsWith("docs/") && currentOutput !== "docs/developer-guide/index.html"],
+    ["MCP setup", sitePath("docs/agent-access/"), currentOutput === "docs/agent-access/index.html"],
     ["GitHub", GITHUB_REPOSITORY_URL, false]
   ];
   return `<header class="site-header"><div class="site-header__inner"><a class="brand" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="38" height="38"><span>Lightstreamer Workbench</span></a><nav aria-label="Primary">${nav.map(([label, href, current]) => `<a href="${href}"${current ? ' aria-current="page"' : ""}${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav><a class="button button--compact" href="${CHROME_WEB_STORE_URL}" target="_blank" rel="noopener noreferrer">Add to Chrome</a></div></header>`;
 }
 
 function renderArticleIntro(definition) {
-  return `<header class="article-intro"><span class="eyebrow">Lightstreamer Workbench</span><h1>${escapeHtml(definition.title)}</h1><p>${escapeHtml(definition.description)}</p></header>`;
+  return `<header class="article-intro"><h1>${escapeHtml(definition.title)}</h1></header>`;
 }
 
 function renderDocsNavigation(currentOutput) {

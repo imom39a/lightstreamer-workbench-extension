@@ -65,18 +65,18 @@ test("every stable public route is isolated, canonical, and navigable", async ({
   }
 });
 
-test("desktop home presents release-current capabilities without overflow", async ({ page }, testInfo) => {
+test("desktop home is a short introduction with links to task guides", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("");
 
   await expect(page.getByRole("heading", { name: "Debug Lightstreamer in Chrome DevTools." })).toBeVisible();
   await expect(page.getByRole("img", { name: /Runtime Scope, Ordered Evidence/ })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Inspect Lightstreamer activity." })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Review Notifications" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open the developer guide" }).first()).toHaveAttribute(
-    "href",
-    "/lightstreamer-workbench-extension/docs/developer-guide/"
-  );
+  const main = page.getByRole("main");
+  expect((await main.innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(200);
+  await expect(main.getByRole("img")).toHaveCount(1);
+  await expect(main.getByRole("link", { name: "Install from Chrome Web Store", exact: true })).toHaveCount(1);
+  await expect(main.getByRole("link", { name: "MCP setup", exact: true })).toHaveAttribute("href", "/lightstreamer-workbench-extension/docs/agent-access/");
+  await expect(main.getByRole("link", { name: "Local Injection", exact: true })).toHaveAttribute("href", "/lightstreamer-workbench-extension/docs/local-injection/");
   await expectNoHorizontalOverflow(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScreenshot(page, testInfo, "desktop-home");
@@ -103,31 +103,42 @@ test("mobile home and documentation keep navigation and calls to action usable",
   await attachScreenshot(page, testInfo, "mobile-docs");
 });
 
-test("developer guide covers the complete inspection and Local Injection workflow", async ({ page }) => {
+test("developer guide routes tasks to one detailed procedure", async ({ page }) => {
   await page.goto("docs/developer-guide/");
   await expect(page.getByRole("heading", { name: "Inspect Lightstreamer activity" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Review Notifications" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Test behavior with Local Injection" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose a task" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Keyboard essentials" })).toBeVisible();
+  expect((await page.locator(".article-content").innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(450);
   await expectNoHorizontalOverflow(page);
 });
 
-test("Agent access explains local setup, Windows, bundled skill, and the trust boundary", async ({ page }, testInfo) => {
+test("Agent access gives one current cross-platform setup and a concise trust boundary", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("docs/agent-access/");
   await expect(page.getByRole("heading", { name: "Agent access" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Windows setup" })).toBeVisible();
-  await expect(page.getByText("workbench-mcp-release-bundle")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Set up MCP" })).toBeVisible();
+  await expect(page.getByText("npx --yes lightstreamer-workbench-agent@latest setup", { exact: true })).toBeVisible();
+  await expect(page.getByText("npx.cmd --yes lightstreamer-workbench-agent@latest setup", { exact: true })).toBeVisible();
   await expect(page.getByText("skills/lightstreamer-workbench/SKILL.md")).toBeVisible();
-  await expect(page.getByText("authentication off", { exact: false })).toBeVisible();
-  await expect(page.getByText("Do not retry an Injection blindly.")).toBeVisible();
+  const article = page.locator(".article-content");
+  await expect(article).toContainText("Authentication is off");
+  await expect(article).toContainText("Do not repeat an Injection with an unknown result");
+  await expect(article).not.toContainText(/until.*publish|after.*publication|not.*published|not available from the npm registry/i);
+  expect((await article.innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(750);
   await expectNoHorizontalOverflow(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
   await attachScreenshot(page, testInfo, "agent-access-desktop");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect(page.getByRole("heading", { name: "Agent access" })).toBeVisible();
+  const commandBlock = page.locator("pre").first();
+  await commandBlock.focus();
+  await expect(commandBlock).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(() => commandBlock.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
   await expectNoHorizontalOverflow(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
   await attachScreenshot(page, testInfo, "agent-access-mobile");
 });
 

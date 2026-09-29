@@ -44,6 +44,21 @@ that Panel Session. The MCP client starts the companion automatically; no
 separate broker terminal is needed. See [Windows setup and troubleshooting](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/agent/WINDOWS.md)
 if the client cannot find `npx` or Chrome runs on Windows.
 
+## Matching extension build
+
+The npm package does not install the Chrome extension. If your installed
+extension lacks Agent access, download `workbench-mcp-release-bundle` from a
+successful `main` run of the [Agent companion workflow](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml).
+Extract the artifact wrapper and the bundle inside it. Check
+`release-manifest.json`, extract the extension ZIP from `extension/` into its
+own directory, and load that directory from `chrome://extensions`. Use the
+assigned extension ID with `setup --extension-id` and keep the extension and
+companion from the same release or source revision.
+
+For a source checkout, run `npm ci`, `npm run build`, and `npm run agent:build`
+from the repository root. Load `dist/` as an unpacked extension, then run
+`node agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID`.
+
 ## What the agent can do
 
 - Find a Subscription or item with `search_scope`, then inspect retained Evidence

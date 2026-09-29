@@ -1,20 +1,18 @@
-Lightstreamer Workbench is a Chrome DevTools extension. Use it to inspect applications that use the official Lightstreamer Web Client. These guides describe the current product.
+Use Workbench with applications that use the official Lightstreamer Web Client.
 
 ## Start here
 
-1. Use the [Developer guide]({{site}}docs/developer-guide/) for the complete procedure.
-2. [Install Workbench and capture a Session]({{site}}docs/getting-started/).
-3. Learn how to use [Runtime Scope, Ordered Evidence, and Context]({{site}}docs/workspace/).
-4. Learn how to use [Filter, Find, selection, Live, Frozen, and Notifications]({{site}}docs/evidence/).
-5. [Debug a COMMAND lifecycle]({{site}}docs/command-state/) with ordered operations, Fields, and diagnostics.
-6. Create a Draft or a [Local Injection Scenario]({{site}}docs/local-injection/).
-7. [Capture and deliberately send a Client Message]({{site}}docs/server-injection/) with Server Injection.
-8. [Connect an MCP agent]({{site}}docs/agent-access/) to inspect Evidence and prepare deliberate Local Injection.
+- [Getting started]({{site}}docs/getting-started/) — install the extension and capture activity.
+- [Developer guide]({{site}}docs/developer-guide/) — choose an investigation or test procedure.
+- [MCP setup]({{site}}docs/agent-access/) — connect an agent on macOS, Windows, or Linux.
 
-## Product boundary
+## Reference
 
-Workbench observes Lightstreamer clients that the page owns. It does not create clients or Sessions. It does not subscribe for the application. It does not interpret application-specific business objects. Local Injection delivers an Item Update in the inspected page. Server Injection sends a Client Message through a page-owned client's current Session; it does not create an inbound Server Update.
+- [Workspace]({{site}}docs/workspace/) and [Ordered Evidence]({{site}}docs/evidence/).
+- [COMMAND lifecycles]({{site}}docs/command-state/).
+- [Local Injection]({{site}}docs/local-injection/) and [Server Injection]({{site}}docs/server-injection/).
+- [Export and privacy]({{site}}docs/export-and-privacy/).
 
-## Need help?
+## Help
 
-Use [Troubleshooting]({{site}}docs/troubleshooting/) for Capture and target problems. Use the [FAQ]({{site}}docs/faq/) for product limits. Use [Support]({{site}}support/) to report a problem or ask a question.
+Use [Troubleshooting]({{site}}docs/troubleshooting/) for a problem, [FAQ]({{site}}docs/faq/) for product limits, or [Support]({{site}}support/) to contact the project.

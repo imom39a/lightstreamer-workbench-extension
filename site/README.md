@@ -19,3 +19,5 @@ The final card remains exactly `1280x640`; `npm run site:check` enforces that di
 ## Writing style
 
 Use [ASD-STE100-style Simplified Technical English](https://www.asd-ste100.org/) for all public copy. Use short, active sentences. Give one action in each numbered step. Use the same word for the same action or object. Do not use idioms or promotional slogans. Keep official Lightstreamer and Workbench terms exact when a simpler word would change the technical meaning.
+
+Keep each procedure in one guide. The home page and Developer guide link to those procedures instead of repeating them. Keep setup steps in the public MCP guide, not in the panel. Link advanced contracts and source-build instructions to the corresponding GitHub document. Keep safety and data warnings beside the relevant action. Describe published npm packages separately from Chrome Web Store releases.
