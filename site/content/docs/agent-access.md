@@ -7,11 +7,11 @@ Connect an MCP agent to inspect Evidence and test Local Injections in an open Wo
 - An agent app that supports local stdio MCP servers.
 - Chrome, Node, and the agent app on the same computer.
 
-The [npm companion](https://www.npmjs.com/package/lightstreamer-workbench-agent) is published. It does not install the Chrome extension. See [Release notes]({{site}}releases/) for extension availability.
+The npm companion is currently unavailable after its September 29, 2026 unpublish. A tested 0.1.2 candidate is in the [matching release bundle](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). Use the [source or bundle instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent) until npm publication resumes. The companion does not install the Chrome extension. See [Release notes]({{site}}releases/) for extension availability.
 
 ## Set up MCP
 
-1. Run the setup command for your system.
+1. After npm publication resumes, run the setup command for your system. Until then, use the source or bundle instructions above.
 
    macOS or Linux:
 

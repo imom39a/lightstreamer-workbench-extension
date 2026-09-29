@@ -18,7 +18,7 @@ Capture is observational. Workbench does not create clients or subscribe for the
 
 ## Agent access
 
-The published [MCP companion](https://www.npmjs.com/package/lightstreamer-workbench-agent) supports macOS, Windows, and Linux. Your agent app starts it. No hosted service or native installer is needed.
+The MCP companion supports macOS, Windows, and Linux. It is temporarily unavailable on npm after a September 29, 2026 unpublish; a tested 0.1.2 candidate is in the [Agent companion workflow bundle](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). Your agent app starts it. No hosted service or native installer is needed.
 
 Follow the [shared MCP setup guide](https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/).
 Use the [read contract](agent/READS.md) for scoped queries, summaries, and selected fields.

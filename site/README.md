@@ -14,7 +14,7 @@ The build writes only public routes and required local assets to ignored `site-d
 
 ## Content map
 
-The home page is the documentation overview. It explains the first Workbench workflow with one workspace screenshot and links to task guides. `docs/` is a compact directory for readers who know the guide they need. `docs/developer-guide/` is the Inspect activity procedure; the Local Injection, Server Injection, and MCP procedures live in their own guides. Keep one Chrome Web Store installation link in the home page's Start section rather than adding a separate call to action.
+The home page is the documentation overview. It explains the first Workbench workflow with one workspace screenshot, links to task guides, and has a dedicated MCP access section with the data-sharing boundary. `docs/` is a compact directory for readers who know the guide they need. `docs/developer-guide/` is the Inspect activity procedure; the Local Injection, Server Injection, and MCP procedures live in their own guides. Keep one Chrome Web Store installation link in the home page's Start section rather than adding a separate call to action.
 
 ## Social card
 

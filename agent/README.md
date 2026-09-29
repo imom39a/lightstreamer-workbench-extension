@@ -20,6 +20,8 @@ actual tool list.
 
 ## Set up
 
+The npm package is temporarily unavailable after its September 29, 2026 unpublish. Use the matching [release bundle](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml) or the source checkout instructions below until npm publication resumes. The `npx` commands here apply after that publication.
+
 On macOS or Linux, run:
 
 ```sh
@@ -54,6 +56,14 @@ Extract the artifact wrapper and the bundle inside it. Check
 own directory, and load that directory from `chrome://extensions`. Use the
 assigned extension ID with `setup --extension-id` and keep the extension and
 companion from the same release or source revision.
+
+For the current 0.1.2 bundle candidate, run these commands from the extracted
+bundle root after loading its extension:
+
+```sh
+npm install --prefix ./workbench-companion ./agent/lightstreamer-workbench-agent-0.1.2.tgz
+node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
+```
 
 For a source checkout, run `npm ci`, `npm run build`, and `npm run agent:build`
 from the repository root. Load `dist/` as an unpacked extension, then run

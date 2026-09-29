@@ -112,6 +112,20 @@ The local preparation gate completed on 2026-09-09 from base revision `b0b0c85f3
 
 The Chrome Web Store dashboard was audited and updated from `store-listing/LISTING.md` on 2026-09-09. The verified 2.0.3 ZIP is the unpublished draft, and the listing now has the current description, privacy disclosures, reviewer instructions, icon, five screenshots, and both promo tiles. The dashboard still shows 2.0.2 as the published package. The candidate was not submitted for review or published, and no Git tag or rollout was created.
 
+## Version 2.0.5 Preparation Record
+
+The public Chrome Web Store listing showed 2.0.4 on 2026-09-29, so 2.0.5 is the next extension update. This preparation uses product source revision `c8dd5c6ee56dd4746864c4785b3d0c3aaeec6fd3` plus documentation and site-copy changes that do not enter the extension ZIP. The extension includes automatic Panel Session Agent access through a local MCP companion, scoped and byte-bounded Evidence tools, and reviewed Local Injection. Its Manifest V3 removes the 2.0.4 `nativeMessaging` permission; `storage` and the Google Analytics host permission remain.
+
+The local preparation gate completed on 2026-09-29 on Darwin arm64 with Node.js `v25.9.0` and npm `11.12.1`:
+
+- `npm ci` completed. `npm audit --omit=dev` reported zero production dependency advisories; the full development dependency audit reported two high and three moderate advisories in browser/test tooling and an MCP SDK transitive dependency. `npm run release:package` passed type checking, 1,872 unit tests with one skipped, the configured production build, and the extension audit.
+- `npm run agent:test:extension` passed the installed companion proof, same-tab dual-panel isolation, panel disposal, and portable Chrome connection/revocation proof. `npm run agent:test:browser` passed the real MCP-to-official-client app proof and 13 headed fixture scenarios with one intentional skip.
+- `npm run store:assets` regenerated all five Store screenshots, icon, promo tiles, and site images; every generated image was pixel-identical to its checked-in counterpart, so timestamp-only PNG differences were omitted. The five Store screenshots were visually reviewed.
+- The public homepage now explains Agent/MCP access and its data-sharing boundary. `npm run docs:check` and `npm run test:site` passed; the latter verified site routes, website analytics, desktop and mobile layout, and accessibility.
+- The configured Store ZIP is `release/lightstreamer-workbench-v2.0.5.zip`, 506,533 bytes, SHA-256 `5f9e6b17a913256d3f4fbfe891dcf80e18177e4029ae97dfef21c12de8b18328`. ZIP integrity passed. All 26 entries are release assets; the ZIP-root, `dist/`, and `public/` manifests agree on version 2.0.5.
+
+The [verified main-branch companion bundle](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36547823118) contains `lightstreamer-workbench-agent-0.1.2.tgz` and an analytics-disabled extension ZIP from the same product source. The configured Store ZIP differs only in `extension/background.js`; use the configured ZIP for Store review. The npm publish job was skipped and the npm registry returned 404 after the September 29 unpublish. Public documentation now states that temporary unavailability. The Store package has not been uploaded or submitted for review. Publication remains gated on a verified public companion installation path and publisher access.
+
 ## Usage analytics release contract
 
 [ADR 0015](docs/adr/0015-measure-extension-usage-with-a-closed-analytics-vocabulary.md) records the maintainer-requested replacement of the earlier no-analytics invariant. The candidate enables limited GA4 usage analytics by default with a persistent off switch. Captured Evidence, payloads, inspected URLs, search text, credentials, and raw errors remain outside analytics. This is a Material UI and data-boundary change, not a statement that an existing Store package has changed.
