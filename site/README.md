@@ -12,6 +12,10 @@ npm run test:site
 
 The build writes only public routes and required local assets to ignored `site-dist/`. `.github/workflows/pages.yml` uploads that isolated directory rather than the repository or `docs/` tree.
 
+## Content map
+
+The home page is the documentation overview. It explains the first Workbench workflow with one workspace screenshot and links to task guides. `docs/` is a compact directory for readers who know the guide they need. `docs/developer-guide/` is the Inspect activity procedure; the Local Injection, Server Injection, and MCP procedures live in their own guides. Keep one Chrome Web Store installation link in the home page's Start section rather than adding a separate call to action.
+
 ## Social card
 
 `site/assets/og.png` is the release-current social card copied into the public artifact. `npm run store:assets` composes it from the maintained brand artwork, project logo, and latest generated Workbench screenshot.
@@ -22,4 +26,4 @@ The final card remains exactly `1280x640`; `npm run site:check` enforces that di
 
 Use [ASD-STE100-style Simplified Technical English](https://www.asd-ste100.org/) for all public copy. Use short, active sentences. Give one action in each numbered step. Use the same word for the same action or object. Do not use idioms or promotional slogans. Keep official Lightstreamer and Workbench terms exact when a simpler word would change the technical meaning.
 
-Keep each procedure in one guide. The home page and Developer guide link to those procedures instead of repeating them. Keep setup steps in the public MCP guide, not in the panel. Link advanced contracts and source-build instructions to the corresponding GitHub document. Keep safety and data warnings beside the relevant action. Describe published npm packages separately from Chrome Web Store releases.
+Keep each procedure in one guide. The home page and documentation directory link to those procedures instead of repeating them. Keep setup steps in the public MCP guide, not in the panel. Link advanced contracts and source-build instructions to the corresponding GitHub document. Keep safety and data warnings beside the relevant action. Describe published npm packages separately from Chrome Web Store releases.

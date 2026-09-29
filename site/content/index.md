@@ -1,31 +1,41 @@
-<section class="hero">
-  <div class="hero__copy">
-    <h1>Debug Lightstreamer in Chrome DevTools.</h1>
-    <p class="lede">Inspect Lightstreamer events. Test an Item Update with Local Injection, or send a reviewed Client Message with Server Injection.</p>
-    <div class="hero__actions">
-      <a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Install from Chrome Web Store</a>
-      <a class="button button--secondary" href="{{site}}docs/getting-started/">Get started</a>
+<div class="a-home">
+  <div class="a-eyebrow">Documentation / Overview</div>
+  <h1>Lightstreamer Workbench</h1>
+  <p class="a-definition">A Chrome DevTools extension for inspecting activity from the official Lightstreamer Web Client and testing how an application handles updates and messages.</p>
+
+  <section class="a-home-section a-start" aria-labelledby="a-start-title">
+    <div class="a-section-heading"><span class="a-section-number">01</span><h2 id="a-start-title">Start with a live page</h2></div>
+    <div class="a-section-body">
+      <p><a href="{{store}}" target="_blank" rel="noopener noreferrer">Install Workbench from the Chrome Web Store</a>. Open DevTools on the application page and select the Workbench panel. The <a href="{{site}}docs/getting-started/">getting started guide</a> shows how to check Capture and inspect your first Session.</p>
     </div>
-    <p>For applications that use the official Lightstreamer Web Client.</p>
-  </div>
-  <figure class="product-frame product-frame--hero">
-    <img src="{{site}}assets/app-workspace-context.png" alt="Lightstreamer Workbench showing Runtime Scope, Ordered Evidence, and selected Evidence Context." width="960" height="600" fetchpriority="high">
-  </figure>
-</section>
+  </section>
 
-<section class="section" id="capabilities">
-  <h2>Choose a task</h2>
-  <ul class="check-list">
-    <li><a href="{{site}}docs/developer-guide/">Inspect activity</a> — select a Scope and read its Evidence.</li>
-    <li><a href="{{site}}docs/local-injection/">Local Injection</a> — test an update or a sequence in the page.</li>
-    <li><a href="{{site}}docs/server-injection/">Server Injection</a> — review and send a Client Message.</li>
-    <li><a href="{{site}}docs/agent-access/">MCP setup</a> — connect an agent to inspect and test.</li>
-    <li><a href="{{site}}docs/troubleshooting/">Troubleshooting</a> — resolve Capture, storage, or connection problems.</li>
-  </ul>
-</section>
+  <section class="a-home-section a-workspace-section" aria-labelledby="a-workspace-title">
+    <div class="a-section-heading"><span class="a-section-number">02</span><h2 id="a-workspace-title">Read the workspace</h2></div>
+    <div class="a-section-body">
+      <p>Workbench organizes the inspected page into three parts. Select where to look, read what happened, then inspect the selected record.</p>
+      <figure class="a-workspace-figure">
+        <img src="{{site}}assets/app-workspace-context.png" alt="Workbench panel with Runtime Scope on the left, Ordered Evidence in the center, and Context on the right." width="960" height="600">
+        <figcaption><strong>Runtime Scope</strong> selects a client, Session, or Subscription. <strong>Ordered Evidence</strong> lists captured activity. <strong>Context</strong> shows details for the selected record.</figcaption>
+      </figure>
+      <p class="a-related">Read more: <a href="{{site}}docs/workspace/">Workspace</a> · <a href="{{site}}docs/evidence/">Evidence and search</a> · <a href="{{site}}docs/command-state/">COMMAND lifecycles</a></p>
+    </div>
+  </section>
 
-<section class="section">
-  <h2>Data and privacy</h2>
-  <p>Workbench keeps temporary Evidence in the browser. Agent access can share requested data with your model provider. Exports are deliberate downloads.</p>
-  <p><a href="{{site}}docs/export-and-privacy/">Data and privacy</a> · <a href="{{site}}releases/">Release notes</a> · <a href="{{site}}support/">Support</a></p>
-</section>
+  <section class="a-home-section" aria-labelledby="a-task-title">
+    <div class="a-section-heading"><span class="a-section-number">03</span><h2 id="a-task-title">Choose a task</h2></div>
+    <div class="a-section-body">
+      <div class="a-task-list">
+        <a href="{{site}}docs/developer-guide/"><span>Inspect activity</span><span>Find a Session, Subscription, or Item Update in captured Evidence.</span><span aria-hidden="true">→</span></a>
+        <a href="{{site}}docs/local-injection/"><span>Test an Item Update</span><span>Deliver a Local Injection to the page without a backend change.</span><span aria-hidden="true">→</span></a>
+        <a href="{{site}}docs/server-injection/"><span>Send a Client Message</span><span>Review a Server Injection sent through the client's current Session.</span><span aria-hidden="true">→</span></a>
+        <a href="{{site}}docs/agent-access/"><span>Connect an agent</span><span>Give an MCP agent access to a connected Panel Session.</span><span aria-hidden="true">→</span></a>
+      </div>
+    </div>
+  </section>
+
+  <section class="a-home-section a-note-section" aria-labelledby="a-data-title">
+    <div class="a-section-heading"><span class="a-section-number">04</span><h2 id="a-data-title">Data in this session</h2></div>
+    <div class="a-section-body"><p>Workbench keeps temporary Evidence in the browser. An export is a deliberate download. Agent access can share requested data with your model provider. See <a href="{{site}}docs/export-and-privacy/">export and privacy</a> before sharing Evidence.</p></div>
+  </section>
+</div>

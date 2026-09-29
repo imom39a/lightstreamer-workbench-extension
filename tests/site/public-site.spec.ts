@@ -66,50 +66,68 @@ test("every stable public route is isolated, canonical, and navigable", async ({
   }
 });
 
-test("desktop home is a short introduction with links to task guides", async ({ page }, testInfo) => {
+test("desktop home is a documentation overview with real task routes", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("");
 
-  await expect(page.getByRole("heading", { name: "Debug Lightstreamer in Chrome DevTools." })).toBeVisible();
-  await expect(page.getByRole("img", { name: /Runtime Scope, Ordered Evidence/ })).toBeVisible();
   const main = page.getByRole("main");
-  expect((await main.innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(200);
+  await expect(main.getByRole("heading", { name: "Lightstreamer Workbench", exact: true })).toBeVisible();
+  await expect(main.getByRole("heading", { name: "Start with a live page" })).toBeVisible();
+  await expect(main.getByRole("heading", { name: "Read the workspace" })).toBeVisible();
+  await expect(main.getByRole("heading", { name: "Choose a task" })).toBeVisible();
+  await expect(main.getByRole("img", { name: /Runtime Scope.*Ordered Evidence.*Context/ })).toBeVisible();
+  await expect(main.locator("figcaption")).toContainText("Runtime Scope");
+  await expect(main.locator("figcaption")).toContainText("Ordered Evidence");
+  await expect(main.locator("figcaption")).toContainText("Context");
+  expect((await main.innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(250);
   await expect(main.getByRole("img")).toHaveCount(1);
-  await expect(main.getByRole("link", { name: "Install from Chrome Web Store", exact: true })).toHaveCount(1);
-  await expect(main.getByRole("link", { name: "MCP setup", exact: true })).toHaveAttribute("href", "/lightstreamer-workbench-extension/docs/agent-access/");
-  await expect(main.getByRole("link", { name: "Local Injection", exact: true })).toHaveAttribute("href", "/lightstreamer-workbench-extension/docs/local-injection/");
+  await expect(main.getByRole("link", { name: /Install Workbench from the Chrome Web Store/ })).toHaveCount(1);
+  await expect(main.locator('.a-task-list a[href="/lightstreamer-workbench-extension/docs/developer-guide/"]')).toContainText("Inspect activity");
+  await expect(main.locator('.a-task-list a[href="/lightstreamer-workbench-extension/docs/local-injection/"]')).toContainText("Test an Item Update");
+  await expect(main.locator('.a-task-list a[href="/lightstreamer-workbench-extension/docs/server-injection/"]')).toContainText("Send a Client Message");
+  await expect(main.locator('.a-task-list a[href="/lightstreamer-workbench-extension/docs/agent-access/"]')).toContainText("Connect an agent");
+  await expect(main).not.toContainText("Debug Lightstreamer in Chrome DevTools.");
+  await expect(page.getByRole("navigation", { name: "Guides" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScreenshot(page, testInfo, "desktop-home");
 });
 
-test("mobile home and documentation keep navigation and calls to action usable", async ({ page }, testInfo) => {
+test("mobile home opens the guide navigation and keeps the article readable", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("");
 
-  await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Add to Chrome" }).first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Debug Lightstreamer in Chrome DevTools." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Lightstreamer Workbench", exact: true })).toBeVisible();
+  await expect(page.getByText("Browse documentation")).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
-  await page
-    .getByRole("navigation", { name: "Primary" })
-    .getByRole("link", { name: "Developer guide", exact: true })
-    .click();
+  await page.getByText("Browse documentation").click();
+  const mobileNavigation = page.getByRole("navigation", { name: "Mobile documentation navigation" });
+  await expect(mobileNavigation).toBeVisible();
+  await mobileNavigation.getByRole("link", { name: "Inspect activity", exact: true }).click();
   await expect(page).toHaveURL(/\/docs\/developer-guide\/$/);
-  await expect(page.getByRole("heading", { name: "Developer guide" })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Documentation" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Inspect activity", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Keyboard essentials" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScreenshot(page, testInfo, "mobile-docs");
 });
 
-test("developer guide routes tasks to one detailed procedure", async ({ page }) => {
+test("Inspect activity is a procedure with keyboard help", async ({ page }) => {
   await page.goto("docs/developer-guide/");
   await expect(page.getByRole("heading", { name: "Inspect Lightstreamer activity" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Choose a task" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Keyboard essentials" })).toBeVisible();
-  expect((await page.locator(".article-content").innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(450);
+  await expect(page.getByRole("main")).not.toContainText("Choose a task");
+  expect((await page.locator(".article-content").innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(300);
+  await expectNoHorizontalOverflow(page);
+});
+
+test("documentation directory links to all task procedures", async ({ page }) => {
+  await page.goto("docs/");
+  const main = page.getByRole("main");
+  for (const route of ["getting-started", "developer-guide", "local-injection", "server-injection", "agent-access", "evidence", "command-state", "troubleshooting"]) {
+    await expect(main.locator(`a[href="/lightstreamer-workbench-extension/docs/${route}/"]`)).toHaveCount(1);
+  }
   await expectNoHorizontalOverflow(page);
 });
 

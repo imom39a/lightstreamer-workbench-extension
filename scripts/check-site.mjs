@@ -64,6 +64,20 @@ for (const file of htmlFiles) {
   if (!document.querySelector("main")) failures.push(`${route} is missing a main landmark`);
   if (route !== "404.html" && !document.querySelector("header.site-header")) failures.push(`${route} is missing the site header`);
   if (route !== "404.html" && !document.querySelector("footer.site-footer")) failures.push(`${route} is missing the site footer`);
+  if (!document.body.classList.contains("site-page")) failures.push(`${route} is missing the selected documentation layout`);
+  if (!document.querySelector("aside.a-sidebar nav[aria-label='Guides']")) failures.push(`${route} is missing the desktop guide index`);
+  if (!document.querySelector("details.a-mobile-index > summary")) failures.push(`${route} is missing the mobile guide index`);
+  if (!document.querySelector("main#main-content")) failures.push(`${route} is missing the skip-link destination`);
+  if (document.querySelector(".hero, .capability-card, .final-cta, .p-switcher")) failures.push(`${route} contains a retired marketing or prototype surface`);
+  if (route === "index.html" && !document.querySelector(`img[src="${SITE_BASE_PATH}assets/app-workspace-context.png"]`)) {
+    failures.push("Home must show the real Workbench workspace screenshot");
+  }
+  if (route === "index.html" || route.startsWith("docs/")) {
+    const currentPath = route === "index.html" ? SITE_BASE_PATH : `${SITE_BASE_PATH}${route.replace(/index\.html$/, "")}`;
+    if (!document.querySelector(`aside.a-sidebar a[aria-current="page"][href="${currentPath}"]`)) {
+      failures.push(`${route} must mark its current guide link in the desktop index`);
+    }
+  }
   const scripts = [...document.querySelectorAll("script")];
   const expectedScript = `${SITE_BASE_PATH}assets/site-analytics.js`;
   if (route === "404.html" ? scripts.length > 0 : scripts.length !== 1 || scripts[0]?.getAttribute("src") !== expectedScript || !scripts[0]?.hasAttribute("defer")) {
@@ -104,7 +118,7 @@ if (failures.length) {
   throw new Error(`Invalid public site:\n${failures.join("\n")}`);
 }
 
-console.log(`Verified ${htmlFiles.length} public pages: isolated routes, local assets, canonical policy links, and one guarded website analytics script.`);
+console.log(`Verified ${htmlFiles.length} public pages: documentation layout, isolated routes, local assets, canonical policy links, and one guarded website analytics script.`);
 
 async function listFiles(directory) {
   const files = [];

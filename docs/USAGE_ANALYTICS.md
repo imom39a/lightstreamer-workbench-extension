@@ -14,6 +14,8 @@ Configured production builds enable GA4 usage analytics by default. More actions
 
 The [GitHub Pages website stream](https://analytics.google.com/analytics/web/#/a402536926p547418482/admin/streams/table/15864929658) is configured for `https://imom39a.github.io/lightstreamer-workbench-extension/`. Enhanced Measurement was verified Off in the Google Analytics UI, so it does not add scroll, click, or form events. The site sends one explicit `page_view` per loaded page with `app_surface=website`; GA4 can also collect its standard session and engagement information. The website uses the site's public JavaScript tag, not the extension's Measurement Protocol stream or secret. Live website receipt is unverified until deployment.
 
+### Extension stream
+
 Use the [Workbench usage property](https://analytics.google.com/analytics/web/#/a402536926p547418482/reports/reportinghub) for feature and journey reports. Store visits, installs, and listing engagement are separate measurements; their user identities are not joined.
 
 Copy `.env.analytics.example` to ignored `.env.local` and supply the stream's Measurement Protocol API secret. `npm run build` embeds configuration only in the service worker. A distributed ingestion key is extractable, as in Chrome's direct Measurement Protocol example. Do not commit it, log collection URLs, or substitute a general account credential. Forks should use their own stream.
