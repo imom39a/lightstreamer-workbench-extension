@@ -130,6 +130,12 @@ The draft listing has the 2.0.5 Agent/MCP description and a short release note. 
 
 The 2.0.5 revision was submitted through Chrome Web Store API v2 with `DEFAULT_PUBLISH` on September 29, 2026. The API reported `PENDING_REVIEW` at 100% distribution, and the dashboard independently showed “This draft is pending review.” Google has not yet approved or published 2.0.5; the public version remains 2.0.4.
 
+## Version 2.0.6 Preparation Record
+
+Version 2.0.6 is a Non-UI MCP maintenance release based on verified product source `6feda64a28f3d0253f1c48f26f51370a48cd8646`. It removes cached Evidence from operational status, enforces serialized response budgets for every MCP tool, and pages large discovery and diagnostic lists. Companion 0.1.3 supplies the matching response guard and global pagination fixes. Extension permissions, Capture, Local Injection semantics, and the configured analytics boundary are unchanged.
+
+On September 29, 2026 the Store API confirmed 2.0.4 published and 2.0.5 pending review. At the maintainer's request, the pending 2.0.5 submission was canceled before preparing this replacement. The configured Store ZIP and public companion tarball must be verified before submitting 2.0.6 with automatic public publishing after approval. npm publication remains disabled during the post-unpublish package-name hold.
+
 ## Usage analytics release contract
 
 [ADR 0015](docs/adr/0015-measure-extension-usage-with-a-closed-analytics-vocabulary.md) records the maintainer-requested replacement of the earlier no-analytics invariant. The candidate enables limited GA4 usage analytics by default with a persistent off switch. Captured Evidence, payloads, inspected URLs, search text, credentials, and raw errors remain outside analytics. This is a Material UI and data-boundary change, not a statement that an existing Store package has changed.

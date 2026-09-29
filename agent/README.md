@@ -20,19 +20,19 @@ actual tool list.
 
 ## Set up
 
-The npm package is temporarily unavailable after its September 29, 2026 unpublish. Download `lightstreamer-workbench-agent-0.1.2.tgz` from the [public MCP companion release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.2). The tarball is the exact artifact tested on Windows, macOS, and Linux. Install it into a directory you will keep:
+The npm package remains unavailable after its September 29, 2026 unpublish. Companion 0.1.3 pairs with extension 2.0.6. It bounds serialized MCP replies to 8 KiB by default, allows up to 64 KiB where a tool supports `maxBytes`, and keeps cached Evidence query results out of operational status. Download the [`lightstreamer-workbench-agent-0.1.3.tgz`](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.3/lightstreamer-workbench-agent-0.1.3.tgz) from the versioned release assets below, then install it into a directory you will keep:
 
 On macOS or Linux:
 
 ```sh
-npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.2.tgz
+npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.3.tgz
 node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local
 ```
 
 In Windows PowerShell:
 
 ```powershell
-npm.cmd install --prefix .\workbench-companion .\lightstreamer-workbench-agent-0.1.2.tgz
+npm.cmd install --prefix .\workbench-companion .\lightstreamer-workbench-agent-0.1.3.tgz
 node.exe .\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs setup --local
 ```
 
@@ -61,7 +61,7 @@ own directory, and load that directory from `chrome://extensions`. Use the
 assigned extension ID with `setup --extension-id` and keep the extension and
 companion from the same release or source revision.
 
-For the current 0.1.2 bundle candidate, use its `agent/lightstreamer-workbench-agent-0.1.2.tgz`
+For the 0.1.3 bundle, use its `agent/lightstreamer-workbench-agent-0.1.3.tgz`
 with the same local install commands above after loading the unpacked extension.
 
 For a source checkout, run `npm ci`, `npm run build`, and `npm run agent:build`

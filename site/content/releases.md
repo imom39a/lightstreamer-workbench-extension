@@ -1,6 +1,6 @@
-## MCP companion — 0.1.2 candidate
+## MCP companion — 0.1.3 in preparation
 
-Version 0.1.0 was first published on September 28, 2026, then unpublished on September 29. The npm package is currently unavailable. Version 0.1.2 passed Windows, macOS, and Linux checks and is available as a [public GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.2). It includes the agent skill. The Chrome extension is released separately.
+Version 0.1.0 was first published on September 28, 2026, then unpublished on September 29. The npm package remains unavailable. Companion 0.1.3 is being prepared as the exact CI-tested tarball for the [agent-v0.1.3 GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3). It bounds serialized MCP replies to 8 KiB by default, allows up to 64 KiB where a tool supports `maxBytes`, and excludes cached Evidence query results from operational status. The Chrome extension is released separately.
 
 - Find Subscriptions and items with Scope search.
 - Count records and distinct keys before reading examples.
@@ -9,9 +9,13 @@ Version 0.1.0 was first published on September 28, 2026, then unpublished on Sep
 
 Follow [MCP setup]({{site}}docs/agent-access/) to connect a matching local build. The companion does not install or update the Chrome extension.
 
-## Extension 2.0.5 — MCP support
+## MCP companion — 0.1.2
 
-This update adds Agent access and the version-2 read contract. Version 2.0.5 was submitted to the Chrome Web Store on September 29, 2026 and is pending review. It is set to publish publicly after approval; 2.0.4 remains public until then.
+This previous companion version passed Windows, macOS, and Linux checks and included the agent skill. It remains available as a [public GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.2); the Chrome extension is released separately.
+
+## Extension 2.0.6 — MCP reply budgets
+
+This update bounds MCP replies, removes cached Evidence results from operational status, and adds useful pagination for oversized lists and reads. Extension 2.0.6 is being prepared. The 2.0.5 Store submission was cancelled before publication; 2.0.4 remains the current public Store version.
 
 For the matching unpacked build, download `workbench-mcp-release-bundle` from a successful main-branch [Agent companion workflow run](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml). The bundle contains the extension, companion, and a manifest that identifies the source commit. See the [bundle instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent) for installation.
 

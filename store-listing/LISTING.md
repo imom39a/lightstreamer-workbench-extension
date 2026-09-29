@@ -46,10 +46,10 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below accompanies the 2.0.5 Store revision pending review. The Chrome Web Store still publishes 2.0.4. The MCP companion was briefly published to npm, then unpublished on September 29, 2026; npm currently returns 404 for it. The tested 0.1.2 tarball is available in a public GitHub release with a verified local installation path. The versioned release records later in this file describe their original packages.
+The description below accompanies the 2.0.6 Store candidate. The Chrome Web Store still publishes 2.0.4; the pending 2.0.5 submission was canceled on September 29, 2026 to include the MCP context-budget fixes. Companion 0.1.3 is being prepared for a public GitHub release. npm publication remains disabled after the September 29 unpublish. The versioned release records later in this file describe their original packages.
 
 ```text
-New in 2.0.5: Connect a local MCP agent to inspect a Panel Session, query bounded Evidence, and prepare and run reviewed Local Injection Scenarios. Open Agent access and setup from the panel header. The extension no longer requests the nativeMessaging permission.
+New in 2.0.6: Compact MCP status and byte-bounded replies prevent captured Evidence from flooding agent context. Large Scope and discovery lists paginate within response budgets. Use companion 0.1.3 for the matching fixes. Agent access also supports Evidence search and reviewed Local Injection Scenarios, without the nativeMessaging permission.
 
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
 
@@ -126,14 +126,18 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.5
+2.0.6
 ```
 
 What's new:
 
 ```text
-Agent access for inspecting a connected Panel Session and testing Local Injections through a local MCP companion.
+MCP context-budget maintenance release, paired with companion 0.1.3.
 
+- Status reports operational metadata without cached Evidence payloads.
+- All MCP tool replies enforce an 8 KiB default serialized response budget, with explicit larger budgets capped at 64 KiB.
+- Large Scope, diagnostic, Scenario, and global discovery lists paginate within their response budget.
+- Validation verdicts and execution receipts remain explicit in bounded replies.
 - Search Scope, summarize and query retained Evidence, and wait for matching updates with bounded responses.
 - Inspect stream shape and review source-grounded Local Injection Drafts and Scenarios before execution.
 - Agent access starts on when a panel opens and can be turned off under More actions. Agent tools do not expose Server Injection, Event History clearing, or arbitrary page code.
@@ -179,17 +183,17 @@ Page access is required to run packaged instrumentation at document_start before
 ## Reviewer Test Instructions
 
 ```text
-No account required. On a page using the official Lightstreamer Web Client, open DevTools > Lightstreamer Workbench. Ordered Evidence captures updates; select one for Local Injection. Server Injection reviews one Client Message before send. Agent access starts on. To test MCP, install companion 0.1.2 from https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.2 using the setup guide at https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/.
+No account required. On a page using the official Lightstreamer Web Client, open DevTools > Lightstreamer Workbench. Ordered Evidence captures updates; select one for Local Injection. Server Injection reviews one Client Message before send. Agent access starts on. To test MCP, install companion 0.1.3 from https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3 using the setup guide at https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/.
 ```
 
-For prepublication MCP review, extract the configured Store candidate `release/lightstreamer-workbench-v2.0.5.zip` and load it unpacked; record its assigned extension ID. Download [`lightstreamer-workbench-agent-0.1.2.tgz`](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.2/lightstreamer-workbench-agent-0.1.2.tgz) from the [public companion release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.2). Its SHA-256 is `6a7a30a0def5838743aa40d732142849673e8977a85cd6eaa5a39688fca84ae1`; the release tag targets the tested source commit. From the download directory, install the tarball and print local setup:
+For prepublication MCP review, extract the configured Store candidate `release/lightstreamer-workbench-v2.0.6.zip` and load it unpacked; record its assigned extension ID. Download [`lightstreamer-workbench-agent-0.1.3.tgz`](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.3/lightstreamer-workbench-agent-0.1.3.tgz) from the [public companion release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3). The release will include SHA-256 checksums and target the source commit tested on Windows, macOS, and Linux. From the download directory, install the tarball and print local setup:
 
 ```sh
-npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.2.tgz
+npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.3.tgz
 node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Copy the printed MCP configuration into the test agent app and start its stdio server. Keep the installation directory in place. Do not use `npx` until npm publication is confirmed. The 2.0.5 candidate was submitted for Store review on September 29, 2026 with automatic public publishing after approval; it remains pending review.
+Copy the printed MCP configuration into the test agent app and start its stdio server. Keep the installation directory in place. Do not use `npx` until npm publication is confirmed. The 2.0.6 candidate is being prepared to replace the canceled 2.0.5 submission.
 
 ## Version 2.0.2 Release Checklist (historical)
 
@@ -254,4 +258,4 @@ The maintainer explicitly authorized this release. The Chrome session currently 
 
 Restore version-pinned `npx` setup after npm publication resumes; it is not required for this Store submission because the public tarball and local setup are verified.
 
-The 2.0.5 candidate is being prepared for the Store. The npm companion is currently unavailable, so Store review submission remains pending.
+The 2.0.5 submission was canceled on September 29, 2026 while still pending review. Version 2.0.6 supersedes it with the MCP context-budget fixes; 2.0.4 remains the published version.
