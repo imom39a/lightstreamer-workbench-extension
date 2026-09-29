@@ -6,6 +6,14 @@ import { startPortableBroker } from "../../src/agent/companion/portable-broker";
 import { DEFAULT_COMPANION_PORT, PAIRING_ENV } from "../../src/agent/pairing";
 import { CdpClient, evaluateByValue, waitForCondition } from "./chrome-extension-cdp";
 
+function assertMcpReplyBudget(name: string, args: Record<string, unknown>, reply: unknown) {
+  // A continuation's chosen budget belongs to its panel-owned cursor. Every
+  // other reply, including discovery, status, mutations and failures, is small
+  // by default after text/structured serialization.
+  const budget = args.cursor ? 65536 : Number(args.maxBytes ?? 8192);
+  assert.ok(Buffer.byteLength(JSON.stringify(reply)) <= budget, `${name} respects its serialized MCP budget`);
+}
+
 /** Opt-in real Chrome proof. The same loopback runtime runs on every platform. */
 export async function proveAgentFixture(root: string, panel: CdpClient, page: CdpClient) {
   const cli = (process.env.LSEW_AGENT_TEST_CLI ?? join(root, "agent/dist/cli.mjs"));
@@ -17,6 +25,7 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     await client.connect(new StdioClientTransport({ command: process.execPath, args: [cli, "mcp", "--extension-id", origin.slice("chrome-extension://".length)], env: { [PAIRING_ENV]: "" }, stderr: "inherit" }));
     const call = async (name: string, args: Record<string, unknown> = {}) => {
       const reply = await client.callTool({ name, arguments: args });
+      assertMcpReplyBudget(name, args, reply);
       const text = (reply.content as Array<{ type: string; text: string }>).filter(part => part.type === "text").map(part => part.text).join("\n");
       assert.ok(!reply.isError, `${name}: ${text}`);
       assert.ok(reply.structuredContent, `${name} provides structured MCP output`);
@@ -27,6 +36,7 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.equal(sessions.length, 1);
     const panelSessionId = sessions[0].panelSessionId;
     const status = await call("get_status", { panelSessionId });
+    assert.equal(status.history.lastCoherentQuery, undefined, "Status never exposes the panel's cached Evidence query.");
     const pageUrl = await evaluateByValue<string>(page, "location.origin + location.pathname");
     assert.equal(status.inspectedPage.urlWithoutQuery, pageUrl);
     assert.equal(status.permission, "local", "A normal connection grants inspection and Local Injection without settings.");
@@ -132,20 +142,22 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     await client.connect(transport());
     const call = async (name: string, args: Record<string, unknown> = {}) => {
       const result = await client.callTool({ name, arguments: args });
-      if (["search_scope", "query_evidence", "search_evidence", "summarize_evidence", "get_evidence"].includes(name) && !args.cursor) {
-        assert.ok(Buffer.byteLength(JSON.stringify(result)) <= Number(args.maxBytes ?? 8192), `${name} respects its serialized MCP budget`);
-      }
+      assertMcpReplyBudget(name, args, result);
       assert.ok(!result.isError); return JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
     };
     const sessions = await settle(() => call("list_panel_sessions"), sessions => sessions.length === 1);
     await headerState(panel, "On");
     const panelSessionId = sessions[0].panelSessionId;
     const status = await call("get_status", { panelSessionId });
+    assert.equal(status.history.lastCoherentQuery, undefined, "Status never exposes the panel's cached Evidence query.");
     assert.equal(status.inspectedPage.urlWithoutQuery, expectedUrl);
     assert.equal(status.permission, "local", "Inspection plus Local Injection requires no permission selection.");
     assert.equal(status.readContract.version, 2);
     const query = await call("query_evidence", { panelSessionId, within: "page", text: "cdp-same-tab-four", limit: 10, includePayload: true, maxBytes: 65536 });
     assert.ok(query.evidence.some((entry: any) => entry.payload?.item?.name === "cdp-same-tab-four"));
+    const statusAfterPayloadRead = await call("get_status", { panelSessionId });
+    assert.equal(statusAfterPayloadRead.history.lastCoherentQuery, undefined, "Even a hydrated IndexedDB query cannot expand later status output.");
+    assert.ok(!JSON.stringify(statusAfterPayloadRead).includes("cdp-live-four"), "Status omits captured field values.");
     const summary = await call("summarize_evidence", { panelSessionId, within: "page", text: "cdp-same-tab-four", where: { kind: ["ITEM-UPDATE"], mode: ["MERGE"] }, facet: "kind" });
     assert.equal(summary.totals.matching, query.totals.matching);
     assert.equal(summary.distinctTotal, 1);

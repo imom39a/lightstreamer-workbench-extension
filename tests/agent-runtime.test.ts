@@ -126,10 +126,15 @@ describe("Workbench agent domain API", () => {
     const { call, evidence, pageEpoch } = await fixture();
     const prepared = await call("prepare_scenario", { pageEpoch, steps: Array.from({ length: 30 }, (_, i) => ({ evidence, document: document("UPDATE", i) })) });
     expect(prepared.token).toBeTruthy();
-    expect(prepared.scenario.steps).toHaveLength(25);
-    expect(prepared.scenario.nextOffset).toBe(25);
-    const last = await call("get_scenario_trace", { offset: 25 });
-    expect(last.steps).toHaveLength(5); expect(last.nextOffset).toBeNull();
+    expect(prepared.scenario.steps.length).toBeGreaterThan(0);
+    let count = prepared.scenario.steps.length;
+    let offset = prepared.scenario.nextOffset;
+    while (offset !== null) {
+      const page = await call("get_scenario_trace", { offset });
+      count += page.steps.length;
+      offset = page.nextOffset;
+    }
+    expect(count).toBe(30);
   });
   it("redacts Client Message bodies and removes duplicate raw payload text", async () => {
     const { call, history } = await fixture();

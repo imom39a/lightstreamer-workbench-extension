@@ -39,6 +39,7 @@ const indexedDbFiles = Object.freeze([
 // gives setup, teardown and full integration workloads a separate budget.
 const heavyWorkFiles = Object.freeze([
   "tests/agent-mcp-efficiency.test.ts",
+  "tests/agent-status-budget.test.ts",
   "tests/activity-timeline-projection.test.ts",
   "tests/command-state.test.ts",
   "tests/event-history-performance-harness.test.ts",

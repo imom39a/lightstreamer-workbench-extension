@@ -93,8 +93,12 @@ describe("end-to-end agent experiment loop", () => {
 
     await call("control_scenario", { runId: prepared.scenario.run.id, requestId: "loop-checkpoint", action: "step" });
     await vi.waitFor(async () => expect((await call("get_scenario_trace")).phase).toBe("complete"));
-    const trace = await call("get_scenario_trace");
-    const checkpoint = trace.run.trace.find((entry: any) => entry.kind === "checkpoint" && entry.checkpointId === "local-evidence-checkpoint");
+    let trace = await call("get_scenario_trace");
+    let checkpoint = trace.run.trace.find((entry: any) => entry.kind === "checkpoint" && entry.checkpointId === "local-evidence-checkpoint");
+    while (!checkpoint && trace.nextOffset !== null) {
+      trace = await call("get_scenario_trace", { offset: trace.nextOffset });
+      checkpoint = trace.run.trace.find((entry: any) => entry.kind === "checkpoint" && entry.checkpointId === "local-evidence-checkpoint");
+    }
     expect(checkpoint.assertions.map((assertion: any) => assertion.status)).toEqual(["pass", "pass"]);
   });
 

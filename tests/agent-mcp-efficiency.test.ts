@@ -67,12 +67,15 @@ describe("MCP query efficiency contract", () => {
       expect(sessions.items.map((entry: any) => entry.panelSessionId)).toContain(panelSessionId);
       const status = await call("get_status", { panelSessionId });
       expect(status.readContract?.version).toBe(2);
+      expect(resources.responseBytes("get_status")).toBeLessThanOrEqual(8192);
       expect(status.capabilities).toContain("summarize_evidence");
 
       const subscriptions = await call("search_scope", { panelSessionId, text: "eff-target-subscription", kind: "subscription", limit: 25 });
+      expect(resources.responseBytes("search_scope")).toBeLessThanOrEqual(8192);
       const parent = subscriptions.scopes.find((scope: any) => scope.kind === "subscription" && String(scope.label).includes("eff-target-subscription"));
       expect(parent, "scope discovery locates the exact target Subscription").toBeDefined();
       const discovered = await call("search_scope", { panelSessionId, text: "eff-target-item-1", kind: "item", parentScopeId: parent.scopeId, limit: 25 });
+      expect(resources.responseBytes("search_scope")).toBeLessThanOrEqual(8192);
       const target = discovered.scopes.find((scope: any) => scope.kind === "item" && String(scope.label).includes("eff-target-item-1"));
       expect(target, "scope discovery locates the exact COMMAND item").toBeDefined();
 
@@ -138,6 +141,7 @@ describe("MCP query efficiency contract", () => {
       expect(compactThree.value.evidence.map((row: any) => row.identity)).toEqual(legacy.value.evidence.map((row: any) => row.identity));
       const reduction = 1 - compactThree.bytes / legacy.bytes;
       expect(reduction).toBeGreaterThan(0.5);
+      expect(resources.worstResponseBytes()).toBeLessThanOrEqual(8192);
 
       console.log(JSON.stringify({ proof: "stdio-mcp+loopback-ws+real-runtime", historyRecords: finalAt, goldenCalls, totalMcpCalls: resources.callCount(), worstDefaultResponseBytes: resources.worstResponseBytes(), summaryBytes, summaryMs: +summaryMs.toFixed(1), queryMs: +compactFirst.elapsedMs.toFixed(1), compactThreeBytes: compactThree.bytes, legacyThreeBytes: legacy.bytes, byteReductionPercent: +(reduction * 100).toFixed(2), matchingTargetUpdates: compactFirst.value.totals.matching, unrelatedRecords: 0, continuationCount: continuation.value.evidence.length }));
     } finally {
@@ -157,6 +161,7 @@ async function connectRealMcp(runtime: WorkbenchRuntime, cli: string) {
   const extensionId = "a".repeat(32), port = await freePort(), panelSessionId = `mcp-efficiency-${port}`;
   let callCount = 0;
   let worstResponseBytes = 0;
+  const responseBytes = new Map<string, number>();
   const broker = await startPortableBroker({ auth: "off", port }, extensionId);
   const panel = new WebSocket(`ws://127.0.0.1:${port}/workbench`, { headers: { Origin: `chrome-extension://${extensionId}` } });
   const queue: Record<string, unknown>[] = [], readers: ((value: Record<string, unknown>) => void)[] = [];
@@ -181,6 +186,7 @@ async function connectRealMcp(runtime: WorkbenchRuntime, cli: string) {
     call: async (name: string, args: Record<string, unknown> = {}) => {
       callCount++;
       const result = await client.callTool({ name, arguments: args });
+      responseBytes.set(name, serializedResultBytes(result));
       worstResponseBytes = Math.max(worstResponseBytes, serializedResultBytes(result));
       if (result.isError) throw new Error(`${name}: ${JSON.stringify(result.structuredContent ?? result.content)}`);
       return result.structuredContent ?? JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
@@ -190,11 +196,13 @@ async function connectRealMcp(runtime: WorkbenchRuntime, cli: string) {
       const started = performance.now();
       const result = await client.callTool({ name, arguments: args });
       const bytes = serializedResultBytes(result);
+      responseBytes.set(name, bytes);
       if (args.maxBytes === undefined || Number(args.maxBytes) <= 8192) worstResponseBytes = Math.max(worstResponseBytes, bytes);
       if (result.isError) throw new Error(`${name}: ${JSON.stringify(result.structuredContent ?? result.content)}`);
       return { value: result.structuredContent ?? JSON.parse((result.content as Array<{ text: string }>)[0]!.text), bytes, elapsedMs: performance.now() - started };
     },
     callCount: () => callCount,
+    responseBytes: (name: string) => responseBytes.get(name) ?? 0,
     worstResponseBytes: () => worstResponseBytes,
     close: async () => { await client.close(); panel.close(); broker.close(); }
   };

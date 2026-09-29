@@ -67,6 +67,9 @@ with the same local install commands above after loading the unpacked extension.
 For a source checkout, run `npm ci`, `npm run build`, and `npm run agent:build`
 from the repository root. Load `dist/` as an unpacked extension, then run
 `node agent/dist/cli.mjs setup --local --extension-id YOUR_UNPACKED_EXTENSION_ID`.
+After pulling a newer revision, rebuild both artifacts, reload the extension
+in `chrome://extensions`, and restart the MCP server in your client.
+`agent:build` alone does not rebuild or reload the panel that serves Evidence.
 
 ## What the agent can do
 

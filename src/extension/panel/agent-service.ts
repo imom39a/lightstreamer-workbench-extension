@@ -1,4 +1,4 @@
-import { AGENT_MAX_BYTES, AGENT_PROTOCOL_VERSION, AGENT_READ_CONTRACT, AGENT_TOOLS, validateAgentCall, type AgentArguments, type AgentPermission } from "../../agent/protocol";
+import { AGENT_PROTOCOL_VERSION, AGENT_READ_CONTRACT, AGENT_RESPONSE_CONTRACT, AGENT_TOOLS, validateAgentCall, type AgentArguments, type AgentPermission } from "../../agent/protocol";
 import { toBulkShareableEventEnvelope, type LightstreamerEventEnvelope } from "../../core/event-envelope";
 import type { EvidenceIdentity, EvidenceReadPoint, DeterministicEvidenceRecord } from "../../core/evidence-filter-contract";
 import { createScopeSearchIndex, searchScopes, type ScopeSearchIndex, type ScopeSearchNode } from "../../core/scope-search";
@@ -13,6 +13,87 @@ import { agentToolResultBytes } from "../../agent/tool-result";
 import type { HistoryStatus } from "../../core/event-history-authoritative";
 
 const SEARCH_CURSOR_LIFETIME_MS = 5 * 60 * 1000;
+/** Only these operational fields cross the agent boundary. History may retain a
+ * full lastCoherentQuery for its own recovery; it is never part of status. */
+export function projectAgentStatus(value: unknown) {
+  const status = value as { pageEpoch: string | null; visible: boolean; captureStatus: string; capture: {
+    operation: string; coverage: string; firstMissingEventId: string | null; committedEvidenceBoundary: unknown; detail?: string; recovery?: string;
+  }; history: HistoryStatus };
+  if (!status.capture || !status.history) return {
+    pageEpoch: status.pageEpoch ?? null, visible: status.visible ?? false, captureStatus: status.captureStatus ?? "unknown",
+    capture: { operation: "UNKNOWN", coverage: "UNAVAILABLE" }, history: { phase: "UNKNOWN", retained: null }
+  };
+  const capture = status.capture;
+  const history = status.history;
+  return {
+    pageEpoch: status.pageEpoch, visible: status.visible, captureStatus: status.captureStatus,
+    capture: { operation: capture.operation, coverage: capture.coverage, firstMissingEventId: capture.firstMissingEventId,
+      committedEvidenceBoundary: capture.committedEvidenceBoundary,
+      ...(capture.detail ? { detail: capture.detail.slice(0, 256) } : {}),
+      ...(capture.recovery ? { recovery: capture.recovery.slice(0, 256) } : {}) },
+    history: {
+      phase: history.phase, captureOperation: history.captureOperation, interval: history.interval,
+      committedEvidenceBoundary: history.committedEvidenceBoundary, retainedRange: history.retainedRange,
+      capacity: { tier: history.capacity.tier, state: history.capacity.state, limits: history.capacity.limits, measurements: history.capacity.measurements },
+      fallback: history.fallback, captured: history.captured, awaitingAcceptance: history.awaitingAcceptance,
+      accepted: history.accepted, notAccepted: history.notAccepted, retained: history.retained,
+      retention: history.retention && { policy: history.retention.policy, highWater: history.retention.highWater,
+        lowWater: history.retention.lowWater, evicted: history.retention.evicted },
+      persistence: history.persistence && { mode: history.persistence.mode, health: history.persistence.health,
+        commitAttempts: history.persistence.commitAttempts, retryCount: history.persistence.retryCount,
+        failureCount: history.persistence.failureCount, lastFailureAt: history.persistence.lastFailureAt,
+        lastProblemCode: history.persistence.lastProblem?.code },
+      continuity: history.continuity && { state: history.continuity.state, gapCount: history.continuity.gapCount },
+      terminal: history.terminal && { reason: history.terminal.reason, dimension: history.terminal.dimension,
+        tier: history.terminal.tier, firstMissingEventId: history.terminal.firstMissingEventId }
+    }
+  };
+}
+
+function compactOversizedAgentResult(name: string, args: AgentArguments, result: unknown, budget: number = AGENT_RESPONSE_CONTRACT.defaultMaxBytes): unknown | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const value = result as Record<string, unknown>;
+  const omitted = "Preview exceeded the agent response budget. Inspect the existing Workbench document or request a smaller page.";
+  if ((name === "prepare_scenario" || name === "get_scenario_trace") && (name === "get_scenario_trace" || typeof value.token === "string")) {
+    const scenario = (name === "get_scenario_trace" ? value : value.scenario) as Record<string, unknown> | null;
+    if (scenario) {
+      const members = (scenario.members as Record<string, unknown>[] | undefined)?.map(member => member.kind === "step"
+        ? { kind: "step", id: member.id, ready: member.ready }
+        : { kind: "checkpoint", id: member.id, name: member.name }) ?? [];
+      const steps = members.filter(member => member.kind === "step");
+      const run = scenario.run as Record<string, unknown> | null;
+      const compact = { ...(name === "prepare_scenario" ? { token: value.token } : {}), previewOmitted: omitted,
+        ...(name === "prepare_scenario" ? { scenario: { ...scenario, members, steps,
+          run: run && { id: run.id, status: run.status, nextOrdinal: run.nextOrdinal, trace: run.trace ?? [], controlsTotal: run.controlsTotal, driftsTotal: run.driftsTotal } } }
+          : { ...scenario, members, steps, run: run && { id: run.id, status: run.status, nextOrdinal: run.nextOrdinal, trace: run.trace ?? [], controlsTotal: run.controlsTotal, driftsTotal: run.driftsTotal } }) };
+      if (agentToolResultBytes(compact) <= budget) return compact;
+    }
+  }
+  if (["prepare_local_injection", "prepare_scenario", "update_agent_document"].includes(name) && typeof value.token === "string") {
+    // Preparation and editing can rotate an execution token. Never lose it
+    // solely because the optional preview is large.
+    return { token: value.token, previewOmitted: omitted };
+  }
+  if (["execute_local_injection", "get_operation"].includes(name)) {
+    const outcome = value.outcome && typeof value.outcome === "object" ? value.outcome as Record<string, unknown> : null;
+    const summary = outcome && Object.fromEntries(["disposition", "status", "executionId", "requestId", "timestamp", "attemptedCount", "deliveredCount", "failedCount"].filter(key => outcome[key] !== undefined).map(key => [key, outcome[key]]));
+    return { requestId: args.requestId ?? value.requestId ?? outcome?.requestId ?? null, state: value.state ?? "unknown",
+      ...(summary ? { outcome: summary } : {}), detailsOmitted: omitted };
+  }
+  if (name === "control_scenario") return { requestId: args.requestId ?? value.requestId, accepted: value.accepted, detailsOmitted: omitted };
+  if (name === "get_scope") {
+    const node = value.node as Record<string, unknown> | undefined;
+    const local = value.localInjection as Record<string, unknown> | undefined;
+    const base = { node: node && { id: node.id, kind: node.kind, label: node.label, lifecycle: node.lifecycle, retired: node.retired }, pageEpoch: value.pageEpoch,
+      localInjection: { ...(local?.anchor ? { anchor: local.anchor } : {}), ...(local?.unavailable ? { unavailable: local.unavailable } : {}),
+        ...(local?.diagnostics ? { diagnostics: local.diagnostics } : {}), documentOmitted: omitted } };
+    if (agentToolResultBytes(base) <= budget) return base;
+    return { ...base, localInjection: { ...(local?.anchor ? { anchor: local.anchor } : {}),
+      ...(local?.unavailable ? { unavailable: local.unavailable } : {}), documentOmitted: omitted,
+      diagnosticsOmitted: "Target diagnostics exceeded the response budget; inspect the Scope in Workbench." } };
+  }
+  return null;
+}
 type EvidenceSearch = { at: EvidenceReadPoint; after: EvidenceIdentity; boundary: AgentQueryBoundary; within: "page" | "current-investigation"; scopeId?: string; text: string; size: number; includePayload: boolean; fields?: string[]; maxBytes: number; pageEpoch: unknown; expiresAt: number };
 type ScopeSearch = { index: ScopeSearchIndex; snapshot: Omit<AgentScopeSearchSnapshot, "nodes">; text: string; size: number; maxBytes: number; kind?: string; parentScopeId?: string; expiresAt: number };
 
@@ -24,6 +105,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
   const scopeSearches = new Map<string, ScopeSearch>();
   const scopeCursors = new Map<string, { searchId: string; offset: number }>();
   const requests = new Map<string, { signature: string; kind: "local" | "scenario"; draftId?: string; value: unknown }>();
+  const emergencyControlIds: Partial<Record<"pause" | "stop", string>> = {};
   const waits = new Set<AbortController>();
   let prepared: { token: string; fingerprint: string; kind: "local" | "scenario"; consumed: boolean } | null = null;
   let busy = false;
@@ -62,8 +144,20 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
     refreshOperations();
     if (requests.size >= 256 && ["execute_local_injection", "control_scenario"].includes(name) && !(typeof args.requestId === "string" && requests.has(args.requestId)) && !["pause", "stop"].includes(String(args.action))) throw new Error("This Panel Session reached its 256-operation agent limit. Existing outcomes remain readable; pause and stop remain available.");
     switch (name) {
-      case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, readContract: AGENT_READ_CONTRACT, panelSessionId, permission: permission(), ...runtime.status() as object, capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local") && (tool.name !== "validate_agent_candidate" || typeof runtime.validateCandidate === "function") && (tool.name !== "prepare_scenario" || typeof runtime.prepareScenarioPlan === "function")).map(tool => tool.name) };
-      case "list_scope": return runtime.scopes(Number(args.offset ?? 0), Number(args.limit ?? 50));
+      case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, readContract: AGENT_READ_CONTRACT, responseContract: AGENT_RESPONSE_CONTRACT, panelSessionId, permission: permission(), ...projectAgentStatus(runtime.status()), capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local") && (tool.name !== "validate_agent_candidate" || typeof runtime.validateCandidate === "function") && (tool.name !== "prepare_scenario" || typeof runtime.prepareScenarioPlan === "function")).map(tool => tool.name) };
+      case "list_scope": {
+        const offset = Number(args.offset ?? 0);
+        const requested = Number(args.limit ?? 50);
+        const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
+        let size = requested;
+        for (;;) {
+          const page = runtime.scopes(offset, size) as { total: number; offset: number; nodes: unknown[] };
+          const response = { ...page, nextOffset: offset + page.nodes.length < page.total ? offset + page.nodes.length : null };
+          if (agentToolResultBytes(response) <= budget) return response;
+          if (size <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One Scope exceeds maxBytes. Use search_scope to locate an exact Scope.");
+          size = Math.max(1, Math.floor(size / 2));
+        }
+      }
       case "search_scope": {
         const saved = args.cursor ? scopeCursors.get(String(args.cursor)) : undefined;
         if (args.cursor && !saved) throw new Error("Search cursor expired. Start a new search.");
@@ -200,18 +294,33 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       }
       case "describe_stream": {
         const query = makeQuery(args, 100, true, "NEWEST_FIRST");
+        const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
         if (query.size > 100) throw new Error("Stream descriptions are limited to 100 Evidence records per read point.");
         if (args.cursor) throw new Error("describe_stream summarizes one bounded sample; use query_evidence to continue pages.");
-        const result = await runtime.query({ ...query, signal });
-        const records = boundedRecords(result.page.evidence) as DeterministicEvidenceRecord[];
-        const sampled = records.length;
-        const completeSample = result.evaluation === "COMPLETE" && result.coverage === "COMPLETE" && sampled >= result.totals.matching && result.page.nextCursor === null && records.every(record => record.payload !== undefined);
-        const profile = describeAgentStreams({ records, limit: query.size, readPoint: result.readPoint, completeness: completeSample ? "COMPLETE" : "LIMITED", window: query.order ?? "NEWEST_FIRST" });
-        const nextCursor = saveNextCursor({ ...query, includePayload: false }, result.readPoint, result.page.nextCursor);
-        const current = runtime.status() as { capture?: { coverage?: string; operation?: string; firstMissingEventId?: string | null; detail?: string }; history?: { phase?: string; retained?: number; retention?: unknown; continuity?: unknown } };
-        return { ...profile, readPoint: result.readPoint, matchingTotal: result.totals.matching, sampled, completeness: profile.completeness, nextCursor, observationCoverage: current.capture?.coverage ?? "UNAVAILABLE", history: { phase: current.history?.phase ?? "UNKNOWN", retained: current.history?.retained ?? 0, retention: current.history?.retention ?? null, continuity: current.history?.continuity ?? null }, omissions: [...omissions(true), ...(completeSample ? [] : ["The sample or its payload budget is incomplete. Use query_evidence with nextCursor when present, or narrow the query to inspect omitted payloads."])] };
+        let size = query.size;
+        let at = query.at;
+        for (;;) {
+          const result = await runtime.query({ ...query, at, size, signal });
+          const records = boundedRecords(result.page.evidence) as DeterministicEvidenceRecord[];
+          const sampled = records.length;
+          const completeSample = result.evaluation === "COMPLETE" && result.coverage === "COMPLETE" && sampled >= result.totals.matching && result.page.nextCursor === null && records.every(record => record.payload !== undefined);
+          const profile = describeAgentStreams({ records, limit: size, readPoint: result.readPoint, completeness: completeSample ? "COMPLETE" : "LIMITED", window: query.order ?? "NEWEST_FIRST" });
+          const current = projectAgentStatus(runtime.status());
+          const response = { ...profile, readPoint: result.readPoint, matchingTotal: result.totals.matching, sampled, completeness: profile.completeness,
+            nextCursor: result.page.nextCursor ? "00000000-0000-0000-0000-000000000000" : null,
+            observationCoverage: current.capture.coverage,
+            history: { phase: current.history.phase, retained: current.history.retained, retention: current.history.retention, continuity: current.history.continuity },
+            omissions: [...omissions(true), ...(completeSample ? [] : ["The sample or its payload budget is incomplete. Use query_evidence with nextCursor when present, or narrow the query to inspect omitted payloads."])] };
+          if (agentToolResultBytes(response) <= budget) {
+            return { ...response, nextCursor: saveNextCursor({ ...query, size, includePayload: false }, result.readPoint, result.page.nextCursor) };
+          }
+          if (size <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One stream description exceeds the response budget. Narrow the Scope or use query_evidence.");
+          size = Math.max(1, Math.floor(size / 2));
+          at = result.readPoint;
+        }
       }
       case "wait_for_evidence": {
+        const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
         if (!runtime.subscribeEvidence) throw new Error("Evidence observation is unavailable in this panel build.");
         if (waits.size >= 4) throw new Error("REQUEST_CAPACITY: At most four Evidence waits may run concurrently per Panel Session.");
         const controller = new AbortController();
@@ -225,7 +334,24 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
             subscribe: listener => runtime.subscribeEvidence!(listener),
             query: readSignal => runtime.query({ ...query, at: "LATEST_COMMITTED", signal: readSignal })
           }, { after: args.after as EvidenceReadPoint, pageEpoch: String(args.pageEpoch), timeoutMs: Number(args.timeoutMs ?? 10000), signal: controller.signal });
-          return { ...result, evidence: boundedRecords(result.evidence), omissions: omissions(query.includePayload) };
+          let evidence = result.evidence.map(record => query.includePayload ? safeRecord(record, 64 * 1024) : compactWaitEvidence(record, args));
+          let response = { ...result, evidence, omissions: omissions(query.includePayload) };
+          while (agentToolResultBytes(response) > budget && evidence.length > 1) {
+            evidence = evidence.slice(0, Math.max(1, Math.floor(evidence.length / 2)));
+            response = { ...response, evidence, mayHaveMoreMatches: true };
+          }
+          if (agentToolResultBytes(response) > budget && query.includePayload && evidence.length) {
+            const first = result.evidence[0]!;
+            evidence = [compactWaitEvidence(first, args)];
+            response = { ...response, evidence, mayHaveMoreMatches: true,
+              omissions: [...response.omissions, "Matched Evidence payload exceeded the response budget. Use get_evidence with an explicit maxBytes for this identity."] };
+          }
+          if (agentToolResultBytes(response) > budget && evidence.length) {
+            const first = result.evidence[0]!;
+            response = { ...response, evidence: [{ identity: first.identity, timestamp: first.timestamp, facets: {} }], mayHaveMoreMatches: true,
+              omissions: [...response.omissions, "Matched Evidence facets exceeded the response budget. Use get_evidence for this identity."] };
+          }
+          return response;
         } finally { signal?.removeEventListener("abort", cancel); waits.delete(controller); }
       }
       case "get_evidence": {
@@ -238,9 +364,16 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       }
       case "query_diagnostics": {
         const result = await runtime.diagnostics(args.after as Parameters<AgentRuntime["diagnostics"]>[0]);
-        const observations = result.observations.slice(0, Number(args.limit ?? 50));
-        const truncated = observations.length < result.observations.length;
-        return cloneCredentialSafe({ ...result, observations, truncated, nextAfter: truncated ? observations.at(-1)!.observationBoundary : null });
+        const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
+        let size = Number(args.limit ?? 50);
+        for (;;) {
+          const observations = result.observations.slice(0, size);
+          const truncated = observations.length < result.observations.length;
+          const response = cloneCredentialSafe({ ...result, observations, truncated, nextAfter: truncated && observations.length ? observations.at(-1)!.observationBoundary : null });
+          if (agentToolResultBytes(response) <= budget) return response;
+          if (size <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One Diagnostic Observation exceeds the response budget.");
+          size = Math.max(1, Math.floor(size / 2));
+        }
       }
       case "update_agent_document": {
         if (!prepared || prepared.token !== args.token || prepared.consumed || prepared.fingerprint !== fingerprint(prepared.kind === "scenario")) throw new Error("Agent document was changed or executed. Inspect the document in Workbench.");
@@ -271,7 +404,18 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
             }
             await runtime.prepareScenarioPlan(plan, String(args.pageEpoch), stillAuthorized);
             prepared = { token: crypto.randomUUID(), fingerprint: fingerprint(true), kind: "scenario", consumed: false };
-            return { token: prepared.token, ...snapshot() };
+            const local = safeDraft(runtime.local());
+            let size = 25;
+            for (;;) {
+              const response = { token: prepared.token, local, scenario: safeScenario(runtime.scenario(), 0, size) };
+              if (agentToolResultBytes(response) <= AGENT_RESPONSE_CONTRACT.defaultMaxBytes) return response;
+              if (size <= 2) {
+                const compact = compactOversizedAgentResult(name, args, response);
+                if (compact && agentToolResultBytes(compact) <= AGENT_RESPONSE_CONTRACT.defaultMaxBytes) return compact;
+              }
+              if (size <= 1) return response; // Final boundary retains the token if even one preview is large.
+              size = Math.max(1, Math.floor(size / 2));
+            }
           }
           const draft: AgentDraftInput = { scopeId: args.scopeId as string | undefined, evidence: args.evidence as EvidenceIdentity | undefined, document: args.document as string | undefined };
           validateDraftSource(draft);
@@ -320,11 +464,31 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
           prepared.consumed = true;
         }
         const operation = { signature, kind: "scenario" as const, value: { requestId: id, accepted: true } };
-        if (requests.size < 256) requests.set(id, operation);
+        // Keep all earlier receipts: evicting one could let its requestId
+        // dispatch again. Reserve one extra ID each for pause and stop.
+        const emergencyAction = args.action === "pause" || args.action === "stop" ? args.action : null;
+        if (requests.size >= 256) {
+          if (!emergencyAction || emergencyControlIds[emergencyAction] || requests.size >= 258) throw new Error("REQUEST_CAPACITY: The Scenario control receipt reserve is full for this action. Existing requestIds remain inspectable.");
+          emergencyControlIds[emergencyAction] = id;
+        }
+        requests.set(id, operation);
         runtime.control(args.action as Parameters<AgentRuntime["control"]>[0]);
         return operation.value;
       }
-      case "get_scenario_trace": return safeScenario(runtime.scenario(), Number(args.offset ?? 0), Number(args.limit ?? 25));
+      case "get_scenario_trace": {
+        let size = Number(args.limit ?? 25);
+        const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
+        for (;;) {
+          const response = safeScenario(runtime.scenario(), Number(args.offset ?? 0), size);
+          if (agentToolResultBytes(response) <= budget) return response;
+          if (size <= 2) {
+            const compact = compactOversizedAgentResult(name, args, response, budget);
+            if (compact && agentToolResultBytes(compact) <= budget) return compact;
+          }
+          if (size <= 1) return response; // The final boundary omits its optional preview.
+          size = Math.max(1, Math.floor(size / 2));
+        }
+      }
       case "finish_agent_document": {
         if (!prepared || args.token !== prepared.token || prepared.fingerprint !== fingerprint(prepared.kind === "scenario")) throw new Error("Agent document is unavailable or was edited.");
         const complete = prepared.kind === "scenario" ? ["complete", "stopped"].includes(runtime.scenario()?.phase ?? "") : runtime.local().draft?.phase === "outcome";
@@ -340,8 +504,16 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       const result = await call(name, args, options?.signal);
       // Grants can be revoked while a read awaits storage. Do not disclose its result.
       if (permission() === "off" || generation !== grantGeneration) throw new Error("Agent access was revoked.");
-      if (new TextEncoder().encode(JSON.stringify(result)).byteLength > AGENT_MAX_BYTES) throw new Error("Response exceeds 512 KiB. Narrow the query, lower its limit, or omit payloads. Mutations are not retried; inspect their existing outcome.");
-      return result;
+      const input = args as AgentArguments;
+      const budget = ["query_evidence", "search_evidence", "summarize_evidence", "search_scope"].includes(name) && input.cursor
+        ? AGENT_RESPONSE_CONTRACT.maxBytes
+        : Number(input.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
+      if (agentToolResultBytes(result) <= budget) return result;
+      const compact = compactOversizedAgentResult(name, input, result, budget);
+      if (compact && agentToolResultBytes(compact) <= budget) return compact;
+      throw new Error(name === "execute_local_injection" || name === "control_scenario"
+        ? "DELIVERY_UNKNOWN: The operation may have executed, but its response exceeded the agent budget. Inspect its existing requestId; do not retry with a new id."
+        : "RESULT_BUDGET_EXCEEDED: Response exceeds the agent budget. Request a smaller page or inspect the exact object in Workbench.");
     },
     refreshOperations,
     revoke() { grantGeneration++; cursors.clear(); evidenceSearches.clear(); summaries.clear(); scopeCursors.clear(); scopeSearches.clear(); for (const wait of waits) wait.abort(); if (prepared?.kind === "scenario") runtime.control("pause"); }
@@ -388,6 +560,12 @@ function boundedRecords(records: readonly DeterministicEvidenceRecord[]) {
     if ("payload" in safe) remaining = Math.max(0, remaining - new TextEncoder().encode(JSON.stringify(safe.payload)).byteLength);
     return safe;
   });
+}
+function compactWaitEvidence(record: DeterministicEvidenceRecord, args: AgentArguments) {
+  const requested = (args.filter as { criteria?: readonly { facet: string }[] } | undefined)?.criteria?.map(entry => entry.facet) ?? [];
+  const keys = new Set(["kind", "mode", "key", "operation", "phase", "provenance", ...requested]);
+  const facets = Object.fromEntries(Object.entries(record.facets).filter(([key]) => keys.has(key)));
+  return { identity: record.identity, timestamp: record.timestamp, facets: cloneCredentialSafe(facets) };
 }
 function projectReadRecord(record: DeterministicEvidenceRecord, includePayload: boolean, fields?: readonly string[]) {
   const facets = Object.fromEntries(Object.entries(record.facets).map(([key, value]) => [key, ["client", "session", "subscription", "item", "listener"].includes(key) ? value?.label : value?.value]));
@@ -439,6 +617,8 @@ function safeDraft(local: ReturnType<AgentRuntime["local"]>) {
 function safeScenario(state: ReturnType<AgentRuntime["scenario"]>, offset = 0, limit = 25) {
   if (!state) return null;
   // Source JSON text can contain credentials; expose reviewed documents, explicit membership and trace only.
+  // Final serialized budget fitting decides page size. Explicit maxBytes can
+  // retain a larger Step preview when its complete MCP result fits.
   let remaining = 64 * 1024;
   const members = state.scenario.members.slice(offset, offset + limit).map(member => {
     if (member.kind === "checkpoint") return { kind: "checkpoint" as const, id: member.id, name: member.name, assertions: member.assertions };

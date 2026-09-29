@@ -72,10 +72,18 @@ candidate. Mutation and delivery rules are unchanged.
   by default. `fields` and `includePayload:true` are mutually exclusive. Full
   permitted envelopes are opt-in; raw transport text and Client Message bodies
   remain omitted/redacted.
-- Compact reads, including `search_scope` and summaries, default to **8192 bytes**
-  for the serialized MCP `CallToolResult` (compatibility text plus structured
-  data, including escaping). `maxBytes` allows 4096–65536 bytes. JSON-RPC framing
-  is additional. These byte counts are not model-token estimates.
+- Every tool defaults to **8192 bytes** for the serialized MCP `CallToolResult`
+  (compatibility text plus structured data, including escaping). Tools that
+  advertise `maxBytes` allow 4096–65536 bytes. `get_status.responseContract`
+  reports these limits. JSON-RPC framing is additional. These byte counts are
+  not model-token estimates. The companion enforces the final limit even when
+  connected to an older panel.
+- `get_status` exposes operational status only. Cached Evidence queries,
+  search text, captured field values and Client Message bodies are not status.
+- `list_scope` pages shrink to the byte budget; continue with its `nextOffset`,
+  not the requested `limit`. Diagnostic pages similarly use `nextAfter` and
+  Scenario pages use `nextOffset`. These offset/boundary pages are separate
+  from the opaque Evidence cursors described below.
 - `limit` is a maximum of 100, not a promised page size. Pages shrink to fit the
   budget. A record that cannot fit yields `RESULT_BUDGET_EXCEEDED`; select fewer
   fields or deliberately choose a larger budget. Do not silently truncate values.
@@ -102,11 +110,18 @@ item Scope when its identity matters. Read `coverage`, `evaluation`, read point
 and discovery availability before making absence claims. Unavailable discovery
 is not a zero-key result.
 
-`describe_stream` remains a bounded field-shape profiler, not a counting query.
-`wait_for_evidence` remains a bounded observation primitive. They do not inherit
-the new `where`, `fields` or 8 KiB read budget options in this slice. No current
-COMMAND-state export, application-specific schema engine, or new mutation tool
-is introduced.
+`describe_stream` remains a field-shape profiler, not a counting query. Its
+sample may shrink to fit the byte budget; read its completeness and omissions.
+`wait_for_evidence` remains an observation primitive. A match whose payload
+cannot fit returns its identity with an explicit omission; use `get_evidence`
+to inspect it. Neither tool inherits the `where` or `fields` options.
+
+Large Draft and Scenario previews may omit document details explicitly while
+preserving preparation tokens, identities and operation outcomes. Review the
+existing document in Workbench when a preview is omitted. A lost or oversized
+execution reply is never permission to repeat execution with a new request ID;
+inspect the existing receipt with `get_operation`. Operation receipts remain
+reserved for duplicate suppression even when the session reaches its limit.
 
 ## Verification
 
@@ -115,12 +130,16 @@ The efficiency proof launches the built stdio MCP executable, sends actual MCP
 calls through an isolated loopback broker, and routes them into the real panel
 service/runtime with synthetic retained Evidence. It checks unrelated-Scope
 exclusion, selected fields, response bytes, and stable continuations after new
-Capture. It is not a model-token benchmark or a substitute for the separate
-installed-package/loaded-Chrome proof.
+Capture. A separate IndexedDB regression first populates the real history query
+cache, then checks that status stays small through the built stdio companion.
+All advertised tools, escaped error messages, page continuations and oversized
+mutation previews have response-budget regressions. Tool schema discovery has
+a separate 80 KiB ceiling. These checks are not model-token benchmarks or a
+substitute for the separate installed-package/loaded-Chrome proof.
 
 ```sh
 npm run agent:build
-npx vitest run tests/agent-read-contract.test.ts tests/agent-compact-query.test.ts tests/agent-mcp-budget.test.ts tests/agent-mcp-efficiency.test.ts --maxWorkers=1 --no-file-parallelism
+npx vitest run tests/agent-*.test.ts --maxWorkers=1 --no-file-parallelism
 ```
 
 CI also runs `agent:test:extension` with the installed npm artifact and a loaded
