@@ -8,11 +8,13 @@ Configured production builds enable GA4 usage analytics by default. More actions
 | --- | --- | --- |
 | Listing visits and installs | Store-managed `541917230`, account `397908666` | Store-managed; cannot add extension instrumentation here |
 | Product engagement | Lightstreamer Event Workbench Usage `547418482`, account `402536926` | Chrome extension usage `15339538535`; `G-SHFQ6R7KZK` |
-| Public website visits | Lightstreamer Event Workbench Usage `547418482`, account `402536926` | GitHub Pages website `15864929658`; `G-SY4DYL8WH5` |
+| Documentation website visits | Lightstreamer Workbench Documentation `556788190`, account `402536926` | Documentation website — GitHub Pages `15887962376`; `G-SFDTHQK6C4` |
 
 ### Website stream (separate site change)
 
-The [GitHub Pages website stream](https://analytics.google.com/analytics/web/#/a402536926p547418482/admin/streams/table/15864929658) is configured for `https://imom39a.github.io/lightstreamer-workbench-extension/`. Enhanced Measurement was verified Off in the Google Analytics UI, so it does not add scroll, click, or form events. The site sends one explicit `page_view` per loaded page with `app_surface=website`; GA4 can also collect its standard session and engagement information. The website uses the site's public JavaScript tag, not the extension's Measurement Protocol stream or secret. Live website receipt is unverified until deployment.
+The [documentation website stream](https://analytics.google.com/analytics/web/#/a402536926p556788190/admin/streams/table/15887962376) is configured for `https://imom39a.github.io/lightstreamer-workbench-extension/`. Enhanced Measurement was verified Off in the Google Analytics UI, so it does not add scroll, click, or form events. The site sends one explicit `page_view` per loaded page with `app_surface=website`; GA4 can also collect its standard session and engagement information. The website uses the site's public JavaScript tag, not the extension's Measurement Protocol stream or secret. This configuration takes effect after site deployment; live receipt in the new property is not yet verified.
+
+The Lightstreamer Event Workbench account `402536926` is the main project account. Documentation appears as its own property in the Properties & Apps picker; the site is a Web stream, rather than an Android or iOS app. The previous website stream `15864929658` (`G-SY4DYL8WH5`) remains in Workbench Usage for historical data. This change sends future visits to the documentation property after deployment; it does not move historical events. The repository publishes to GitHub Pages.
 
 ### Extension stream
 
