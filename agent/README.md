@@ -20,29 +20,25 @@ actual tool list.
 
 ## Set up
 
-The npm package remains unavailable after its September 29, 2026 unpublish. Companion 0.1.3 pairs with extension 2.0.6. It bounds serialized MCP replies to 8 KiB by default, allows up to 64 KiB where a tool supports `maxBytes`, and keeps cached Evidence query results out of operational status. Download the [`lightstreamer-workbench-agent-0.1.3.tgz`](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.3/lightstreamer-workbench-agent-0.1.3.tgz) from the versioned release assets below, then install it into a directory you will keep:
+Companion 0.1.4 pairs with extension 2.0.6 and contains the same runtime fixes as 0.1.3. It bounds serialized MCP replies to 8 KiB by default, allows up to 64 KiB where a tool supports `maxBytes`, and keeps cached Evidence query results out of operational status. Generate a version-pinned MCP configuration from npm:
 
 On macOS or Linux:
 
 ```sh
-npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.3.tgz
-node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local
+npx --yes lightstreamer-workbench-agent@0.1.4 setup
 ```
 
 In Windows PowerShell:
 
 ```powershell
-npm.cmd install --prefix .\workbench-companion .\lightstreamer-workbench-agent-0.1.3.tgz
-node.exe .\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs setup --local
+npx.cmd --yes lightstreamer-workbench-agent@0.1.4 setup
 ```
 
 For an unpacked extension, add `--extension-id YOUR_UNPACKED_EXTENSION_ID` to
 the setup command. Copy the printed `mcpServers` entry into your MCP client's
 configuration and start or reconnect the server. Setup only prints configuration;
-it does not edit your settings. The generated entry points to the installed
-local package, so keep that directory in place. Once npm publication resumes,
-`npx lightstreamer-workbench-agent@VERSION setup` can generate a version-pinned
-registry configuration.
+it does not edit your settings. The generated entry runs the pinned npm version
+through `npx` whenever your MCP client starts it.
 
 Open **Lightstreamer Workbench** in the intended tab's DevTools. Ask the agent
 to call `list_panel_sessions`, choose the exact tab, and call `get_status` for
@@ -61,8 +57,18 @@ own directory, and load that directory from `chrome://extensions`. Use the
 assigned extension ID with `setup --extension-id` and keep the extension and
 companion from the same release or source revision.
 
-For the 0.1.3 bundle, use its `agent/lightstreamer-workbench-agent-0.1.3.tgz`
-with the same local install commands above after loading the unpacked extension.
+The [0.1.3 GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3)
+also contains a matching extension 2.0.6 bundle and companion tarball. For a
+local tarball installation, extract its `agent/lightstreamer-workbench-agent-0.1.3.tgz`,
+then run:
+
+```sh
+npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.3.tgz
+node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local
+```
+
+In Windows PowerShell, use `npm.cmd` and `node.exe`. Keep that installation
+directory in place because `--local` configuration points to its installed CLI.
 
 For a source checkout, run `npm ci`, `npm run build`, and `npm run agent:build`
 from the repository root. Load `dist/` as an unpacked extension, then run
