@@ -148,6 +148,14 @@ Version 2.0.6 was submitted on September 29, 2026 through Chrome Web Store API v
 
 The Mac was locked, so the Store dashboard description and reviewer fields could not be refreshed. The submission retains the existing 2.0.5 feature description and 0.1.2 reviewer link; the public setup guide now identifies 0.1.3, and that older GitHub release starts with a notice directing current setup and Store review to 0.1.3. The maintained 2.0.6 text in [`store-listing/LISTING.md`](store-listing/LISTING.md) is ready for a later dashboard update; it was not saved to the Store during this submission.
 
+## npm companion 0.1.4 Publication Record
+
+Companion 0.1.4 was published to npm on September 30, 2026 after the full-unpublish package-name hold. It contains the same runtime as 0.1.3 and updates the package README with version-pinned npm setup instructions. Source commit `fcdff7d7ba696054484f8d668116abb70ce31a72` passed the [companion workflow](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36682448324): one tarball, installed-artifact and response-budget checks on Windows, macOS, and Linux, and matching bundle assembly.
+
+The exact tested tarball was published through the authenticated maintainer CLI to recreate the deleted npm package. The first authenticated upload returned an npm processing conflict; retrying the same bytes succeeded. This bootstrap publication has npm registry signatures but no CI provenance attestation. Its SHA-256 is `6f43a9a5564a349d7f6dc0586733445cd5aec303509166c2818aeeda3d4a591b`, size 180,224 bytes. The public registry reports version and `latest` tag 0.1.4 and the matching source `gitHead`. An anonymous tarball download was byte-identical to the CI artifact; installing from npm and running the version-pinned `npx` setup command succeeded.
+
+The GitHub Actions trusted publisher was restored for repository `imom39a/lightstreamer-workbench-extension`, workflow `agent-companion.yml`, and environment `npm`. The repository publication variable remains `false` outside planned releases. A Store API status read on September 30 confirmed extension 2.0.6 `PENDING_REVIEW` and 2.0.4 `PUBLISHED`; npm publication does not change the Store release state.
+
 ## Usage analytics release contract
 
 [ADR 0015](docs/adr/0015-measure-extension-usage-with-a-closed-analytics-vocabulary.md) records the maintainer-requested replacement of the earlier no-analytics invariant. The candidate enables limited GA4 usage analytics by default with a persistent off switch. Captured Evidence, payloads, inspected URLs, search text, credentials, and raw errors remain outside analytics. This is a Material UI and data-boundary change, not a statement that an existing Store package has changed.

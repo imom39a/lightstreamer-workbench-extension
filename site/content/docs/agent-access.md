@@ -7,24 +7,22 @@ Connect an MCP agent to inspect Evidence and test Local Injections in an open Wo
 - An agent app that supports local stdio MCP servers.
 - Chrome, Node, and the agent app on the same computer.
 
-The npm companion remains unavailable after its September 29, 2026 unpublish. Companion 0.1.3 passed Windows, macOS, and Linux checks and is available in the [public GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3). It bounds serialized MCP replies to 8 KiB by default, supports up to 64 KiB when a tool offers `maxBytes`, and keeps cached Evidence query results out of operational status. The companion does not install the Chrome extension. See [Release notes]({{site}}releases/) for extension availability.
+Companion [0.1.4 is available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.4) and passed Windows, macOS, and Linux checks. It contains the 0.1.3 runtime fixes: serialized MCP replies are bounded to 8 KiB by default, tools that offer `maxBytes` support up to 64 KiB, and operational status excludes cached Evidence query results. The companion does not install the Chrome extension. See [Release notes]({{site}}releases/) for extension availability.
 
 ## Set up MCP
 
-1. Download the exact CI-tested [`lightstreamer-workbench-agent-0.1.3.tgz`](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.3/lightstreamer-workbench-agent-0.1.3.tgz), then install it into a directory you will keep:
+1. Generate the version-pinned MCP configuration:
 
    macOS or Linux:
 
    ```sh
-   npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.3.tgz
-   node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local
+   npx --yes lightstreamer-workbench-agent@0.1.4 setup
    ```
 
    Windows PowerShell:
 
    ```powershell
-   npm.cmd install --prefix .\workbench-companion .\lightstreamer-workbench-agent-0.1.3.tgz
-   node.exe .\workbench-companion\node_modules\lightstreamer-workbench-agent\dist\cli.mjs setup --local
+   npx.cmd --yes lightstreamer-workbench-agent@0.1.4 setup
    ```
 
    For an unpacked extension, append `--extension-id YOUR_EXTENSION_ID` to the setup command. Copy its ID from `chrome://extensions`.
@@ -35,7 +33,7 @@ The npm companion remains unavailable after its September 29, 2026 unpublish. Co
 5. Ask the agent to call `list_panel_sessions`.
 6. Ask it to call `get_status` with the selected `panelSessionId`.
 
-The agent app starts the companion. Workbench connects automatically. Keep the install directory in place because the printed configuration uses its local path. No separate terminal, hosted service, or native installer is needed after setup.
+The agent app starts the pinned npm companion. Workbench connects automatically. No separate terminal, hosted service, or native installer is needed after setup.
 
 If your extension lacks **Agent access and setup**, use a matching unpacked build. Follow the [release-bundle and source instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent); use the extension ID assigned by Chrome. Extension 2.0.6 is pending Chrome Web Store review and will publish automatically after approval; 2.0.4 remains public until then.
 

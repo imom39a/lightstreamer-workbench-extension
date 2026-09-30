@@ -1,6 +1,10 @@
+## MCP companion — 0.1.4
+
+Companion [0.1.4 is published on npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.4). It restores version-pinned `npx` setup and contains the same runtime as 0.1.3, paired with extension 2.0.6. The published tarball passed Windows, macOS, and Linux checks. Follow [MCP setup]({{site}}docs/agent-access/) to connect it. The companion does not install or update the Chrome extension.
+
 ## MCP companion — 0.1.3
 
-Version 0.1.0 was first published on September 28, 2026, then unpublished on September 29. The npm package remains unavailable. Companion 0.1.3 passed Windows, macOS, and Linux checks; the exact tested tarball is available in the [agent-v0.1.3 GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3). It bounds serialized MCP replies to 8 KiB by default, allows up to 64 KiB where a tool supports `maxBytes`, and excludes cached Evidence query results from operational status. The Chrome extension is released separately.
+Version 0.1.0 was first published on September 28, 2026, then unpublished on September 29. Companion 0.1.3 was distributed through the [agent-v0.1.3 GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3) during npm's package-name hold. It passed Windows, macOS, and Linux checks, bounds serialized MCP replies to 8 KiB by default, allows up to 64 KiB where a tool supports `maxBytes`, and excludes cached Evidence query results from operational status. The Chrome extension is released separately.
 
 - Find Subscriptions and items with Scope search.
 - Count records and distinct keys before reading examples.
