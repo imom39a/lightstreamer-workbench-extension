@@ -41,6 +41,9 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.equal(status.inspectedPage.urlWithoutQuery, pageUrl);
     assert.equal(status.permission, "local", "A normal connection grants inspection and Local Injection without settings.");
     assert.ok(status.capabilities.includes("search_evidence") && status.capabilities.includes("search_scope"));
+    assert.ok(status.capabilities.includes("query_command_state") && status.capabilities.includes("wait_for_operation"));
+    assert.equal(status.companion.extensionId, origin.slice("chrome-extension://".length));
+    assert.equal(status.companion.readContractVersion, 2);
     const scopeSearch = await call("search_scope", { panelSessionId, text: "SCENARIO.MUTATE-REINJECT", limit: 100 });
     assert.ok(scopeSearch.scopes.some((entry: any) => entry.kind === "item" && entry.label === "scenario.mutate-reinject · #1"), `MCP Scope search finds the exact named, positional item regardless of tree expansion: ${JSON.stringify(scopeSearch)}`);
     const evidenceSearch = await call("search_evidence", { panelSessionId, within: "page", text: "SCENARIO.MUTATE-REINJECT", limit: 1, includePayload: true, maxBytes: 65536 });
@@ -104,9 +107,28 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
       { facet: "key", polarity: "include", type: "string", value: "agent-browser.TICKER" }
     ] } });
     await call("execute_local_injection", request); await call("execute_local_injection", request);
+    const receipt = call("wait_for_operation", { panelSessionId, requestId: request.requestId, timeoutMs: 10000 });
     assert.equal((await observation).status, "MATCHED", "Observation sees the correlated Local Evidence without blocking execution.");
     await waitForCondition(page, `document.querySelector('#message-text').textContent === 'Agent MCP Local Injection' && Number(document.querySelector('#update-count').textContent) === ${baselineCount + 1}`, "one MCP injection reaches the official-client app exactly once");
-    await settle(() => call("get_operation", { panelSessionId, requestId: request.requestId }), result => result.state === "complete");
+    assert.deepEqual(await receipt, {
+      status: "COMPLETE", requestId: request.requestId, completionBoundary: "LOCAL_INJECTION_RECEIPT",
+      operation: await call("get_operation", { panelSessionId, requestId: request.requestId })
+    });
+    const localState = await call("query_command_state", {
+      panelSessionId, scopeId: liveItem.scopeId, pageEpoch: status.pageEpoch,
+      projection: "local-effective", item: { name: anchor.itemName, position: anchor.itemPosition },
+      key: "agent-browser.TICKER", fields: ["modelValues"]
+    });
+    assert.equal(localState.status, "ok", JSON.stringify(localState));
+    assert.equal(localState.presence.state, "present");
+    assert.equal(localState.fields[0].state, "concrete");
+    assert.equal(localState.fields[0].certainty, "projected");
+    assert.ok(JSON.stringify(localState.fields[0].value).includes("Agent MCP Local Injection"));
+    assert.equal(localState.fields[0].provenance.evidenceRetained, true);
+    const stateBasis = await call("get_evidence", { panelSessionId, evidence: localState.fields[0].provenance.evidence, fields: ["modelValues"] });
+    assert.deepEqual(stateBasis.lookup.evidence.fields.modelValues.value, localState.fields[0].value);
+    const stateEvidence = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, at: localState.readPoint, where: { key: ["agent-browser.TICKER"], provenance: ["LOCAL"] }, limit: 1 });
+    assert.equal(stateEvidence.totals.matching, 1, "The COMMAND read point is reusable through installed stdio MCP.");
     await call("finish_agent_document", { panelSessionId, token: draft.token });
     const members = [
       { kind: "step", id: "first-update", evidence: source.identity, document: document("UPDATE", "Agent Scenario first") },
@@ -167,6 +189,9 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     assert.equal(status.inspectedPage.urlWithoutQuery, expectedUrl);
     assert.equal(status.permission, "local", "Inspection plus Local Injection requires no permission selection.");
     assert.equal(status.readContract.version, 2);
+    assert.equal(status.companion.extensionId, extensionId);
+    assert.equal(status.companion.protocolVersion, 1);
+    assert.ok(status.capabilities.includes("query_command_state") && status.capabilities.includes("wait_for_operation"));
     const query = await call("query_evidence", { panelSessionId, within: "page", text: "cdp-same-tab-four", limit: 10, includePayload: true, maxBytes: 65536 });
     assert.ok(query.evidence.some((entry: any) => entry.payload?.item?.name === "cdp-same-tab-four"));
     const statusAfterPayloadRead = await call("get_status", { panelSessionId });

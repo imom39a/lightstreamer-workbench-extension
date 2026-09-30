@@ -23,6 +23,32 @@ function fixture(autoChannel?: CompanionChannel) {
   return { connection, agent, connectNative, unsubscribe };
 }
 describe("per-panel agent grants", () => {
+  it("preserves actionable compatibility failures in required-auth mode without granting access", async () => {
+    const f = fixture();
+    vi.mocked(beginPanelPairing).mockReturnValueOnce({ ready: Promise.reject(new Error("COMPANION_INCOMPATIBLE: Stop existing Workbench MCP servers and start the matching companion package.")), approve: vi.fn(), close: vi.fn() });
+    try {
+      f.connection.connect("read", { auth: "required" });
+      await vi.waitFor(() => expect(f.connection.getSnapshot()).toMatchObject({ enabled: false, status: "error", permission: "off", detail: expect.stringContaining("matching companion package") }));
+    } finally { f.connection.dispose(); }
+  });
+  it("explains incompatible companion identity in the existing setup surface without granting access", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const f = fixture();
+    const extensionId = "a".repeat(32);
+    vi.mocked(connectPortable).mockRejectedValue(new Error(`COMPANION_INCOMPATIBLE: Companion extension ${"b".repeat(32)} differs from required ${extensionId}. Stop Workbench MCP servers; run setup --extension-id ${extensionId} with the matching package.`));
+    const mount = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(mount);
+    try {
+      await act(async () => {
+        root.render(createElement(AgentAccess, { connection: f.connection }));
+        f.connection.connect();
+      });
+      expect(f.connection.getSnapshot()).toMatchObject({ enabled: true, permission: "off", status: "waiting" });
+      expect(mount.querySelector('[role="status"]')?.textContent).toContain(`setup --extension-id ${extensionId}`);
+      expect(mount.querySelector("details")!.textContent!.trim().split(/\s+/).length).toBeLessThanOrEqual(70);
+    } finally { await act(async () => root.unmount()); mount.remove(); f.connection.dispose(); }
+  });
+
   it("renders Waiting until ready, returns to Waiting on loss, and keeps explicit Off across retries", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -82,7 +108,7 @@ describe("per-panel agent grants", () => {
     let read!: (message: Record<string, unknown>) => void;
     const channel: CompanionChannel = { send: vi.fn(), close: vi.fn(), onMessage: callback => { read = callback; }, onClose: vi.fn() };
     const f = fixture(channel);
-    expect(connectPortable).toHaveBeenCalledWith({ auth: "off", port: 24817 }, "panel");
+    expect(connectPortable).toHaveBeenCalledWith({ auth: "off", port: 24817 }, "panel", { extensionId: "a".repeat(32) });
     expect(f.connection.getSnapshot()).toMatchObject({ enabled: true, permission: "off" });
     await vi.waitFor(() => expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({ permission: "local", panelSessionId: "panel-1" })));
     read({ type: "ready" });
@@ -150,7 +176,7 @@ describe("per-panel agent grants", () => {
     f.connection.connect("read");
     expect(f.connection.getSnapshot().permission).toBe("off");
     await vi.waitFor(() => expect(channel.send).toHaveBeenCalled());
-    expect(connectPortable).toHaveBeenCalledWith({ auth: "off", port: 24817 }, "panel");
+    expect(connectPortable).toHaveBeenCalledWith({ auth: "off", port: 24817 }, "panel", { extensionId: "a".repeat(32) });
     expect(f.connectNative).not.toHaveBeenCalled();
     read({ type: "ready" });
     expect(f.connection.getSnapshot()).toMatchObject({ status: "connected", permission: "read", auth: "off" });

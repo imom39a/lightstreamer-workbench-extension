@@ -1,16 +1,18 @@
+import type { AgentCommandStateInput, AgentCommandStateResult } from "./agent-command-state";
 import type { EvidenceFindRequest, EvidenceIdentity, EvidenceReadPoint, EvidenceSnapshot, FacetDiscoveryRequest } from "../../core/evidence-filter-contract";
 import type { DiagnosticObservationBoundary, DiagnosticObservationRead } from "../../core/diagnostic-observation";
+import type { ScopeSearchNode } from "../../core/scope-search";
 import type { Filter } from "../../core/filter-algebra";
 import type { ScenarioAssertion } from "../../core/local-injection-scenario";
 import type { StructuralEvidenceScope } from "./evidence-investigation-query";
-import type { WorkbenchLocalInjectionSnapshot, WorkbenchScenarioSnapshot, WorkbenchScopeNode } from "./workbench-runtime";
+import type { WorkbenchLocalInjectionSnapshot, WorkbenchScenarioSnapshot } from "./workbench-runtime";
 
 export type AgentDraftInput = { scopeId?: string; evidence?: EvidenceIdentity; document?: string; delayMs?: number };
 export type AgentQueryBoundary = Readonly<{ scope: StructuralEvidenceScope; filter: Filter }>;
 export type AgentScopeSearchSnapshot = Readonly<{
   pageEpoch: string | null;
   structureRevision: number;
-  nodes: readonly WorkbenchScopeNode[];
+  nodes: readonly ScopeSearchNode[];
   history: Readonly<{ intervalId: string; committedSequence: number | null; retainedFirstSequence: number | null }>;
 }>;
 export type AgentScenarioMember =
@@ -38,6 +40,7 @@ export type AgentQueryInput = Readonly<{
 /** Narrow internal seam. Transport validation and grant enforcement live outside the runtime. */
 export interface AgentRuntime {
   status(): unknown;
+  commandState?(input: AgentCommandStateInput): AgentCommandStateResult;
   scopes(offset: number, limit: number): unknown;
   scopeSearchSnapshot(): AgentScopeSearchSnapshot;
   scope(id: string): unknown;
@@ -46,7 +49,8 @@ export interface AgentRuntime {
   validateCandidate(input: AgentCandidateInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<unknown>;
   prepareScenarioPlan(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void>;
   subscribeEvidence?(listener: () => void): () => void;
-  diagnostics(after?: DiagnosticObservationBoundary): Promise<DiagnosticObservationRead>;
+  subscribeOperations?(listener: () => void): () => void;
+  diagnostics(after?: DiagnosticObservationBoundary, signal?: AbortSignal): Promise<DiagnosticObservationRead>;
   prepare(steps: AgentDraftInput[], scenario: boolean, pageEpoch: string, stillAuthorized: () => boolean): Promise<void>;
   edit(document: string, stepId?: string): void;
   local(): WorkbenchLocalInjectionSnapshot;

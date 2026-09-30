@@ -15,6 +15,8 @@ Installing a new companion alone does not update Chrome.
 | Show a few matching examples | `query_evidence` | Compact matching records and exact Evidence identities |
 | Find this text in that Scope | `search_evidence` | Matching records with shareable match explanations |
 | Read more from this one example | `get_evidence` | One exact retained record, with selected fields if requested |
+| Inspect one derived COMMAND key | `query_command_state` | Exact item/key, chosen projection, certainty and Evidence provenance |
+| Wait for an existing operation receipt | `wait_for_operation` | Bounded receipt completion without repeating execution |
 
 Filtering, indexed counting, field projection and paging execute in the
 extension's owning DevTools panel. The companion validates and routes calls and
@@ -122,12 +124,59 @@ sample may shrink to fit the byte budget; read its completeness and omissions.
 cannot fit returns its identity with an explicit omission; use `get_evidence`
 to inspect it. Neither tool inherits the `where` or `fields` options.
 
+## One derived COMMAND key
+
+When `query_command_state` appears in capabilities, pass the exact live COMMAND
+Subscription or item `scopeId`, current `pageEpoch`, exact item name/position,
+opaque `key`, and explicit `projection`: `observed-server` or `local-effective`.
+Whitespace in keys is significant. Request up to 32 exact field names in
+`fields`; omitted selection returns a bounded field prefix. This read leaves
+the human's investigation unchanged.
+
+The result is derived Workbench state. Inspect `presence.state`, its `basis`
+and provenance before making a presence claim. Missing prior Evidence, an
+Evidence Gap, or evicted historical detail can make presence `inconclusive`.
+Each field carries its value state, certainty and provenance. `last-observed`
+does not establish continuity through a Gap; `output-budget` and `truncated`
+identify omitted detail. `evidenceRetained:false` means the referenced Evidence
+can no longer be retrieved. These projections do not prove application or
+Lightstreamer Server state.
+
+If credential protection would change an opaque target identity, the read fails
+with `CREDENTIAL_IDENTITY_UNAVAILABLE` rather than returning a different key as
+an exact target. Inspect that target locally in Workbench; the failure includes
+neither the credential nor a substitute identity.
+
+Its canonical `readPoint` identifies the applied projection boundary. Reuse it
+as `query_evidence.at` or `wait_for_evidence.after` while that boundary remains
+available. Use a field's exact provenance identity with `get_evidence` to inspect
+the captured basis. Older tombstones, lifecycle history and diagnostics have
+explicit count and byte limits; active projected rows remain separate from
+rolling Event History retention.
+
+## Operation receipts and recovery
+
 Large Draft and Scenario previews may omit document details explicitly while
 preserving preparation tokens, identities and operation outcomes. Review the
 existing document in Workbench when a preview is omitted. A lost or oversized
 execution reply is never permission to repeat execution with a new request ID;
 inspect the existing receipt with `get_operation`. Operation receipts remain
 reserved for duplicate suppression even when the session reaches its limit.
+
+`wait_for_operation` accepts an existing `requestId` and waits up to 20 seconds
+(10 seconds by default). `COMPLETE` means the receipt settled; inspect its
+operation outcome. `TIMED_OUT` leaves the current receipt pending.
+`SCENARIO_CONTROL_RECEIPT` acknowledges a Scenario control, not completion of
+the whole Run; use `get_scenario_trace` for Run progress. `OPERATION_UNKNOWN`
+never proves non-delivery. Cancellation and revoked access stop the wait without
+repeating an effect. Each agent connection can hold two combined Evidence or
+operation waits and 16 pending requests; each Panel Session permits four waits.
+
+Recoverable errors carry stable codes, including `CURSOR_EXPIRED`,
+`TARGET_CHANGED`, `TARGET_RETIRED`, `ACCESS_REVOKED`, `REQUEST_CAPACITY`,
+`OPERATION_BUDGET_EXCEEDED`, and `COMPANION_INCOMPATIBLE`. Rediscover or repair the
+identified boundary before starting a fresh read. A mutation failure or lost
+reply retains `automaticRetry:false`; inspect its existing receipt first.
 
 `validate_agent_candidate` evaluates the complete ordered plan. If its detailed
 result is too large, it returns the overall verdict and member counts with an

@@ -7,6 +7,7 @@ import {
   type LightstreamerClientLike,
   type LightstreamerClientMessageListenerLike
 } from "../core/lightstreamer-types";
+import { createWeakObjectRegistry } from "./weak-object-registry";
 
 export const SERVER_INJECTION_LISTENER_CONTEXT = "__lsewServerInjectionContext" as const;
 
@@ -38,17 +39,17 @@ const MAX_REMEMBERED_REQUESTS = 2_048;
 export function createClientMessageDeliveryRegistry(
   dependencies: ClientMessageDeliveryDependencies
 ): ClientMessageDeliveryRegistry {
-  const clients = new Map<string, LightstreamerClientLike>();
+  const clients = createWeakObjectRegistry<LightstreamerClientLike>();
   const starts = new Map<string, ServerInjectionStartResult>();
   const now = dependencies.now ?? Date.now;
 
   return {
     register(clientId, client) {
-      clients.set(clientId, client);
+      clients.register(clientId, client);
     },
 
     submit(correlation, draft) {
-      const key = `${correlation.panelSessionId}:${correlation.requestId}`;
+      const key = JSON.stringify([correlation.panelSessionId, correlation.requestId]);
       const previous = starts.get(key);
       if (previous) {
         return {
@@ -69,6 +70,10 @@ export function createClientMessageDeliveryRegistry(
         timestamp: now(),
         error
       });
+
+      if (starts.size >= MAX_REMEMBERED_REQUESTS) {
+        return fail("unsupported", "Server Injection receipt capacity has been reached for this page. No Injection was attempted.");
+      }
 
       if (draft.target.pageEpoch !== dependencies.pageEpoch) {
         return fail("stale-target", "The inspected page has reloaded since this Draft was created.");
@@ -101,10 +106,18 @@ export function createClientMessageDeliveryRegistry(
         status: "started",
         timestamp: now()
       };
+      // Preflight reads execute page-owned getters. They may reenter this seam,
+      // so the receipt and its budget must still be available after those reads.
+      const reentrantPrevious = starts.get(key);
+      if (reentrantPrevious) {
+        return { ...reentrantPrevious, ok: true, status: "duplicate", error: undefined };
+      }
+      if (starts.size >= MAX_REMEMBERED_REQUESTS) {
+        return fail("unsupported", "Server Injection receipt capacity has been reached for this page. No Injection was attempted.");
+      }
       // Claim the correlation before crossing the page-owned API boundary. A
       // throwing implementation may already have caused effects.
       starts.set(key, started);
-      trimRememberedRequests(starts);
       try {
         client.sendMessage(
           draft.message,
@@ -163,14 +176,4 @@ function createServerInjectionListener(
     value: Object.freeze({ ...context })
   });
   return listener;
-}
-
-function trimRememberedRequests(
-  starts: Map<string, ServerInjectionStartResult>
-): void {
-  while (starts.size > MAX_REMEMBERED_REQUESTS) {
-    const oldest = starts.keys().next().value;
-    if (typeof oldest !== "string") return;
-    starts.delete(oldest);
-  }
 }

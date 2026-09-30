@@ -13,8 +13,10 @@ const argumentsByTool: Record<string, Record<string, unknown>> = {
   get_status: {}, list_scope: {}, search_scope: { text: "item" }, get_scope: { scopeId: "page" },
   query_evidence: { within: "page" }, search_evidence: { within: "page", text: "item" }, summarize_evidence: { within: "page" }, describe_stream: {},
   wait_for_evidence: { after: readPoint, pageEpoch: "epoch" }, get_evidence: { evidence: identity }, query_diagnostics: {},
+  query_command_state: { scopeId: "subscription", pageEpoch: "epoch", projection: "observed-server", item: { name: "rows", position: 1 }, key: "row" },
   update_agent_document: { token: "token", document: "{}" }, prepare_local_injection: { pageEpoch: "epoch", scopeId: "page" },
   execute_local_injection: { token: "token", requestId: "injection" }, get_operation: { requestId: "injection" },
+  wait_for_operation: { requestId: "injection" },
   validate_agent_candidate: { pageEpoch: "epoch", draft: { scopeId: "page" } },
   prepare_scenario: { pageEpoch: "epoch", steps: [{ scopeId: "page" }] },
   control_scenario: { runId: "run", requestId: "control", action: "pause" }, get_scenario_trace: {}, finish_agent_document: { token: "token" }

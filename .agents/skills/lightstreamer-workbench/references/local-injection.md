@@ -13,8 +13,10 @@
    unexecuted agent Draft through `update_agent_document` using its current token.
    Use the replacement token. Human edits invalidate the agent's prepared version.
 5. Call `execute_local_injection` with that token and a fresh stable `requestId`.
-6. Read `get_operation` until it leaves pending. Repeating the same request id
-   retrieves the operation; it must not create another delivery. Partial, failed,
+6. Use `wait_for_operation` with the existing request id when advertised, or read
+   its receipt with `get_operation`. Inspect the settled outcome; a bounded wait
+   timeout leaves the current receipt pending. Repeating the same request id
+   retrieves the operation and must not create another delivery. Partial, failed,
    blocked and unknown outcomes require diagnosis. A new request id is a new
    deliberate experiment, never a transport retry.
 7. Verify corresponding Local Evidence and the concrete app behavior separately.

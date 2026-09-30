@@ -26,6 +26,12 @@ Only within the current Panel Session. Rolling limits remove the oldest Evidence
 
 Yes. The published companion supports inspection and Local Injection. Follow [MCP setup]({{site}}docs/agent-access/).
 
+## What do I need to install?
+
+For browser inspection, install the Chrome extension. For agent access, also use the npm companion, Node.js 22.12 or later with npm, and an agent app that supports local stdio MCP. Add the setup command's printed entry to that app's MCP settings once. The app starts the companion.
+
+The extension and npm package are ready to use. A repository checkout, compilation, Docker, and a separate Workbench server are not required. The included agent skill is optional.
+
 ## Is this an official Lightstreamer product?
 
 No. This independent, [open-source project]({{github}}) uses the Apache-2.0 license.

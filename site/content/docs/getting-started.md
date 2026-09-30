@@ -4,7 +4,9 @@
 - A page that uses the official Lightstreamer Web Client.
 - Authorization to inspect the page and any data it displays.
 
-Workbench does not require an account or a Workbench server.
+The Chrome extension is enough for browser inspection. It uses the application's existing Lightstreamer connection. Workbench does not require an account or a Workbench server.
+
+Agent access is optional. It adds the npm companion, Node.js with npm, and one MCP entry in your agent app. Follow [MCP setup]({{site}}docs/agent-access/) for those requirements and steps.
 
 ## Install
 
@@ -35,6 +37,4 @@ If Coverage is LIMITED or UNAVAILABLE, do the displayed recovery action. Do not 
 8. Open **Notifications** when the footer shows a condition or recent diagnostic.
 9. Dismiss a footer message if it obstructs the workspace. This action does not delete the notification or Evidence.
 
-Next, use the [Developer guide]({{site}}docs/developer-guide/) or read about the [Workbench workspace]({{site}}docs/workspace/).
-
-To connect an agent, use [MCP setup]({{site}}docs/agent-access/).
+Next, use [Inspect activity]({{site}}docs/developer-guide/) or read about the [Workbench workspace]({{site}}docs/workspace/).

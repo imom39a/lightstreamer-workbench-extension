@@ -1,3 +1,5 @@
+import { createWeakObjectRegistry } from "./weak-object-registry";
+
 export type SubscriptionLocalInjectionListener<TUpdate> = {
   listenerId: string;
   fieldNames: readonly string[];
@@ -30,7 +32,8 @@ export type SubscriptionLocalInjectionResult =
 export type SubscriptionLocalInjectionRegistry<TUpdate> = {
   register(
     subscriptionId: string,
-    listener: SubscriptionLocalInjectionListener<TUpdate>
+    listener: SubscriptionLocalInjectionListener<TUpdate>,
+    owner?: object
   ): void;
   unregister(subscriptionId: string, listenerId: string): void;
   hasTarget(subscriptionId: string): boolean;
@@ -49,9 +52,24 @@ export function createSubscriptionLocalInjectionRegistry<TUpdate>(): Subscriptio
     string,
     Map<string, SubscriptionLocalInjectionListener<TUpdate>>
   >();
+  // Page registration callbacks belong to the live Subscription. The enumerable
+  // target index must not root their closures or the Subscription/client graph.
+  const ownedListeners = new WeakMap<object, Map<string, SubscriptionLocalInjectionListener<TUpdate>>>();
+  const owners = createWeakObjectRegistry<object>();
+  const listenersFor = (subscriptionId: string) => {
+    const owner = owners.get(subscriptionId);
+    return (owner ? ownedListeners.get(owner) : undefined) ?? listenersBySubscription.get(subscriptionId);
+  };
 
   return {
-    register(subscriptionId, listener) {
+    register(subscriptionId, listener, owner) {
+      if (owner) {
+        const listeners = ownedListeners.get(owner) ?? new Map<string, SubscriptionLocalInjectionListener<TUpdate>>();
+        listeners.set(listener.listenerId, listener);
+        ownedListeners.set(owner, listeners);
+        owners.register(subscriptionId, owner);
+        return;
+      }
       const listeners =
         listenersBySubscription.get(subscriptionId) ??
         new Map<string, SubscriptionLocalInjectionListener<TUpdate>>();
@@ -60,7 +78,7 @@ export function createSubscriptionLocalInjectionRegistry<TUpdate>(): Subscriptio
     },
 
     unregister(subscriptionId, listenerId) {
-      const listeners = listenersBySubscription.get(subscriptionId);
+      const listeners = listenersFor(subscriptionId);
       listeners?.delete(listenerId);
       if (listeners?.size === 0) {
         listenersBySubscription.delete(subscriptionId);
@@ -68,12 +86,12 @@ export function createSubscriptionLocalInjectionRegistry<TUpdate>(): Subscriptio
     },
 
     hasTarget(subscriptionId) {
-      return Boolean(listenersBySubscription.get(subscriptionId)?.size);
+      return Boolean(listenersFor(subscriptionId)?.size);
     },
 
     deliver(subscriptionId, createUpdate) {
       const listeners = [
-        ...(listenersBySubscription.get(subscriptionId)?.values() ?? [])
+        ...(listenersFor(subscriptionId)?.values() ?? [])
       ];
       if (listeners.length === 0) {
         return {

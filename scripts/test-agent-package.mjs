@@ -68,7 +68,10 @@ try {
   const next = () => queue.length ? Promise.resolve(queue.shift()) : new Promise(resolve => readers.push(resolve));
   await once(panel, "open");
   panel.send(JSON.stringify({ type: "connect", role: "panel", auth: "off" }));
-  assert.deepEqual(await next(), { type: "connected", auth: "off" });
+  const connected = await next();
+  assert.equal(connected.type, "connected");
+  assert.equal(connected.auth, "off");
+  assert.deepEqual(connected.identity, { identityVersion: 1, extensionId: "a".repeat(32), companionVersion: metadata.version, protocolVersion: 1, readContractVersion: 2 });
   panel.send(JSON.stringify({ role: "panel", protocolVersion: 1, panelSessionId: "npm-package-panel", permission: "read" }));
   assert.deepEqual(await next(), { type: "ready" });
   for (const client of clients) {

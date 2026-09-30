@@ -38,6 +38,29 @@ async function accessible(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
+for (const [name, width, height] of [["compact", 563, 700], ["normal", 900, 700], ["shallow", 900, 320]] as const) {
+  test(`Companion mismatch recovery stays readable: ${name}`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height });
+    await page.goto("/?scenario=live-selected&agent=mismatch");
+    const instructions = await openInstructions(page);
+    const status = instructions.getByRole("status");
+    await expect(status).toContainText("setup --extension-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await expect(page.getByRole("button", { name: "Agent access Waiting", exact: true })).toBeVisible();
+    expect((await instructions.innerText()).trim().split(/\s+/).length).toBeLessThanOrEqual(70);
+    await status.scrollIntoViewIfNeeded(); await expect(status).toBeInViewport();
+    await accessible(page);
+    await page.screenshot({ path: info.outputPath("companion-mismatch.png") });
+    await page.emulateMedia({ forcedColors: "active" });
+    expect(await page.evaluate(() => matchMedia("(forced-colors: active)").matches)).toBe(true);
+    expect(await page.locator(".workbench-react").evaluate(element => getComputedStyle(element).forcedColorAdjust)).toBe("none");
+    await page.getByRole("button", { name: "Turn agent access off", exact: true }).focus();
+    await expect(page.getByRole("button", { name: "Turn agent access off", exact: true })).toBeFocused();
+    await page.screenshot({ path: info.outputPath("companion-mismatch-forced.png") });
+    await page.keyboard.press("Space");
+    await expect(instructions.getByRole("status")).toContainText("Agent access is off");
+  });
+}
+
 for (const width of [700, 760, 761, 799, 800, 801, 846]) {
  for (const height of [700, 320]) {
  for (const state of ["ready", "error"] as const) {

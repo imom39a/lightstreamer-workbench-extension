@@ -5,6 +5,7 @@ import {
   createClientMessageDeliveryRegistry,
   readServerInjectionListenerContext
 } from "../src/injected/client-message-delivery";
+import { installControlledWeakLifetimes } from "./helpers/controlled-weak-lifetimes";
 
 const correlation = {
   panelSessionId: "panel-00000000-0000-4000-8000-000000000017",
@@ -27,6 +28,68 @@ function draft(): ServerInjectionDraftPayload {
 }
 
 describe("client message delivery registry", () => {
+  it("rechecks a correlation claimed by a reentrant page getter", () => {
+    const sendMessage = vi.fn();
+    let reenter = true;
+    const registry = createClientMessageDeliveryRegistry({
+      pageEpoch: "page-1",
+      getSessionId: () => {
+        if (reenter) { reenter = false; registry.submit(correlation, draft()); }
+        return "session-1";
+      },
+      getStatus: () => "STALLED"
+    });
+    const client = { sendMessage };
+    registry.register("client-1", client);
+    expect(registry.submit(correlation, draft()).status).toBe("duplicate");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when an application-discarded client is collected", () => {
+    const lifetimes = installControlledWeakLifetimes();
+    try {
+      const sendMessage = vi.fn();
+      const client = { sendMessage };
+      const registry = createClientMessageDeliveryRegistry({ pageEpoch: "page-1", getSessionId: () => "session-1", getStatus: () => "STALLED" });
+      registry.register("client-1", client);
+      lifetimes.collect(client);
+      expect(registry.submit(correlation, draft())).toMatchObject({ ok: false, status: "stale-target" });
+      expect(sendMessage).not.toHaveBeenCalled();
+    } finally { lifetimes.restore(); }
+  });
+
+  it("fails closed at its receipt budget and never forgets an attempted correlation", () => {
+    const sendMessage = vi.fn();
+    const registry = createClientMessageDeliveryRegistry({
+      pageEpoch: "page-1",
+      getSessionId: () => "session-1",
+      getStatus: () => "CONNECTED:WS-STREAMING"
+    });
+    const client = { sendMessage };
+    registry.register("client-1", client);
+    for (let ordinal = 0; ordinal < 2_048; ordinal += 1) {
+      expect(registry.submit({ ...correlation, requestId: `bounded-${ordinal}` }, draft()).status)
+        .toBe("started");
+    }
+    expect(registry.submit({ ...correlation, requestId: "over-budget" }, draft()))
+      .toMatchObject({ ok: false, status: "unsupported", error: expect.stringMatching(/capacity/i) });
+    expect(registry.submit({ ...correlation, requestId: "bounded-0" }, draft()).status)
+      .toBe("duplicate");
+    expect(sendMessage).toHaveBeenCalledTimes(2_048);
+  });
+
+  it("does not conflate correlations containing delimiters", () => {
+    const sendMessage = vi.fn();
+    const registry = createClientMessageDeliveryRegistry({
+      pageEpoch: "page-1", getSessionId: () => "session-1", getStatus: () => "STALLED"
+    });
+    const client = { sendMessage };
+    registry.register("client-1", client);
+    registry.submit({ panelSessionId: "panel:a", requestId: "b" }, draft());
+    registry.submit({ panelSessionId: "panel", requestId: "a:b" }, draft());
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
   it("sends once through the exact live client and supplies a complete outcome listener", () => {
     const sendMessage = vi.fn();
     const client = { sendMessage };

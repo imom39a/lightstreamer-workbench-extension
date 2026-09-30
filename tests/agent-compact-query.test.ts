@@ -37,6 +37,42 @@ describe("compact public agent reads", () => {
     expect(result.evidence[0].payload).toBeUndefined();
     expect(result.evidence[0].facets).toBeUndefined();
   });
+  it("preserves exact application JSON strings and reports embedded redaction honestly", async () => {
+    const plain = ' { "large" : 9007199254740993, "precise":1.2300, "nested": "[1, 2]" } ';
+    const secret = ' { "large" : 9007199254740993, "password":"hidden", "note":"safe" } ';
+    const nested = JSON.stringify({ inner: secret });
+    const event = item(1, "row-a");
+    event.update!.fields = { plain, details: secret, nested };
+    const service = await fixture([event]);
+    for (const tool of ["query_evidence", "search_evidence"]) {
+      const args = { panelSessionId: "panel", within: "page", fields: ["plain", "details", "nested"], ...(tool === "search_evidence" ? { text: "safe" } : {}) };
+      const result = await service.call(tool, args) as any;
+      expect(result.evidence[0].fields.plain).toEqual({ state: "concrete", value: plain });
+      expect(result.evidence[0].fields.details).toMatchObject({ state: "redacted" });
+      expect(result.evidence[0].fields.details.value).toBeUndefined();
+      expect(result.evidence[0].fields.details.redactedValue).toContain('9007199254740993');
+      expect(result.evidence[0].fields.nested).toMatchObject({ state: "redacted" });
+      expect(JSON.stringify(result)).not.toContain("hidden");
+    }
+    const payload = await service.call("query_evidence", { panelSessionId: "panel", within: "page", includePayload: true, maxBytes: 65536 }) as any;
+    expect(payload.evidence[0].payload.update.fields.plain).toBe(plain);
+    expect(payload.evidence[0].payload.update.fields.details).toContain('9007199254740993');
+    expect(payload.evidence[0].payload.update.fieldValueStates.details).toBe('redacted');
+  });
+  it("bounds deep embedded JSON and redacts escaped credential keys", async () => {
+    const event = item(1, "row-a");
+    event.update!.fields = {
+      details: String.raw`[9007199254740993, {"api\u004bey":"credential-marker","note":"safe"}]`,
+      nested: JSON.stringify({ safe: 900, password: "credential-marker" }),
+      deep: "[".repeat(20000) + '"credential-marker"' + "]".repeat(20000)
+    };
+    const service = await fixture([event]);
+    const result = await service.call("query_evidence", { panelSessionId: "panel", within: "page", fields: ["details", "nested", "deep"], maxBytes: 65536 }) as any;
+    expect(result.evidence[0].fields.details).toMatchObject({ state: "redacted", redactedValue: expect.stringContaining("9007199254740993") });
+    expect(result.evidence[0].fields.nested).toMatchObject({ state: "redacted", redactedValue: expect.stringContaining("900") });
+    expect(result.evidence[0].fields.deep).toMatchObject({ state: "redacted", redactedValue: expect.stringContaining("OMITTED:deeply-nested-data") });
+    expect(JSON.stringify(result)).not.toContain("credential-marker");
+  });
   it("pages every matching record within the whole MCP result budget and counts distinct keys", async () => {
     const service = await fixture(Array.from({ length: 40 }, (_, index) => item(index + 1, `row-${index % 3}`)));
     const call = (name: string, args: Record<string, unknown>) => service.call(name, { panelSessionId: "panel", ...args }) as Promise<any>;

@@ -36,6 +36,7 @@ import {
   topologySyncUtf8Bytes
 } from "../bridge/messages";
 import { createStableIdAllocator, type StableIdAllocator } from "../core/ids";
+import { createWeakObjectRegistry } from "./weak-object-registry";
 import {
   type LightstreamerClientLike,
   type LightstreamerHost,
@@ -64,6 +65,8 @@ type InstrumentationState = {
   topologyObservedDispatches: Set<string>;
   topologyEstablishmentEpochs: Map<string, number>;
   topologyCommandEpochs: Map<string, number>;
+  clientOwners: ReturnType<typeof createWeakObjectRegistry<object>>;
+  subscriptionOwners: ReturnType<typeof createWeakObjectRegistry<object>>;
   topologyCommandGenerations: Map<string, string>;
   topologyCoverage: "complete" | "partial";
   clientTopologyCoverages: Map<string, TopologyCoverage>;
@@ -80,14 +83,15 @@ type InstrumentationState = {
   clientKeepaliveWindows: WeakMap<object, KeepaliveWindow>;
   subscriptionListenerProxies: WeakMap<object, WeakMap<object, LightstreamerListenerLike>>;
   listenerProxyOriginals: WeakMap<object, LightstreamerListenerLike>;
-  subscriptionClients: WeakMap<object, object>;
+  subscriptionClients: WeakMap<object, WeakRef<object>>;
+  subscriptionClientIdentities: WeakMap<object, CapturePayload>;
   clientMetadata: WeakMap<object, CapturePayload>;
   activeSubscriptions: Map<string, CapturePayload>;
   commandReplayRows: Map<string, Map<string, CapturePayload>>;
   retiredFallbackSubscriptionIds: Set<string>;
   localInjectionTargets: SubscriptionLocalInjectionRegistry<SyntheticItemUpdate>;
   clientMessageDelivery: ClientMessageDeliveryRegistry;
-  listenerRegistrations: Map<string, ListenerRegistrationState>;
+  listenerRegistrations: WeakMap<object, WeakMap<object, ListenerRegistrationState>>;
   subscriptionListenerIds: Map<string, Set<string>>;
   wireTargets: Map<string, WireReinjectionTarget>;
   syntheticWireEvents: WeakSet<object>;
@@ -101,6 +105,7 @@ type ListenerRegistrationState = {
   addCount: number;
   active: boolean;
   callbacks: string[];
+  deliveryCount: number;
 };
 
 type KeepaliveWindow = {
@@ -212,6 +217,22 @@ export function installLightstreamerInstrumentation(
     topologyObservedDispatches: new Set<string>(),
     topologyEstablishmentEpochs: new Map<string, number>(),
     topologyCommandEpochs: new Map<string, number>(),
+    clientOwners: createWeakObjectRegistry<object>((clientId) => {
+      state.clientTopologyCoverages.delete(clientId);
+      for (const [key, record] of state.topologyRecords) {
+        if ((record.kind === "client" && record.id === clientId) || (record.clientId === clientId && !record.subscriptionId)) {
+          state.topologyRecords.delete(key);
+        }
+      }
+    }),
+    subscriptionOwners: createWeakObjectRegistry<object>((subscriptionId) => {
+      state.activeSubscriptions.delete(subscriptionId);
+      state.commandReplayRows.delete(subscriptionId);
+      state.subscriptionListenerIds.delete(subscriptionId);
+      state.topologyEstablishmentEpochs.delete(subscriptionId);
+      state.topologyCommandEpochs.delete(subscriptionId);
+      deleteSubscriptionTopology(state, subscriptionId);
+    }),
     topologyCommandGenerations: new Map<string, string>(),
     topologyCoverage: "complete",
     clientTopologyCoverages: new Map<string, TopologyCoverage>(),
@@ -228,7 +249,8 @@ export function installLightstreamerInstrumentation(
     clientKeepaliveWindows: new WeakMap<object, KeepaliveWindow>(),
     subscriptionListenerProxies: new WeakMap<object, WeakMap<object, LightstreamerListenerLike>>(),
     listenerProxyOriginals: new WeakMap<object, LightstreamerListenerLike>(),
-    subscriptionClients: new WeakMap<object, object>(),
+    subscriptionClients: new WeakMap<object, WeakRef<object>>(),
+    subscriptionClientIdentities: new WeakMap<object, CapturePayload>(),
     clientMetadata: new WeakMap<object, CapturePayload>(),
     activeSubscriptions,
     commandReplayRows,
@@ -246,7 +268,7 @@ export function installLightstreamerInstrumentation(
         return typeof value === "string" && value ? value : null;
       }
     }),
-    listenerRegistrations: new Map<string, ListenerRegistrationState>(),
+    listenerRegistrations: new WeakMap<object, WeakMap<object, ListenerRegistrationState>>(),
     subscriptionListenerIds: new Map<string, Set<string>>(),
     wireTargets: new Map<string, WireReinjectionTarget>(),
     syntheticWireEvents: new WeakSet<object>(),
@@ -346,6 +368,7 @@ export function installLightstreamerInstrumentation(
 
         activatePrimaryInstrumentation(host);
         state.clientMessageDelivery.register(clientId, instance);
+        state.clientOwners.register(clientId, instance);
         wrapClient(instance, state);
         state.clientMetadata.set(instance, clientMetadata);
         state.emit("client-created", {
@@ -572,7 +595,7 @@ function specializedTopologyObservationKind(
   const update = captureObject(payload.update);
   const fields = captureObject(update?.fields);
   const command = normalizedString(update?.command ?? fields?.command);
-  const key = nonEmptyString(update?.key ?? fields?.key);
+  const key = opaqueCommandKey(update?.key ?? fields?.key);
   if (
     kind === "item-update" &&
     normalizedString(subscription?.mode) === "COMMAND" &&
@@ -612,7 +635,7 @@ function specializedTopologyValues(
   const update = captureObject(payload.update);
   const fields = captureObject(update?.fields);
   const command = normalizedString(update?.command ?? fields?.command);
-  const key = nonEmptyString(update?.key ?? fields?.key);
+  const key = opaqueCommandKey(update?.key ?? fields?.key);
   const itemId = itemTopologyIdentity(subscriptionId, captureObject(payload.item));
   if (!command || !key || !itemId) {
     return undefined;
@@ -625,13 +648,13 @@ function specializedTopologyValues(
   const dispatchId = topologyString(dispatchAndDelivery.dispatch?.id);
   let generationId = activeId;
   let generationEpoch = activeId
-    ? state.topologyCommandEpochs.get(generationKey) ?? topologyEpochFromId(activeId)
+    ? topologyEpochFromId(activeId)
     : undefined;
   if (
     command !== "DELETE" &&
     (!generationId || (command === "ADD" && activeRecord?.values?.dispatchId !== dispatchId))
   ) {
-    generationEpoch = (state.topologyCommandEpochs.get(generationKey) ?? 0) + 1;
+    generationEpoch = (state.topologyCommandEpochs.get(subscriptionId) ?? 0) + 1;
     generationId = `command-generation:${subscriptionId}:${itemId}:${key}:${generationEpoch}`;
   }
   return {
@@ -722,7 +745,7 @@ function createSubscriptionActivityFacts(
     ["subscription-frequency", "item-update", "end-of-snapshot", "lost-updates", "clear-snapshot"].includes(kind);
   const secondLevelCallback = nonEmptyString(raw?.callback);
   const secondLevelArgs = Array.isArray(raw?.args) ? raw.args : [];
-  const secondLevelKey = nonEmptyString(
+  const secondLevelKey = opaqueCommandKey(
     secondLevelCallback === "onCommandSecondLevelItemLostUpdates"
       ? secondLevelArgs[1]
       : secondLevelCallback === "onCommandSecondLevelSubscriptionError"
@@ -1078,6 +1101,8 @@ function updateListenerAttachmentRecord(
   }
   if (kind === "listener-removed") {
     state.topologyRecords.delete(topologyRecordKey("listener-attachment", attachmentId));
+    const listenerId = topologyString(topology.listener?.id);
+    if (listenerId) state.topologyListenerCounters.delete(`${subscriptionId}\u0000${listenerId}`);
     synchronizeAttachmentCounts(state, subscriptionId, topology.captureSequence);
     return;
   }
@@ -1087,7 +1112,7 @@ function updateListenerAttachmentRecord(
   const listenerId = topologyString(topology.listener?.id);
   const listenerCounterKey = listenerId ? `${subscriptionId}\u0000${listenerId}` : null;
   const deliveryCount = listenerCounterKey
-    ? state.topologyListenerCounters.get(listenerCounterKey) ?? 0
+    ? state.topologyListenerCounters.get(listenerCounterKey) ?? (typeof listenerPayload?.deliveryCount === "number" ? listenerPayload.deliveryCount : 0)
     : 0;
   if (listenerCounterKey) {
     state.topologyListenerCounters.set(listenerCounterKey, deliveryCount);
@@ -1233,13 +1258,20 @@ function updateItemAndCounterRecords(
 
   updateInferredSecondLevelRecord(kind, payload, topology, subscriptionId, state);
 
+  if (kind === "clear-snapshot" && itemIdentity) {
+    for (const [generationKey, generationId] of state.topologyCommandGenerations) {
+      if (generationKey.startsWith(`${subscriptionId}\u0000${itemIdentity}\u0000`)) {
+        retireCommandGeneration(state, generationKey, generationId);
+      }
+    }
+  }
   if (kind !== "item-update" || topology.kind === "second-level-observed" || !itemIdentity) {
     return;
   }
   const update = updatePayload;
   const fields = captureObject(update?.fields);
   const command = normalizedString(update?.command ?? fields?.command);
-  const key = nonEmptyString(update?.key ?? fields?.key);
+  const key = opaqueCommandKey(update?.key ?? fields?.key);
   if (!command || !key || !["ADD", "UPDATE", "DELETE"].includes(command)) {
     return;
   }
@@ -1263,8 +1295,8 @@ function updateItemAndCounterRecords(
     if (generationId) {
       retireCommandGeneration(state, generationKey, generationId);
     }
-    const epoch = (state.topologyCommandEpochs.get(generationKey) ?? 0) + 1;
-    state.topologyCommandEpochs.set(generationKey, epoch);
+    const epoch = (state.topologyCommandEpochs.get(subscriptionId) ?? 0) + 1;
+    state.topologyCommandEpochs.set(subscriptionId, epoch);
     generationId = `command-generation:${subscriptionId}:${itemIdentity}:${key}:${epoch}`;
     state.topologyCommandGenerations.set(generationKey, generationId);
   }
@@ -1322,7 +1354,7 @@ function updateInferredSecondLevelRecord(
     return;
   }
   const args = Array.isArray(raw?.args) ? raw.args : [];
-  const key = nonEmptyString(
+  const key = opaqueCommandKey(
     callback === "onCommandSecondLevelItemLostUpdates" ? args[1] : args[2]
   );
   if (!key) {
@@ -2665,7 +2697,8 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
       primarySubscription
     );
     wrapSubscription(subscription as LightstreamerSubscriptionLike, state);
-    state.subscriptionClients.set(subscription, target);
+    state.subscriptionClients.set(subscription, new WeakRef(target));
+    state.subscriptionClientIdentities.set(subscription, lastKnownClientIdentity(clientMetadata));
     state.emit("subscription-started", compactJsonObject({
       client: clientMetadata,
       subscription: primarySubscription,
@@ -2872,6 +2905,7 @@ function wrapSubscription(
     return;
   }
   state.wrappedSubscriptions.add(subscription);
+  state.subscriptionOwners.register(state.subscriptionIds.getId(subscription), subscription);
 
   wrapSubscriptionListenerMethods(subscription, state);
 }
@@ -3304,6 +3338,10 @@ function emitSubscriptionListenerCallback(
   if (!kind) {
     return;
   }
+  if (callback === "onItemUpdate") {
+    const registration = state.listenerRegistrations.get(subscription)?.get(listener);
+    if (registration) registration.deliveryCount += 1;
+  }
   const callbackPayload =
     callback === "onItemUpdate"
       ? readItemUpdatePayload(args[0])
@@ -3375,7 +3413,7 @@ function registerReinjectionTarget(
     listenerId,
     fieldNames: readSubscriptionFieldNames(subscription),
     deliver: callback
-  });
+  }, subscription);
 }
 
 function registerSubscriptionListener(
@@ -3385,16 +3423,18 @@ function registerSubscriptionListener(
 ): boolean {
   const subscriptionId = state.subscriptionIds.getId(subscription);
   const listenerId = state.listenerIds.getId(listener);
-  const key = targetKey(subscriptionId, listenerId);
-  const existing = state.listenerRegistrations.get(key);
+  const registrations = state.listenerRegistrations.get(subscription) ?? new WeakMap<object, ListenerRegistrationState>();
+  state.listenerRegistrations.set(subscription, registrations);
+  const existing = registrations.get(listener);
   if (existing?.active) {
     existing.callbacks = subscriptionListenerCallbacks(listener);
     return false;
   }
-  state.listenerRegistrations.set(key, {
+  registrations.set(listener, {
     addCount: (existing?.addCount ?? 0) + 1,
     active: true,
-    callbacks: subscriptionListenerCallbacks(listener)
+    callbacks: subscriptionListenerCallbacks(listener),
+    deliveryCount: existing?.deliveryCount ?? 0
   });
   const listenerIds = state.subscriptionListenerIds.get(subscriptionId) ?? new Set<string>();
   listenerIds.add(listenerId);
@@ -3409,8 +3449,7 @@ function unregisterSubscriptionListener(
 ): boolean {
   const subscriptionId = state.subscriptionIds.getId(subscription);
   const listenerId = state.listenerIds.getId(listener);
-  const key = targetKey(subscriptionId, listenerId);
-  const registration = state.listenerRegistrations.get(key);
+  const registration = state.listenerRegistrations.get(subscription)?.get(listener);
   if (!registration?.active) {
     return false;
   }
@@ -3481,11 +3520,12 @@ function subscriptionListenerPayload(
 ): CapturePayload {
   const subscriptionId = state.subscriptionIds.getId(subscription);
   const listenerId = state.listenerIds.getId(listener);
-  const registration = state.listenerRegistrations.get(targetKey(subscriptionId, listenerId));
+  const registration = state.listenerRegistrations.get(subscription)?.get(listener);
   return compactJsonObject({
     id: listenerId,
     callbacks: registration?.callbacks ?? subscriptionListenerCallbacks(listener),
     registrationCount: registration?.addCount ?? 1,
+    deliveryCount: registration?.deliveryCount ?? 0,
     metricOwner: metricOwnerId(subscriptionId, state) === listenerId
   });
 }
@@ -3547,6 +3587,17 @@ function trackCommandReplayRows(
     replayRows.delete(subscriptionId);
     return;
   }
+  if (kind === "clear-snapshot") {
+    const itemId = itemTopologyIdentity(subscriptionId, captureObject(payload.item));
+    const rows = replayRows.get(subscriptionId);
+    if (itemId && rows) {
+      for (const [rowId, row] of rows) {
+        if (itemTopologyIdentity(subscriptionId, captureObject(row.item)) === itemId) rows.delete(rowId);
+      }
+      if (rows.size === 0) replayRows.delete(subscriptionId);
+    }
+    return;
+  }
   if (kind !== "item-update") {
     return;
   }
@@ -3559,7 +3610,7 @@ function trackCommandReplayRows(
   const update = captureObject(payload.update);
   const fields = captureObject(update?.fields);
   const command = normalizedString(update?.command ?? fields?.command);
-  const key = nonEmptyString(update?.key ?? fields?.key);
+  const key = opaqueCommandKey(update?.key ?? fields?.key);
   const item = captureObject(payload.item);
   if (!command || !key || !item || !["ADD", "UPDATE", "DELETE"].includes(command)) {
     return;
@@ -3623,7 +3674,7 @@ function commandReplayPayload(
   const rowSubscription = captureObject(row.subscription);
   const update = captureObject(row.update);
   const fields = captureObject(update?.fields);
-  const key = nonEmptyString(update?.key ?? fields?.key);
+  const key = opaqueCommandKey(update?.key ?? fields?.key);
   const replayFields = compactJsonObject({
     ...fields,
     command: "ADD",
@@ -3718,6 +3769,8 @@ function installCaptureSyncHandler(host: LightstreamerHost, state: Instrumentati
       return;
     }
 
+    state.clientOwners.prune();
+    state.subscriptionOwners.prune();
     emitAbsoluteTopologyCheckpoint(host, state, event.data.panelSessionId);
 
     for (const [subscriptionId, rows] of state.commandReplayRows.entries()) {
@@ -4312,10 +4365,6 @@ function resolveSyntheticFieldName(
   return fieldNames[fieldNameOrPos - 1] ?? null;
 }
 
-function targetKey(subscriptionId: string, listenerId: string): string {
-  return `${subscriptionId}:${listenerId}`;
-}
-
 function wrapMethod<T extends MethodOwner>(
   target: T,
   name: string,
@@ -4413,8 +4462,26 @@ function readSubscriptionCallbackPayload(
 }
 
 function readSubscriptionClient(subscription: object, state: InstrumentationState): CapturePayload | undefined {
-  const client = state.subscriptionClients.get(subscription);
-  return client ? clientPayload(client, state) : undefined;
+  const client = state.subscriptionClients.get(subscription)?.deref();
+  if (client) {
+    const metadata = clientPayload(client, state);
+    state.subscriptionClientIdentities.set(subscription, lastKnownClientIdentity(metadata));
+    return metadata;
+  }
+  const identity = state.subscriptionClientIdentities.get(subscription);
+  return identity ? { ...identity, ownerAvailability: "collected" } : undefined;
+}
+
+/** A retained Subscription can remember identity without claiming a live Session. */
+function lastKnownClientIdentity(metadata: CapturePayload): CapturePayload {
+  const sanitized = sanitizeCapturePayload({ client: compactJsonObject({
+    id: metadata.id,
+    serverAddress: metadata.serverAddress,
+    adapterSet: metadata.adapterSet,
+    libraryVersion: metadata.libraryVersion,
+    instrumentationSource: metadata.instrumentationSource
+  }) });
+  return captureObject(sanitized.client) ?? {};
 }
 
 function clientPayload(client: object, state: InstrumentationState): CapturePayload {
@@ -4556,6 +4623,11 @@ function asNullableString(value: unknown): string | null {
     return null;
   }
   return String(value);
+}
+
+/** COMMAND keys are opaque application values, including whitespace-only keys. */
+function opaqueCommandKey(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function nonEmptyString(value: unknown): string | null {

@@ -20,6 +20,7 @@ import { createTopologyStructuredSnapshot } from "../src/extension/panel/topolog
 import { createTopologyCheckpointEvidenceCandidate } from "../src/extension/panel/topology-checkpoint-evidence-codec";
 import { renderTopologyHtmlReport } from "../src/extension/panel/topology-html-report";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
+import { installControlledWeakLifetimes } from "./helpers/controlled-weak-lifetimes";
 
 const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000015";
 
@@ -170,6 +171,82 @@ function syncRecords(
 }
 
 describe("semantic topology instrumentation", () => {
+  it("uses current weak client ownership for live callbacks and only last-known identity after collection", () => {
+    const lifetimes = installControlledWeakLifetimes();
+    try {
+      const { host, messages } = createSemanticHarness();
+      const client = new host.LightstreamerClient();
+      const subscription = new host.Subscription("COMMAND", ["orders"], ["command", "key"]);
+      client.subscribe(subscription);
+      subscription.addListener({ onClearSnapshot() {} });
+      client.sessionId = "changed-session";
+      subscription.listeners[0]?.onClearSnapshot?.("orders", 1);
+      expect(messages.at(-1)?.payload.client).toMatchObject({ id: "client-1", sessionId: "changed-session" });
+      lifetimes.collect(client);
+      subscription.listeners[0]?.onClearSnapshot?.("orders", 1);
+      expect(messages.at(-1)?.payload.client).toMatchObject({ id: "client-1", ownerAvailability: "collected" });
+      expect(messages.at(-1)?.payload.client).not.toHaveProperty("status");
+      expect(messages.at(-1)?.payload.client).not.toHaveProperty("sessionId");
+      const replacement = new host.LightstreamerClient();
+      replacement.sessionId = "replacement-session";
+      replacement.subscribe(subscription);
+      subscription.listeners[0]?.onClearSnapshot?.("orders", 1);
+      expect(messages.at(-1)?.payload.client).toMatchObject({ id: "client-2", sessionId: "replacement-session" });
+    } finally { lifetimes.restore(); }
+  });
+
+  it("prunes discarded client and Subscription metadata before a late checkpoint", () => {
+    const lifetimes = installControlledWeakLifetimes();
+    try {
+      const { host, listeners, frames } = createSemanticHarness();
+      const discardedClient = new host.LightstreamerClient();
+      const discardedSubscription = new host.Subscription("COMMAND", ["discarded"], ["command", "key"]);
+      discardedClient.subscribe(discardedSubscription);
+      discardedSubscription.addListener({ onItemUpdate() {} });
+      const liveClient = new host.LightstreamerClient();
+      const liveSubscription = new host.Subscription("COMMAND", ["live"], ["command", "key"]);
+      liveClient.subscribe(liveSubscription);
+      liveSubscription.addListener({ onItemUpdate() {} });
+      lifetimes.collect(discardedClient, false);
+      lifetimes.collect(discardedSubscription, false);
+      const records = syncRecords(host, listeners, frames);
+      expect(records.some((record) => record.id === "client-1" || record.subscriptionId === "subscription-1")).toBe(false);
+      expect(records.some((record) => record.id === "client-2")).toBe(true);
+      expect(records.some((record) => record.id === "subscription-2")).toBe(true);
+      liveClient.status = "DISCONNECTED";
+      expect(syncRecords(host, listeners, frames).some((record) => record.id === "client-2")).toBe(true);
+    } finally { lifetimes.restore(); }
+  });
+
+  it("keeps exact COMMAND generations stable and clears only one item's generations", () => {
+    const { host, messages, listeners, frames } = createSemanticHarness();
+    const client = new host.LightstreamerClient();
+    const subscription = new host.Subscription("COMMAND", ["orders", "other"], ["command", "key"]);
+    client.subscribe(subscription);
+    subscription.addListener({ onItemUpdate() {}, onClearSnapshot() {}, onCommandSecondLevelItemLostUpdates() {} });
+    const update = (command: string, key: string, pos = 1) => ({
+      forEachField(iterator: (name: string, position: number, value: string) => void) { iterator("command", 1, command); iterator("key", 2, key); },
+      forEachChangedField(iterator: (name: string, position: number, value: string) => void) { this.forEachField(iterator); },
+      getItemName: () => pos === 1 ? "orders" : "other", getItemPos: () => pos, isSnapshot: () => false
+    });
+    for (const key of ["k", " k ", " "]) subscription.listeners[0]?.onItemUpdate?.(update("ADD", key));
+    subscription.listeners[0]?.onItemUpdate?.(update("ADD", "kept", 2));
+    const recordsBefore = syncRecords(host, listeners, frames);
+    const paddedGeneration = recordsBefore.find((record) => record.kind === "command-generation" && record.values?.key === " k ");
+    subscription.listeners[0]?.onItemUpdate?.(update("UPDATE", " k "));
+    expect(messages.at(-1)?.topology?.values).toMatchObject({ generationId: { value: paddedGeneration?.id }, generationEpoch: { value: 2 } });
+    subscription.listeners[0]?.onCommandSecondLevelItemLostUpdates?.(1, " k ");
+    expect(syncRecords(host, listeners, frames).find((record) => record.kind === "inferred-child")?.parentId).toBe(paddedGeneration?.id);
+    subscription.listeners[0]?.onItemUpdate?.(update("DELETE", "k"));
+    expect(syncRecords(host, listeners, frames).filter((record) => record.kind === "command-generation").map((record) => record.values?.key)).toEqual([" ", " k ", "kept"]);
+    subscription.listeners[0]?.onClearSnapshot?.("orders", 1);
+    const recordsAfter = syncRecords(host, listeners, frames);
+    expect(recordsAfter.filter((record) => record.kind === "command-generation").map((record) => record.values?.key)).toEqual(["kept"]);
+    expect(recordsAfter.some((record) => record.kind === "inferred-child")).toBe(false);
+    subscription.listeners[0]?.onItemUpdate?.(update("ADD", " k "));
+    expect(syncRecords(host, listeners, frames).find((record) => record.kind === "command-generation" && record.values?.key === " k ")?.id).not.toBe(paddedGeneration?.id);
+  });
+
   it("uses cutoff zero for an empty late-open checkpoint without suppressing sequence one", () => {
     const { host, messages, listeners, frames } = createSemanticHarness();
     const request = {

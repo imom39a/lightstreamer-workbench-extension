@@ -3,8 +3,9 @@ import type { AgentConnection, AgentConnectionState } from "../../src/extension/
 const waitingDetail = "Waiting for the companion. Workbench retries automatically.";
 
 /** UI-only fixture; production transports are exercised by the extension proof. */
-export function agentConnectionFixture(fail = false): AgentConnection {
-  let state: AgentConnectionState = { enabled: true, permission: fail ? "off" : "local", requestedPermission: "local", port: 24817, auth: "off", status: fail ? "waiting" : "connected", detail: fail ? waitingDetail : "Connected · inspection and Local Injection allowed." };
+export function agentConnectionFixture(fail = false, mismatchDetail?: string): AgentConnection {
+  const failureDetail = mismatchDetail ?? waitingDetail;
+  let state: AgentConnectionState = { enabled: true, permission: fail ? "off" : "local", requestedPermission: "local", port: 24817, auth: "off", status: fail ? "waiting" : "connected", detail: fail ? failureDetail : "Connected · inspection and Local Injection allowed." };
   const listeners = new Set<() => void>();
   let pending: ReturnType<typeof setTimeout> | undefined;
   const publish = (next: AgentConnectionState) => { state = Object.freeze(next); listeners.forEach(listener => listener()); };
@@ -15,7 +16,7 @@ export function agentConnectionFixture(fail = false): AgentConnection {
     connect(permission = state.requestedPermission ?? "local", options = { auth: state.auth, port: state.port }) {
       clearTimeout(pending);
       publish({ ...state, enabled: true, permission: "off", requestedPermission: permission, pairing: undefined, auth: options.auth ?? "off", port: options.port ?? 24817 });
-      if (fail) publish({ ...state, status: "waiting", detail: waitingDetail });
+      if (fail) publish({ ...state, status: "waiting", detail: failureDetail });
       else {
         const auth = options.auth ?? "off";
         publish({ ...state, status: "connecting", detail: "Connecting to the local Workbench companion…" });

@@ -10,6 +10,7 @@ import { describeAgentStreams } from "./agent-stream-description";
 import { waitForAgentEvidence } from "./agent-evidence-wait";
 import { FACET_DESCRIPTORS } from "../../core/evidence-facets";
 import { agentToolResultBytes } from "../../agent/tool-result";
+import type { AgentCommandStateInput, AgentCommandStateResult } from "./agent-command-state";
 import type { HistoryStatus } from "../../core/event-history-authoritative";
 
 const SEARCH_CURSOR_LIFETIME_MS = 5 * 60 * 1000;
@@ -74,6 +75,10 @@ function compactOversizedAgentResult(name: string, args: AgentArguments, result:
     // solely because the optional preview is large.
     return { token: value.token, previewOmitted: omitted };
   }
+  if (name === "wait_for_operation") {
+    const receipt = compactOversizedAgentResult("get_operation", args, value.operation, budget);
+    return receipt ? { ...value, operation: receipt } : null;
+  }
   if (["execute_local_injection", "get_operation"].includes(name)) {
     const outcome = value.outcome && typeof value.outcome === "object" ? value.outcome as Record<string, unknown> : null;
     const summary = outcome && Object.fromEntries(["disposition", "status", "executionId", "requestId", "timestamp", "attemptedCount", "deliveredCount", "failedCount"].filter(key => outcome[key] !== undefined).map(key => [key, outcome[key]]));
@@ -125,6 +130,9 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
   const requests = new Map<string, { signature: string; kind: "local" | "scenario"; draftId?: string; value: unknown }>();
   const emergencyControlIds: Partial<Record<"pause" | "stop", string>> = {};
   const waits = new Set<AbortController>();
+  const operationListeners = new Set<() => void>();
+  const inFlight = new Set<AbortController>();
+  let scopeIndexCache: { pageEpoch: string | null; structureRevision: number; nodes: AgentScopeSearchSnapshot["nodes"]; index: ScopeSearchIndex } | null = null;
   let prepared: { token: string; fingerprint: string; kind: "local" | "scenario"; consumed: boolean } | null = null;
   let busy = false;
   let grantGeneration = 0;
@@ -147,22 +155,32 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
     if (![...requests.values()].some(operation => operation.kind === "local" && (operation.value as { state?: string }).state === "pending")) return;
     const draft = runtime.local().draft;
     for (const operation of requests.values()) {
-      if (operation.kind !== "local" || !draft || draft.id !== operation.draftId) continue;
+      if (operation.kind !== "local" || (operation.value as { state?: string }).state !== "pending" || !draft || draft.id !== operation.draftId) continue;
       if (draft.outcome) operation.value = { state: "complete", outcome: cloneCredentialSafe(draft.outcome) };
       else if (draft.phase !== "pending") operation.value = { state: "not-run", validation: safeDraft(runtime.local()) };
+      if ((operation.value as { state?: string }).state !== "pending") {
+        for (const listener of [...operationListeners]) listener();
+      }
     }
   }
   async function call(name: string, input: unknown, signal?: AbortSignal): Promise<unknown> {
+    assertNotCancelled(signal);
     validateAgentCall(name, input);
+    const guardedQuery = async (input: AgentQueryInput) => {
+      assertNotCancelled(signal);
+      const result = await runtime.query({ ...input, signal });
+      assertNotCancelled(signal);
+      return result;
+    };
     const args = input as AgentArguments;
-    if (permission() === "off" || args.panelSessionId !== panelSessionId) throw new Error("This Panel Session has not granted agent access.");
+    if (permission() === "off" || args.panelSessionId !== panelSessionId) throw new Error("ACCESS_REVOKED: This Panel Session has not granted agent access.");
     const mutation = AGENT_TOOLS.find(tool => tool.name === name)!.mutation;
-    if (mutation && permission() !== "local") throw new Error("This Panel Session grants inspection only.");
-    if (busy && mutation && !(name === "control_scenario" && ["pause", "stop"].includes(String(args.action)))) throw new Error("Another agent operation is preparing a document. Try this mutation again after it settles.");
+    if (mutation && permission() !== "local") throw new Error("ACCESS_REVOKED: This Panel Session grants inspection only.");
+    if (busy && mutation && !(name === "control_scenario" && ["pause", "stop"].includes(String(args.action)))) throw new Error("REQUEST_CAPACITY: Another agent operation is preparing a document. Try this mutation again after it settles.");
     refreshOperations();
-    if (requests.size >= 256 && ["execute_local_injection", "control_scenario"].includes(name) && !(typeof args.requestId === "string" && requests.has(args.requestId)) && !["pause", "stop"].includes(String(args.action))) throw new Error("This Panel Session reached its 256-operation agent limit. Existing outcomes remain readable; pause and stop remain available.");
+    if (requests.size >= 256 && ["execute_local_injection", "control_scenario"].includes(name) && !(typeof args.requestId === "string" && requests.has(args.requestId)) && !["pause", "stop"].includes(String(args.action))) throw new Error("OPERATION_BUDGET_EXCEEDED: This Panel Session reached its 256-operation agent limit. Existing outcomes remain readable; pause and stop remain available.");
     switch (name) {
-      case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, readContract: AGENT_READ_CONTRACT, responseContract: AGENT_RESPONSE_CONTRACT, panelSessionId, permission: permission(), ...projectAgentStatus(runtime.status()), capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local") && (tool.name !== "validate_agent_candidate" || typeof runtime.validateCandidate === "function") && (tool.name !== "prepare_scenario" || typeof runtime.prepareScenarioPlan === "function")).map(tool => tool.name) };
+      case "get_status": return { protocolVersion: AGENT_PROTOCOL_VERSION, readContract: AGENT_READ_CONTRACT, responseContract: AGENT_RESPONSE_CONTRACT, panelSessionId, permission: permission(), ...projectAgentStatus(runtime.status()), capabilities: AGENT_TOOLS.filter(tool => tool.name !== "list_panel_sessions" && (!tool.mutation || permission() === "local") && (tool.name !== "validate_agent_candidate" || typeof runtime.validateCandidate === "function") && (tool.name !== "prepare_scenario" || typeof runtime.prepareScenarioPlan === "function") && (tool.name !== "query_command_state" || typeof runtime.commandState === "function")).map(tool => tool.name) };
       case "list_scope": {
         const offset = Number(args.offset ?? 0);
         const requested = Number(args.limit ?? 50);
@@ -178,21 +196,25 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       }
       case "search_scope": {
         const saved = args.cursor ? scopeCursors.get(String(args.cursor)) : undefined;
-        if (args.cursor && !saved) throw new Error("Search cursor expired. Start a new search.");
+        if (args.cursor && !saved) throw new Error("CURSOR_EXPIRED: Search cursor expired. Start a new search.");
         const searchId = saved?.searchId ?? crypto.randomUUID();
         let search = saved ? scopeSearches.get(searchId) : undefined;
         if (saved) {
-          if (!search || search.expiresAt <= Date.now()) throw new Error("Search cursor expired. Start a new search.");
+          if (!search || search.expiresAt <= Date.now()) throw new Error("CURSOR_EXPIRED: Search cursor expired. Start a new search.");
           const status = runtime.status() as { pageEpoch: string | null; history: { interval: { id: string }; retainedRange: { first: { sequence: number } } | null } };
           const first = search.snapshot.history.retainedFirstSequence;
           if (status.pageEpoch !== search.snapshot.pageEpoch || status.history.interval.id !== search.snapshot.history.intervalId
             || (first !== null && (status.history.retainedRange === null || status.history.retainedRange.first.sequence > first))) {
-            throw new Error("Scope search snapshot expired after page change, Clear or retention. Start a new search.");
+            throw new Error("CURSOR_EXPIRED: Scope search snapshot expired after page change, Clear or retention. Start a new search.");
           }
         } else {
           const { nodes, ...snapshot } = runtime.scopeSearchSnapshot();
-          const index = createScopeSearchIndex(cloneCredentialSafe(nodes) as readonly ScopeSearchNode[]);
-          const entries = index.entries.filter(entry => (args.kind === undefined || entry.node.kind === args.kind) && (args.parentScopeId === undefined || entry.node.parentId === args.parentScopeId));
+          if (!scopeIndexCache || scopeIndexCache.pageEpoch !== snapshot.pageEpoch || scopeIndexCache.structureRevision !== snapshot.structureRevision || scopeIndexCache.nodes !== nodes) {
+            scopeIndexCache = { pageEpoch: snapshot.pageEpoch, structureRevision: snapshot.structureRevision, nodes,
+              index: createScopeSearchIndex(cloneCredentialSafe(nodes) as readonly ScopeSearchNode[]) };
+          }
+          const index = scopeIndexCache.index;
+          const entries = args.kind === undefined && args.parentScopeId === undefined ? index.entries : index.entries.filter(entry => (args.kind === undefined || entry.node.kind === args.kind) && (args.parentScopeId === undefined || entry.node.parentId === args.parentScopeId));
           search = { index: { entries, totalNodes: entries.length }, snapshot, text: String(args.text).trim(), size: Number(args.limit ?? 25), maxBytes: Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes), kind: args.kind as string | undefined, parentScopeId: args.parentScopeId as string | undefined, expiresAt: Date.now() + SEARCH_CURSOR_LIFETIME_MS };
         }
         let size = search!.size;
@@ -215,11 +237,18 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         return { ...response(), nextCursor };
       }
       case "get_scope": return cloneCredentialSafe(runtime.scope(String(args.scopeId)));
+      case "query_command_state": {
+        if (!runtime.commandState) throw new Error("UNSUPPORTED_CAPABILITY: This panel build does not support derived COMMAND state reads.");
+        const { panelSessionId: _panelSessionId, ...input } = args;
+        const result = runtime.commandState(input as AgentCommandStateInput);
+        if (result.status === "error") throw new Error(`${result.problem.code}: ${result.problem.message}`);
+        return safeCommandState(result, Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes));
+      }
       case "search_evidence": {
         const saved = args.cursor ? evidenceSearches.get(String(args.cursor)) : undefined;
-        if (args.cursor && (!saved || saved.expiresAt <= Date.now())) throw new Error("Search cursor expired. Start a new search.");
+        if (args.cursor && (!saved || saved.expiresAt <= Date.now())) throw new Error("CURSOR_EXPIRED: Search cursor expired. Start a new search.");
         const pageEpoch = (runtime.status() as { pageEpoch: unknown }).pageEpoch;
-        if (saved && saved.pageEpoch !== pageEpoch) throw new Error("Search cursor expired after page change. Start a new search.");
+        if (saved && saved.pageEpoch !== pageEpoch) throw new Error("CURSOR_EXPIRED: Search cursor expired after page change. Start a new search.");
         const within = saved?.within ?? (args.within === "current-investigation" ? "current-investigation" : "page");
         if (!saved && within === "current-investigation" && args.where !== undefined) throw new Error("INVALID_ARGUMENT: current-investigation already owns its Filter; start fresh with an explicit scopeId or within:page to add where.");
         const boundary = saved?.boundary ?? structuredClone(runtime.queryBoundary(args.scopeId as string | undefined, within === "current-investigation"));
@@ -230,28 +259,37 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         const maxBytes = saved?.maxBytes ?? Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes);
         const readFilter = saved ? boundary.filter : makeReadQuery(runtime, within === "current-investigation" ? { ...args, text: undefined } : args).filter ?? boundary.filter;
         const searchBoundary = { ...boundary, filter: readFilter };
-        let pageSize = size;
-        let at: EvidenceReadPoint | "LATEST_COMMITTED" = saved?.at ?? (args.at as EvidenceReadPoint | "LATEST_COMMITTED" | undefined) ?? "LATEST_COMMITTED";
-        for (;;) {
-          const result = await runtime.query({ ...searchBoundary, at, size: 1, includePayload: includePayload || Boolean(fields?.length), find: { text, scopeToFilter: true, reveal: false, size: pageSize, ...(saved ? { after: saved.after } : {}) } });
-          if (result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: Evidence search cannot evaluate this investigation. Remove the unsupported Filter criterion or explicitly search within: page.");
-          if (!result.find) throw new Error("Evidence search is unavailable at this read point.");
-          const records = result.find.results ?? [];
-          const evidence = records.map(record => { const projected = projectReadRecord(record, includePayload, fields); return { ...projected, match: safeMatchExplanation(projected, text) }; });
-          const response = { search: { text, within, ...((saved?.scopeId ?? args.scopeId) ? { scopeId: saved?.scopeId ?? args.scopeId } : {}), match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" }, readPoint: result.readPoint, total: result.find.total, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor: result.find.hasMore ? "00000000-0000-0000-0000-000000000000" : null, evidence };
-          if (agentToolResultBytes(response) <= maxBytes) {
-            let nextCursor: string | null = null;
-            if (result.find.hasMore && records.length > 0) {
-              nextCursor = crypto.randomUUID();
-              evidenceSearches.set(nextCursor, { boundary: searchBoundary, within, scopeId: saved?.scopeId ?? args.scopeId as string | undefined, text, size: pageSize, includePayload, fields, maxBytes, pageEpoch, at: result.readPoint, after: records.at(-1)!.identity, expiresAt: saved?.expiresAt ?? Date.now() + SEARCH_CURSOR_LIFETIME_MS });
-              if (evidenceSearches.size > 128) evidenceSearches.delete(evidenceSearches.keys().next().value!);
-            }
-            return { ...response, nextCursor };
+        const at: EvidenceReadPoint | "LATEST_COMMITTED" = saved?.at ?? (args.at as EvidenceReadPoint | "LATEST_COMMITTED" | undefined) ?? "LATEST_COMMITTED";
+        const result = await guardedQuery({ ...searchBoundary, at, size: 1, includePayload: includePayload || Boolean(fields?.length), find: { text, scopeToFilter: true, reveal: false, size, ...(saved ? { after: saved.after } : {}) } });
+        if (result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: Evidence search cannot evaluate this investigation. Remove the unsupported Filter criterion or explicitly search within: page.");
+        if (!result.find) throw new Error("Evidence search is unavailable at this read point.");
+        const records = result.find.results ?? [];
+        const evidence = records.map(record => { const projected = projectReadRecord(record, includePayload, fields); return { ...projected, match: safeMatchExplanation(projected, text) }; });
+        const hasMore = (count: number) => result.find!.hasMore || count < records.length;
+        const response = (count: number) => ({ search: { text, within, ...((saved?.scopeId ?? args.scopeId) ? { scopeId: saved?.scopeId ?? args.scopeId } : {}), match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" }, readPoint: result.readPoint, total: result.find!.total, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor: hasMore(count) && count > 0 ? "00000000-0000-0000-0000-000000000000" : null, evidence: evidence.slice(0, count) });
+        // Storage already latched the complete count/read point and one bounded
+        // match page. Fit its longest permitted prefix in memory; shrinking the
+        // response must never rescan history or advance past unreturned matches.
+        let count = evidence.length;
+        if (agentToolResultBytes(response(count)) > maxBytes) {
+          let low = 1, high = count, fitted = 0;
+          while (low <= high) {
+            assertNotCancelled(signal);
+            const middle = Math.floor((low + high) / 2);
+            if (agentToolResultBytes(response(middle)) <= maxBytes) { fitted = middle; low = middle + 1; }
+            else high = middle - 1;
           }
-          if (pageSize <= 1) throw new Error("RESULT_BUDGET_EXCEEDED: One search match exceeds maxBytes. Request fewer fields or narrow the search; start fresh without cursor to change options.");
-          pageSize = Math.max(1, Math.floor(pageSize / 2));
-          at = result.readPoint;
+          if (!fitted) throw new Error("RESULT_BUDGET_EXCEEDED: One search match or search metadata exceeds maxBytes. Request fewer fields or narrow the search; start fresh without cursor to change options.");
+          count = fitted;
         }
+        assertNotCancelled(signal);
+        let nextCursor: string | null = null;
+        if (hasMore(count) && count > 0) {
+          nextCursor = crypto.randomUUID();
+          evidenceSearches.set(nextCursor, { boundary: searchBoundary, within, scopeId: saved?.scopeId ?? args.scopeId as string | undefined, text, size, includePayload, fields, maxBytes, pageEpoch, at: result.readPoint, after: records[count - 1]!.identity, expiresAt: saved?.expiresAt ?? Date.now() + SEARCH_CURSOR_LIFETIME_MS });
+          if (evidenceSearches.size > 128) evidenceSearches.delete(evidenceSearches.keys().next().value!);
+        }
+        return { ...response(count), nextCursor };
       }
       case "query_evidence": {
         let query = makeReadQuery(runtime, args);
@@ -261,15 +299,15 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
           const suppliedQueryKeys = Object.keys(args).filter(key => !["panelSessionId", "cursor"].includes(key));
           if (suppliedQueryKeys.length) throw new Error("Continue a query with only its cursor; query arguments are bound to the first page.");
           const saved = cursors.get(String(args.cursor));
-          if (!saved) throw new Error("Query cursor expired. Start a new query.");
-          if (saved.pageEpoch !== (runtime.status() as { pageEpoch: unknown }).pageEpoch) throw new Error("Query cursor expired after page change. Start fresh without cursor.");
+          if (!saved) throw new Error("CURSOR_EXPIRED: Query cursor expired. Start a new query.");
+          if (saved.pageEpoch !== (runtime.status() as { pageEpoch: unknown }).pageEpoch) throw new Error("CURSOR_EXPIRED: Query cursor expired after page change. Start fresh without cursor.");
           query = { ...saved.query!, at: saved.at, cursor: saved.cursor };
           fields = saved.fields;
           maxBytes = saved.maxBytes ?? maxBytes;
         }
         let size = query.size;
         for (;;) {
-          const result = await runtime.query({ ...query, size, includePayload: query.includePayload || Boolean(fields?.length), signal });
+          const result = await guardedQuery({ ...query, size, includePayload: query.includePayload || Boolean(fields?.length), signal });
           if (args.within === "current-investigation" && result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: The current investigation cannot be evaluated completely. Start fresh with within:page or an exact scopeId before making a count or absence claim.");
           const response = { readPoint: result.readPoint, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, discoveries: cloneCredentialSafe(Object.fromEntries(result.discoveries)), nextCursor: result.page.nextCursor ? "00000000-0000-0000-0000-000000000000" : null, evidence: result.page.evidence.map(record => projectReadRecord(record, query.includePayload, fields)), omissions: omissions(query.includePayload) };
           if (agentToolResultBytes(response) <= maxBytes) {
@@ -282,7 +320,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       }
       case "summarize_evidence": {
         const saved = args.cursor ? summaries.get(String(args.cursor)) : undefined;
-        if (args.cursor && (!saved || saved.pageEpoch !== (runtime.status() as { pageEpoch: unknown }).pageEpoch)) throw new Error("Summary cursor expired. Start fresh without cursor.");
+        if (args.cursor && (!saved || saved.pageEpoch !== (runtime.status() as { pageEpoch: unknown }).pageEpoch)) throw new Error("CURSOR_EXPIRED: Summary cursor expired. Start fresh without cursor.");
         const query = saved?.query ?? makeReadQuery(runtime, args);
         const facet = saved?.facet ?? args.facet as string | undefined;
         const maxBytes = saved?.maxBytes ?? Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes);
@@ -291,7 +329,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         let at = effective.at;
         for (;;) {
           const discovery = facet ? [{ facet, size, scopeToFilter: true, ...(saved ? { cursor: saved.cursor } : {}) }] : undefined;
-          const result = await runtime.query({ ...effective, at, size: 1, includePayload: false, ...(discovery ? { discover: discovery } : {}), signal });
+          const result = await guardedQuery({ ...effective, at, size: 1, includePayload: false, ...(discovery ? { discover: discovery } : {}), signal });
           if (args.within === "current-investigation" && result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: The current investigation cannot be evaluated completely. Start fresh with within:page or an exact scopeId before making a count or absence claim.");
           const found = facet ? result.discoveries.get(facet) : undefined;
           const response = { readPoint: result.readPoint, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage,
@@ -318,7 +356,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         let size = query.size;
         let at = query.at;
         for (;;) {
-          const result = await runtime.query({ ...query, at, size, signal });
+          const result = await guardedQuery({ ...query, at, size, signal });
           const records = boundedRecords(result.page.evidence) as DeterministicEvidenceRecord[];
           const sampled = records.length;
           const completeSample = result.evaluation === "COMPLETE" && result.coverage === "COMPLETE" && sampled >= result.totals.matching && result.page.nextCursor === null && records.every(record => record.payload !== undefined);
@@ -340,7 +378,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       case "wait_for_evidence": {
         const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
         if (!runtime.subscribeEvidence) throw new Error("Evidence observation is unavailable in this panel build.");
-        if (waits.size >= 4) throw new Error("REQUEST_CAPACITY: At most four Evidence waits may run concurrently per Panel Session.");
+        if (waits.size >= 4) throw new Error("REQUEST_CAPACITY: At most four Evidence or operation waits may run concurrently per Panel Session.");
         const controller = new AbortController();
         const cancel = () => controller.abort();
         waits.add(controller); signal?.addEventListener("abort", cancel, { once: true });
@@ -375,13 +413,13 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       case "get_evidence": {
         const includePayload = args.includePayload === true;
         const fields = args.fields as string[] | undefined;
-        const result = await runtime.query({ at: "LATEST_COMMITTED", size: 1, includePayload: includePayload || Boolean(fields?.length), lookup: args.evidence as EvidenceIdentity, signal });
+        const result = await guardedQuery({ at: "LATEST_COMMITTED", size: 1, includePayload: includePayload || Boolean(fields?.length), lookup: args.evidence as EvidenceIdentity, signal });
         const response = { readPoint: result.readPoint, coverage: result.coverage, lookup: result.lookup?.state === "RETAINED" ? { state: "RETAINED", evidence: projectReadRecord(result.lookup.evidence, includePayload, fields) } : result.lookup };
         if (agentToolResultBytes(response) > Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes)) throw new Error("RESULT_BUDGET_EXCEEDED: Exact Evidence exceeds maxBytes. Request fewer fields or omit payload.");
         return response;
       }
       case "query_diagnostics": {
-        const result = await runtime.diagnostics(args.after as Parameters<AgentRuntime["diagnostics"]>[0]);
+        const result = await runtime.diagnostics(args.after as Parameters<AgentRuntime["diagnostics"]>[0], signal);
         const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
         let size = Number(args.limit ?? 50);
         for (;;) {
@@ -394,7 +432,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         }
       }
       case "update_agent_document": {
-        if (!prepared || prepared.token !== args.token || prepared.consumed || prepared.fingerprint !== fingerprint(prepared.kind === "scenario")) throw new Error("Agent document was changed or executed. Inspect the document in Workbench.");
+        if (!prepared || prepared.token !== args.token || prepared.consumed || prepared.fingerprint !== fingerprint(prepared.kind === "scenario")) throw new Error("TARGET_CHANGED: Agent document was changed or executed. Inspect the document in Workbench.");
         runtime.edit(String(args.document), args.stepId as string | undefined);
         prepared = { ...prepared, token: crypto.randomUUID(), fingerprint: fingerprint(prepared.kind === "scenario") };
         return { token: prepared.token, ...snapshot() };
@@ -420,7 +458,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
             const plan = scenarioPlan(args);
             if (plan.replace) {
               const current = runtime.scenario()?.scenario;
-              if (!prepared || prepared.kind !== "scenario" || prepared.fingerprint !== fingerprint(true) || current?.id !== plan.replace.scenarioId || current.revision !== plan.replace.revision) throw new Error("Only the unchanged agent-owned Scenario can be replaced.");
+              if (!prepared || prepared.kind !== "scenario" || prepared.fingerprint !== fingerprint(true) || current?.id !== plan.replace.scenarioId || current.revision !== plan.replace.revision) throw new Error("TARGET_CHANGED: Only the unchanged agent-owned Scenario can be replaced.");
             }
             await runtime.prepareScenarioPlan(plan, String(args.pageEpoch), stillAuthorized);
             prepared = { token: crypto.randomUUID(), fingerprint: fingerprint(true), kind: "scenario", consumed: false };
@@ -452,7 +490,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
           if (previous.signature !== signature) throw new Error("requestId already belongs to a different operation.");
           return previous.value;
         }
-        if (!prepared || prepared.kind !== "local" || prepared.token !== args.token || prepared.consumed || prepared.fingerprint !== fingerprint(false)) throw new Error("Prepared Draft changed, was consumed, or is unavailable. Inspect the current document in Workbench.");
+        if (!prepared || prepared.kind !== "local" || prepared.token !== args.token || prepared.consumed || prepared.fingerprint !== fingerprint(false)) throw new Error("TARGET_CHANGED: Prepared Draft changed, was consumed, or is unavailable. Inspect the current document in Workbench.");
         if (!(runtime.status() as { visible: boolean }).visible) throw new Error("Show the Workbench panel before injecting.");
         const draft = runtime.local().draft;
         if (!draft?.ready || draft.phase !== "edit") throw new Error("The Draft is not ready for delivery. Inspect its validation in Workbench.");
@@ -466,8 +504,56 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       }
       case "get_operation": {
         const operation = requests.get(String(args.requestId));
-        if (!operation) throw new Error("Operation is unknown in this Panel Session. This is not proof that delivery did not occur.");
+        if (!operation) throw new Error("OPERATION_UNKNOWN: Operation is unknown in this Panel Session. This is not proof that delivery did not occur.");
         return operation.value;
+      }
+      case "wait_for_operation": {
+        const requestId = String(args.requestId);
+        const operation = requests.get(requestId);
+        if (!operation) throw new Error("OPERATION_UNKNOWN: Operation is unknown in this Panel Session. This is not proof that delivery did not occur.");
+        const response = (status: "COMPLETE" | "TIMED_OUT") => ({ status, requestId,
+          completionBoundary: operation.kind === "local" ? "LOCAL_INJECTION_RECEIPT" : "SCENARIO_CONTROL_RECEIPT",
+          operation: operation.value });
+        const pending = () => operation.kind === "local" && (operation.value as { state?: string }).state === "pending";
+        if (!pending()) return response("COMPLETE");
+        const timeoutMs = Number(args.timeoutMs ?? 10000);
+        if (timeoutMs === 0) return response("TIMED_OUT");
+        if (waits.size >= 4) throw new Error("REQUEST_CAPACITY: At most four Evidence or operation waits may run concurrently per Panel Session.");
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        waits.add(controller); signal?.addEventListener("abort", cancel, { once: true });
+        try {
+          return await new Promise<ReturnType<typeof response>>((resolve, reject) => {
+            let finished = false;
+            let unsubscribe = () => {};
+            let deadline: ReturnType<typeof setTimeout> | undefined;
+            function finish(status?: "COMPLETE" | "TIMED_OUT", failure?: unknown) {
+              if (finished) return;
+              finished = true;
+              clearTimeout(deadline);
+              operationListeners.delete(changed);
+              unsubscribe();
+              controller.signal.removeEventListener("abort", aborted);
+              if (status) resolve(response(status));
+              else reject(failure ?? new Error("QUERY_CANCELLED: Operation receipt wait was cancelled. Existing outcomes remain readable; no execution was repeated."));
+            }
+            function aborted() { finish(); }
+            function changed() { if (!pending()) finish("COMPLETE"); }
+            controller.signal.addEventListener("abort", aborted, { once: true });
+            if (signal?.aborted || controller.signal.aborted) { finish(); return; }
+            // Subscribe before the second refresh so completion racing setup is
+            // observed. This uses notifications and one deadline, no poll loop.
+            operationListeners.add(changed);
+            try {
+              unsubscribe = runtime.subscribeOperations?.(() => refreshOperations()) ?? (() => {});
+              if (finished) { unsubscribe(); return; }
+              refreshOperations(); changed();
+              if (!finished) deadline = setTimeout(() => { refreshOperations(); if (!finished) finish(pending() ? "TIMED_OUT" : "COMPLETE"); }, timeoutMs);
+            } catch (error) {
+              finish(undefined, error);
+            }
+          });
+        } finally { signal?.removeEventListener("abort", cancel); waits.delete(controller); }
       }
       case "control_scenario": {
         const id = String(args.requestId);
@@ -478,7 +564,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
           return previous.value;
         }
         const current = runtime.scenario();
-        if (!prepared || prepared.kind !== "scenario" || prepared.fingerprint !== fingerprint(true) || !current?.run || current.run.id !== args.runId) throw new Error("Reviewed agent Scenario is unavailable or was edited.");
+        if (!prepared || prepared.kind !== "scenario" || prepared.fingerprint !== fingerprint(true) || !current?.run || current.run.id !== args.runId) throw new Error("TARGET_CHANGED: Reviewed agent Scenario is unavailable or was edited.");
         if (["step", "play"].includes(String(args.action))) {
           if (!(runtime.status() as { visible: boolean }).visible || !["review", "paused"].includes(current.phase)) throw new Error("Scenario must be visible and reviewed or paused before dispatch.");
           prepared.consumed = true;
@@ -510,7 +596,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         }
       }
       case "finish_agent_document": {
-        if (!prepared || args.token !== prepared.token || prepared.fingerprint !== fingerprint(prepared.kind === "scenario")) throw new Error("Agent document is unavailable or was edited.");
+        if (!prepared || args.token !== prepared.token || prepared.fingerprint !== fingerprint(prepared.kind === "scenario")) throw new Error("TARGET_CHANGED: Agent document is unavailable or was edited.");
         const complete = prepared.kind === "scenario" ? ["complete", "stopped"].includes(runtime.scenario()?.phase ?? "") : runtime.local().draft?.phase === "outcome";
         if (!complete) throw new Error("Only a completed agent document can be finished. Resolve or discard unfinished documents in Workbench.");
         runtime.finish(); prepared = null; return { finished: true };
@@ -521,9 +607,34 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
   return {
     async call(name: string, args: unknown, options?: { signal?: AbortSignal }) {
       const generation = grantGeneration;
-      const result = await call(name, args, options?.signal);
+      assertNotCancelled(options?.signal);
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      options?.signal?.addEventListener("abort", abort, { once: true });
+      inFlight.add(controller);
+      let result: unknown;
+      try {
+        result = await call(name, args, controller.signal);
+        if (generation !== grantGeneration || permission() === "off") throw new Error("ACCESS_REVOKED: Agent access was revoked.");
+        assertNotCancelled(controller.signal);
+      } catch (error) {
+        // A result prepared immediately before cancellation must not leave a
+        // continuation that was never published to its caller.
+        const cursor = result && typeof result === "object" ? (result as { nextCursor?: unknown }).nextCursor : undefined;
+        if (typeof cursor === "string") {
+          cursors.delete(cursor); evidenceSearches.delete(cursor); summaries.delete(cursor);
+          const scopeCursor = scopeCursors.get(cursor);
+          scopeCursors.delete(cursor);
+          if (scopeCursor && ![...scopeCursors.values()].some(entry => entry.searchId === scopeCursor.searchId)) scopeSearches.delete(scopeCursor.searchId);
+        }
+        if (generation !== grantGeneration || permission() === "off") throw new Error("ACCESS_REVOKED: Agent access was revoked.");
+        throw error;
+      } finally {
+        options?.signal?.removeEventListener("abort", abort);
+        inFlight.delete(controller);
+      }
       // Grants can be revoked while a read awaits storage. Do not disclose its result.
-      if (permission() === "off" || generation !== grantGeneration) throw new Error("Agent access was revoked.");
+      if (permission() === "off" || generation !== grantGeneration) throw new Error("ACCESS_REVOKED: Agent access was revoked.");
       const input = args as AgentArguments;
       const budget = ["query_evidence", "search_evidence", "summarize_evidence", "search_scope"].includes(name) && input.cursor
         ? AGENT_RESPONSE_CONTRACT.maxBytes
@@ -537,8 +648,65 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         : "RESULT_BUDGET_EXCEEDED: Response exceeds the agent budget. Request a smaller page or inspect the exact object in Workbench.");
     },
     refreshOperations,
-    revoke() { grantGeneration++; cursors.clear(); evidenceSearches.clear(); summaries.clear(); scopeCursors.clear(); scopeSearches.clear(); for (const wait of waits) wait.abort(); if (prepared?.kind === "scenario") runtime.control("pause"); }
+    revoke() { grantGeneration++; cursors.clear(); evidenceSearches.clear(); summaries.clear(); scopeCursors.clear(); scopeSearches.clear(); scopeIndexCache = null; for (const read of inFlight) read.abort(); for (const wait of waits) wait.abort(); if (prepared?.kind === "scenario") runtime.control("pause"); }
   };
+}
+
+/** Named projected fields use the same privacy and concrete-value semantics as
+ * retained Evidence reads. Presence/provenance stay derived projection facts. */
+function safeCommandState(result: Extract<AgentCommandStateResult, { status: "ok" }>, budget: number): unknown {
+  // Target identity is opaque and exact. Redaction must never turn one key into
+  // another while preserving a presence assertion about the original target.
+  const safeTarget = cloneCredentialSafe(result.target);
+  if (JSON.stringify(safeTarget) !== JSON.stringify(result.target)) {
+    throw new Error("CREDENTIAL_IDENTITY_UNAVAILABLE: This exact COMMAND target contains recognized credential data. Inspect the target in Workbench; this agent read cannot return its identity safely.");
+  }
+  let redacted = false;
+  const fields = result.fields.map(field => {
+    const { value, ...metadata } = field;
+    if (field.state !== "concrete") return metadata;
+    if (value === undefined) return { ...metadata, state: "unavailable", certainty: "unavailable" };
+    const safe = cloneCredentialSafe({ [field.name]: value }) as Record<string, unknown>;
+    if (!Object.hasOwn(safe, field.name)) {
+      redacted = true;
+      return { ...metadata, state: "redacted", certainty: "unavailable" };
+    }
+    if (JSON.stringify(safe[field.name]) !== JSON.stringify(value)) {
+      redacted = true;
+      return { ...metadata, state: "redacted", certainty: "unavailable", redactedValue: safe[field.name] };
+    }
+    return { ...metadata, value: safe[field.name] };
+  });
+  const response = cloneCredentialSafe({ ...result, fields }) as {
+    fields: Array<Record<string, unknown>>; fieldsReturned: number; truncated: boolean; limitations: string[];
+  };
+  if (redacted) response.limitations.push("Recognized credentials are omitted or replaced; redactedValue is a sanitized preview, not an executable concrete field value.");
+  // The complete MCP envelope duplicates JSON into text and structured content.
+  // Replace individual previews explicitly instead of dropping selected fields
+  // or changing presence, read point, provenance, or field-count meanings.
+  // If field metadata alone cannot fit, return a bounded prefix with truthful
+  // fieldsReturned and truncated rather than an unlabelled partial result.
+  while (agentToolResultBytes(response) > budget) {
+    let largest = -1, largestBytes = 0;
+    response.fields.forEach((field, index) => {
+      if (field.value === undefined && field.redactedValue === undefined) return;
+      const bytes = agentToolResultBytes(field.value ?? field.redactedValue);
+      if (bytes > largestBytes) { largest = index; largestBytes = bytes; }
+    });
+    if (largest < 0) {
+      if (response.fields.length) {
+        response.fields.pop();
+        response.fieldsReturned = response.fields.length;
+        response.truncated = true;
+        continue;
+      }
+      throw new Error("RESULT_BUDGET_EXCEEDED: Exact COMMAND target metadata exceeds maxBytes. Select fewer fields or use a larger maxBytes.");
+    }
+    const { value: _value, redactedValue: _redactedValue, ...metadata } = response.fields[largest]!;
+    response.fields[largest] = { ...metadata, state: "output-budget", certainty: "unavailable" };
+    response.truncated = true;
+  }
+  return response;
 }
 
 function safeRecord(record: DeterministicEvidenceRecord, payloadBudget = 256 * 1024) {
@@ -548,7 +716,15 @@ function safeRecord(record: DeterministicEvidenceRecord, payloadBudget = 256 * 1
   const payload = record.payload ? toBulkShareableEventEnvelope(record.payload as LightstreamerEventEnvelope) : null;
   // Raw transport text can duplicate a redacted Client Message or credential values.
   const { raw: _raw, ...semantic } = payload ?? {};
-  return { identity: record.identity, timestamp: record.timestamp, facets: cloneCredentialSafe(record.facets), ...(payload ? { payload: cloneCredentialSafe(semantic) } : {}) };
+  const sanitized = payload ? cloneCredentialSafe(semantic) as LightstreamerEventEnvelope : null;
+  if (sanitized?.update && payload?.update?.fields) {
+    const safeFields = sanitized.update.fields ?? {};
+    const redactedStates = Object.entries(payload.update.fields).filter(([name, value]) =>
+      !Object.hasOwn(safeFields, name) || JSON.stringify(safeFields[name]) !== JSON.stringify(value)
+    ).map(([name]) => [name, "redacted"] as const);
+    if (redactedStates.length) sanitized.update.fieldValueStates = { ...sanitized.update.fieldValueStates, ...Object.fromEntries(redactedStates) };
+  }
+  return { identity: record.identity, timestamp: record.timestamp, facets: cloneCredentialSafe(record.facets), ...(sanitized ? { payload: sanitized } : {}) };
 }
 /** Explain only the exported representation: canonical searchText/summary may contain secrets. */
 function safeMatchExplanation(evidence: object, query: string) {
@@ -602,7 +778,11 @@ function projectReadRecord(record: DeterministicEvidenceRecord, includePayload: 
       const value = update?.fields?.[name];
       const sanitized = state === "concrete" && value !== undefined ? cloneCredentialSafe({ [name]: value }) as Record<string, unknown> : null;
       return [name, state === "concrete" && value !== undefined
-        ? Object.hasOwn(sanitized!, name) ? { state, value: sanitized![name] } : { state: "redacted" }
+        ? Object.hasOwn(sanitized!, name)
+          ? JSON.stringify(sanitized![name]) !== JSON.stringify(value)
+            ? { state: "redacted", redactedValue: sanitized![name] }
+            : { state, value: sanitized![name] }
+          : { state: "redacted" }
         : { state }];
     }));
     return { ...compact, fields: projected };
@@ -705,15 +885,91 @@ function omissions(payloadRequested: boolean): string[] {
     : ["Item Update payloads were not requested; Client Message bodies and raw transport text are omitted."];
 }
 
+function assertNotCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error("QUERY_CANCELLED: Agent call was cancelled. No read result was published.");
+}
+
+/** Redact source spans instead of parsing numeric values or reserializing safe
+ * application text. JSON is validated first, but its parsed values are never
+ * used to reconstruct the string. Nested JSON strings use the same policy. */
+function redactEmbeddedJson(source: string, depth: number): string {
+  try { JSON.parse(source); } catch { return source; }
+  const edits: Array<{ start: number; end: number; replacement: string }> = [];
+  let offset = 0;
+  const whitespace = () => { while (/\s/.test(source[offset] ?? "") && offset < source.length) offset++; };
+  const stringEnd = () => {
+    offset++; // opening quote
+    while (offset < source.length) {
+      const char = source[offset++];
+      if (char === "\\") offset++;
+      else if (char === '"') break;
+    }
+  };
+  const value = (level: number, omit = false): void => {
+    whitespace();
+    const start = offset;
+    const char = source[offset];
+    if (omit || level > 16) {
+      // Skip a bounded-out or credential value iteratively. Do not recurse
+      // into a discarded subtree: application JSON can be arbitrarily deep.
+      if (char === '"') stringEnd();
+      else if (char === "{" || char === "[") {
+        let nesting = 0;
+        do {
+          const token = source[offset];
+          if (token === '"') stringEnd();
+          else {
+            if (token === "{" || token === "[") nesting++;
+            if (token === "}" || token === "]") nesting--;
+            offset++;
+          }
+        } while (nesting > 0 && offset < source.length);
+      } else while (offset < source.length && !/[\s,\]}]/.test(source[offset]!)) offset++;
+      edits.push({ start, end: offset, replacement: JSON.stringify(omit ? "[REDACTED:credential]" : "[OMITTED:deeply-nested-data]") });
+      return;
+    }
+    if (char === '"') {
+      stringEnd();
+      if (!omit && level <= 16) {
+        const text = JSON.parse(source.slice(start, offset)) as string;
+        const safe = cloneCredentialSafe(text, level + 1);
+        if (safe !== text) edits.push({ start, end: offset, replacement: JSON.stringify(safe) });
+      }
+    } else if (char === "{" || char === "[") {
+      const close = char === "{" ? "}" : "]";
+      offset++; whitespace();
+      while (source[offset] !== close) {
+        let credential = false;
+        if (char === "{") {
+          const keyStart = offset;
+          stringEnd();
+          const key = JSON.parse(source.slice(keyStart, offset)) as string;
+          credential = !Object.hasOwn(omitCredentialFields({ [key]: true }) as object, key);
+          whitespace(); offset++; // colon
+        }
+        value(level + 1, omit || credential || level > 16);
+        whitespace();
+        if (source[offset] === ",") { offset++; whitespace(); } else break;
+      }
+      offset++; // closing delimiter
+    } else {
+      while (offset < source.length && !/[\s,\]}]/.test(source[offset]!)) offset++;
+    }
+
+  };
+  value(depth);
+  let safe = source;
+  for (const edit of edits.reverse()) safe = safe.slice(0, edit.start) + edit.replacement + safe.slice(edit.end);
+  return safe;
+}
+
 function cloneCredentialSafe(value: unknown, depth = 0): unknown {
   if (depth > 16) return "[OMITTED:deeply-nested-data]";
-  if (typeof value === "string" && /^[\s]*[\[{]/.test(value)) {
-    try {
-      const parsed: unknown = JSON.parse(value);
-      if (parsed && typeof parsed === "object") return JSON.stringify(cloneCredentialSafe(parsed, depth + 1));
-    } catch { /* Plain application text; no inferred secret detection. */ }
-  }
+  if (typeof value === "string" && /^[\s]*[\[{]/.test(value)) return redactEmbeddedJson(value, depth + 1);
   if (Array.isArray(value)) return value.map(entry => cloneCredentialSafe(entry, depth + 1));
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(omitCredentialFields(value) as Record<string, unknown>).map(([key, entry]) => [key, cloneCredentialSafe(entry, depth + 1)]));
+  // Test each property at this level; recursively omitting the whole graph here
+  // would duplicate the walk and bypass this function's nesting bound.
+  return Object.fromEntries(Object.entries(value).filter(([key]) => Object.hasOwn(omitCredentialFields({ [key]: true }) as object, key))
+    .map(([key, entry]) => [key, cloneCredentialSafe(entry, depth + 1)]));
 }

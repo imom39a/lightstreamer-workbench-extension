@@ -75,6 +75,12 @@ occurred. See [investigation.md](references/investigation.md) for discovery,
 candidate validation and wait-result handling. Keep Server Updates and successful
 Local Evidence distinct.
 
+Use `query_command_state` when available for one exact live COMMAND item/key,
+with the current `pageEpoch` and explicit `observed-server` or `local-effective`
+projection. Preserve whitespace in keys. Inspect presence basis, field certainty,
+provenance and limitations; derived state does not prove application or server
+state. Reuse its read point or retained provenance to inspect the Evidence basis.
+
 ## Reproduce and observe
 
 When the user authorizes reproduction, read [local-injection.md](references/local-injection.md).
@@ -83,6 +89,12 @@ Item Update when available; source-free authoring requires a supported live
 COMMAND Scope. Show the intended target and change in the task's progress.
 Existing task authorization can cover the experiment; do not ask again for
 every Step within that scope.
+
+After an operation is pending, use `wait_for_operation` with its existing
+`requestId` instead of polling or repeating execution. `COMPLETE` refers to the
+receipt; a Scenario control receipt does not mean the Run finished.
+`TIMED_OUT` and `OPERATION_UNKNOWN` do not prove non-delivery. See
+[investigation.md](references/investigation.md) for receipt recovery.
 
 After delivery settles, observe the same application tab with browser tools.
 Check a concrete expected change, such as a row appearing or a displayed value

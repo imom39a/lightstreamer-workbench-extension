@@ -12,6 +12,7 @@ private/
 .DS_Store
 .codex/
 .codex_/
+.scratch/
 .cache/lsew-browsers/
 test-results/
 fixtures/lightstreamer/adapter/target/

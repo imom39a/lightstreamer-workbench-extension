@@ -51,7 +51,7 @@ type CheckpointSubscriptionEvidence = {
     }>
   >;
   commandGenerations: TopologyCommandGeneration[];
-  commandGenerationEpochs: Map<string, number>;
+  commandGenerationEpoch: number;
   appliedLiveSequences: Set<number>;
 };
 
@@ -116,6 +116,18 @@ export function createPanelTopologySyncAdapter(
   };
 }
 
+/** Matches the bounded recent-dispatch window used by item counters. */
+function rememberLogicalUpdate(ids: Set<string>, id: string): boolean {
+  if (ids.has(id)) return false;
+  ids.add(id);
+  while (ids.size > 4_096) {
+    const oldest = ids.values().next().value as string | undefined;
+    if (oldest === undefined) break;
+    ids.delete(oldest);
+  }
+  return true;
+}
+
 function applyAggregateLiveEvent(
   index: TopologyStateIndex,
   event: LightstreamerEventEnvelope
@@ -127,8 +139,7 @@ function applyAggregateLiveEvent(
   if (!aggregates || !aggregate) return;
   if (event.kind === "item-update" && aggregate.updateCount !== undefined) {
     const logicalId = event.logicalEventId ?? event.id;
-    if (!aggregate.logicalUpdateIds.has(logicalId)) {
-      aggregate.logicalUpdateIds.add(logicalId);
+    if (rememberLogicalUpdate(aggregate.logicalUpdateIds, logicalId)) {
       aggregate.updateCount += 1;
     }
   }
@@ -258,7 +269,7 @@ function checkpointEvidence(
       itemLogicalUpdateIds: new Map(),
       listenerAttachments: new Map(),
       commandGenerations: [],
-      commandGenerationEpochs: new Map(),
+      commandGenerationEpoch: 0,
       appliedLiveSequences: new Set()
     };
     result.set(subscriptionId, created);
@@ -323,16 +334,10 @@ function checkpointEvidence(
         captureSequence: record.captureSequence,
         inferredChildren: childrenByGeneration.get(record.id) ?? []
       });
-      if (key) {
-        const generationKey = commandGenerationEpochKey(itemId, key);
-        target.commandGenerationEpochs.set(
-          generationKey,
-          Math.max(
-            target.commandGenerationEpochs.get(generationKey) ?? 0,
-            numericIdSuffix(record.id) ?? 0
-          )
-        );
-      }
+      target.commandGenerationEpoch = Math.max(
+        target.commandGenerationEpoch,
+        numericIdSuffix(record.id) ?? 0
+      );
     }
   }
   for (const target of result.values()) {
@@ -445,6 +450,15 @@ function applyLiveEvidence(
     }
   }
 
+  if (event.kind === "clear-snapshot") {
+    const itemId = semanticItemId(subscriptionId, event, observation);
+    if (itemId) {
+      target.commandGenerations = target.commandGenerations.filter(
+        (generation) => generation.itemId !== itemId
+      );
+    }
+  }
+
   applyLiveAggregateCounters(target, subscriptionId, observation, event);
 
   applyLiveCommandGeneration(target, subscriptionId, observation, event);
@@ -469,7 +483,7 @@ function ensureSubscriptionEvidence(
     itemLogicalUpdateIds: new Map(),
     listenerAttachments: new Map(),
     commandGenerations: [],
-    commandGenerationEpochs: new Map(),
+    commandGenerationEpoch: 0,
     appliedLiveSequences: new Set()
   };
   evidence.set(subscriptionId, created);
@@ -491,11 +505,8 @@ function applyLiveAggregateCounters(
     };
     const logicalId = event.logicalEventId ?? event.id;
     const logicalIds = target.itemLogicalUpdateIds.get(itemId) ?? new Set<string>();
-    if (!logicalIds.has(logicalId)) {
-      logicalIds.add(logicalId);
-      if (counters.updateCount !== null) {
-        counters.updateCount += 1;
-      }
+    if (rememberLogicalUpdate(logicalIds, logicalId) && counters.updateCount !== null) {
+      counters.updateCount += 1;
     }
     if (
       event.listener &&
@@ -503,11 +514,6 @@ function applyLiveAggregateCounters(
       counters.deliveryCount !== null
     ) {
       counters.deliveryCount += 1;
-    }
-    while (logicalIds.size > 4_096) {
-      const oldest = logicalIds.values().next().value as string | undefined;
-      if (oldest === undefined) break;
-      logicalIds.delete(oldest);
     }
     target.itemLogicalUpdateIds.set(itemId, logicalIds);
     target.itemCounters.set(itemId, counters);
@@ -557,9 +563,9 @@ function applyLiveCommandGeneration(
   const explicitEpoch =
     numberValue(observation.values?.generationEpoch) ??
     (explicitId ? numericIdSuffix(explicitId) : null);
-  const generationEpochKey = commandGenerationEpochKey(itemId, key);
-  const epoch = explicitEpoch ??
-    (target.commandGenerationEpochs.get(generationEpochKey) ?? 0) + 1;
+  // One Subscription ordinal preserves unique fallback generations without
+  // retaining a permanent counter for every key that has ever been observed.
+  const epoch = explicitEpoch ?? target.commandGenerationEpoch + 1;
   const id =
     explicitId ??
     `command-generation:${subscriptionId}:${itemId ?? "unknown-item"}:${key}:${epoch}`;
@@ -574,14 +580,7 @@ function applyLiveCommandGeneration(
     captureSequence: observation.captureSequence,
     inferredChildren: []
   });
-  target.commandGenerationEpochs.set(
-    generationEpochKey,
-    Math.max(target.commandGenerationEpochs.get(generationEpochKey) ?? 0, epoch)
-  );
-}
-
-function commandGenerationEpochKey(itemId: string | null, key: string): string {
-  return `${itemId ?? "unknown-item"}\u0000${key}`;
+  target.commandGenerationEpoch = Math.max(target.commandGenerationEpoch, epoch);
 }
 
 function checkpointItemId(

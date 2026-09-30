@@ -29,7 +29,7 @@ function globalListResult(name: string, items: readonly unknown[], args: Message
 /** Transports enforce their configured connection policy before joining. Routing never owns Capture or grants. */
 export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Message): unknown }) {
   const panels = new Map<string, { peer: BrokerPeer; session: Message }>();
-  const pending = new Map<string, { client: BrokerPeer; panel: BrokerPeer; id: string; timer: NodeJS.Timeout }>();
+  const pending = new Map<string, { client: BrokerPeer; panel: BrokerPeer; id: string; name: string; timer: NodeJS.Timeout }>();
   function send(peer: BrokerPeer, value: Message) {
     try { peer.send(value); } catch { peer.close(); }
   }
@@ -37,6 +37,7 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
     join(peer: BrokerPeer, hello: Message) {
       const role = hello.role;
       if (role !== "agent" && role !== "panel") throw new Error("Invalid companion role.");
+      const agentConnectionId = role === "agent" ? randomUUID() : null;
       let sessionId: string | null = null;
       if (role === "panel") {
         if (hello.protocolVersion !== AGENT_PROTOCOL_VERSION || typeof hello.panelSessionId !== "string" || panels.has(hello.panelSessionId) || !["read", "local"].includes(String(hello.permission))) throw new Error("Invalid Panel Session.");
@@ -81,15 +82,23 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
             }
             const panel = panels.get(String((message.args as Message).panelSessionId));
             if (!panel) throw new Error("COMPANION_UNAVAILABLE: Panel Session is not connected. Open Workbench and check Agent access status.");
-            if (pending.size >= 64) throw new Error("Companion request capacity reached.");
+            if (pending.size >= 64) throw new Error("REQUEST_CAPACITY: Companion request capacity reached. Wait for a pending call to settle.");
+            const owned = [...pending.values()].filter(request => request.client === peer);
+            if (owned.length >= 16) throw new Error("REQUEST_CAPACITY: This agent has 16 pending calls. Wait for one to settle before requesting more.");
+            const waiting = (name: string) => name === "wait_for_evidence" || name === "wait_for_operation";
+            if (waiting(message.name) && owned.filter(request => waiting(request.name)).length >= 2) {
+              throw new Error("REQUEST_CAPACITY: This agent has two pending waits. Wait for one to settle before starting another.");
+            }
             const route = randomUUID(), id = message.id;
             const timer = setTimeout(() => {
               pending.delete(route);
               send(panel.peer, { type: "cancel", id: route });
-              send(peer, { id, error: "Workbench reply timed out. An execution may have occurred; query its requestId instead of repeating it." });
+              send(peer, { id, error: `${message.name === "execute_local_injection" || message.name === "control_scenario" ? "DELIVERY_UNKNOWN" : "QUERY_FAILED"}: Workbench reply timed out. Inspect an existing operation requestId before any further execution.` });
             }, 30000);
-            pending.set(route, { client: peer, panel: panel.peer, id, timer });
-            send(panel.peer, { id: route, name: message.name, args: message.args });
+            pending.set(route, { client: peer, panel: panel.peer, id, name: message.name, timer });
+            // Panel accounting uses this trusted peer token even after a route
+            // is cancelled while an uncooperative provider is still settling.
+            send(panel.peer, { id: route, name: message.name, args: message.args, agentConnectionId });
           } catch (error) { send(peer, { id: message.id, error: error instanceof Error ? error.message : "Companion request failed." }); }
         },
         close() {

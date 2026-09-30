@@ -1,3 +1,4 @@
+import { readAgentCommandState } from "./agent-command-state";
 import { type CaptureMessage, type CaptureStatus, type TopologySyncFrame } from "../../bridge/messages";
 import { createCommandStateProjections, findCommandItem, type CommandStateProjections } from "../../core/command-state";
 import type {
@@ -6,7 +7,7 @@ import type {
   ScenarioCommittedBoundarySnapshot
 } from "../../core/local-injection-scenario-checkpoint";
 import { validateScenarioCheckpoint } from "../../core/local-injection-scenario-checkpoint";
-import type { AgentRuntime, AgentDraftInput, AgentCandidateInput, AgentScenarioMember, AgentScenarioPlanInput } from "./agent-runtime";
+import type { AgentScopeSearchSnapshot, AgentRuntime, AgentDraftInput, AgentCandidateInput, AgentScenarioMember, AgentScenarioPlanInput } from "./agent-runtime";
 import {
   toBulkShareableEventEnvelope,
   type LightstreamerEventEnvelope
@@ -1049,6 +1050,15 @@ export function createWorkbenchRuntime(options: WorkbenchRuntimeOptions = {}): W
 class Runtime implements WorkbenchRuntime {
   readonly agent: AgentRuntime = {
     status: () => ({ pageEpoch: this.currentPageEpoch, visible: this.visible, captureStatus: this.captureStatus, capture: this.captureSnapshot(), history: this.history.status() }),
+    commandState: input => readAgentCommandState(input, {
+      pageEpoch: this.currentPageEpoch,
+      disposed: this.disposed,
+      scope: findTopologySelection(this.topologyProjection.snapshot(), input.scopeId),
+      history: this.history.status(),
+      projectionBoundary: this.commandProjectionEvidenceBoundary,
+      projectionReady: this.projectionRecovery === null && this.scenarioFollowerPhase === "LIVE",
+      readKey: (projection, target) => this.commandStateProjections.readKey(projection, target)
+    }),
     scopes: (offset, limit) => {
       const scope = this.scopeSnapshot();
       return { total: scope.structure.length, offset, nodes: scope.structure.slice(offset, offset + limit).map(node => scope.resolveNode(node.id)) };
@@ -1056,25 +1066,40 @@ class Runtime implements WorkbenchRuntime {
     scope: (id) => {
       const scope = this.scopeSnapshot();
       const node = scope.resolveNode(id);
-      if (!node) throw new Error("Scope is unavailable in this Panel Session.");
+      if (!node) throw new Error("TARGET_RETIRED: Scope is unavailable in this Panel Session. Locate a current Scope before reading it.");
       const candidate = authoredDraftFromScope(findTopologySelection(this.topologyProjection.snapshot(), id), this.currentPageEpoch);
       return { node, pageEpoch: this.currentPageEpoch, localInjection: candidate ? { anchor: candidate.anchor, document: createLocalInjectionDocumentFromDraft(candidate.draft), diagnostics: this.validateLocalInjectionTarget(candidate.anchor) } : { unavailable: "Authoring requires a live COMMAND item with a captured delivery context. Use captured Evidence for other supported modes." } };
     },
     scopeSearchSnapshot: () => {
-      const scope = this.scopeSnapshot();
+      const topology = this.topologyProjection.snapshot();
+      const structure = this.currentScopeStructure(topology);
+      let cached = this.agentScopeSearchNodesCache;
+      // Structural revisions track membership. Lifecycle/detail presentation can
+      // also change within one revision; topology identity invalidates those
+      // search fields without rebuilding on every fresh query.
+      if (!cached || cached.pageEpoch !== this.currentPageEpoch || cached.structureRevision !== structure.revision
+        || cached.topology !== topology || cached.captureStatus !== this.captureStatus) {
+        const nodes = Object.freeze(structure.descriptors.map(descriptor => {
+          const node = resolveScopeNode(topology, descriptor, null, this.captureStatus);
+          return Object.freeze({ id: node.id, kind: node.kind, label: node.label, parentId: node.parentId,
+            lifecycle: node.lifecycle, retired: node.retired, detail: node.detail });
+        }));
+        cached = this.agentScopeSearchNodesCache = { pageEpoch: this.currentPageEpoch, structureRevision: structure.revision,
+          topology, captureStatus: this.captureStatus, nodes };
+      }
       const history = this.history.status();
-      return { pageEpoch: this.currentPageEpoch, structureRevision: scope.structureRevision, nodes: scope.nodes,
+      return { pageEpoch: this.currentPageEpoch, structureRevision: structure.revision, nodes: cached.nodes,
         history: { intervalId: history.interval.id, committedSequence: history.committedEvidenceBoundary?.sequence ?? null, retainedFirstSequence: history.retainedRange?.first.sequence ?? null } };
     },
     queryBoundary: (scopeId, useCurrentInvestigation = false) => {
       const id = useCurrentInvestigation ? this.scopeId : scopeId;
       const target = id ? findTopologySelection(this.topologyProjection.snapshot(), id) : null;
-      if (id && !target) throw new Error("Scope is unavailable.");
+      if (id && !target) throw new Error("TARGET_RETIRED: Scope is unavailable. Locate a current Scope before reading it.");
       return { scope: structuralEvidenceScope(target), filter: useCurrentInvestigation ? this.canonicalFilter : createFilter() };
     },
     query: async (input) => {
       const target = input.scopeId ? findTopologySelection(this.topologyProjection.snapshot(), input.scopeId) : null;
-      if (input.scopeId && !target) throw new Error("Scope is unavailable.");
+      if (input.scopeId && !target) throw new Error("TARGET_RETIRED: Scope is unavailable. Locate a current Scope before reading it.");
       const result = await this.evidenceQuery.query({
         at: input.at, scope: input.scope ?? (input.scopeId ? structuralEvidenceScope(target) : { kind: "PAGE" }),
         filter: input.filter ?? { ...createFilter(), text: input.text ?? "" },
@@ -1086,6 +1111,7 @@ class Runtime implements WorkbenchRuntime {
       if (!result.ok) throw new Error(`${result.problem.code}: ${result.problem.message}`);
       return result.value;
     },
+    subscribeOperations: listener => this.subscribe(listener),
     subscribeEvidence: listener => {
       // History notification is independent of UI publication/visibility. Runtime
       // publication also wakes waits when the inspected page identity changes.
@@ -1093,9 +1119,14 @@ class Runtime implements WorkbenchRuntime {
       const runtime = this.subscribe(listener);
       return () => { history(); runtime(); };
     },
-    diagnostics: async (after) => {
+    diagnostics: async (after, signal) => {
+      const assertCurrent = () => { if (signal?.aborted) throw new Error("QUERY_CANCELLED: Diagnostic read was cancelled."); };
+      assertCurrent();
       await this.diagnosticObservationSettlement;
-      return this.diagnosticObservations.query({ after, through: this.diagnosticObservations.currentBoundary() });
+      assertCurrent();
+      const result = await this.diagnosticObservations.query({ after, through: this.diagnosticObservations.currentBoundary() });
+      assertCurrent();
+      return result;
     },
     validateCandidate: (input, pageEpoch, stillAuthorized) => this.validateAgentCandidate(input, pageEpoch, stillAuthorized),
     prepareScenarioPlan: (input, pageEpoch, stillAuthorized) => this.prepareAgentScenarioPlan(input, pageEpoch, stillAuthorized),
@@ -1124,8 +1155,8 @@ class Runtime implements WorkbenchRuntime {
 
   private async validateAgentCandidate(input: AgentCandidateInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<unknown> {
     const available = () => {
-      if (!stillAuthorized()) throw new Error("Agent access was revoked while validating the candidate.");
-      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("Page changed or panel is hidden/closed. Inspect the current target again.");
+      if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Agent access was revoked while validating the candidate.");
+      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Page changed or panel is hidden/closed. Inspect the current target again.");
     };
     const validate = async (id: string, draft: AgentDraftInput) => {
       available();
@@ -1217,7 +1248,7 @@ class Runtime implements WorkbenchRuntime {
     const candidate = this.createLocalInjectionCandidate(draft.evidence
       ? { kind: "selected-event", eventId: draft.evidence.eventId }
       : { kind: "scope-author", scopeId: draft.scopeId! }, source, { id: `agent-draft-${id}`, recordError: false });
-    if (!candidate) throw new Error("Local Injection target is unavailable or incompatible with the selected source.");
+    if (!candidate) throw new Error("TARGET_RETIRED: Local Injection target is unavailable or incompatible with the selected source. Inspect a current target before preparing another document.");
     if (draft.document !== undefined) {
       candidate.rawText = draft.document;
       this.refreshLocalInjectionValidation(candidate);
@@ -1235,8 +1266,8 @@ class Runtime implements WorkbenchRuntime {
 
   private async prepareAgentScenarioPlanInternal(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
     const available = () => {
-      if (!stillAuthorized()) throw new Error("Agent access was revoked while preparing the Scenario.");
-      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("Page changed or panel is hidden/closed. Inspect the current target again.");
+      if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Agent access was revoked while preparing the Scenario.");
+      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Page changed or panel is hidden/closed. Inspect the current target again.");
       if (this.localInjectionDraft || this.serverInjectionDraft) throw new Error("A protected Draft already exists. Finish it in Workbench before creating a Scenario.");
       if (this.scenarioState) {
         const existing = this.scenarioState;
@@ -1307,8 +1338,8 @@ class Runtime implements WorkbenchRuntime {
 
   private async prepareAgentDrafts(inputs: AgentDraftInput[], scenario: boolean, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
     const available = () => {
-      if (!stillAuthorized()) throw new Error("Agent access was revoked while preparing the document.");
-      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("Page changed or panel is hidden/closed. Inspect the current target again.");
+      if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Agent access was revoked while preparing the document.");
+      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Page changed or panel is hidden/closed. Inspect the current target again.");
       if (this.localInjectionDraft || this.scenarioState || this.serverInjectionDraft) throw new Error("A protected Draft or Scenario already exists. Finish it in Workbench before creating another.");
     };
     available();
@@ -1511,6 +1542,7 @@ class Runtime implements WorkbenchRuntime {
     evidence: EvidenceRef;
   }> | null = null;
   private committedEvidenceBoundary: EvidenceRef | null = null;
+  private commandProjectionEvidenceBoundary: EvidenceIdentity | null = null;
   private scenarioFollowerPhase: CommittedEvidencePipelineFollowerState["progress"]["phase"] = "IDLE";
   private readonly scenarioBoundaryListeners = new Set<(snapshot: ScenarioCommittedBoundarySnapshot) => void>();
   private scenarioBoundaryPublicationPending = false;
@@ -1581,6 +1613,13 @@ class Runtime implements WorkbenchRuntime {
     revision: number;
     descriptors: readonly ScopeNodeDescriptor[];
     descriptorById: ReadonlyMap<string, ScopeNodeDescriptor>;
+  } | null = null;
+  private agentScopeSearchNodesCache: {
+    pageEpoch: string | null;
+    structureRevision: number;
+    topology: TopologyState;
+    captureStatus: CaptureStatus;
+    nodes: AgentScopeSearchSnapshot["nodes"];
   } | null = null;
   private scopeNodePresentationCache: {
     revision: number;
@@ -3292,6 +3331,7 @@ class Runtime implements WorkbenchRuntime {
     this.passiveRefreshPending = false;
     this.projectionRecovery = null;
     this.commandStateProjections.clear();
+    this.commandProjectionEvidenceBoundary = null;
     this.retainedLocalEvidenceIds.clear();
     this.topologyProjection.clear();
     this.committedEvidenceBoundary = this.history.status().retainedRange?.last ?? null;
@@ -3526,6 +3566,7 @@ class Runtime implements WorkbenchRuntime {
         if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
         else this.topologyCoverage = "LIMITED";
       }
+      this.commandProjectionEvidenceBoundary = Object.freeze({ intervalId: entry.intervalId, pageId: entry.intervalId, ownerId: "memory-event-history", sequence: entry.sequence, eventId: entry.eventId });
       this.acceptTopologyBasisRecovery(entry, topologyResult.checkpoint);
       this.recordSubscriptionDiagnosticProposals(topologyDiagnostics.apply(
         entry,
@@ -3589,7 +3630,9 @@ class Runtime implements WorkbenchRuntime {
       event.topology?.pageEpoch ?? this.currentPageEpoch,
       { historyStatus: this.history.status() }
     ));
-    commandStateProjections.apply(event);
+    const commandEvidence = Object.freeze({ intervalId: entry.intervalId, pageId: entry.intervalId, ownerId: "memory-event-history", sequence: entry.sequence, eventId: entry.eventId });
+    commandStateProjections.apply(event, commandEvidence);
+    this.commandProjectionEvidenceBoundary = commandEvidence;
     this.recordCommittedServerDiagnosticFindings(entry, event);
     if (!this.visible && this.trackHiddenActivityConditionLifecycle) {
       // A rendered snapshot is intentionally not required to end an active
@@ -7080,13 +7123,18 @@ class Runtime implements WorkbenchRuntime {
         ["Phase", evidencePhase(selected)],
         ["COMMAND operation", selected.update?.command ?? "—"],
         ["Evidence identity", selected.id],
+        ...(selected.kind === "item-update" ? [
+          ["Logical Update identity", selected.logicalEventId ?? "Unavailable; delivery grouping is not proven."],
+          ["Update Delivery listener", selected.listener?.id ?? "Unavailable; listener delivery is not proven."]
+        ] as const : []),
         ["Client identity", selected.client?.id ?? "—"],
         ["Session identity", selected.client?.sessionId ?? "—"],
         ["Subscription identity", selected.subscription?.id ?? "—"],
         ["Runtime object", evidenceObject(selected)],
         ["COMMAND key", selected.update?.key ?? "—"],
         ["Observation path", evidenceObservationPath(selected)],
-        ["Evidence limitations", evidenceLimitations(selected)]
+        ["Evidence limitations", evidenceLimitations(selected)],
+        ...(Object.keys(selected.update?.jsonPatches ?? {}).length ? [["JSON Patch basis", "Captured patch; prior value and application have not been verified."]] as const : [])
       ] as const),
       filterActions: this.selectedContextFilterActions(selected)
     });

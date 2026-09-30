@@ -52,6 +52,14 @@ unpacked builds. A busy port is not authorization to kill an unrelated process. 
 matching configuration through the common guide when authorized. Existing
 credential-bearing entries remain authenticated; they are never silently downgraded.
 
+The companion handshake verifies its extension ID, protocol and read-contract
+versions before granting access. `COMPANION_INCOMPATIBLE` and the existing Agent
+access detail name the mismatch. Stop the Workbench MCP server processes, run
+`setup --extension-id <actual-extension-id>` with the matching companion package,
+and reconnect. Automatic retries do not repair an incompatible configuration.
+`get_status.companion` reports public companion identity when connected; it does
+not contain captured Evidence or credentials.
+
 Browser automation is a separate connection. Confirm it controls the same page
 and application state. If its identifiers cannot be mapped unambiguously to the
 Workbench connection, resolve that uncertainty before a reproduction.

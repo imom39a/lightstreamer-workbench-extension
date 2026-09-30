@@ -1,3 +1,5 @@
+import { isBoundedEvidenceRefComponent, MAX_EVIDENCE_REF_COMPONENT_UTF8_BYTES } from "./event-history-authoritative";
+
 export const DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION = 1 as const;
 export const DIAGNOSTIC_RULE_CODE_MAX_LENGTH = 96;
 export const DIAGNOSTIC_IDENTITY_COMPONENT_MAX_LENGTH = 128;
@@ -608,6 +610,12 @@ function assertComponent(value: string, label: string): void {
   }
 }
 
+function assertEvidenceComponent(value: string, label: string): void {
+  if (!isBoundedEvidenceRefComponent(value)) {
+    throw new Error(`${label} must contain 1 to ${MAX_EVIDENCE_REF_COMPONENT_UTF8_BYTES} UTF-8 bytes.`);
+  }
+}
+
 function assertPositiveInteger(value: number, label: string, allowZero = false): void {
   if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) throw new Error(`${label} must be a ${allowZero ? "non-negative" : "positive"} safe integer.`);
 }
@@ -627,11 +635,14 @@ function assertAffected(affected: DiagnosticAffectedIdentity): void {
       assertComponent(affected.subscriptionId, "Affected Subscription identity");
       break;
     case "item": assertComponent(affected.pageId, "Affected page identity"); assertComponent(affected.clientId, "Affected Client identity"); assertComponent(affected.subscriptionId, "Affected Subscription identity"); assertComponent(affected.item, "Affected item identity"); break;
-    case "evidence": assertComponent(affected.intervalId, "Affected History Interval identity"); assertPositiveInteger(affected.sequence, "Affected Evidence sequence"); assertComponent(affected.eventId, "Affected Evidence identity"); break;
+    case "evidence": assertEvidenceComponent(affected.intervalId, "Affected History Interval identity"); assertPositiveInteger(affected.sequence, "Affected Evidence sequence"); assertEvidenceComponent(affected.eventId, "Affected Evidence identity"); break;
     default: throw new Error("Diagnostic affected identity kind is unsupported.");
   }
   Object.entries(affected).forEach(([key, value]) => {
-    if (typeof value === "string") assertComponent(value, `Affected identity ${key}`);
+    if (typeof value === "string") {
+      if (affected.kind === "evidence" && (key === "intervalId" || key === "eventId")) assertEvidenceComponent(value, `Affected identity ${key}`);
+      else assertComponent(value, `Affected identity ${key}`);
+    }
     if (key === "sequence" && typeof value === "number") assertPositiveInteger(value, "Affected Evidence sequence");
   });
 }
@@ -647,8 +658,12 @@ function assertResultRef(ref: DiagnosticResultRef): void {
   if (!(["evidence", "projection", "injection-outcome"] as const).includes(ref.kind)) {
     throw new Error("Diagnostic result reference kind is unsupported.");
   }
+  if (ref.kind === "evidence") assertAffected(ref);
   Object.entries(ref).forEach(([key, value]) => {
-    if (typeof value === "string") assertComponent(value, `Diagnostic result ${key}`);
+    if (typeof value === "string") {
+      if (ref.kind === "evidence" && (key === "intervalId" || key === "eventId")) assertEvidenceComponent(value, `Diagnostic result ${key}`);
+      else assertComponent(value, `Diagnostic result ${key}`);
+    }
     if (key === "sequence" && typeof value === "number") assertPositiveInteger(value, "Diagnostic result Evidence sequence");
   });
 }

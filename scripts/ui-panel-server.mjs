@@ -114,7 +114,14 @@ const history = createInMemoryEventHistory({
       }
     : {}),
 });
-await Promise.all(scenario.initialEvents.map((event) => history.offer(event).settled));
+await Promise.all(scenario.initialEvents.map((event) => {
+  const selectedFidelity = params.get("selected-values") === "fidelity" && event.id === scenario.selectedEventId;
+  const candidate = selectedFidelity ? { ...event, logicalEventId: "logical-fidelity-update", listener: { ...event.listener, id: "listener-fidelity" },
+    update: { ...event.update, fields: { ...event.update?.fields, exactJson: ' { "identifier":9007199254740993, "amount":1.2300 } ', confirmedNull: null, uncertainNull: null },
+      fieldValueStates: { ...event.update?.fieldValueStates, exactJson: "concrete", confirmedNull: "concrete", uncertainNull: "ambiguous-null", missingValue: "unavailable" },
+      jsonPatches: { exactJson: { op: "replace", path: "/amount", value: 2 } } } } : event;
+  return history.offer(candidate).settled;
+}));
 let localInjectionExecutionCount = 0;
 let serverInjectionExecutionCount = 0;
 let scenarioClockNow = 0;
@@ -226,7 +233,8 @@ const presentationRuntime = {
   reportVisibleFrame: runtime.reportVisibleFrame?.bind(runtime),
   reportPanelPerformanceEvent: runtime.reportPanelPerformanceEvent?.bind(runtime)
 };
-const agentConnection = agentConnectionFixture(params.get("agent") === "error");
+const mismatchDetail = params.get("agent") === "mismatch" ? "Companion extension bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb differs from required aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Stop Workbench MCP servers; run setup --extension-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa with the matching package. Workbench retries automatically." : undefined;
+const agentConnection = agentConnectionFixture(params.get("agent") === "error" || params.get("agent") === "mismatch", mismatchDetail);
 reactRoot.render(createElement(WorkbenchPanel, { runtime: presentationRuntime, analytics, agentConnection }));
 window.__analyticsEvents = () => analyticsEvents;
 window.addEventListener("pagehide", () => { analyticsObserver.dispose(); analytics.dispose(); }, { once: true });

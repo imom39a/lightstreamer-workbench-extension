@@ -265,6 +265,7 @@ describe("Local Injection Scenario runner", () => {
 
   it("appends a maximum-shaped compact diagnostic reference within its pre-admitted 8 MiB Trace", async () => {
     const component = "🧭".repeat(128);
+    const evidenceComponent = "🧭".repeat(64); // Canonical Evidence components allow 256 UTF-8 bytes.
     const code = "a".repeat(96);
     const affected = { kind: "item", pageId: component, clientId: component, subscriptionId: component, item: component } as const;
     const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: component });
@@ -273,8 +274,8 @@ describe("Local Injection Scenario runner", () => {
     await journal.observe({
       code, ruleVersion: Number.MAX_SAFE_INTEGER, severity: "error", lifecycle: { kind: "occurrence", occurrenceId: component }, affected,
       observedAt: Number.MAX_SAFE_INTEGER, observed: "x", limitation: "x", consequence: "x",
-      evidenceBoundary: { intervalId: component, sequence: Number.MAX_SAFE_INTEGER, eventId: component },
-      route: { kind: "inspect-evidence", evidence: { intervalId: component, sequence: Number.MAX_SAFE_INTEGER, eventId: component } },
+      evidenceBoundary: { intervalId: evidenceComponent, sequence: Number.MAX_SAFE_INTEGER, eventId: evidenceComponent },
+      route: { kind: "inspect-evidence", evidence: { intervalId: evidenceComponent, sequence: Number.MAX_SAFE_INTEGER, eventId: evidenceComponent } },
       resultRef: { kind: "projection", projection: "local-effective-command-state", key: component }
     });
     const clock = new FakeClock();

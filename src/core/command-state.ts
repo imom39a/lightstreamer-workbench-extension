@@ -7,10 +7,17 @@ export type CommandLifecycleCommand = "ADD" | "UPDATE" | "DELETE";
 
 /**
  * The amount of lifecycle detail intentionally retained in a live projection.
- * Older lifecycle Evidence remains available from the bounded Event History
- * query seam at its History Interval and Committed Evidence Boundary.
+ * Older lifecycle Evidence may remain available through bounded Event History
+ * queries, only while its Evidence is retained.
  */
 export const COMMAND_RECENT_LIFECYCLE_LIMIT = 32;
+/** Global per-projection budgets for auxiliary history; active row values are never evicted. */
+export const COMMAND_HISTORICAL_KEY_LIMIT = 2_048;
+export const COMMAND_HISTORICAL_KEY_BYTE_LIMIT = 2 * 1024 * 1024;
+export const COMMAND_LIFECYCLE_ENTRY_LIMIT = 4_096;
+export const COMMAND_LIFECYCLE_BYTE_LIMIT = 8 * 1024 * 1024;
+export const COMMAND_DIAGNOSTIC_LIMIT = 512;
+export const COMMAND_DIAGNOSTIC_BYTE_LIMIT = 512 * 1024;
 
 export type CommandDiagnosticCode =
   | "missing-command"
@@ -37,6 +44,8 @@ export type CommandDiagnostic = {
 
 export type CommandProvenanceLabel = "snapshot" | "live" | "synthetic-live" | "synthetic-snapshot";
 
+export type CommandEvidenceIdentity = Readonly<{ intervalId: string; sequence: number; eventId: string; pageId?: string; ownerId?: string }>;
+
 export type CommandProvenance = {
   label: CommandProvenanceLabel;
   eventId: string;
@@ -44,6 +53,7 @@ export type CommandProvenance = {
   source: LightstreamerEventEnvelope["source"];
   synthetic: boolean;
   isSnapshot: boolean;
+  evidence?: CommandEvidenceIdentity;
 };
 
 export type CommandLifecycleEntry = {
@@ -96,10 +106,15 @@ export type CommandItemGroup = {
   itemPosition: number | null;
   activeRows: CommandRow[];
   deletedKeys: DeletedCommandKey[];
+  /** Older tombstones were evicted; absence from deletedKeys is not a never-seen claim. */
+  deletedKeysHasOlder: boolean;
+  lastClearSnapshot: CommandProvenance | null;
   lifecycle: CommandLifecycleEntry[];
   lifecycleTotal: number;
   lifecycleHasOlder: boolean;
   diagnostics: CommandDiagnostic[];
+  diagnosticsTotal: number;
+  diagnosticsHasOlder: boolean;
 };
 
 export type CommandSubscriptionGroup = {
@@ -108,11 +123,15 @@ export type CommandSubscriptionGroup = {
   subscription: EventSubscription;
   items: CommandItemGroup[];
   diagnostics: CommandDiagnostic[];
+  diagnosticsTotal: number;
+  diagnosticsHasOlder: boolean;
 };
 
 export type CommandState = {
   subscriptions: CommandSubscriptionGroup[];
   diagnostics: CommandDiagnostic[];
+  diagnosticsTotal: number;
+  diagnosticsHasOlder: boolean;
 };
 
 export type CommandItemIdentity = {
@@ -140,6 +159,7 @@ export type CommandDraftValidationResult = {
 
 type MutableCommandRow = Omit<CommandRow, "status" | "lifecycle" | "lifecycleTotal" | "lifecycleHasOlder"> & {
   status: "active";
+  fieldCount: number;
   lifecycle: CommandLifecycleEntry[];
   lifecycleTotal: number;
   lifecycleHasOlder: boolean;
@@ -164,9 +184,12 @@ type ItemAccumulator = {
   itemPosition: number | null;
   activeRows: Map<string, MutableCommandRow>;
   deletedKeys: Map<string, MutableDeletedCommandKey>;
+  deletedKeysHasOlder: boolean;
+  lastClearSnapshot: CommandProvenance | null;
   lifecycleByKey: Map<string, BoundedLifecycle>;
   lifecycle: BoundedLifecycle;
   diagnostics: CommandDiagnostic[];
+  diagnosticsTotal: number;
 };
 
 type SubscriptionAccumulator = {
@@ -175,16 +198,24 @@ type SubscriptionAccumulator = {
   subscription: EventSubscription;
   items: Map<string, ItemAccumulator>;
   diagnostics: CommandDiagnostic[];
+  diagnosticsTotal: number;
 };
 
 type CommandStateAccumulator = {
   subscriptions: Map<string, SubscriptionAccumulator>;
   knownSubscriptions: Map<string, EventSubscription>;
   diagnostics: CommandDiagnostic[];
+  diagnosticsTotal: number;
+  lifecycleHistory: AuxiliaryHistory<CommandLifecycleEntry>;
+  deletedHistory: AuxiliaryHistory<MutableDeletedCommandKey>;
+  diagnosticHistory: AuxiliaryHistory<CommandDiagnostic>;
 };
 
+type AuxiliaryRecord<T> = { subscriptionId: string; itemId: string; value: T; bytes: number };
+type AuxiliaryHistory<T> = { entries: Map<T, AuxiliaryRecord<T>>; bytes: number };
+
 export type CommandStateIndex = {
-  apply(event: LightstreamerEventEnvelope): void;
+  apply(event: LightstreamerEventEnvelope, evidence?: CommandEvidenceIdentity): void;
   clear(): void;
   snapshot(): CommandState;
 };
@@ -197,10 +228,12 @@ export type CommandStateProjection = "observed-server" | "local-effective";
  * advance only the locally effective projection.
  */
 export type CommandStateProjections = {
-  apply(event: LightstreamerEventEnvelope): void;
+  apply(event: LightstreamerEventEnvelope, evidence?: CommandEvidenceIdentity): void;
   clear(): void;
   snapshot(projection: CommandStateProjection): CommandState;
   inspect(projection: CommandStateProjection, input: CommandStateInspectionInput): CommandStateInspection;
+  /** Direct exact-item/key read; never materializes unrelated rows or subscriptions. */
+  readKey(projection: CommandStateProjection, input: CommandStateInspectionInput): CommandKeyStateRead;
 };
 
 export type CommandStateInspectionInput = Readonly<{
@@ -210,12 +243,24 @@ export type CommandStateInspectionInput = Readonly<{
   field?: string;
 }>;
 
+export type CommandKeyStateRead = Readonly<{
+  itemFound: boolean;
+  row: Readonly<CommandRow> | null;
+  deleted: Readonly<DeletedCommandKey> | null;
+  fieldsTotal: number;
+  lastClearSnapshot: CommandProvenance | null;
+  deletedKeysHasOlder: boolean;
+  lifecycleHasOlder: boolean;
+  diagnosticsHasOlder: boolean;
+}>;
+
 export type CommandStateInspection = Readonly<{
   state: "key-present" | "key-absent" | "field-absent" | "concrete" | "ambiguous-server-null" | "redacted" | "unavailable" | "unresolved-wire";
   value?: CommandFieldValue;
   provenance: CommandProvenance | null;
 }>;
 
+const AUXILIARY_BYTE_ENCODER = new TextEncoder();
 const SUPPORTED_COMMANDS = new Set<CommandLifecycleCommand>(["ADD", "UPDATE", "DELETE"]);
 const APPLIED_PROJECTION_EVENT_DEDUP_LIMIT = 4_096;
 
@@ -231,7 +276,7 @@ export function createCommandStateIndex(): CommandStateIndex {
   return createCommandStateIndexController().index;
 }
 
-type CommandStateIndexController = Readonly<{ index: CommandStateIndex }>;
+type CommandStateIndexController = Readonly<{ index: CommandStateIndex; readKey(input: CommandStateInspectionInput): CommandKeyStateRead }>;
 
 function createCommandStateIndexController(
   initial: CommandStateAccumulator = createCommandStateAccumulator()
@@ -239,8 +284,8 @@ function createCommandStateIndexController(
   let accumulator = initial;
   let cachedSnapshot: CommandState | null = null;
   const index: CommandStateIndex = {
-    apply(event) {
-      applyCommandEvent(accumulator, event);
+    apply(event, evidence) {
+      applyCommandEvent(accumulator, event, evidence);
       cachedSnapshot = null;
     },
 
@@ -254,7 +299,7 @@ function createCommandStateIndexController(
       return cachedSnapshot;
     }
   };
-  return { index };
+  return { index, readKey: (input) => readAccumulatorKey(accumulator, input) };
 }
 
 export function createCommandStateProjections(): CommandStateProjections {
@@ -263,7 +308,7 @@ export function createCommandStateProjections(): CommandStateProjections {
   const appliedEventIds = new Set<string>();
 
   return {
-    apply(event) {
+    apply(event, evidence) {
       if (appliedEventIds.has(event.id)) return;
       appliedEventIds.add(event.id);
       while (appliedEventIds.size > APPLIED_PROJECTION_EVENT_DEDUP_LIMIT) {
@@ -272,10 +317,10 @@ export function createCommandStateProjections(): CommandStateProjections {
         appliedEventIds.delete(oldest);
       }
       if (isLocalInjectedEvent(event)) {
-        localEffective.index.apply(event);
+        localEffective.index.apply(event, evidence);
       } else {
-        observedServer.index.apply(event);
-        localEffective.index.apply(event);
+        observedServer.index.apply(event, evidence);
+        localEffective.index.apply(event, evidence);
       }
     },
 
@@ -289,6 +334,10 @@ export function createCommandStateProjections(): CommandStateProjections {
       return projection === "observed-server"
         ? observedServer.index.snapshot()
         : localEffective.index.snapshot();
+    },
+
+    readKey(projection, input) {
+      return (projection === "observed-server" ? observedServer : localEffective).readKey(input);
     },
 
     inspect(projection, input) {
@@ -306,20 +355,27 @@ function createCommandStateAccumulator(): CommandStateAccumulator {
   return {
     subscriptions: new Map(),
     knownSubscriptions: new Map(),
-    diagnostics: []
+    diagnostics: [],
+    diagnosticsTotal: 0,
+    lifecycleHistory: { entries: new Map(), bytes: 0 },
+    deletedHistory: { entries: new Map(), bytes: 0 },
+    diagnosticHistory: { entries: new Map(), bytes: 0 }
   };
 }
 
 function commandStateFromAccumulator(accumulator: CommandStateAccumulator): CommandState {
   return {
     subscriptions: Array.from(accumulator.subscriptions.values()).map(toSubscriptionGroup),
-    diagnostics: [...accumulator.diagnostics]
+    diagnostics: [...accumulator.diagnostics],
+    diagnosticsTotal: accumulator.diagnosticsTotal,
+    diagnosticsHasOlder: accumulator.diagnosticsTotal > accumulator.diagnostics.length
   };
 }
 
 function applyCommandEvent(
   accumulator: CommandStateAccumulator,
-  event: LightstreamerEventEnvelope
+  event: LightstreamerEventEnvelope,
+  evidence?: CommandEvidenceIdentity
 ): void {
   const subscription = subscriptionForEvent(event, accumulator.knownSubscriptions);
   const subscriptionId = event.subscription?.id;
@@ -327,6 +383,7 @@ function applyCommandEvent(
     (event.kind === "subscription-ended" || event.kind === "subscription-error") &&
     subscriptionId
   ) {
+    releaseSubscriptionAuxiliaryHistory(accumulator, subscriptionId);
     accumulator.subscriptions.delete(subscriptionId);
     accumulator.knownSubscriptions.delete(subscriptionId);
     return;
@@ -339,6 +396,7 @@ function applyCommandEvent(
   if (
     event.kind !== "subscription-started" &&
     event.kind !== "subscription-snapshot" &&
+    event.kind !== "clear-snapshot" &&
     event.kind !== "item-update"
   ) {
     return;
@@ -355,16 +413,23 @@ function applyCommandEvent(
     return;
   }
 
-  if (event.kind !== "item-update") {
-    return;
-  }
-
   const item = getItemAccumulator(
     subscriptionAccumulator,
     resolveCommandItemIdentity(commandEvent.subscription, commandEvent.item)
   );
+  if (event.kind === "clear-snapshot") {
+    for (const deleted of item.deletedKeys.values()) removeAuxiliaryRecord(accumulator.deletedHistory, deleted);
+    item.activeRows.clear();
+    item.deletedKeys.clear();
+    // Clear establishes a fresh empty item basis. Earlier tombstone eviction
+    // must not invalidate that basis; item lifecycle history keeps its own limit.
+    item.deletedKeysHasOlder = false;
+    item.lifecycleByKey.clear();
+    item.lastClearSnapshot = Object.freeze(createProvenance(commandEvent, evidence));
+    return;
+  }
   const command = normalizeCommand(commandValue(commandEvent));
-  const key = stringOrNull(commandEvent.update?.key ?? commandEvent.update?.fields?.key);
+  const key = exactKeyOrNull(commandEvent.update?.key ?? commandEvent.update?.fields?.key);
   const isSnapshot = Boolean(commandEvent.update?.isSnapshot);
   const eventDiagnostics: CommandDiagnostic[] = [];
 
@@ -387,12 +452,12 @@ function applyCommandEvent(
   }
 
   if (hasBlockingDiagnostic(eventDiagnostics) || !key || !command || !isSupportedCommand(command)) {
-    recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+    recordDiagnostics(accumulator, subscriptionAccumulator, item, eventDiagnostics);
     return;
   }
 
   if (command === "UPDATE" && isSnapshot) {
-    recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+    recordDiagnostics(accumulator, subscriptionAccumulator, item, eventDiagnostics);
     return;
   }
 
@@ -400,7 +465,7 @@ function applyCommandEvent(
   let effectiveCommand: CommandLifecycleCommand = command;
 
   if (command === "DELETE" && isSnapshot && !existing) {
-    recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+    recordDiagnostics(accumulator, subscriptionAccumulator, item, eventDiagnostics);
     return;
   }
 
@@ -413,11 +478,11 @@ function applyCommandEvent(
   if (command === "DELETE" && !existing) {
     const diagnostic = createUnknownKeyDeleteDiagnostic(commandEvent, key);
     eventDiagnostics.push(diagnostic);
-    recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+    recordDiagnostics(accumulator, subscriptionAccumulator, item, eventDiagnostics);
     return;
   }
 
-  const provenance = Object.freeze(createProvenance(commandEvent));
+  const provenance = Object.freeze(createProvenance(commandEvent, evidence));
   const currentFields = commandEvent.update?.fields ?? {};
   const changedFieldNames = new Set(Object.keys(commandEvent.update?.changedFields ?? {}));
   const incomingFieldStates = commandFieldStates(commandEvent);
@@ -446,11 +511,11 @@ function applyCommandEvent(
     diagnosticCodes: Object.freeze(eventDiagnostics.map((diagnostic) => diagnostic.code)) as CommandDiagnosticCode[]
   }) as CommandLifecycleEntry;
 
-  appendLifecycle(item, key, lifecycleEntry);
+  appendLifecycle(accumulator, item, key, lifecycleEntry);
 
   if (effectiveCommand === "DELETE") {
     item.activeRows.delete(key);
-    item.deletedKeys.set(key, {
+    const deleted: MutableDeletedCommandKey = {
       subscriptionId: subscriptionAccumulator.subscriptionId,
       itemId: item.itemId,
       itemName: item.itemName,
@@ -461,6 +526,14 @@ function applyCommandEvent(
       lifecycle: lifecycleEntries(item.lifecycleByKey.get(key)),
       lifecycleTotal: item.lifecycleByKey.get(key)?.total ?? 0,
       lifecycleHasOlder: hasOlderLifecycle(item.lifecycleByKey.get(key))
+    };
+    item.deletedKeys.set(key, deleted);
+    retainAuxiliaryRecord(accumulator.deletedHistory, item, deleted, COMMAND_HISTORICAL_KEY_LIMIT, COMMAND_HISTORICAL_KEY_BYTE_LIMIT, (record) => {
+      const affected = auxiliaryItem(accumulator, record);
+      if (affected?.deletedKeys.get(record.value.key) !== record.value) return;
+      affected.deletedKeys.delete(record.value.key);
+      affected.lifecycleByKey.delete(record.value.key);
+      affected.deletedKeysHasOlder = true;
     });
   } else {
     const origin = existing?.origin ?? provenance;
@@ -473,6 +546,7 @@ function applyCommandEvent(
       key,
       status: "active",
       fields: cloneFields(commandEvent.update?.fields),
+      fieldCount: Object.keys(currentFields).length,
       fieldValueStates,
       fieldProvenance,
       origin,
@@ -481,10 +555,12 @@ function applyCommandEvent(
       lifecycleTotal: keyLifecycle?.total ?? 0,
       lifecycleHasOlder: hasOlderLifecycle(keyLifecycle)
     });
+    const deleted = item.deletedKeys.get(key);
+    if (deleted) removeAuxiliaryRecord(accumulator.deletedHistory, deleted);
     item.deletedKeys.delete(key);
   }
 
-  recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+  recordDiagnostics(accumulator, subscriptionAccumulator, item, eventDiagnostics);
 }
 
 export function inspectCommandState(state: CommandState, input: CommandStateInspectionInput): CommandStateInspection {
@@ -494,7 +570,10 @@ export function inspectCommandState(state: CommandState, input: CommandStateInsp
     itemPosition: input.item.position
   });
   const row = item?.activeRows.find(({ key }) => key === input.key);
-  if (!row) return Object.freeze({ state: "key-absent", provenance: null });
+  if (!row) return Object.freeze({
+    state: "key-absent",
+    provenance: item?.deletedKeys.find(({ key }) => key === input.key)?.deletedAt ?? item?.lastClearSnapshot ?? null
+  });
   if (input.field === undefined) return Object.freeze({ state: "key-present", provenance: row.latest });
   if (!Object.prototype.hasOwnProperty.call(row.fields, input.field)) {
     return Object.freeze({ state: "field-absent", provenance: row.latest });
@@ -507,6 +586,23 @@ export function inspectCommandState(state: CommandState, input: CommandStateInsp
   if (semantic === "unavailable") return Object.freeze({ state: "unavailable", provenance });
   if (semantic === "unresolved-wire-difference") return Object.freeze({ state: "unresolved-wire", provenance });
   return Object.freeze({ state: "concrete", value, provenance });
+}
+
+function readAccumulatorKey(accumulator: CommandStateAccumulator, input: CommandStateInspectionInput): CommandKeyStateRead {
+  const subscription = accumulator.subscriptions.get(input.subscriptionId);
+  const identity = resolveCommandItemIdentity(subscription?.subscription, input.item);
+  const candidate = subscription?.items.get(identity.itemId);
+  const item = candidate && (input.item.position === null || candidate.itemPosition === input.item.position)
+    && (input.item.name === null || candidate.itemName === input.item.name) ? candidate : undefined;
+  const row = item?.activeRows.get(input.key) ?? null;
+  return Object.freeze({
+    itemFound: Boolean(item), row, deleted: item?.deletedKeys.get(input.key) ?? null,
+    fieldsTotal: row?.fieldCount ?? 0,
+    lastClearSnapshot: item?.lastClearSnapshot ?? null,
+    deletedKeysHasOlder: item?.deletedKeysHasOlder ?? false,
+    lifecycleHasOlder: hasOlderLifecycle(item?.lifecycle),
+    diagnosticsHasOlder: Boolean(item && item.diagnosticsTotal > item.diagnostics.length)
+  });
 }
 
 function commandFieldStates(event: LightstreamerEventEnvelope): Record<string, ItemUpdateFieldValueState> {
@@ -523,7 +619,7 @@ export function validateCommandDraftAgainstState(
 ): CommandDraftValidationResult {
   const diagnostics: CommandDiagnostic[] = [];
   const command = normalizeCommand(draft?.command);
-  const key = stringOrNull(draft?.key);
+  const key = exactKeyOrNull(draft?.key);
   const syntheticEvent = validationEvent(draft, context);
 
   if (!command) {
@@ -636,7 +732,8 @@ function getSubscriptionAccumulator(
     mode: subscription.mode ?? null,
     subscription,
     items: new Map(),
-    diagnostics: []
+    diagnostics: [],
+    diagnosticsTotal: 0
   };
   subscriptions.set(subscriptionId, created);
   return created;
@@ -663,9 +760,12 @@ function getItemAccumulator(
     itemPosition,
     activeRows: new Map(),
     deletedKeys: new Map(),
+    deletedKeysHasOlder: false,
+    lastClearSnapshot: null,
     lifecycleByKey: new Map(),
     lifecycle: createBoundedLifecycle(),
-    diagnostics: []
+    diagnostics: [],
+    diagnosticsTotal: 0
   };
   subscription.items.set(itemId, created);
   return created;
@@ -697,7 +797,9 @@ function toSubscriptionGroup(subscription: SubscriptionAccumulator): CommandSubs
     mode: subscription.mode,
     subscription: { ...subscription.subscription },
     items: Array.from(subscription.items.values()).map(toItemGroup),
-    diagnostics: [...subscription.diagnostics]
+    diagnostics: [...subscription.diagnostics],
+    diagnosticsTotal: subscription.diagnosticsTotal,
+    diagnosticsHasOlder: subscription.diagnosticsTotal > subscription.diagnostics.length
   };
 }
 
@@ -707,45 +809,61 @@ function toItemGroup(item: ItemAccumulator): CommandItemGroup {
     itemId: item.itemId,
     itemName: item.itemName,
     itemPosition: item.itemPosition,
-    activeRows: Array.from(item.activeRows.values()).map((row) => ({
+    deletedKeysHasOlder: item.deletedKeysHasOlder,
+    lastClearSnapshot: item.lastClearSnapshot,
+    activeRows: Array.from(item.activeRows.values()).map(({ fieldCount: _fieldCount, ...row }) => ({
       ...row,
       fields: { ...row.fields },
       fieldValueStates: { ...row.fieldValueStates },
       fieldProvenance: { ...row.fieldProvenance },
-      lifecycle: row.lifecycle.map(cloneLifecycleEntry)
+      lifecycle: row.lifecycle.map(cloneLifecycleEntry),
+      lifecycleHasOlder: row.lifecycleTotal > row.lifecycle.length
     })),
     deletedKeys: Array.from(item.deletedKeys.values()).map((deleted) => ({
       ...deleted,
-      lifecycle: deleted.lifecycle.map(cloneLifecycleEntry)
+      lifecycle: deleted.lifecycle.map(cloneLifecycleEntry),
+      lifecycleHasOlder: deleted.lifecycleTotal > deleted.lifecycle.length
     })),
     lifecycle: item.lifecycle.entries.map(cloneLifecycleEntry),
     lifecycleTotal: item.lifecycle.total,
     lifecycleHasOlder: hasOlderLifecycle(item.lifecycle),
-    diagnostics: [...item.diagnostics]
+    diagnostics: [...item.diagnostics],
+    diagnosticsTotal: item.diagnosticsTotal,
+    diagnosticsHasOlder: item.diagnosticsTotal > item.diagnostics.length
   };
 }
 
-function appendLifecycle(item: ItemAccumulator, key: string, entry: CommandLifecycleEntry): void {
+function appendLifecycle(accumulator: CommandStateAccumulator, item: ItemAccumulator, key: string, entry: CommandLifecycleEntry): void {
   const lifecycle = item.lifecycleByKey.get(key) ?? createBoundedLifecycle();
-  appendBoundedLifecycle(lifecycle, entry);
+  const discardedKeyEntry = appendBoundedLifecycle(lifecycle, entry);
   item.lifecycleByKey.set(key, lifecycle);
-  appendBoundedLifecycle(item.lifecycle, entry);
+  const discardedItemEntry = appendBoundedLifecycle(item.lifecycle, entry);
+  for (const discarded of [discardedKeyEntry, discardedItemEntry]) {
+    if (discarded && !item.lifecycle.entries.includes(discarded) && !item.lifecycleByKey.get(discarded.key)?.entries.includes(discarded)) {
+      removeAuxiliaryRecord(accumulator.lifecycleHistory, discarded);
+    }
+  }
+  retainAuxiliaryRecord(accumulator.lifecycleHistory, item, entry, COMMAND_LIFECYCLE_ENTRY_LIMIT, COMMAND_LIFECYCLE_BYTE_LIMIT, (record) => {
+    const affected = auxiliaryItem(accumulator, record);
+    if (!affected) return;
+    removeIdentity(affected.lifecycle.entries, record.value);
+    const keyLifecycle = affected.lifecycleByKey.get(record.value.key);
+    if (keyLifecycle) removeIdentity(keyLifecycle.entries, record.value);
+  });
 }
 
 function createBoundedLifecycle(): BoundedLifecycle {
   return { entries: [], total: 0 };
 }
 
-function appendBoundedLifecycle(lifecycle: BoundedLifecycle, entry: CommandLifecycleEntry): void {
+function appendBoundedLifecycle(lifecycle: BoundedLifecycle, entry: CommandLifecycleEntry): CommandLifecycleEntry | undefined {
   lifecycle.entries.push(entry);
   lifecycle.total += 1;
-  if (lifecycle.entries.length > COMMAND_RECENT_LIFECYCLE_LIMIT) {
-    lifecycle.entries.splice(0, lifecycle.entries.length - COMMAND_RECENT_LIFECYCLE_LIMIT);
-  }
+  return lifecycle.entries.length > COMMAND_RECENT_LIFECYCLE_LIMIT ? lifecycle.entries.shift() : undefined;
 }
 
 function lifecycleEntries(lifecycle: BoundedLifecycle | undefined): CommandLifecycleEntry[] {
-  return lifecycle ? [...lifecycle.entries] : [];
+  return lifecycle?.entries ?? [];
 }
 
 function hasOlderLifecycle(lifecycle: BoundedLifecycle | undefined): boolean {
@@ -753,7 +871,7 @@ function hasOlderLifecycle(lifecycle: BoundedLifecycle | undefined): boolean {
 }
 
 function recordDiagnostics(
-  stateDiagnostics: CommandDiagnostic[],
+  accumulator: CommandStateAccumulator,
   subscription: SubscriptionAccumulator,
   item: ItemAccumulator,
   eventDiagnostics: readonly CommandDiagnostic[]
@@ -761,9 +879,76 @@ function recordDiagnostics(
   if (eventDiagnostics.length === 0) {
     return;
   }
-  stateDiagnostics.push(...eventDiagnostics);
-  subscription.diagnostics.push(...eventDiagnostics);
-  item.diagnostics.push(...eventDiagnostics);
+  accumulator.diagnosticsTotal += eventDiagnostics.length;
+  subscription.diagnosticsTotal += eventDiagnostics.length;
+  item.diagnosticsTotal += eventDiagnostics.length;
+  for (const diagnostic of eventDiagnostics) {
+    accumulator.diagnostics.push(diagnostic);
+    subscription.diagnostics.push(diagnostic);
+    item.diagnostics.push(diagnostic);
+    retainAuxiliaryRecord(accumulator.diagnosticHistory, item, diagnostic, COMMAND_DIAGNOSTIC_LIMIT, COMMAND_DIAGNOSTIC_BYTE_LIMIT, (record) => {
+      removeIdentity(accumulator.diagnostics, record.value);
+      const affectedSubscription = accumulator.subscriptions.get(record.subscriptionId);
+      if (affectedSubscription) removeIdentity(affectedSubscription.diagnostics, record.value);
+      const affected = auxiliaryItem(accumulator, record);
+      if (affected) removeIdentity(affected.diagnostics, record.value);
+    });
+  }
+}
+
+/** Account serialized UTF-8 payload bytes, not an unsupported heap-size estimate. */
+function retainAuxiliaryRecord<T>(
+  history: AuxiliaryHistory<T>, item: ItemAccumulator, value: T, countLimit: number, byteLimit: number,
+  evict: (record: AuxiliaryRecord<T>) => void
+): void {
+  const bytes = AUXILIARY_BYTE_ENCODER.encode(JSON.stringify({ subscriptionId: item.subscriptionId, itemId: item.itemId, value })).byteLength;
+  const record = { subscriptionId: item.subscriptionId, itemId: item.itemId, value, bytes };
+  if (bytes > byteLimit) {
+    evict(record);
+    return;
+  }
+  history.entries.set(value, record);
+  history.bytes += bytes;
+  while (history.entries.size > countLimit || history.bytes > byteLimit) {
+    const oldest = history.entries.values().next().value as AuxiliaryRecord<T>;
+    removeAuxiliaryRecord(history, oldest.value);
+    evict(oldest);
+  }
+}
+
+function removeAuxiliaryRecord<T>(history: AuxiliaryHistory<T>, value: T): void {
+  const record = history.entries.get(value);
+  if (!record) return;
+  history.bytes -= record.bytes;
+  history.entries.delete(value);
+}
+
+function auxiliaryItem<T>(accumulator: CommandStateAccumulator, record: AuxiliaryRecord<T>): ItemAccumulator | undefined {
+  return accumulator.subscriptions.get(record.subscriptionId)?.items.get(record.itemId);
+}
+
+function removeIdentity<T>(values: T[], value: T): void {
+  const index = values.indexOf(value);
+  if (index !== -1) values.splice(index, 1);
+}
+
+function releaseSubscriptionAuxiliaryHistory(accumulator: CommandStateAccumulator, subscriptionId: string): void {
+  releaseAuxiliarySubscription(accumulator.lifecycleHistory, subscriptionId);
+  releaseAuxiliarySubscription(accumulator.deletedHistory, subscriptionId);
+  // State diagnostics remain recent historical occurrences after retirement.
+  // Their queue owns only bounded payloads/IDs, never a Subscription graph.
+}
+
+function releaseAuxiliarySubscription<T>(history: AuxiliaryHistory<T>, subscriptionId: string): void {
+  for (const record of history.entries.values()) {
+    if (record.subscriptionId === subscriptionId) removeAuxiliaryRecord(history, record.value);
+  }
+}
+
+function exactKeyOrNull(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const key = String(value);
+  return key.length > 0 ? key : null;
 }
 
 function hasBlockingDiagnostic(diagnostics: readonly CommandDiagnostic[]): boolean {
@@ -829,12 +1014,13 @@ function itemGroupIdentity(itemGroup: string | null, itemPosition: number | null
   return itemIdentity(itemGroup, itemPosition);
 }
 
-function createProvenance(event: LightstreamerEventEnvelope): CommandProvenance {
+function createProvenance(event: LightstreamerEventEnvelope, evidence?: CommandEvidenceIdentity): CommandProvenance {
   const isSnapshot = Boolean(event.update?.isSnapshot);
   const synthetic = event.synthetic || event.source === "synthetic";
   return {
     label: synthetic ? (isSnapshot ? "synthetic-snapshot" : "synthetic-live") : isSnapshot ? "snapshot" : "live",
     eventId: event.id,
+    ...(evidence ? { evidence: Object.freeze({ ...evidence }) } : {}),
     timestamp: event.timestamp,
     source: event.source,
     synthetic,

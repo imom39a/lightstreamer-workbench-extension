@@ -295,14 +295,15 @@ describe("Scenario Checkpoints", () => {
 
   it("fits a maximum-shaped compact Diagnostic Observation reference inside its admitted assertion Trace reservation", async () => {
     const component = "🧭".repeat(128);
+    const evidenceComponent = "🧭".repeat(64); // Canonical Evidence components allow 256 UTF-8 bytes.
     const code = "a".repeat(96);
     const affected = { kind: "item", pageId: component, clientId: component, subscriptionId: component, item: component } as const;
     const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: component });
     const observation = await journal.observe({
       code, ruleVersion: Number.MAX_SAFE_INTEGER, severity: "error", lifecycle: { kind: "occurrence", occurrenceId: component }, affected,
       observedAt: Number.MAX_SAFE_INTEGER, observed: "x", limitation: "x", consequence: "x",
-      evidenceBoundary: { intervalId: component, sequence: Number.MAX_SAFE_INTEGER, eventId: component },
-      route: { kind: "inspect-evidence", evidence: { intervalId: component, sequence: Number.MAX_SAFE_INTEGER, eventId: component } },
+      evidenceBoundary: { intervalId: evidenceComponent, sequence: Number.MAX_SAFE_INTEGER, eventId: evidenceComponent },
+      route: { kind: "inspect-evidence", evidence: { intervalId: evidenceComponent, sequence: Number.MAX_SAFE_INTEGER, eventId: evidenceComponent } },
       resultRef: { kind: "projection", projection: "local-effective-command-state", key: component }
     });
     const assertion = checkpoint([{

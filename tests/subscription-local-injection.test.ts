@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createSubscriptionLocalInjectionRegistry } from "../src/injected/subscription-local-injection";
 import { stepScenarioRun, type ScenarioRun } from "../src/core/local-injection-scenario";
+import { installControlledWeakLifetimes } from "./helpers/controlled-weak-lifetimes";
 
 function oneStepScenarioRun(): ScenarioRun {
   const target = Object.freeze({ pageEpoch: "page-1", clientId: "client-1", sessionId: "session-1", subscriptionId: "subscription-1", deliveryPath: "listener" as const, listenerId: "listener-1", mode: "COMMAND", schemaFields: Object.freeze(["command", "key", "value"]) });
@@ -16,6 +17,22 @@ function oneStepScenarioRun(): ScenarioRun {
 }
 
 describe("Subscription-scoped Local Injection", () => {
+  it("keeps callbacks with a live owner and retires collected Subscription targets", () => {
+    const lifetimes = installControlledWeakLifetimes();
+    try {
+      const subscription = {};
+      const deliver = vi.fn();
+      const registry = createSubscriptionLocalInjectionRegistry<object>();
+      registry.register("subscription-1", { listenerId: "listener-1", fieldNames: [], deliver }, subscription);
+      expect(registry.hasTarget("subscription-1")).toBe(true);
+      expect(registry.deliver("subscription-1", () => ({})).ok).toBe(true);
+      lifetimes.collect(subscription);
+      expect(registry.hasTarget("subscription-1")).toBe(false);
+      expect(registry.deliver("subscription-1", () => ({}))).toMatchObject({ ok: false, reason: "stale-target" });
+      expect(deliver).toHaveBeenCalledTimes(1);
+    } finally { lifetimes.restore(); }
+  });
+
   it("fans one Logical Update out to every current listener", () => {
     const registry = createSubscriptionLocalInjectionRegistry<{ value: number }>();
     const first = vi.fn();

@@ -2530,6 +2530,8 @@ describe("WorkbenchRuntime", () => {
         timestamp: index,
         captureSource: "listener",
         ...(index === 100 ? {
+          logicalEventId: "logical-selected-100",
+          listener: { id: "listener-selected-100" },
           update: {
             fields: { payload: '{"flight":{"number":"DL42"}}', malformed: "{nope" },
             changedFields: { payload: '{"flight":{"number":"DL42"}}' },
@@ -2556,6 +2558,8 @@ describe("WorkbenchRuntime", () => {
       title: "selected-100 · Item Update"
     });
     expect(Object.fromEntries(runtime.getSnapshot().context.fields)).toMatchObject({
+      "Logical Update identity": "logical-selected-100",
+      "Update Delivery listener": "listener-selected-100",
       "Observation path": "Server › listener Capture",
       "Evidence limitations": "Captured observation; unavailable properties remain Unknown and this is not Authoritative COMMAND State."
     });

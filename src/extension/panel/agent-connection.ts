@@ -6,8 +6,9 @@ import { beginPanelPairing, type PanelPairing, type PairingDisplay } from "../..
 import { DEFAULT_COMPANION_PORT } from "../../agent/pairing";
 import { createAgentService } from "./agent-service";
 import type { WorkbenchRuntime } from "./workbench-runtime";
+import type { CompanionIdentity } from "../../agent/companion-identity";
 
-export type AgentConnectionState = Readonly<{ enabled: boolean; permission: AgentPermission; status: "off" | "waiting" | "connecting" | "pairing" | "awaiting-agent" | "connected" | "error"; detail: string; port?: number; auth?: CompanionAuth; requestedPermission?: "read" | "local"; pairing?: PairingDisplay }>;
+export type AgentConnectionState = Readonly<{ enabled: boolean; permission: AgentPermission; status: "off" | "waiting" | "connecting" | "pairing" | "awaiting-agent" | "connected" | "error"; detail: string; port?: number; auth?: CompanionAuth; requestedPermission?: "read" | "local"; pairing?: PairingDisplay; companion?: CompanionIdentity }>;
 export type AgentConnectionOptions = { port?: number; auth?: CompanionAuth };
 export interface AgentConnection {
   getSnapshot(): AgentConnectionState;
@@ -19,6 +20,14 @@ export interface AgentConnection {
 }
 const unavailable: AgentConnectionState = { enabled: false, permission: "off", status: "off", detail: "Available in the installed DevTools panel after companion setup." };
 export const UNAVAILABLE_AGENT_CONNECTION: AgentConnection = { getSnapshot: () => unavailable, subscribe: () => () => {}, connect() {}, approvePairing() {}, disconnect() {}, dispose() {} };
+
+// Slow or uncooperative providers retain their admission until actual settlement,
+// even after cancellation/reconnection. Reserve bounded capacity for immediate
+// projection/receipt inspection and status's cancellable tab-identity lookup.
+const PROVIDER_CAPACITY = 48;
+const IMMEDIATE_CAPACITY = 16;
+const AGENT_PROVIDER_CAPACITY = 16;
+const immediateReads = new Set(["get_status", "query_command_state", "get_operation"]);
 
 export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId: string): AgentConnection {
   let permission: "read" | "local" = "local";
@@ -32,6 +41,7 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
   let generation = 0;
   let disposed = false;
   const pendingReads = new Map<string, AbortController>();
+  const outstanding = new Set<{ owner: string; immediate: boolean }>();
   const listeners = new Set<() => void>();
   const service = runtime.agent ? createAgentService(runtime.agent, panelSessionId, () => state.permission) : null;
   const unsubscribe = runtime.subscribe(() => service?.refreshOperations());
@@ -56,13 +66,15 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
     }
     const epoch = generation;
     const auth = options.auth ?? "off";
-    const fail = () => {
+    const fail = (error?: unknown) => {
       if (epoch !== generation) return;
       release();
       const automatic = auth === "off";
+      const mismatch = error instanceof Error && error.message.startsWith("COMPANION_INCOMPATIBLE:")
+        ? error.message.slice("COMPANION_INCOMPATIBLE: ".length) : null;
       publish({ ...settings(), enabled: automatic, permission: "off", status: automatic ? "waiting" : "error", detail: automatic
-        ? "Waiting for the companion. Workbench retries automatically."
-        : "Companion unavailable or approval expired. Check connection settings, then enable agent access again. Inspect any pending outcome first." });
+        ? mismatch ? `${mismatch} Workbench retries automatically.` : "Waiting for the companion. Workbench retries automatically."
+        : mismatch ?? "Companion unavailable or approval expired. Check connection settings, then enable agent access again. Inspect any pending outcome first." });
       if (automatic) retry = setTimeout(start, Math.min(1000 * 2 ** Math.min(failures++, 4), 15000));
     };
     publish({ ...settings(), enabled: true, permission: "off", status: "connecting", detail: "Connecting to the local Workbench companion…" });
@@ -76,26 +88,42 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
       current.onMessage(value => {
         if (epoch !== generation) return;
         if (value.type === "cancel" && typeof value.id === "string") {
-          pendingReads.get(value.id)?.abort();
+          const controller = pendingReads.get(value.id);
+          pendingReads.delete(value.id);
+          controller?.abort();
           return;
         }
         if (value.type === "ready") {
           clearTimeout(deadline); failures = 0;
-          publish({ ...settings(), enabled: true, permission, status: "connected", detail: permission === "local" ? "Connected · inspection and Local Injection allowed." : "Connected · inspection only." });
+          publish({ ...settings(), enabled: true, permission, status: "connected", companion: current.identity,
+            detail: `${permission === "local" ? "Connected · inspection and Local Injection allowed." : "Connected · inspection only."}${current.identity ? ` Companion ${current.identity.companionVersion}.` : ""}` });
           return;
         }
         if (state.status !== "connected" || typeof value.id !== "string" || typeof value.name !== "string") return;
         const requestId = value.id;
-        if (pendingReads.has(requestId) || pendingReads.size >= 64) { reply({ id: requestId, error: "REQUEST_CAPACITY: Workbench request capacity reached." }); return; }
+        const immediate = immediateReads.has(value.name);
+        // The broker supplies this identity; caller tool arguments cannot set it.
+        // Direct/legacy adapters share one bounded owner for this connection.
+        const owner = typeof value.agentConnectionId === "string" && value.agentConnectionId.length <= 128 ? value.agentConnectionId : `connection-${epoch}`;
+        const providers = [...outstanding].filter(entry => !entry.immediate);
+        const immediateCount = outstanding.size - providers.length;
+        if (pendingReads.has(requestId) || pendingReads.size >= 64
+          || (immediate ? immediateCount >= IMMEDIATE_CAPACITY : providers.length >= PROVIDER_CAPACITY || providers.filter(entry => entry.owner === owner).length >= AGENT_PROVIDER_CAPACITY)) {
+          reply({ id: requestId, error: "REQUEST_CAPACITY: Workbench request capacity reached. Cancelled provider work remains bounded until it settles; immediate inspection has reserved capacity." }); return;
+        }
         const controller = new AbortController();
         pendingReads.set(requestId, controller);
+        const admitted = { owner, immediate };
+        outstanding.add(admitted);
         const response = service.call(value.name, value.args, { signal: controller.signal }).then(async result => {
           if (value.name !== "get_status") return result;
-          const inspectedPage = await describeInspectedPage();
-          if ((result as { pageEpoch: string }).pageEpoch !== (runtime.agent!.status() as { pageEpoch: string }).pageEpoch) throw new Error("The inspected page changed while resolving its identity. Query status again.");
-          return appendInspectedPageStatus(result as object, inspectedPage);
+          const inspectedPage = await describeInspectedPage(controller.signal);
+          if ((result as { pageEpoch: string }).pageEpoch !== (runtime.agent!.status() as { pageEpoch: string }).pageEpoch) throw new Error("TARGET_CHANGED: The inspected page changed while resolving its identity. Query status again.");
+          return appendInspectedPageStatus({ ...(result as object), ...(current.identity ? { companion: current.identity } : {}) }, inspectedPage);
         });
-        void response.then(result => reply({ id: requestId, result }), error => reply({ id: requestId, error: error instanceof Error ? error.message : "Workbench operation failed." })).finally(() => {
+        const callCurrent = () => !controller.signal.aborted && pendingReads.get(requestId) === controller;
+        void response.then(result => { if (callCurrent()) reply({ id: requestId, result }); }, error => { if (callCurrent()) reply({ id: requestId, error: error instanceof Error ? error.message : "Workbench operation failed." }); }).finally(() => {
+          outstanding.delete(admitted);
           if (pendingReads.get(requestId) === controller) pendingReads.delete(requestId);
         });
       });
@@ -103,7 +131,8 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
     };
     try {
       if (auth === "off") {
-        void connectPortable({ auth: "off", port: options.port ?? DEFAULT_COMPANION_PORT }, "panel").then(attach).catch(fail);
+        const extensionId = chrome.runtime.getURL("").replace(/^chrome-extension:\/\//, "").replace(/\/$/, "");
+        void connectPortable({ auth: "off", port: options.port ?? DEFAULT_COMPANION_PORT }, "panel", { extensionId }).then(attach).catch(fail);
         return;
       }
       const attempt = beginPanelPairing(options.port ?? DEFAULT_COMPANION_PORT, chrome.runtime.getURL("").replace(/\/$/, ""), pairing => {
@@ -150,13 +179,19 @@ export function appendInspectedPageStatus(status: object, inspectedPage: Inspect
   throw new Error("RESULT_BUDGET_EXCEEDED: Operational status exceeds the MCP response budget even after omitting the inspected URL.");
 }
 
-function describeInspectedPage(): Promise<InspectedPageIdentity> {
+function describeInspectedPage(signal?: AbortSignal): Promise<InspectedPageIdentity> {
   // Fixed read-only expression, never code supplied by the agent. Query/hash are not shared.
-  return new Promise(resolve => {
-    const complete = (url: string | null) => resolve({ chromeTabId: chrome.devtools.inspectedWindow.tabId, urlWithoutQuery: url });
-    const timer = setTimeout(() => complete(null), 1500);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", aborted); };
+    const complete = (url: string | null) => { if (settled) return; settled = true; cleanup(); resolve({ chromeTabId: chrome.devtools.inspectedWindow.tabId, urlWithoutQuery: url }); };
+    const aborted = () => { if (settled) return; settled = true; cleanup(); reject(new Error("QUERY_CANCELLED: Status identity read was cancelled.")); };
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal?.aborted) { aborted(); return; }
+    timer = setTimeout(() => complete(null), 1500);
     chrome.devtools.inspectedWindow.eval("location.origin + location.pathname", (value, exception) => {
-      clearTimeout(timer); complete(!exception && typeof value === "string" ? value : null);
+      complete(!exception && typeof value === "string" ? value : null);
     });
   });
 }

@@ -60,6 +60,18 @@ describe("Workbench agent domain API", () => {
     await call("finish_agent_document", { token: corrected.token });
     expect(runtime.agent!.local().draft).toBeNull();
   });
+  it("observes asynchronous delivery completion through a bounded receipt wait", async () => {
+    const { call, execute, evidence, pageEpoch } = await fixture();
+    let release!: (value: any) => void;
+    execute.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const prepared = await call("prepare_local_injection", { evidence, pageEpoch, document: document() });
+    const started = await call("execute_local_injection", { token: prepared.token, requestId: "wait-for-delivery" });
+    expect(started.state).toBe("pending");
+    const waiting = call("wait_for_operation", { requestId: "wait-for-delivery", timeoutMs: 2000 });
+    release({ requestId: "delivery-1", ok: true, status: "success", timestamp: 10, attemptedCount: 1, deliveredCount: 1, failedCount: 0 });
+    expect(await waiting).toMatchObject({ status: "COMPLETE", completionBoundary: "LOCAL_INJECTION_RECEIPT", operation: { state: "complete", outcome: { disposition: "delivered" } } });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
   it("rejects wrong sessions, read-only mutations, stale epochs and edits from the human", async () => {
     const { call, service, grant, execute, runtime, evidence, pageEpoch } = await fixture();
     await expect(service.call("get_status", { panelSessionId: "other" })).rejects.toThrow("not granted");

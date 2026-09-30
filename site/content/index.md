@@ -35,7 +35,7 @@
 
   <section class="a-home-section" aria-labelledby="a-agent-title">
     <div class="a-section-heading"><span class="a-section-number">04</span><h2 id="a-agent-title">Connect an MCP agent</h2></div>
-    <div class="a-section-body"><p>The local Node companion lets an agent inspect a connected Panel Session, query Evidence, and run reviewed Local Injections. Open More actions → Agent access and setup in Workbench. Requested Evidence may reach your model provider. Follow the <a href="{{site}}docs/agent-access/">MCP setup guide</a>.</p></div>
+    <div class="a-section-body"><p>Agent access needs Node.js 22.12+, the npm companion, and an MCP app. Run setup and add its output to the app's MCP settings. The app starts the companion. Requested Evidence may reach your model provider. Follow the <a href="{{site}}docs/agent-access/">MCP setup guide</a>.</p></div>
   </section>
 
   <section class="a-home-section a-note-section" aria-labelledby="a-data-title">

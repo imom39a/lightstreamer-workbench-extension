@@ -1,6 +1,6 @@
 {
   "name": "lightstreamer-workbench-agent",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MCP companion for Lightstreamer Workbench: one Node runtime for Windows, macOS and Linux",
   "type": "module",
   "license": "Apache-2.0",

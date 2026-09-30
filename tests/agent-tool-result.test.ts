@@ -10,6 +10,9 @@ describe("MCP structured results", () => {
     expect(agentToolResult([{ panelSessionId: "one" }]).structuredContent).toEqual({ items: [{ panelSessionId: "one" }] });
     expect(agentToolResult(null)).toEqual({ content: [{ type: "text", text: "null" }], structuredContent: { value: null } });
   });
+  it.each(["CURSOR_EXPIRED", "TARGET_CHANGED", "TARGET_RETIRED", "ACCESS_REVOKED", "OPERATION_BUDGET_EXCEEDED", "COMPANION_INCOMPATIBLE"])("exposes stable recoverable %s errors without authorizing effects", code => {
+    expect(agentToolFailure(new Error(`${code}: inspect and deliberately recover`)).structuredContent.error).toMatchObject({ code, automaticRetry: false });
+  });
   it("exposes canonical errors without permitting automatic execution retries", () => {
     expect(agentToolFailure(new Error("READ_POINT_UNAVAILABLE: retention advanced")).structuredContent.error).toEqual({ code: "READ_POINT_UNAVAILABLE", message: "READ_POINT_UNAVAILABLE: retention advanced", automaticRetry: false });
     expect(agentToolFailure(new Error("Unrecognized: data")).structuredContent.error.code).toBe("WORKBENCH_OPERATION_FAILED");

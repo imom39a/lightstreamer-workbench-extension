@@ -4,7 +4,8 @@ import {
   DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
   createMemoryDiagnosticObservationJournal,
   createUnavailableDiagnosticObservationJournal,
-  openIndexedDbDiagnosticObservationJournal
+  openIndexedDbDiagnosticObservationJournal,
+  normalizeDiagnosticObservationInput
 } from "../src/core/diagnostic-observation";
 import { IDBFactory } from "fake-indexeddb";
 
@@ -16,6 +17,40 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
 }
 
 describe("normalized Diagnostic Observation contract", () => {
+  it.each(["x".repeat(129), "x".repeat(256), "😀".repeat(64), "\u0000" + "x".repeat(255)])("preserves canonical byte-bounded Evidence identities (%#)", value => {
+    const evidence = { intervalId: value, sequence: 1, eventId: value };
+    const input = {
+      code: "workbench.evidence.condition", severity: "warning" as const,
+      lifecycle: { kind: "condition" as const, conditionId: "checkpoint" },
+      affected: { kind: "evidence" as const, ...evidence }, observedAt: 1,
+      evidenceBoundary: evidence, observed: "Observed checkpoint.", limitation: "Limited coverage.", consequence: "Inspect Evidence.",
+      route: { kind: "inspect-evidence" as const, evidence }, resultRef: { kind: "evidence" as const, ...evidence }
+    };
+    expect(normalizeDiagnosticObservationInput(input)).toMatchObject(input);
+    // Each embedded reference also accepts the canonical bound independently.
+    for (const affected of [{ kind: "page" as const, pageId: "page" }, input.affected]) {
+      expect(normalizeDiagnosticObservationInput({ ...input, affected })).toMatchObject({ evidenceBoundary: evidence, resultRef: input.resultRef });
+    }
+  });
+
+  it.each(["x".repeat(257), "é".repeat(129), "😀".repeat(65)])("rejects Evidence identities beyond the canonical UTF-8 bound (%#)", value => {
+    const evidence = { intervalId: "interval", sequence: 1, eventId: value };
+    const base = {
+      code: "workbench.evidence.condition", severity: "warning" as const,
+      lifecycle: { kind: "condition" as const, conditionId: "checkpoint" },
+      affected: { kind: "page" as const, pageId: "page" }, observedAt: 1,
+      observed: "Observed checkpoint.", limitation: "Limited coverage.", consequence: "Inspect Evidence.", route: { kind: "inspect-affected" as const }
+    };
+    for (const invalid of [evidence, { intervalId: value, sequence: 1, eventId: "event" }]) {
+      for (const addition of [
+        { affected: { kind: "evidence" as const, ...invalid } }, { evidenceBoundary: invalid },
+        { route: { kind: "inspect-evidence" as const, evidence: invalid } }, { resultRef: { kind: "evidence" as const, ...invalid } }
+      ]) expect(() => normalizeDiagnosticObservationInput({ ...base, ...addition })).toThrow("UTF-8 bytes");
+    }
+    expect(() => normalizeDiagnosticObservationInput({ ...base, affected: { kind: "page", pageId: "x".repeat(129) } })).toThrow("bounded identity component");
+    expect(() => normalizeDiagnosticObservationInput({ ...base, affected: { kind: "page", pageId: "page\u0000" } })).toThrow("bounded identity component");
+  });
+
   it("commits a versioned occurrence with stable identity and exact Evidence boundary", async () => {
     const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-1" });
     const observation = await journal.observe({

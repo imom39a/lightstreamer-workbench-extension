@@ -8,10 +8,9 @@ macOS, and Linux; it does not require a hosted service or Chrome native host.
 ## Requirements
 
 - Node.js 22.12+ and npm on the computer running Chrome and your MCP client.
-- A Lightstreamer Workbench extension build with **Agent access**. If your
-  installed extension does not show **Agent access and setup** under **More
-  actions**, load a compatible unpacked build from the [Agent companion workflow's
-  release bundle](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml).
+- Lightstreamer Workbench extension 2.0.7 with **Agent access**. If the Chrome
+  Web Store offers an older version, use the ready-built extension in the
+  [matching release bundle](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.5).
 - An MCP client that can launch a local stdio server.
 
 Use the extension and companion from the same release or source revision when
@@ -20,18 +19,18 @@ actual tool list.
 
 ## Set up
 
-Companion 0.1.4 pairs with extension 2.0.6 and contains the same runtime fixes as 0.1.3. It bounds serialized MCP replies to 8 KiB by default, allows up to 64 KiB where a tool supports `maxBytes`, and keeps cached Evidence query results out of operational status. Generate a version-pinned MCP configuration from npm:
+Companion 0.1.5 pairs with extension 2.0.7. It verifies broker compatibility before connecting, supports exact COMMAND-key reads, and waits for existing operation receipts without repeating execution. It bounds serialized MCP replies to 8 KiB by default, allows up to 64 KiB where a tool supports `maxBytes`, and keeps cached Evidence query results out of operational status. Generate a version-pinned MCP configuration from npm:
 
 On macOS or Linux:
 
 ```sh
-npx --yes lightstreamer-workbench-agent@0.1.4 setup
+npx --yes lightstreamer-workbench-agent@0.1.5 setup
 ```
 
 In Windows PowerShell:
 
 ```powershell
-npx.cmd --yes lightstreamer-workbench-agent@0.1.4 setup
+npx.cmd --yes lightstreamer-workbench-agent@0.1.5 setup
 ```
 
 For an unpacked extension, add `--extension-id YOUR_UNPACKED_EXTENSION_ID` to
@@ -48,22 +47,21 @@ if the client cannot find `npx` or Chrome runs on Windows.
 
 ## Matching extension build
 
-The npm package does not install the Chrome extension. If your installed
-extension lacks Agent access, download `workbench-mcp-release-bundle` from a
-successful `main` run of the [Agent companion workflow](https://github.com/imom39a/lightstreamer-workbench-extension/actions/workflows/agent-companion.yml).
-Extract the artifact wrapper and the bundle inside it. Check
-`release-manifest.json`, extract the extension ZIP from `extension/` into its
-own directory, and load that directory from `chrome://extensions`. Use the
-assigned extension ID with `setup --extension-id` and keep the extension and
-companion from the same release or source revision.
+The npm package does not install the Chrome extension. Download
+`lightstreamer-workbench-mcp-v2.0.7.zip` from the
+[0.1.5 GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.5)
+if you need the matching extension before the Store update. Extract the bundle,
+then extract `extension/lightstreamer-workbench-v2.0.7.zip` into its own folder.
+In `chrome://extensions`, enable **Developer mode**, select **Load unpacked**,
+and choose the folder containing `manifest.json`. Use Chrome's assigned ID with
+`setup --extension-id`.
 
-The [0.1.3 GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.3)
-also contains a matching extension 2.0.6 bundle and companion tarball. For a
-local tarball installation, extract its `agent/lightstreamer-workbench-agent-0.1.3.tgz`,
-then run:
+The bundle also contains the tested companion tarball, `release-manifest.json`,
+and SHA-256 checksums. The companion normally comes from npm. For a local tarball
+installation, extract `agent/lightstreamer-workbench-agent-0.1.5.tgz`, then run:
 
 ```sh
-npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.3.tgz
+npm install --prefix ./workbench-companion ./lightstreamer-workbench-agent-0.1.5.tgz
 node ./workbench-companion/node_modules/lightstreamer-workbench-agent/dist/cli.mjs setup --local
 ```
 
@@ -107,6 +105,22 @@ header shows **Waiting** until the companion connects, **On** when ready, and
 to change access. Turning it off revokes the panel grant; closing the panel
 ends it. A lost connection does not replay an Injection or resume a Scenario.
 Inspect an unknown outcome before deciding whether to send another update.
+
+Before reusing a running broker, the companion verifies its extension ID,
+protocol, and read contract. A mismatch returns `COMPANION_INCOMPATIBLE` and
+keeps Agent access Waiting with recovery instructions. Stop existing Workbench
+MCP servers and restart the matching package configured for the required
+extension ID. The broker exits after 30 seconds without connections. The
+panel's public `/identity` preflight contains only extension/package versions
+and compatibility metadata; it exposes no Panel Session, grant, or Evidence.
+
+For efficient reads, check `get_status.capabilities`, locate an exact Scope,
+and request only needed fields. `query_command_state` reads one derived COMMAND
+key with certainty and provenance; it never claims Authoritative COMMAND State.
+`wait_for_operation` waits for an existing receipt without repeating execution.
+Scenario control completion acknowledges the control, so use
+`get_scenario_trace` to inspect the Run. Each agent may have 16 pending calls,
+including at most two waits; wait for a call to settle before sending more.
 
 The companion uses a shared broker on `127.0.0.1:24817` with authentication off.
 Any local process that can reach it can use a connected panel's grant. Requested

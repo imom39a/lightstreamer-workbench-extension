@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as scopeSearch from "../src/core/scope-search";
+import { agentToolFailure, agentToolResultBytes } from "../src/agent/tool-result";
 import { AGENT_TOOLS, validateAgentCall, type AgentPermission } from "../src/agent/protocol";
 import { createInMemoryEventHistory, type EventHistory } from "../src/core/event-history-authoritative";
 import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
@@ -80,6 +82,37 @@ describe("MCP companion search", () => {
     expect(investigation(runtime)).toEqual(before);
     expect((await call("search_evidence", { within: "page", text: "search-needle" })).total).toBe(1003);
   }, 15_000);
+
+  it("fits a search prefix with one storage read per page and preserves every ordered match", async () => {
+    const { runtime, call } = await fixture(Array.from({ length: 27 }, (_, index) => event(index + 1, {
+      update: { ...event(index + 1).update!, key: `row-${index}-${"x".repeat(index < 12 ? 80 : 650)}` }
+    })));
+    const query = vi.spyOn(runtime.agent!, "query");
+    const identities: string[] = [];
+    let cursor: string | null = null;
+    let readPoint: unknown;
+    let pages = 0;
+    do {
+      const before = query.mock.calls.length;
+      const page = await call("search_evidence", cursor ? { cursor } : { within: "page", text: "needle", limit: 100, maxBytes: 8192 });
+      expect(query.mock.calls.length - before).toBe(1);
+      expect(agentToolResultBytes(page)).toBeLessThanOrEqual(8192);
+      expect(page.total).toBe(27);
+      expect(page.totals.matching).toBe(27);
+      if (pages === 0) {
+        readPoint = page.readPoint;
+        expect(page.evidence.length).toBeGreaterThan(0);
+        expect(page.evidence.length).toBeLessThan(27);
+        expect(page.nextCursor).toBeTruthy(); // Storage returned its entire match set, but the fitted tail remains.
+      } else expect(page.readPoint).toEqual(readPoint);
+      identities.push(...page.evidence.map((entry: any) => entry.identity.eventId));
+      cursor = page.nextCursor; pages++;
+    } while (cursor);
+    expect(identities).toEqual(Array.from({ length: 27 }, (_, index) => `search-event-${index + 1}`));
+    expect(new Set(identities).size).toBe(27);
+    expect(query).toHaveBeenCalledTimes(pages);
+    expect(query.mock.calls.every(([input]) => input.find?.size === 100)).toBe(true);
+  });
 
   it("freezes the current Scope and Filter independently of Find and preserves the human investigation", async () => {
     const { runtime, call } = await fixture([
@@ -215,6 +248,75 @@ describe("MCP companion search", () => {
     const pending = call("search_evidence", { within: "page", text: "needle" });
     grant("off"); service.revoke(); grant("read"); release();
     await expect(pending).rejects.toThrow("revoked");
+  });
+
+  it("rejects already-aborted searches before starting storage work", async () => {
+    const { runtime, service } = await fixture();
+    const query = vi.spyOn(runtime.agent!, "query");
+    const controller = new AbortController(); controller.abort();
+    await expect(service.call("search_evidence", { panelSessionId: "panel-1", within: "page", text: "needle" }, { signal: controller.signal })).rejects.toThrow("QUERY_CANCELLED");
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("propagates cancellation and blocks response publication and budget retries", async () => {
+    const { runtime, service } = await fixture();
+    const controller = new AbortController();
+    const original = runtime.agent!.query;
+    let received: AbortSignal | undefined;
+    const query = vi.spyOn(runtime.agent!, "query").mockImplementationOnce(async input => {
+      received = input.signal;
+      const result = await original(input);
+      controller.abort();
+      return result; // Storage may finish in the same turn as cancellation.
+    });
+    await expect(service.call("search_evidence", { panelSessionId: "panel-1", within: "page", text: "needle", limit: 100, maxBytes: 4096 }, { signal: controller.signal })).rejects.toThrow("QUERY_CANCELLED");
+    expect(received?.aborted).toBe(true);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses immutable Scope nodes on fresh reads of one structural revision", async () => {
+    const { runtime, history, call } = await fixture();
+    const first = runtime.agent!.scopeSearchSnapshot();
+    const second = runtime.agent!.scopeSearchSnapshot();
+    expect(second.nodes).toBe(first.nodes);
+    expect(Object.isFrozen(first.nodes)).toBe(true);
+    await call("search_scope", { text: "client-1", limit: 1 });
+    await call("search_scope", { text: "rows", limit: 1, kind: "item" });
+    await offer(history, [event(7, { subscription: { ...event(7).subscription!, id: "different-sub" } })]);
+    const changed = runtime.agent!.scopeSearchSnapshot();
+    expect(changed.structureRevision).not.toBe(first.structureRevision);
+    expect(changed.nodes).not.toBe(first.nodes);
+  });
+
+  it("shares a privacy-safe Scope index across fresh searches and invalidates lifecycle changes", async () => {
+    const { runtime, history, call } = await fixture();
+    const build = vi.spyOn(scopeSearch, "createScopeSearchIndex");
+    const first = runtime.agent!.scopeSearchSnapshot();
+    for (let index = 0; index < 8; index++) await call("search_scope", { text: index % 2 ? "rows" : "client-1", limit: 1 });
+    expect(build).toHaveBeenCalledTimes(1);
+    await offer(history, [event(7, { kind: "client-status", topology: undefined, update: undefined,
+      client: { id: "client-1", sessionId: "session-1", status: "DISCONNECTED" } })]);
+    const latest = runtime.agent!.scopeSearchSnapshot();
+    expect(latest.structureRevision).toBe(first.structureRevision);
+    expect(latest.nodes).not.toBe(first.nodes);
+    await call("search_scope", { text: "disconnected", limit: 1 });
+    expect(build).toHaveBeenCalledTimes(2);
+  });
+
+  it("removes cancellation listeners and reports stable expired-cursor and revoked-grant errors", async () => {
+    const { service, grant } = await fixture();
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener"), remove = vi.spyOn(controller.signal, "removeEventListener");
+    await service.call("search_evidence", { panelSessionId: "panel-1", within: "page", text: "needle" }, { signal: controller.signal });
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("abort", add.mock.calls[0]![1]);
+    const failure = async (args: Record<string, unknown>) => {
+      try { await service.call("search_evidence", { panelSessionId: "panel-1", ...args }); throw new Error("Expected failure"); }
+      catch (error) { return agentToolFailure(error).structuredContent.error; }
+    };
+    expect(await failure({ cursor: "expired" })).toMatchObject({ code: "CURSOR_EXPIRED", automaticRetry: false });
+    grant("off"); service.revoke();
+    expect(await failure({ within: "page", text: "needle" })).toMatchObject({ code: "ACCESS_REVOKED", automaticRetry: false });
   });
 
   it("keeps Client Message and credential text out of search explanations and payloads", async () => {

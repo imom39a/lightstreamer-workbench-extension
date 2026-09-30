@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   COMMAND_RECENT_LIFECYCLE_LIMIT,
+  COMMAND_HISTORICAL_KEY_LIMIT,
+  COMMAND_HISTORICAL_KEY_BYTE_LIMIT,
+  COMMAND_DIAGNOSTIC_BYTE_LIMIT,
+  COMMAND_LIFECYCLE_ENTRY_LIMIT,
   createCommandStateIndex,
   createCommandStateProjections,
   reduceCommandState,
@@ -84,6 +88,112 @@ function firstItem(state: ReturnType<typeof reduceCommandState>) {
 }
 
 describe("COMMAND state reducer", () => {
+  it("clears only the affected item in both projections and starts a fresh key lifecycle", () => {
+    const projections = createCommandStateProjections();
+    projections.apply(commandEvent("add-a", { key: "alpha" }));
+    projections.apply(commandEvent("add-b", { key: "beta", itemName: "other", itemPosition: 2 }));
+    projections.apply(commandEvent("local-a", { key: "local", synthetic: true, source: "synthetic" }));
+    const clear = commandEvent("clear-a", { kind: "clear-snapshot" });
+    clear.subscription = { id: "subscription-1" };
+    clear.update = undefined;
+    projections.apply(clear);
+    for (const projection of ["observed-server", "local-effective"] as const) {
+      const items = projections.snapshot(projection).subscriptions[0].items;
+      expect(items[0].activeRows).toEqual([]);
+      expect(items[0]).toMatchObject({ lastClearSnapshot: { eventId: "clear-a", source: "server" } });
+      expect(items[1].activeRows.map((row) => row.key)).toEqual(["beta"]);
+    }
+    projections.apply(commandEvent("readd-a", { key: "alpha", snapshot: true }));
+    expect(firstItem(projections.snapshot("local-effective")).activeRows[0]).toMatchObject({
+      origin: { eventId: "readd-a" }, lifecycleTotal: 1, lifecycleHasOlder: false
+    });
+  });
+
+  it("preserves exact whitespace key identity through projection and draft validation", () => {
+    const projections = createCommandStateProjections();
+    for (const key of [" row", "row", "row ", " "]) projections.apply(commandEvent(`add-${key}`, { key }));
+    projections.apply(commandEvent("update-spaced", { key: " row", command: "UPDATE", fields: { value: "changed" } }));
+    projections.apply(commandEvent("delete-plain", { key: "row", command: "DELETE" }));
+    const state = projections.snapshot("observed-server");
+    expect(firstItem(state).activeRows.map((row) => row.key)).toEqual([" row", "row ", " "]);
+    expect(firstItem(state).deletedKeys.map((row) => row.key)).toEqual(["row"]);
+    expect(validateCommandDraftAgainstState({ command: "UPDATE", key: " row" }, state, { subscriptionId: "subscription-1", itemName: "scenario.command" }).diagnostics).toEqual([]);
+    expect(validateCommandDraftAgainstState({ command: "UPDATE", key: "row" }, state, { subscriptionId: "subscription-1", itemName: "scenario.command" }).diagnostics).toContainEqual(expect.objectContaining({ code: "unknown-key-update" }));
+    expect(projections.inspect("observed-server", { subscriptionId: "subscription-1", item: { name: "scenario.command", position: 1 }, key: " row", field: "value" })).toMatchObject({ state: "concrete", value: "changed" });
+  });
+
+  it("bounds historical keys and diagnostics globally across items while retaining active rows", () => {
+    const index = createCommandStateIndex();
+    index.apply(commandEvent("active", { key: "kept" }));
+    for (let number = 0; number < 3_000; number += 1) {
+      const context = { key: `deleted-${number}`, itemName: `item-${number % 3}`, itemPosition: number % 3 + 2 };
+      index.apply(commandEvent(`add-${number}`, context));
+      index.apply(commandEvent(`delete-${number}`, { ...context, command: "DELETE" }));
+      index.apply(commandEvent(`invalid-${number}`, { ...context, command: "DELETE", key: `missing-${number}` }));
+    }
+    const state = index.snapshot();
+    expect(state.subscriptions.flatMap((subscription) => subscription.items.flatMap((item) => item.deletedKeys)).length).toBeLessThanOrEqual(2_048);
+    expect(state.diagnostics.length).toBeLessThanOrEqual(512);
+    expect(state).toMatchObject({ diagnosticsTotal: 3_000, diagnosticsHasOlder: true });
+    expect(firstItem(state).activeRows[0]).toMatchObject({ key: "kept", fields: { key: "kept" } });
+    expect(state.subscriptions[0].items.some((item) => item.deletedKeysHasOlder)).toBe(true);
+    const retainedLifecycleIds = new Set(state.subscriptions.flatMap((subscription) => subscription.items.flatMap((item) => [
+      ...item.lifecycle, ...item.activeRows.flatMap((row) => row.lifecycle), ...item.deletedKeys.flatMap((row) => row.lifecycle)
+    ]).map((entry) => entry.eventId)));
+    expect(retainedLifecycleIds.size).toBeLessThanOrEqual(COMMAND_LIFECYCLE_ENTRY_LIMIT);
+  });
+
+  it("bounds historical payload bytes without truncating active fields or asserting retained detail", () => {
+    const index = createCommandStateIndex();
+    const huge = "é".repeat(5_000_000);
+    index.apply(commandEvent("large-active", { key: "active", fields: { key: "active", value: huge } }));
+    index.apply(commandEvent("large-delete", { key: huge, command: "ADD", fields: { key: huge } }));
+    index.apply(commandEvent("large-key-delete", { key: huge, command: "DELETE", fields: { key: huge } }));
+    index.apply(commandEvent("large-diagnostic", { key: huge, command: "DELETE" }));
+    index.apply(commandEvent("current", { key: "current", fields: { key: "current", value: huge } }));
+    const state = index.snapshot();
+    const item = firstItem(state);
+    expect(item.deletedKeys.length).toBe(0);
+    expect(item.deletedKeysHasOlder).toBe(true);
+    expect(item.activeRows.find((row) => row.key === "current")?.fields.value?.toString().length).toBe(huge.length);
+    expect(item.activeRows.find((row) => row.key === "current")).toMatchObject({ lifecycle: [], lifecycleTotal: 1, lifecycleHasOlder: true });
+    expect(item.lifecycle).toEqual([]);
+    expect(state.diagnostics).toEqual([]);
+    expect(state).toMatchObject({ diagnosticsTotal: 1, diagnosticsHasOlder: true });
+  });
+
+  it("applies cumulative byte limits before count limits and releases evicted per-key history", () => {
+    const index = createCommandStateIndex();
+    for (let number = 0; number < 300; number += 1) {
+      const key = `row-${number}`;
+      const fields = { key, value: "é".repeat(4_000) };
+      index.apply(commandEvent(`byte-add-${number}`, { key, fields }));
+      index.apply(commandEvent(`byte-delete-${number}`, { key, command: "DELETE", fields }));
+      index.apply(commandEvent(`byte-invalid-${number}`, { key: `${key}-${"é".repeat(2_000)}`, command: "DELETE" }));
+    }
+    const state = index.snapshot();
+    const item = firstItem(state);
+    const size = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    expect(item.deletedKeys.length).toBeLessThan(300);
+    expect(size(item.deletedKeys)).toBeLessThan(COMMAND_HISTORICAL_KEY_BYTE_LIMIT);
+    expect(state.diagnostics.length).toBeLessThan(300);
+    expect(size(state.diagnostics)).toBeLessThan(COMMAND_DIAGNOSTIC_BYTE_LIMIT);
+    index.apply(commandEvent("readd-evicted", { key: "row-0" }));
+    expect(firstItem(index.snapshot()).activeRows[0]).toMatchObject({ key: "row-0", lifecycleTotal: 1 });
+    expect(firstItem(index.snapshot()).deletedKeysHasOlder).toBe(true);
+  });
+
+  it("bounds state diagnostics even when each malformed Subscription immediately retires", () => {
+    const index = createCommandStateIndex();
+    for (let number = 0; number < 600; number += 1) {
+      const subscriptionId = `retired-${number}`;
+      index.apply(commandEvent(`malformed-${number}`, { subscriptionId, command: null }));
+      index.apply(commandEvent(`ended-${number}`, { subscriptionId, kind: "subscription-ended" }));
+    }
+    expect(index.snapshot()).toMatchObject({ subscriptions: [], diagnosticsTotal: 600, diagnosticsHasOlder: true });
+    expect(index.snapshot().diagnostics.length).toBeLessThanOrEqual(512);
+  });
+
   it("keeps observed server and local effective COMMAND projections distinct", () => {
     const projections = createCommandStateProjections();
     projections.apply(
@@ -311,7 +421,8 @@ describe("COMMAND state reducer", () => {
 
     const item = firstItem(index.snapshot());
     expect(item.activeRows).toHaveLength(keyCount / 2);
-    expect(item.deletedKeys).toHaveLength(keyCount / 2);
+    expect(item.deletedKeys).toHaveLength(COMMAND_HISTORICAL_KEY_LIMIT);
+    expect(item.deletedKeysHasOlder).toBe(true);
     expect(item.activeRows.every((row) => row.lifecycle.length <= COMMAND_RECENT_LIFECYCLE_LIMIT)).toBe(true);
     expect(item.deletedKeys.every((row) => row.lifecycle.length <= COMMAND_RECENT_LIFECYCLE_LIMIT)).toBe(true);
     expect(item.lifecycleTotal).toBe(keyCount + keyCount / 2);

@@ -1678,6 +1678,38 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     });
   });
 
+  it("clears only the affected item from late-panel COMMAND replay", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription("COMMAND", ["orders", "other"], ["command", "key", "qty"]);
+    client.subscribe(subscription);
+    subscription.addListener({ onItemUpdate() {}, onClearSnapshot() {} });
+    const attached = subscription.listeners[0] as { onItemUpdate(update: unknown): void; onClearSnapshot(name: string, pos: number): void };
+    attached.onItemUpdate(createFakeCommandItemUpdate("ADD", "orders", "gone", "1", false));
+    attached.onItemUpdate({ ...createFakeCommandItemUpdate("ADD", "other", "kept", "2", false), getItemPos: () => 2 });
+    attached.onClearSnapshot("orders", 1);
+    messages.length = 0;
+    for (const pageListener of messageListeners) pageListener({ source: target, data: { type: "lsew:page-capture-sync-request", panelSessionId: PANEL_SESSION_ID } } as unknown as MessageEvent);
+    const replays = (messages as CaptureMessage[]).filter((message) => message.kind === "item-update");
+    expect(replays.map((message) => (message.payload.update as { key: string }).key)).toEqual(["kept"]);
+  });
+
+  it("preserves whitespace-distinct COMMAND keys through late-panel replay and DELETE", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription("COMMAND", ["orders"], ["command", "key", "qty"]);
+    client.subscribe(subscription);
+    subscription.addListener({ onItemUpdate() {} });
+    const attached = subscription.listeners[0] as { onItemUpdate(update: unknown): void };
+    for (const key of ["k", " k ", " "]) attached.onItemUpdate(createFakeCommandItemUpdate("ADD", "orders", key, "1", false));
+    attached.onItemUpdate(createFakeCommandItemUpdate("DELETE", "orders", "k", "1", false));
+    messages.length = 0;
+    for (const pageListener of messageListeners) pageListener({ source: target, data: { type: "lsew:page-capture-sync-request", panelSessionId: PANEL_SESSION_ID } } as unknown as MessageEvent);
+    const replays = (messages as CaptureMessage[]).filter((message) => message.kind === "item-update");
+    expect(replays.map((message) => (message.payload.update as { key: string }).key)).toEqual([" k ", " "]);
+    for (const message of replays) expect((message.payload.update as { fields: { key: string }; key: string }).fields.key).toBe((message.payload.update as { key: string }).key);
+  });
+
   it("does not emit WebSocket fallback rows after primary instrumentation is active", () => {
     FakeWebSocket.instances = [];
     const messages: CaptureMessage[] = [];

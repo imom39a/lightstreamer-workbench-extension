@@ -22,7 +22,7 @@ npm ci
 npm run release:package
 ```
 
-`release:package` runs `npm run typecheck`, runs `npm test`, runs the extension build, validates the built manifest, and writes:
+`release:package` runs `npm run typecheck`, runs the serialized `npm run test:release`, runs the extension build, validates the built manifest, and writes:
 
 ```text
 release/lightstreamer-workbench-v<version>.zip

@@ -42,6 +42,8 @@ Retired objects remain available for inspection but cannot receive Local Injecti
 
 Use the [connection checks]({{site}}docs/agent-access/#check-the-connection). Confirm that the agent app starts the MCP server and the intended Workbench panel is open.
 
+If **Agent access and setup** is missing, install a [matching packaged extension]({{site}}docs/agent-access/#install-a-matching-extension). If you loaded that download unpacked, use its Chrome-assigned ID in the npm setup command.
+
 ## The interface differs from this guide
 
 Check the installed version in `chrome://extensions`. Compare it with [Release notes]({{site}}releases/).

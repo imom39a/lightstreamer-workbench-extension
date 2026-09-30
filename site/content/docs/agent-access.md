@@ -1,17 +1,35 @@
-Connect an MCP agent to inspect Evidence and test Local Injections in an open Workbench panel.
+Install the Chrome extension and the npm companion to let an MCP agent inspect Evidence and test Local Injections in an open Workbench panel.
 
 ## Requirements
 
-- Chrome with a Workbench build that supports Agent access.
-- Node.js 22.12 or later with npm.
+- Chrome with a matching Workbench extension that supports Agent access.
+- [Node.js 22.12 or later with npm](https://nodejs.org/en/download).
 - An agent app that supports local stdio MCP servers.
 - Chrome, Node, and the agent app on the same computer.
 
-Companion [0.1.4 is available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.4) and passed Windows, macOS, and Linux checks. It contains the 0.1.3 runtime fixes: serialized MCP replies are bounded to 8 KiB by default, tools that offer `maxBytes` support up to 64 KiB, and operational status excludes cached Evidence query results. The companion does not install the Chrome extension. See [Release notes]({{site}}releases/) for extension availability.
+Companion [0.1.4 is available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.4) and pairs with extension 2.0.6. Install the extension separately. See [Release notes]({{site}}releases/) for the available versions.
+
+The extension and npm package provide the Workbench runtime. A repository checkout, build tools, Docker, and a separately managed server are not part of user setup.
+
+## Install a matching extension
+
+Follow [Getting started]({{site}}docs/getting-started/) to install from the Chrome Web Store. Check the installed version in `chrome://extensions`. Use extension 2.0.6 with companion 0.1.4.
+
+If the Store offers an older version, install the ready-built extension download:
+
+1. Download the [packaged extension 2.0.6](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.3/lightstreamer-workbench-mcp-v2.0.6.zip).
+2. Extract the downloaded bundle.
+3. Extract `extension/lightstreamer-workbench-v2.0.6.zip` into a folder you will keep.
+4. Open `chrome://extensions`.
+5. Turn on **Developer mode**.
+6. Select **Load unpacked**.
+7. Choose the extracted extension folder that contains `manifest.json`.
+
+Copy the ID Chrome assigns to this extension. Add it to the setup command below with `--extension-id YOUR_EXTENSION_ID`. The companion still comes from npm.
 
 ## Set up MCP
 
-1. Generate the version-pinned MCP configuration:
+1. Run setup with npm's `npx`. It downloads the companion and prints a version-pinned MCP configuration:
 
    macOS or Linux:
 
@@ -25,17 +43,15 @@ Companion [0.1.4 is available from npm](https://www.npmjs.com/package/lightstrea
    npx.cmd --yes lightstreamer-workbench-agent@0.1.4 setup
    ```
 
-   For an unpacked extension, append `--extension-id YOUR_EXTENSION_ID` to the setup command. Copy its ID from `chrome://extensions`.
+   For a downloaded extension loaded unpacked, append `--extension-id YOUR_EXTENSION_ID`. Copy its ID from `chrome://extensions`.
 
-2. Copy the printed `mcpServers` entry into your agent app's MCP settings.
+2. Copy the printed `mcpServers` entry into your agent app's MCP settings. Setup prints this entry; it does not edit those settings.
 3. Start that MCP server in the agent app.
 4. Open Workbench on the application tab you want to inspect.
 5. Ask the agent to call `list_panel_sessions`.
 6. Ask it to call `get_status` with the selected `panelSessionId`.
 
-The agent app starts the pinned npm companion. Workbench connects automatically. No separate terminal, hosted service, or native installer is needed after setup.
-
-If your extension lacks **Agent access and setup**, use a matching unpacked build. Follow the [release-bundle and source instructions](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent); use the extension ID assigned by Chrome. Extension 2.0.6 is pending Chrome Web Store review and will publish automatically after approval; 2.0.4 remains public until then.
+The agent app starts the pinned npm companion. Workbench connects automatically. This one-time setup is enough; no separate terminal, hosted service, or native installer is needed afterward.
 
 ## Check the connection
 
@@ -54,19 +70,15 @@ Select the header status to open the access control. A new panel enables access 
 
 If the status stays **Waiting**, restart the MCP server in your agent app. Check the extension ID if you use an unpacked build. The default connection uses `127.0.0.1:24817` with authentication off.
 
-On Windows, use Windows Node, not WSL or a container. If the agent app cannot find `npx`, use `npx.cmd`. Restart the app after installing Node. See [launcher troubleshooting](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/agent/WINDOWS.md) for full-path setup.
+On Windows, use Windows Node. If the agent app cannot find `npx`, set the MCP command to `npx.cmd`. Restart the app after installing Node.
 
-## Query only what you need
+## Work with your agent
 
-1. Check that `get_status.readContract.version` is `2`.
-2. Use `search_scope` to find the relevant Subscription or item.
-3. Use `summarize_evidence` with its `scopeId` to count records or distinct keys.
-4. Use `query_evidence` with that Scope, typed `where` filters, and selected `fields` to read a few examples.
-5. Use `get_evidence` only when you need a complete event.
+Ask the agent to find the relevant Subscription or item, count retained records, and read a few examples. Name the application tab so it selects the intended Panel Session.
 
-Queries and summaries default to an 8 KiB result limit. Summary counts describe retained records, not active COMMAND rows. Check Coverage before drawing conclusions from missing Evidence.
+For example: “Find the orders Subscription. Count its retained updates, then show the last five with the key and quantity fields.” Summary counts describe retained records, not active COMMAND rows. Check Coverage before drawing conclusions from missing Evidence.
 
-If the read contract is missing, update the extension and companion. Then reconnect MCP. See the [read contract and examples](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/agent/READS.md) for details.
+If the agent reports an unsupported tool or incompatible version, update both components to a matching pair from [Release notes]({{site}}releases/), then restart the MCP connection.
 
 ## Test a local update
 
@@ -74,7 +86,9 @@ Use observed Evidence to construct a Draft or Scenario. Validate and prepare it 
 
 Keep the panel visible during a Scenario. Do not repeat an Injection with an unknown result. Read its existing outcome or Scenario trace first.
 
-The package includes `skills/lightstreamer-workbench/SKILL.md`. Install the `lightstreamer-workbench` skill folder in your agent's skill directory. It teaches this investigation procedure.
+## Optional agent skill
+
+The package includes `skills/lightstreamer-workbench/SKILL.md`. The MCP connection works without this skill. You can add its folder to your agent's skill directory for guided investigation steps.
 
 ## Access and data
 

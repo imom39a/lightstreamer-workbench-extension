@@ -193,7 +193,7 @@ describe("agent response pagination and receipt recovery", () => {
       await call(service, "control_scenario", { runId: "run-1", action: "step", requestId: `step-request-${index}` });
     }
     const callsAtOrdinaryCapacity = control.mock.calls.length;
-    await expect(call(service, "control_scenario", { runId: "run-1", action: "step", requestId: "extra-step" })).rejects.toThrow(/limit|capacity/i);
+    await expect(call(service, "control_scenario", { runId: "run-1", action: "step", requestId: "extra-step" })).rejects.toThrow("OPERATION_BUDGET_EXCEEDED");
     expect(control).toHaveBeenCalledTimes(callsAtOrdinaryCapacity);
     await call(service, "control_scenario", { runId: "run-1", action: "pause", requestId: "emergency-pause" });
     const callsAfterPause = control.mock.calls.length;

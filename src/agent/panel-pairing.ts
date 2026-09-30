@@ -1,6 +1,7 @@
 import { AGENT_MAX_BYTES } from "./protocol";
 import { createPairingKey, derivePairingSecret, pairingCommitment, pairingTranscript, comparisonCode, pairingProof, randomNonce, verifyPairingProof, PAIRING_LIFETIME_MS } from "./pairing";
 import type { CompanionChannel } from "./portable-channel";
+import { assertCompanionIdentity } from "./companion-identity";
 
 export type PairingDisplay = Readonly<{ requestId: string; code: string; expiresAt: number }>;
 export interface PanelPairing {
@@ -26,10 +27,10 @@ export function beginPanelPairing(port: number, origin: string, showCode: (value
     if (socket.readyState !== WebSocket.OPEN || new TextEncoder().encode(text).length > AGENT_MAX_BYTES + 4096 || socket.bufferedAmount > 2 * AGENT_MAX_BYTES) throw new Error("Companion unavailable or at capacity.");
     socket.send(text);
   }
-  function close() {
+  function close(error?: Error) {
     if (phase === "closed") return;
     phase = "closed"; clearTimeout(timer); socket.close();
-    reject(new Error("Pairing expired, was cancelled, or the companion disconnected.")); closed.forEach(callback => callback());
+    reject(error?.message.startsWith("COMPANION_INCOMPATIBLE:") ? error : new Error("Pairing expired, was cancelled, or the companion disconnected.")); closed.forEach(callback => callback());
   }
   socket.addEventListener("open", () => {
     void keys.then(async key => {
@@ -66,14 +67,15 @@ export function beginPanelPairing(port: number, origin: string, showCode: (value
         if (value.type === "pairing-approved") return;
         if (value.type !== "authenticated" || !await verifyPairingProof(secret, `broker-confirmed\n${transcript}`, value.proof)) throw new Error("Pairing confirmation failed.");
         if ((phase as string) === "closed") return;
+        const identity = assertCompanionIdentity(value.identity, origin.slice("chrome-extension://".length));
         phase = "ready"; clearTimeout(timer);
-        resolve({ send, onMessage: callback => { readers.add(callback); }, onClose: callback => { closed.add(callback); }, close });
+        resolve({ identity, send, onMessage: callback => { readers.add(callback); }, onClose: callback => { closed.add(callback); }, close });
       } else if (phase === "ready") readers.forEach(callback => callback(value));
       else throw new Error("Pairing requires explicit approval.");
-    }).catch(close);
+    }).catch(error => close(error instanceof Error ? error : undefined));
   });
-  socket.addEventListener("error", close); socket.addEventListener("close", close);
-  return { ready, close, approve() {
+  socket.addEventListener("error", () => close()); socket.addEventListener("close", () => close());
+  return { ready, close: () => close(), approve() {
     if (phase !== "approval") return;
     phase = "confirmed";
     void pairingProof(secret, `panel-approved\n${transcript}`).then(proof => { if (phase === "confirmed") send({ type: "pairing-approve", proof }); }).catch(close);

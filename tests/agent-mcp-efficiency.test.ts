@@ -169,7 +169,7 @@ async function connectRealMcp(runtime: WorkbenchRuntime, cli: string) {
   const nextPanelMessage = () => queue.length ? Promise.resolve(queue.shift()!) : new Promise<Record<string, unknown>>(resolve => readers.push(resolve));
   await once(panel, "open");
   panel.send(JSON.stringify({ type: "connect", role: "panel", auth: "off" }));
-  expect(await nextPanelMessage()).toEqual({ type: "connected", auth: "off" });
+  expect(await nextPanelMessage()).toEqual({ type: "connected", auth: "off", identity: expect.objectContaining({ extensionId, protocolVersion: AGENT_PROTOCOL_VERSION, readContractVersion: 2 }) });
   panel.send(JSON.stringify({ role: "panel", protocolVersion: AGENT_PROTOCOL_VERSION, panelSessionId, permission: "read" }));
   expect(await nextPanelMessage()).toEqual({ type: "ready" });
   const service = createAgentServiceForRuntime(runtime, panelSessionId);

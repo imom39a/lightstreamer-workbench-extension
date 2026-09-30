@@ -3,7 +3,9 @@ import { createConnection } from "node:net";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import { AGENT_MAX_BYTES } from "../protocol";
+import { AGENT_MAX_BYTES, AGENT_PROTOCOL_VERSION, AGENT_READ_CONTRACT } from "../protocol";
+import type { CompanionIdentity } from "../companion-identity";
+import metadata from "../../../agent/package.json";
 import { pairingProof, proofText, randomNonce, verifyPairingProof, createPairingKey, derivePairingSecret, pairingCommitment, pairingTranscript, comparisonCode, PAIRING_LIFETIME_MS } from "../pairing";
 import { portableConfig, type PortableConfig } from "../portable-config";
 import { connectPortable } from "../portable-channel";
@@ -15,6 +17,8 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
   const { port, secret, auth } = portableConfig(config);
   if (!/^[a-p]{32}$/.test(extensionId)) throw new Error("Expected the exact 32-character Chrome extension id.");
   const origin = `chrome-extension://${extensionId}`;
+  const identity: CompanionIdentity = Object.freeze({ identityVersion: 1, extensionId, companionVersion: metadata.version,
+    protocolVersion: AGENT_PROTOCOL_VERSION, readContractVersion: AGENT_READ_CONTRACT.version });
   type PendingPairing = { requestId: string; code: string; expiresAt: number; panelApproved: boolean; confirm(): Promise<void> };
   const pairingRequests = new Map<string, PendingPairing>();
   const router = createBrokerRouter(auth === "off" ? undefined : {
@@ -28,7 +32,18 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
       return { confirmed: true, requestId: request.requestId };
     }
   });
-  const server = createServer((_request, response) => { response.writeHead(404, { Connection: "close" }); response.end(); });
+  const server = createServer((request, response) => {
+    const requestOrigin = request.headers.origin;
+    // This public diagnostic does not join a peer or expose any inspected-page data.
+    // A different extension may learn why its exact-origin WebSocket will be rejected.
+    if (request.method === "GET" && request.url === "/identity" && request.headers.host === `127.0.0.1:${port}`
+      && (requestOrigin === undefined || /^chrome-extension:\/\/[a-p]{32}$/.test(requestOrigin))) {
+      response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store", Connection: "close",
+        ...(requestOrigin ? { "Access-Control-Allow-Origin": requestOrigin, Vary: "Origin" } : {}) });
+      response.end(JSON.stringify(identity)); return;
+    }
+    response.writeHead(404, { Connection: "close" }); response.end();
+  });
   server.headersTimeout = 5000; server.requestTimeout = 5000;
   server.maxConnections = 64;
   const wss = new WebSocketServer({ noServer: true, maxPayload: AGENT_MAX_BYTES + 4096, perMessageDeflate: false });
@@ -77,7 +92,7 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
           role = request.headers.origin === origin ? "panel" : "agent";
           if (auth === "off") {
             if (value.type !== "connect" || value.auth !== "off" || value.role !== role) throw new Error("Connection mode or role does not match.");
-            phase = "hello"; send({ type: "connected", auth: "off" }); return;
+            phase = "hello"; send({ type: "connected", auth: "off", identity }); return;
           }
           if (role === "panel") {
             if (value.type !== "pairing-start" || typeof value.commitment !== "string" || !/^[a-f0-9]{64}$/.test(value.commitment) || pairingRequests.size >= 8) throw new Error("Invalid or busy pairing request.");
@@ -105,7 +120,7 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
             const confirmation = await pairingProof(panelSecret, `broker-confirmed\n${transcript}`);
             if (phase !== "pairing-approve" || Date.now() >= expiresAt) throw new Error("Pairing request no longer active.");
             phase = "hello"; clearTimeout(deadline); deadline = setTimeout(() => socket.terminate(), 5000);
-            send({ type: "authenticated", proof: confirmation });
+            send({ type: "authenticated", proof: confirmation, identity });
           } });
           phase = "pairing-approve"; clearTimeout(deadline); deadline = setTimeout(() => socket.terminate(), PAIRING_LIFETIME_MS);
           send({ type: "pairing-code", requestId, expiresAt, proof });
@@ -118,7 +133,7 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
         } else if (phase === "authenticate") {
           if (value.type !== "authenticate" || !await verifyPairingProof(secret!, proofText("client", role, clientNonce, serverNonce), value.proof)) throw new Error("Pairing rejected.");
           if ((phase as string) === "closed") return;
-          phase = "hello"; send({ type: "authenticated" });
+          phase = "hello"; send({ type: "authenticated", identity });
         } else if (phase === "hello") {
           if (value.role !== role) throw new Error("Invalid role.");
           joined = router.join({ send, close: () => socket.terminate() }, { ...value, extensionOrigin: role === "panel" ? origin : undefined });
@@ -154,7 +169,7 @@ async function portOccupied(port: number): Promise<boolean> {
 export async function connectPortableBroker(cli: string, config: PortableConfig, extensionId: string) {
   const pairing = portableConfig(config);
   if (!/^[a-p]{32}$/.test(extensionId)) throw new Error("Expected the exact 32-character Chrome extension id.");
-  if (await portOccupied(pairing.port)) return connectPortable(config, "agent");
+  if (await portOccupied(pairing.port)) return connectPortable(config, "agent", { extensionId });
   // Atomic TCP bind chooses the winner when several MCP clients start concurrently.
   // Credentials use an anonymous pipe, not command arguments or a persistent token file.
   const child = spawn(process.execPath, [cli, "portable-broker", "--extension-id", extensionId], { detached: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] });
@@ -163,7 +178,7 @@ export async function connectPortableBroker(cli: string, config: PortableConfig,
   child.stdin.on("error", () => {}); child.stdin.end(JSON.stringify(config)); child.unref();
   for (let attempt = 0; attempt < 50; attempt++) {
     if (startupError) throw new Error("The portable companion could not start. Check the Node executable and package path.");
-    if (await portOccupied(pairing.port)) return connectPortable(config, "agent");
+    if (await portOccupied(pairing.port)) return connectPortable(config, "agent", { extensionId });
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error("The portable companion could not start. Choose a free setup port and check local security policy.");

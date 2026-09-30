@@ -183,6 +183,37 @@ Do not advance the wait anchor to the returned read point until those pages
 are accounted for: that would skip omitted matches. Retention or a Gap may
 still make a complete reconstruction unavailable; report that limitation.
 
+## Reading a derived COMMAND key
+
+When advertised in capabilities, `query_command_state` reads one live COMMAND
+Subscription or item Scope with an explicit `projection`, current `pageEpoch`,
+exact `item:{name,position}`, and opaque `key`. At least one item identity member
+must be non-null. Keys retain exact whitespace. Supply up to 32 exact field names
+in `fields`; a default read returns a bounded prefix.
+
+Inspect `presence.state` and `basis`; gaps, missing prior basis or evicted detail
+can make presence inconclusive. Field certainty distinguishes projected from
+last-observed values. Unavailable, redacted, ambiguous and output-budget states
+are not concrete values. The result's read point is the applied projection
+boundary, reusable with Evidence reads and waits. Retained provenance identities
+can be inspected with `get_evidence`. This result is derived Workbench state,
+not application or Lightstreamer Server state.
+
+## Waiting for an operation receipt
+
+Use `wait_for_operation` with the exact existing `requestId` after a pending
+Local Injection receipt. The default wait is 10 seconds, with a maximum of
+20 seconds. `COMPLETE` means inspect the settled operation outcome;
+`TIMED_OUT` retains the current pending receipt. A `SCENARIO_CONTROL_RECEIPT`
+acknowledges a control only; use `get_scenario_trace` for Run progress.
+`OPERATION_UNKNOWN` does not establish that delivery never occurred.
+
+Cancellation and revoked access stop receipt waits. Each agent connection has
+two combined Evidence/receipt wait slots and 16 pending-request slots; each
+Panel Session has four wait slots. On `REQUEST_CAPACITY`, finish or cancel an
+existing wait before starting another. Never recover a lost mutation reply by
+executing under a new request ID.
+
 ## Availability in current releases
 
 Use compatible extension and companion builds for this workflow; confirm the

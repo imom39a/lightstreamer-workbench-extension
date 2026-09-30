@@ -56,7 +56,7 @@ async function authenticate(code: string, role: "agent" | "panel") {
   const challenge = await client.next();
   expect(await verifyPairingProof(secret, proofText("server", role, nonce, challenge.nonce), challenge.proof)).toBe(true);
   client.send({ type: "authenticate", proof: await pairingProof(secret, proofText("client", role, nonce, challenge.nonce)) });
-  expect(await client.next()).toEqual({ type: "authenticated" });
+  expect(await client.next()).toEqual({ type: "authenticated", identity: expect.objectContaining({ extensionId, protocolVersion: 1 }) });
   return client;
 }
 
@@ -87,7 +87,7 @@ describe("installer-free companion", () => {
     channel.send({ id: "empty", name: "list_panel_sessions", args: {} });
     await vi.waitFor(() => expect(replies.shift()).toMatchObject({ id: "empty", result: [] }));
     const panel = await peer(port, { Origin: origin });
-    panel.send({ type: "connect", auth: "off", role: "panel" }); expect(await panel.next()).toEqual({ type: "connected", auth: "off" });
+    panel.send({ type: "connect", auth: "off", role: "panel" }); expect(await panel.next()).toEqual({ type: "connected", auth: "off", identity: expect.objectContaining({ extensionId, protocolVersion: 1 }) });
     panel.send({ role: "panel", protocolVersion: 1, panelSessionId: "direct", permission: "read" }); await panel.next();
     channel.send({ id: "visible", name: "list_panel_sessions", args: {} });
     await vi.waitFor(() => expect(replies.shift()).toMatchObject({ result: [expect.objectContaining({ panelSessionId: "direct", permission: "read" })] }));
@@ -296,7 +296,7 @@ describe("installer-free companion", () => {
     }));
     expect((await clients[0]!.listTools()).tools.map(tool => tool.name)).toContain("prepare_scenario");
     const panel = auth === "required" ? await authenticate(credential, "panel") : await peer(port, { Origin: origin });
-    if (auth === "off") { panel.send({ type: "connect", auth, role: "panel" }); expect(await panel.next()).toEqual({ type: "connected", auth }); }
+    if (auth === "off") { panel.send({ type: "connect", auth, role: "panel" }); expect(await panel.next()).toEqual({ type: "connected", auth, identity: expect.objectContaining({ extensionId, protocolVersion: 1 }) }); }
     panel.send({ role: "panel", protocolVersion: 1, panelSessionId: "portable-cli", permission: "local" }); await panel.next();
     for (const client of clients) expect(JSON.stringify(await client.callTool({ name: "list_panel_sessions", arguments: {} }))).toContain("portable-cli");
     const reply = clients[1]!.callTool({ name: "get_status", arguments: { panelSessionId: "portable-cli" } });
