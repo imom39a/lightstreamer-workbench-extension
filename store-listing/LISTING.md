@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below is prepared for extension 2.0.7 with matching companion 0.1.5. Verify the npm package and matching extension download before submitting this text. The Store API confirmed 2.0.6 published on September 30, 2026. The versioned release records later in this file describe their original packages.
+The description below is prepared for extension 2.0.7 with matching companion 0.1.5. The npm package and matching public extension download were verified on September 30, 2026. The Store API accepted the 2.0.7 ZIP as a draft and confirmed 2.0.6 published. Dashboard updates and submission are deferred until the maintainer returns home to unlock the Mac. The versioned release records later in this file describe their original packages.
 
 ```text
 New in 2.0.7: COMMAND Clear and exact key handling are more reliable, and long sessions release discarded runtime objects and bound historical bookkeeping. With companion 0.1.5, agents can read one exact COMMAND key with certainty and provenance, wait for an existing operation without repeating it, and recover from incompatible companion versions. MCP reads preserve JSON values, support cancellation, and keep replies within explicit budgets.
@@ -193,6 +193,22 @@ npx --yes lightstreamer-workbench-agent@0.1.5 setup --extension-id YOUR_UNPACKED
 ```
 
 Copy the printed MCP configuration into the test agent app and start its stdio server. The app starts the companion; no additional terminal or hosted server is needed. On Windows, use `npx.cmd`. The [matching public release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.5) includes a ready-built unpacked extension, the same tested companion tarball, source provenance, and SHA-256 checksums. Use both components from this release. Ask the agent to call `list_panel_sessions`, choose the reviewed tab, and call `get_status` before reading Evidence or testing Local Injection.
+
+## Version 2.0.7 Release Checklist
+
+- [x] Push reviewed product source `c0f250cba93d5399553f201d9995cd284be1bd26` to `main`.
+- [x] Pass the local package, official-client/MCP, panel browser, and asset-review gates.
+- [x] Verify the exact npm companion on Windows, macOS, and Linux.
+- [x] Publish and verify companion 0.1.5 with source provenance and matching integrity.
+- [x] Publish and verify the ready-built 2.0.7 extension bundle and checksums.
+- [x] Upload the configured 516,955-byte 2.0.7 ZIP; API upload succeeded.
+- [ ] Save the detailed description and 0.1.5 reviewer instructions above in the dashboard.
+- [ ] Refresh the four changed Store screenshots; keep the unchanged Agent access image fourth.
+- [ ] Confirm existing privacy answers and permission justifications agree with this release.
+- [ ] Submit with automatic publication after approval and 100% distribution.
+- [ ] Verify actual review/publication state before announcing Store availability.
+
+The maintainer deferred the remaining dashboard/submission steps until returning home. The five image filenames and their required order are listed above. The exact configured Store ZIP and API upload are recorded in [`RELEASE.md`](../RELEASE.md).
 
 ## Version 2.0.2 Release Checklist (historical)
 

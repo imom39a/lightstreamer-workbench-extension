@@ -45,7 +45,7 @@ jobs:
           node-version: 22.12.0
           cache: npm
       - run: npm ci
-      - run: node --test scripts/prepare-agent-release.test.mjs
+      - run: node --test scripts/prepare-agent-release.test.mjs scripts/verify-agent-publication.test.mjs
       - name: Select release version
         id: release
         env:
@@ -177,6 +177,4 @@ jobs:
           AGENT_TARBALL: ./release/${{ needs.package.outputs.filename }}
         run: npm publish "$AGENT_TARBALL" --access public --provenance --ignore-scripts
       - name: Verify registry version
-        env:
-          AGENT_VERSION: ${{ needs.package.outputs.version }}
-        run: npm view "lightstreamer-workbench-agent@$AGENT_VERSION" version dist.integrity
+        run: node scripts/verify-agent-publication.mjs

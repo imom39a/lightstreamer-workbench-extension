@@ -101,6 +101,7 @@ describe("release packaging verification gate", () => {
       "tests/agent-mcp-efficiency.test.ts",
       "tests/agent-status-budget.test.ts",
       "tests/activity-timeline-projection.test.ts",
+      "tests/command-state-runtime-regressions.test.ts",
       "tests/command-state.test.ts",
       "tests/event-history-performance-harness.test.ts",
       "tests/event-history-performance-runner.test.ts",

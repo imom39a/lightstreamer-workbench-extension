@@ -62,7 +62,7 @@ test("every stable public route is isolated, canonical, and navigable", async ({
     await expect(page.locator("script[src]"), route).toHaveCount(1);
     await expect(page.locator("script[src]")).toHaveAttribute("src", "/lightstreamer-workbench-extension/assets/site-analytics.js");
     await expect(page.locator('a[href*="/blob/main/PRIVACY.md"], a[href*="/blob/main/SECURITY.md"], a[href*="/blob/main/README.md"], a[href*="/blob/main/RELEASE.md"]'), route).toHaveCount(0);
-    await expect(page.locator("body"), route).not.toContainText(/coming soon|prelaunch|preview documentation|0\.1\.5/i);
+    await expect(page.locator("body"), route).not.toContainText(/coming soon|prelaunch|preview documentation/i);
   }
 });
 
@@ -138,9 +138,9 @@ test("Agent access gives one current cross-platform setup and a concise trust bo
   await page.goto("docs/agent-access/");
   await expect(page.getByRole("heading", { name: "Agent access" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Set up MCP" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "0.1.4 is available from npm" })).toHaveAttribute("href", "https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.4");
-  await expect(page.locator("pre").nth(0)).toContainText("npx --yes lightstreamer-workbench-agent@0.1.4 setup");
-  await expect(page.locator("pre").nth(1)).toContainText("npx.cmd --yes lightstreamer-workbench-agent@0.1.4 setup");
+  await expect(page.getByRole("link", { name: "0.1.5 is available from npm" })).toHaveAttribute("href", "https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.5");
+  await expect(page.locator("pre").nth(0)).toContainText("npx --yes lightstreamer-workbench-agent@0.1.5 setup");
+  await expect(page.locator("pre").nth(1)).toContainText("npx.cmd --yes lightstreamer-workbench-agent@0.1.5 setup");
   await expect(page.getByRole("img", { name: /Workbench panel showing Agent access On/ })).toBeVisible();
   await expect(page.getByText("skills/lightstreamer-workbench/SKILL.md")).toBeVisible();
   const article = page.locator(".article-content");
