@@ -26,7 +26,7 @@ async function openActivitySummary(
   }).click();
   const summary = page.locator('details[aria-label="Activity summary"]');
   await expect(summary).toBeVisible();
-  await expect(summary.locator("summary")).toHaveText(/^Activity summary — /);
+  await expect(summary.locator("summary")).toHaveText(/^Activity summary$/);
   await summary.locator("summary").click();
   await expect(summary).toHaveAttribute("open", "");
   return summary;

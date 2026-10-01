@@ -1,3 +1,6 @@
+import { activityScopeFor, compactActivityEvidence, activityProjectionCacheKey } from "./activity-evidence-index";
+export { activityScopeFor } from "./activity-evidence-index";
+import { runtimeObjectDossier } from "./runtime-context-dossier";
 import { readAgentCommandState } from "./agent-command-state";
 import { type CaptureMessage, type CaptureStatus, type TopologySyncFrame } from "../../bridge/messages";
 import { createCommandStateProjections, findCommandItem, type CommandStateProjections } from "../../core/command-state";
@@ -12,10 +15,7 @@ import {
   toBulkShareableEventEnvelope,
   type LightstreamerEventEnvelope
 } from "../../core/event-envelope";
-import {
-  canonicalEvidenceSearchTextWithExtraction,
-  extractEvidenceFacets
-} from "../../core/evidence-facets";
+import { normalizeEvidenceSearchText } from "../../core/evidence-facets";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
   DIAGNOSTIC_TEXT_MAX_LENGTH,
@@ -179,7 +179,6 @@ import {
 import {
   createActivityProjection,
   failedActivityProjection,
-  clipActivityTimeRange,
   matchesActivityEvidence,
   type ActivityEvidence,
   type ActivityProjection,
@@ -188,13 +187,6 @@ import {
   type ActivityReadPoint,
   type ActivityTimelineSourcePoint
 } from "../../core/activity-projection";
-import {
-  closeActivityDocument,
-  openActivityDocument,
-  reconcileActivityDocumentProjection,
-  reduceActivityDocument,
-  type ActivityDocumentState
-} from "../../core/activity-document";
 import {
   createLocalInjectionExecutionCoordinator,
   type LocalInjectionExecutionCoordinator,
@@ -222,6 +214,7 @@ import {
   terminalizeScenarioRun,
   scenarioTargetIncompatibility,
   undoScenarioStepRemoval,
+  undoScenarioStepAddition,
   updateScenarioCheckpoint,
   updateScenarioStepDraft,
   updateScenarioStepPresentation,
@@ -380,6 +373,7 @@ export type WorkbenchContextSnapshot = Readonly<{
   kind: "evidence" | "runtime";
   title: string;
   fields: readonly (readonly [string, string])[];
+  groups?: readonly Readonly<{ title: string; fields: readonly (readonly [string, string])[] }>[];
   /** Full retained Item Update evidence, independent of the evidence window. */
   selectedUpdate: SelectedUpdateSnapshot | null;
   /** Typed Include, Exclude, and Around actions for selected Evidence. */
@@ -407,6 +401,7 @@ export type WorkbenchDiagnostic = Readonly<{
   title: string;
   affected: string;
   detail: string;
+  technicalDetail?: string;
   recovery?: string;
   limitation?: string;
   consequence?: string;
@@ -513,16 +508,10 @@ export type WorkbenchEvidenceCopySnapshot = Readonly<{
 }>;
 
 export type WorkbenchActivitySnapshot = Readonly<{
-  open: boolean;
-  transition: Readonly<{
-    sequence: number;
-    kind: "idle" | "opened" | "explicit-close" | "supporting-evidence" | "back";
-  }>;
   projection: ActivityProjection;
   scope: ActivityScope;
   filter: Filter;
   readPoint: ActivityReadPoint;
-  document: ActivityDocumentState | null;
 }>;
 
 export type WorkbenchLocalInjectionAnchor = Readonly<{
@@ -571,7 +560,6 @@ export type WorkbenchLocalInjectionSnapshot = Readonly<{
     compareStatus: "unchanged" | "changed" | "no-source";
     compareOpen: boolean;
     editorPresentation: ScenarioEditorState;
-    minimized: boolean;
     parked: boolean;
     open: boolean;
     restorationOrigin: WorkbenchLocalInjectionRestorationOrigin;
@@ -604,6 +592,80 @@ export type WorkbenchServerInjectionSnapshot = Readonly<{
   }> | null;
 }>;
 
+export type WorkbenchScenarioCaptureWorkspace = Readonly<{
+  search: string;
+  commandFilter: "ALL" | "ADD" | "UPDATE" | "DELETE";
+  queryState: "idle" | "loading" | "ready" | "error";
+  expired: boolean;
+  newerAcceptedEvidenceCount: number;
+  remainingStepCapacity: number;
+  readPoint: EvidenceReadPoint | null;
+  rows: readonly Readonly<{ identity: EvidenceIdentity; event: LightstreamerEventEnvelope; preview: string; available: boolean; reason: string | null; alreadyUsed: boolean; selected: boolean }>[];
+  selected: readonly EvidenceIdentity[];
+  total: number;
+  pageOffset: number;
+  pageSize: number;
+  canShowOlder: boolean;
+  canShowNewer: boolean;
+  error: string | null;
+  feedback: string | null;
+  adding: boolean;
+  scrollTop: number;
+}>;
+
+type ScenarioCaptureWorkspaceState = {
+  search: string;
+  commandFilter: WorkbenchScenarioCaptureWorkspace["commandFilter"];
+  queryState: WorkbenchScenarioCaptureWorkspace["queryState"];
+  readPoint: EvidenceReadPoint | null;
+  records: readonly DeterministicEvidenceRecord[];
+  selected: Map<string, EvidenceIdentity>;
+  total: number;
+  pageOffset: number;
+  cursors: Array<string | undefined>;
+  nextCursor: string | null;
+  error: string | null;
+  feedback: string | null;
+  adding: boolean;
+  scrollTop: number;
+  generation: number;
+};
+
+function emptyScenarioCaptureWorkspace(): ScenarioCaptureWorkspaceState {
+  return { search: "", commandFilter: "ALL", queryState: "idle", readPoint: null, records: [], selected: new Map(), total: 0, pageOffset: 0, cursors: [undefined], nextCursor: null, error: null, feedback: null, adding: false, scrollTop: 0, generation: 0 };
+}
+
+function scenarioCaptureIdentityKey(identity: EvidenceIdentity): string {
+  return JSON.stringify([identity.intervalId, identity.pageId, identity.ownerId, identity.sequence, identity.eventId]);
+}
+
+/** A search-index excerpt, never a reconstructed executable payload. */
+function scenarioCapturePreview(record: DeterministicEvidenceRecord): string {
+  const marker = /observation path\s+(listener|wire)\s+\1\s+/i.exec(record.searchText);
+  if (!marker) return "";
+  const text = record.searchText;
+  let start = marker.index + marker[0].length;
+  let end = text.length;
+  // The index can append identical fields and changedFields. Collapse only an
+  // exact whole-suffix repetition, never individual words or application values.
+  const half = (end - start - 1) / 2;
+  if (Number.isInteger(half) && text[start + half] === " ") {
+    let repeated = true;
+    for (let index = 0; index < half; index += 1) {
+      if (text[start + index] !== text[start + half + 1 + index]) { repeated = false; break; }
+    }
+    if (repeated) end = start + half;
+  }
+  const operation = record.facets.operation;
+  const key = record.facets.key;
+  if (operation && key) {
+    const header = normalizeEvidenceSearchText(`command ${operation.label} key ${key.label}`);
+    const headerEnd = start + header.length;
+    if (text.startsWith(header, start) && (headerEnd === end || text[headerEnd] === " ")) start = Math.min(headerEnd + 1, end);
+  }
+  return text.slice(start, Math.min(end, start + 240));
+}
+
 export type WorkbenchScenarioSnapshot = Readonly<{
   phase: "edit" | "review" | "running" | "paused" | "complete" | "stopped";
   parked: boolean;
@@ -611,6 +673,7 @@ export type WorkbenchScenarioSnapshot = Readonly<{
   scenario: LocalInjectionScenario;
   run: ScenarioRun | null;
   membershipError: string | null;
+  captureWorkspace: WorkbenchScenarioCaptureWorkspace;
   pickerOpen: boolean;
   membership: readonly Readonly<{ eventId: string; available: boolean; reason: string | null }>[];
   membershipPreview: Readonly<{
@@ -619,6 +682,7 @@ export type WorkbenchScenarioSnapshot = Readonly<{
   }> | null;
   focusedMemberId: string;
   focusedStepId: string;
+  canUndoCaptureAddition: boolean;
   canUndoRemoval: boolean;
   priorRuns: readonly ScenarioRun[];
   retainedRunBytes: number;
@@ -717,7 +781,6 @@ export type WorkbenchCommand =
   | { type: "edit-local-injection" }
   | { type: "execute-local-injection" }
   | { type: "set-local-injection-compare"; open: boolean }
-  | { type: "set-local-injection-minimized"; minimized: boolean }
   | { type: "park-local-injection" }
   | { type: "resume-local-injection" }
   | { type: "request-discard-local-injection" }
@@ -740,6 +803,16 @@ export type WorkbenchCommand =
   | { type: "confirm-discard-server-injection" }
   | { type: "finish-server-injection" }
   | { type: "prepare-server-injection-repeat" }
+  | { type: "set-scenario-capture-search"; text: string }
+  | { type: "set-scenario-capture-filter"; command: WorkbenchScenarioCaptureWorkspace["commandFilter"] }
+  | { type: "show-older-scenario-captures" }
+  | { type: "show-newer-scenario-captures" }
+  | { type: "refresh-scenario-captures" }
+  | { type: "toggle-scenario-capture"; identity: EvidenceIdentity }
+  | { type: "clear-scenario-capture-selection" }
+  | { type: "add-scenario-captures" }
+  | { type: "undo-scenario-capture-addition" }
+  | { type: "set-scenario-capture-scroll"; scrollTop: number }
   | { type: "open-scenario-evidence-picker" }
   | { type: "close-scenario-evidence-picker" }
   | { type: "add-selected-evidence-to-scenario" }
@@ -760,6 +833,7 @@ export type WorkbenchCommand =
   | { type: "focus-scenario-step"; stepId: string }
   | { type: "set-scenario-step-delay"; stepId: string; delayMs: number }
   | { type: "set-scenario-speed"; speed: ScenarioSpeed }
+  | { type: "set-scenario-assertion-authoring-validity"; assertionId: string; valid: boolean }
   | { type: "review-scenario" }
   | { type: "re-review-scenario" }
   | { type: "edit-scenario" }
@@ -795,18 +869,8 @@ export type WorkbenchCommand =
   | { type: "export-scope" }
   | { type: "open-actions" }
   | { type: "close-actions" }
-  | { type: "open-activity" }
-  | { type: "close-activity" }
-  | { type: "show-activity-supporting-evidence"; start?: number; end?: number; filterMutations?: readonly FilterMutation[] }
   | { type: "select-activity-evidence"; intervalId: string; eventId: string; sequence: number; timestamp: number; source: "SERVER" | "LOCAL"; inspect?: boolean }
   | { type: "apply-activity-ranking-filter"; expectedRevision: number; rankingId: string }
-  | { type: "select-activity"; selection: ActivityDocumentState["selection"] }
-  | { type: "set-activity-local-series"; enabled: boolean }
-  | { type: "set-activity-timeline-series"; series: ActivityDocumentState["timelineSeries"] }
-  | { type: "set-activity-ranking-sort"; sort: ActivityDocumentState["rankingSort"] }
-  | { type: "set-activity-scroll"; documentTop?: number; plotLeft?: number }
-  | { type: "freeze-activity" }
-  | { type: "follow-activity" }
   | { type: "freeze-evidence" }
   | { type: "follow-live" }
   | { type: "back-investigation" }
@@ -921,7 +985,6 @@ export type WorkbenchRuntimeOptions = {
   /** Test seam for proving Activity projection failures stay renderer-local. */
   activityProjectionFactory?: (input: ActivityProjectionInput) => ActivityProjection;
   /** Delay for visible Activity projection publication; production uses approximately one second. */
-  activityPublicationDelayMs?: number;
   investigationDiscoveries?: readonly FacetDiscoveryRequest[];
   /** Safety ceiling for any complete Evidence copy or export artifact. */
   outputByteLimit?: number;
@@ -952,7 +1015,6 @@ type LocalInjectionDraftState = {
   phase: "edit" | "review" | "pending" | "outcome";
   compareOpen: boolean;
   editorPresentation: ScenarioEditorState;
-  minimized: boolean;
   parked: boolean;
   open: boolean;
   restorationOrigin: WorkbenchLocalInjectionRestorationOrigin;
@@ -988,7 +1050,11 @@ type ScenarioState = {
   run: ScenarioRun | null;
   reviews: Map<string, LocalInjectionReview>;
   membershipError: string | null;
+  /** Invalid partial primitive authoring belongs to this Scenario until corrected or removed. */
+  invalidPrimitiveAssertionIds: Set<string>;
   pickerOpen: boolean;
+  captureWorkspace: ScenarioCaptureWorkspaceState;
+  lastCaptureAddition?: { revision: number; ids: readonly string[] };
   membershipPreview: ScenarioMembershipPreview | null;
   focusedMemberId: string;
   focusedStepId: string;
@@ -1013,7 +1079,6 @@ type InvestigationCheckpoint = Readonly<{
   mode: "live" | "frozen";
   offset: number;
   readPoint: EvidenceReadPoint | null;
-  activityDocument: ActivityDocumentState | null;
 }>;
 
 const emptyEvidence: EvidenceData = Object.freeze({
@@ -1330,7 +1395,7 @@ class Runtime implements WorkbenchRuntime {
       if (review.kind === "refused") throw new Error(`${reviewedStep.id}: ${review.reason}`);
     }
     available();
-    this.scenarioState = { phase: "edit", parked: false, discardConfirmation: false, scenario: ordered.scenario, drafts, run: null, reviews: new Map(), membershipError: null, pickerOpen: false, membershipPreview: null, focusedMemberId: ordered.scenario.members[0]!.id, focusedStepId: ordered.scenario.steps[0]!.id, removedDrafts: new Map(), priorRuns: [], retainedRunBytes: 0, runner: null, runnerSnapshot: null, serverInterleaves: [] };
+    this.scenarioState = { phase: "edit", parked: false, discardConfirmation: false, scenario: ordered.scenario, drafts, run: null, reviews: new Map(), membershipError: null, invalidPrimitiveAssertionIds: new Set(), pickerOpen: false, captureWorkspace: emptyScenarioCaptureWorkspace(), membershipPreview: null, focusedMemberId: ordered.scenario.members[0]!.id, focusedStepId: ordered.scenario.steps[0]!.id, removedDrafts: new Map(), priorRuns: [], retainedRunBytes: 0, runner: null, runnerSnapshot: null, serverInterleaves: [] };
     this.localInjectionDraft = null;
     this.reviewCurrentScenario();
     if (this.scenarioState?.phase !== "review") throw new Error(this.scenarioState?.membershipError ?? "Scenario Review could not be completed.");
@@ -1417,7 +1482,6 @@ class Runtime implements WorkbenchRuntime {
   private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
   private readonly activityProjectionFactory: (input: ActivityProjectionInput) => ActivityProjection;
-  private readonly activityPublicationDelayMs: number;
   private readonly evidenceQuery: EvidenceInvestigationQuery;
   private readonly investigationDiscoveries: readonly FacetDiscoveryRequest[];
   private filterDiscovery: FacetDiscoveryRequest | null = null;
@@ -1431,7 +1495,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly activityEvidenceKeys = new Set<string>();
   /**
    * One payload-free entry per accepted Lightstreamer Evidence in the current
-   * History Interval. This deliberately survives a closed Activity document;
+   * History Interval. This survives a collapsed Timeline or Activity summary;
    * the complete raw Evidence remains solely in Event History.
    */
   private activityEvidenceRevision = 0;
@@ -1449,15 +1513,6 @@ class Runtime implements WorkbenchRuntime {
   private timelineEvidenceRevealActive = false;
   private activityEvidenceReadPointCache: Readonly<{ intervalId: string; through: number; evidence: readonly ActivityEvidence[] }> | null = null;
   private activityEvidenceCoherent = false;
-  private activityOpen = false;
-  private activityTransition: WorkbenchActivitySnapshot["transition"] = Object.freeze({ sequence: 0, kind: "idle" });
-  private activityDocumentState: ActivityDocumentState | null = null;
-  private activityHydrationPromise: Promise<void> | null = null;
-  private activityHydrated = false;
-  private activityPublicationHandle: unknown | null = null;
-  private activityPublicationPending = false;
-  private activityPublishedProjection: ActivityProjection | null = null;
-  private activityOriginCheckpoint: InvestigationCheckpoint | null = null;
   private topologyProjection: TopologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
@@ -1663,7 +1718,6 @@ class Runtime implements WorkbenchRuntime {
     this.clientMessageRecipeProvider = options.clientMessageRecipeProvider ?? null;
     this.performanceHooks = options.performanceHooks ?? null;
     this.activityProjectionFactory = options.activityProjectionFactory ?? createActivityProjection;
-    this.activityPublicationDelayMs = Math.max(0, options.activityPublicationDelayMs ?? 1_000);
     this.investigationDiscoveries = Object.freeze([...(options.investigationDiscoveries ?? [])]);
     this.storage = options.storage ?? { mode: "indexeddb" };
     this.storageEstimate = options.storageEstimate ?? null;
@@ -1873,11 +1927,7 @@ class Runtime implements WorkbenchRuntime {
     this.refreshEvidence("reveal-selection");
   }
 
-  private markActivityTransition(kind: Exclude<WorkbenchActivitySnapshot["transition"]["kind"], "idle">): void {
-    this.activityTransition = Object.freeze({ sequence: this.activityTransition.sequence + 1, kind });
-  }
-
-  private recordInvestigationCheckpoint(activityDocument: ActivityDocumentState | null = null): void {
+  private recordInvestigationCheckpoint(): void {
     const checkpoint: InvestigationCheckpoint = Object.freeze({
       scopeId: this.scopeId,
       filter: this.canonicalFilter,
@@ -1890,8 +1940,7 @@ class Runtime implements WorkbenchRuntime {
       notificationsReturnContextId: this.notificationsReturnContextId,
       mode: this.mode,
       offset: this.displayedEvidence().offset,
-      readPoint: this.mode === "frozen" ? this.frozenInvestigation?.readPoint ?? this.restorationReadPoint : null,
-      activityDocument
+      readPoint: this.mode === "frozen" ? this.frozenInvestigation?.readPoint ?? this.restorationReadPoint : null
     });
     if (this.restorationIndex < this.restorationCheckpoints.length - 1) {
       this.restorationCheckpoints.splice(this.restorationIndex + 1);
@@ -1924,12 +1973,6 @@ class Runtime implements WorkbenchRuntime {
     this.notificationsReturnContextId = checkpoint.notificationsReturnContextId;
     this.mode = checkpoint.mode;
     this.restorationReadPoint = checkpoint.readPoint;
-    if (checkpoint.activityDocument) {
-      this.markActivityTransition("back");
-      this.activityDocumentState = Object.freeze({ ...checkpoint.activityDocument, open: true });
-      this.activityOpen = true;
-      this.activityPublishedProjection = checkpoint.activityDocument.projection;
-    }
     if (checkpoint.mode === "live") {
       this.frozenEvidence = null;
       this.frozenInvestigation = null;
@@ -2271,11 +2314,6 @@ class Runtime implements WorkbenchRuntime {
         this.localInjectionDraft.editorPresentation = Object.freeze({ ...this.localInjectionDraft.editorPresentation, compareOpen: command.open });
         this.publish();
         return;
-      case "set-local-injection-minimized":
-        if (!this.localInjectionDraft) return;
-        this.localInjectionDraft.minimized = command.minimized;
-        this.publish();
-        return;
       case "park-local-injection":
         this.parkLocalInjection();
         return;
@@ -2349,9 +2387,90 @@ class Runtime implements WorkbenchRuntime {
       case "prepare-server-injection-repeat":
         this.prepareServerInjectionRepeat();
         return;
+      case "set-scenario-capture-search":
+      case "set-scenario-capture-filter": {
+        const state = this.scenarioState;
+        if (!state || state.phase !== "edit" || state.captureWorkspace.adding) return;
+        if (command.type === "set-scenario-capture-search") state.captureWorkspace.search = command.text;
+        else state.captureWorkspace.commandFilter = command.command;
+        state.captureWorkspace.pageOffset = 0;
+        state.captureWorkspace.cursors = [undefined];
+        state.captureWorkspace.scrollTop = 0;
+        this.loadScenarioCaptures();
+        return;
+      }
+      case "refresh-scenario-captures": {
+        const workspace = this.scenarioState?.captureWorkspace;
+        if (!workspace || workspace.adding) return;
+        workspace.readPoint = null;
+        workspace.pageOffset = 0;
+        workspace.cursors = [undefined];
+        this.loadScenarioCaptures();
+        return;
+      }
+      case "show-older-scenario-captures":
+      case "show-newer-scenario-captures": {
+        const workspace = this.scenarioState?.captureWorkspace;
+        if (!workspace || workspace.queryState !== "ready" || workspace.adding) return;
+        if (command.type === "show-older-scenario-captures") {
+          if (!workspace.nextCursor) return;
+          workspace.pageOffset += 40;
+          workspace.cursors[workspace.pageOffset / 40] = workspace.nextCursor;
+        } else {
+          if (workspace.pageOffset === 0) return;
+          workspace.pageOffset -= 40;
+        }
+        workspace.scrollTop = 0;
+        this.loadScenarioCaptures();
+        return;
+      }
+      case "clear-scenario-capture-selection":
+        if (!this.scenarioState || this.scenarioState.captureWorkspace.adding) return;
+        this.scenarioState.captureWorkspace.selected.clear();
+        this.scenarioState.captureWorkspace.error = null;
+        this.scenarioState.membershipError = null;
+        this.publish();
+        return;
+      case "toggle-scenario-capture":
+        this.toggleScenarioCapture(command.identity);
+        return;
+      case "add-scenario-captures":
+        void this.addScenarioCaptures();
+        return;
+      case "undo-scenario-capture-addition": {
+        const state = this.scenarioState;
+        const addition = state?.lastCaptureAddition;
+        if (!state || state.phase !== "edit" || !addition || state.scenario.revision !== addition.revision || state.captureWorkspace.adding) return;
+        const undo = undoScenarioStepAddition(state.scenario, addition.ids, { retainedRunBytes: state.retainedRunBytes });
+        if (!undo.ok) {
+          state.captureWorkspace.error = undo.reason;
+          state.membershipError = undo.reason;
+          this.publish();
+          return;
+        }
+        state.scenario = undo.scenario;
+        for (const id of addition.ids) state.drafts.delete(id);
+        if (!state.drafts.has(state.focusedStepId)) state.focusedStepId = state.scenario.steps[0]!.id;
+        if (!state.scenario.members.some(member => member.id === state.focusedMemberId)) state.focusedMemberId = state.focusedStepId;
+        state.lastCaptureAddition = undefined;
+        state.captureWorkspace.error = null;
+        state.membershipError = null;
+        state.captureWorkspace.feedback = `Undid addition of ${addition.ids.length} captured Steps.`;
+        this.publish();
+        return;
+      }
+      case "set-scenario-capture-scroll": {
+        const workspace = this.scenarioState?.captureWorkspace;
+        if (workspace && Number.isFinite(command.scrollTop) && workspace.scrollTop !== Math.max(0, command.scrollTop)) {
+          workspace.scrollTop = Math.max(0, command.scrollTop);
+          this.publish();
+        }
+        return;
+      }
       case "open-scenario-evidence-picker":
         if (!this.scenarioState || this.scenarioState.phase !== "edit") return;
         this.scenarioState.pickerOpen = true;
+        if (this.scenarioState.captureWorkspace.queryState === "idle") this.loadScenarioCaptures();
         this.scenarioState.membershipError = null;
         this.publish();
         return;
@@ -2405,6 +2524,7 @@ class Runtime implements WorkbenchRuntime {
           state.membershipError = update.reason;
         } else {
           state.scenario = update.scenario;
+          this.pruneScenarioInvalidPrimitiveAssertions(state);
           state.membershipError = null;
         }
         this.publish();
@@ -2431,6 +2551,7 @@ class Runtime implements WorkbenchRuntime {
         if (!removal.ok) state.membershipError = removal.reason;
         else {
           state.scenario = removal.scenario;
+          this.pruneScenarioInvalidPrimitiveAssertions(state);
           state.focusedMemberId = removal.scenario.members[Math.min(index, removal.scenario.members.length - 1)]?.id ?? state.focusedStepId;
           state.membershipError = null;
         }
@@ -2508,6 +2629,18 @@ class Runtime implements WorkbenchRuntime {
       case "set-scenario-speed":
         this.setScenarioSpeed(command.speed);
         return;
+      case "set-scenario-assertion-authoring-validity": {
+        const state = this.scenarioState;
+        if (!state || state.phase !== "edit") return;
+        this.pruneScenarioInvalidPrimitiveAssertions(state);
+        const current = state.scenario.members.some((member) => member.kind === "checkpoint" && member.assertions.some((assertion) => assertion.id === command.assertionId && assertion.kind === "command-field-equals"));
+        if (!current) return;
+        if (command.valid) state.invalidPrimitiveAssertionIds.delete(command.assertionId);
+        else state.invalidPrimitiveAssertionIds.add(command.assertionId);
+        if (command.valid) state.membershipError = null;
+        this.publish();
+        return;
+      }
       case "review-scenario":
         this.reviewCurrentScenario();
         return;
@@ -2523,6 +2656,7 @@ class Runtime implements WorkbenchRuntime {
         this.scenarioState.runner = null;
         this.scenarioState.runnerSnapshot = null;
         this.scenarioState.reviews.clear();
+        if (this.scenarioState.captureWorkspace.queryState === "idle") this.loadScenarioCaptures();
         this.publish();
         return;
       case "play-scenario":
@@ -2712,136 +2846,11 @@ class Runtime implements WorkbenchRuntime {
         this.actionsReturnContextId = null;
         this.publish();
         return;
-      case "open-activity":
-        if (!this.activityOpen) {
-          this.markActivityTransition("opened");
-          const checkpoint = this.restorationCheckpoints[this.restorationIndex] ?? null;
-          this.activityOriginCheckpoint = checkpoint
-            ? Object.freeze({
-              ...checkpoint,
-              selectionEventId: this.selectionEventId,
-              selectedEvidenceIdentity: this.selectedLookupIdentity(),
-              focusedEventId: this.focusedEventId,
-              mode: this.mode,
-              offset: this.displayedEvidence().offset
-            })
-            : null;
-        }
-        this.activityOpen = true;
-        if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: true });
-        if (!this.activityHydrated && this.activityHydrationPromise === null) {
-          this.activityHydrationPromise = this.hydrateActivityEvidence().finally(() => {
-            this.activityHydrationPromise = null;
-          });
-        }
-        this.publish();
-        return;
-      case "close-activity":
-        if (this.activityOpen) this.markActivityTransition("explicit-close");
-        if (this.activityDocumentState) {
-          const origin = closeActivityDocument(this.activityDocumentState);
-          this.selectionEventId = origin.evidenceSelectionId;
-          this.focusedEventId = origin.evidenceFocusId ?? origin.evidenceSelectionId;
-          this.evidenceScrollTop = Math.max(0, origin.evidenceScrollTop);
-          this.activityDocumentState = Object.freeze({
-            ...this.activityDocumentState,
-            scope: origin.scope,
-            filter: origin.filter,
-            readPoint: origin.readPoint,
-            view: origin.view
-          });
-        }
-        this.activityOpen = false;
-        this.cancelActivityPublication();
-        if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
-        const activityOrigin = this.activityOriginCheckpoint;
-        this.activityOriginCheckpoint = null;
-        if (activityOrigin) {
-          this.scopeId = activityOrigin.scopeId;
-          this.canonicalFilter = activityOrigin.filter;
-          this.find = activityOrigin.find;
-          this.findCurrentEventId = activityOrigin.findCurrentEventId;
-          this.selectionEventId = activityOrigin.selectionEventId;
-          this.focusedEventId = activityOrigin.focusedEventId;
-          this.contextId = activityOrigin.contextId;
-          this.mode = activityOrigin.mode;
-          this.restorationReadPoint = activityOrigin.readPoint;
-          if (activityOrigin.mode === "live") {
-            this.frozenEvidence = null;
-            this.frozenInvestigation = null;
-            this.frozenInvestigationContract = null;
-          }
-          this.refreshEvidence("navigation", activityOrigin.offset);
-          return;
-        }
-        this.publish();
-        return;
-      case "show-activity-supporting-evidence": {
-        const retained = this.activitySnapshot(this.scopeSnapshot()).readPoint.retainedRange;
-        const clipped = command.start !== undefined && command.end !== undefined
-          ? clipActivityTimeRange({ start: command.start, end: command.end }, retained)
-          : null;
-        if (command.start !== undefined && command.end !== undefined && !clipped) return;
-        const result = applyFilterMutations(this.canonicalFilter, this.canonicalFilter.revision, [
-          ...(command.filterMutations ?? []),
-          ...(clipped ? [{ type: "set-around" as const, around: { intervalId: this.historyStatus.interval.id, ...clipped } }] : [])
-        ]);
-        if (result.ok) {
-          this.markActivityTransition("supporting-evidence");
-          const activityDocument = this.activityDocumentState;
-          if (activityDocument) this.recordInvestigationCheckpoint(activityDocument);
-          this.canonicalFilter = result.filter;
-          this.activityOpen = false;
-          if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
-          this.recordInvestigationCheckpoint();
-          this.refreshEvidence("filter");
-        }
-        return;
-      }
       case "select-activity-evidence":
         this.selectActivityEvidence(command);
         return;
       case "apply-activity-ranking-filter":
         this.applyActivityRankingFilter(command.expectedRevision, command.rankingId);
-        return;
-      case "select-activity":
-      case "set-activity-local-series":
-      case "set-activity-timeline-series":
-      case "set-activity-ranking-sort":
-      case "set-activity-scroll": {
-        const document = this.activityDocumentState ?? this.activitySnapshot(this.scopeSnapshot()).document;
-        if (!document) return;
-        const documentCommand = command.type === "select-activity"
-          ? { type: "select" as const, selection: command.selection }
-          : command.type === "set-activity-local-series"
-            ? { type: "set-local-series" as const, enabled: command.enabled }
-            : command.type === "set-activity-timeline-series"
-              ? { type: "set-timeline-series" as const, series: command.series }
-            : command.type === "set-activity-ranking-sort"
-              ? { type: "set-ranking-sort" as const, sort: command.sort }
-              : { type: "set-scroll" as const, documentTop: command.documentTop, plotLeft: command.plotLeft };
-        this.activityDocumentState = reduceActivityDocument(document, documentCommand).state;
-        this.publish();
-        return;
-      }
-      case "freeze-activity":
-        this.mode = "frozen";
-        this.restorationReadPoint = null;
-        this.frozenEvidence = this.liveEvidence;
-        this.frozenInvestigation = this.liveInvestigation;
-        this.frozenInvestigationContract = this.liveInvestigationContract;
-        if (this.activityDocumentState) this.activityDocumentState = reduceActivityDocument(this.activityDocumentState, { type: "freeze" }).state;
-        this.refreshEvidence("command");
-        return;
-      case "follow-activity":
-        this.flushActivityPublication();
-        this.mode = "live";
-        this.restorationReadPoint = null;
-        this.frozenEvidence = null;
-        this.frozenInvestigation = null;
-        this.frozenInvestigationContract = null;
-        if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, view: "FOLLOW LIVE", newerMatchingEvidence: 0 });
-        this.refreshEvidence("command");
         return;
       case "freeze-evidence":
         this.mode = "frozen";
@@ -3007,7 +3016,6 @@ class Runtime implements WorkbenchRuntime {
     this.scenarioState?.runner?.dispose();
     this.scenarioBoundaryListeners.clear();
     this.cancelPassivePublication();
-    this.cancelActivityPublication();
     this.evidenceQueryAbortController?.abort();
     this.evidenceQueryAbortController = null;
     this.evidenceCopyGeneration += 1;
@@ -3316,8 +3324,6 @@ class Runtime implements WorkbenchRuntime {
     this.timelineEvidenceRevealActive = false;
     // Clear establishes a new, known-empty History Interval immediately.
     this.activityEvidenceCoherent = true;
-    this.activityHydrationPromise = null;
-    this.activityHydrated = false;
     this.queryGeneration += 1;
     this.evidenceQueryAbortController?.abort();
     this.evidenceQueryAbortController = null;
@@ -3327,7 +3333,6 @@ class Runtime implements WorkbenchRuntime {
     this.investigationProblem = null;
     this.lastEvidenceQueryError = null;
     this.cancelPassivePublication();
-    this.cancelActivityPublication();
     this.passiveRefreshPending = false;
     this.projectionRecovery = null;
     this.commandStateProjections.clear();
@@ -3504,7 +3509,6 @@ class Runtime implements WorkbenchRuntime {
     this.scenarioVisibilityTransition = false;
     if (!visible) {
       this.cancelPassivePublication();
-      this.cancelActivityPublication();
       this.publish(true);
       this.trackHiddenActivityConditionLifecycle = this.activityAggregationFailureReason !== null ||
         this.dismissedDiagnosticIds.has("activity:aggregation-failed:error");
@@ -3651,7 +3655,6 @@ class Runtime implements WorkbenchRuntime {
       this.hiddenDirty = true;
       return;
     }
-    this.scheduleActivityPublication();
     this.schedulePassivePublication();
   }
 
@@ -4074,33 +4077,6 @@ class Runtime implements WorkbenchRuntime {
       this.scheduler.clearTimeout(this.fallbackHandle);
       this.fallbackHandle = null;
     }
-  }
-
-  private scheduleActivityPublication(): void {
-    if (!this.activityOpen || !this.visible || this.activityPublicationHandle !== null) {
-      if (this.activityOpen && this.visible) this.activityPublicationPending = true;
-      return;
-    }
-    this.activityPublicationPending = true;
-    this.activityPublicationHandle = this.scheduler.setTimeout(() => {
-      this.activityPublicationHandle = null;
-      this.activityPublicationPending = false;
-      this.activityPublishedProjection = null;
-      if (!this.disposed && this.visible && this.activityOpen) this.publish();
-    }, this.activityPublicationDelayMs);
-  }
-
-  private cancelActivityPublication(): void {
-    if (this.activityPublicationHandle !== null) {
-      this.scheduler.clearTimeout(this.activityPublicationHandle);
-      this.activityPublicationHandle = null;
-    }
-    this.activityPublicationPending = false;
-    this.activityPublishedProjection = null;
-  }
-
-  private flushActivityPublication(): void {
-    this.cancelActivityPublication();
   }
 
   private navigateEvidenceWindow(
@@ -4526,7 +4502,6 @@ class Runtime implements WorkbenchRuntime {
       phase: "edit",
       compareOpen,
       editorPresentation: emptyScenarioEditorState(compareOpen),
-      minimized: false,
       parked: false,
       open: true,
       restorationOrigin: Object.freeze({
@@ -4809,7 +4784,6 @@ class Runtime implements WorkbenchRuntime {
     if (!draft || draft.phase === "pending") return;
     draft.open = false;
     draft.parked = true;
-    draft.minimized = false;
     this.localInjectionBlockedEntry = null;
     this.localInjectionDiscardConfirmation = false;
     this.publish();
@@ -4853,6 +4827,10 @@ class Runtime implements WorkbenchRuntime {
     const draft = this.localInjectionDraft;
     if (!draft || draft.phase === "pending" || this.scenarioState) return;
     if (draft.phase !== "edit") this.editLocalInjection();
+    if (draft.sourceRawText !== null) {
+      draft.compareOpen = true;
+      draft.editorPresentation = Object.freeze({ ...draft.editorPresentation, compareOpen: true });
+    }
     let scenario: LocalInjectionScenario;
     try {
       scenario = createScenarioFromDraft(this.scenarioDraftInput(draft), {
@@ -4872,7 +4850,9 @@ class Runtime implements WorkbenchRuntime {
       run: null,
       reviews: new Map(),
       membershipError: null,
+      invalidPrimitiveAssertionIds: new Set(),
       pickerOpen: false,
+      captureWorkspace: emptyScenarioCaptureWorkspace(),
       membershipPreview: null,
       focusedMemberId: scenario.steps[0]!.id,
       focusedStepId: scenario.steps[0]!.id,
@@ -4885,7 +4865,171 @@ class Runtime implements WorkbenchRuntime {
     };
     draft.open = false;
     draft.parked = false;
+    this.loadScenarioCaptures();
     this.publish();
+  }
+
+  private scenarioCaptureSnapshot(state: ScenarioState): WorkbenchScenarioCaptureWorkspace {
+    const workspace = state.captureWorkspace;
+    const used = new Set(state.scenario.steps.map(step => step.draft.sourceEventId));
+    const history = this.history.status();
+    const expired = workspace.readPoint !== null && (workspace.readPoint.interval.id !== history.interval.id
+      || (workspace.readPoint.retainedRange !== null && (history.retainedRange === null || history.retainedRange.first.sequence > workspace.readPoint.retainedRange.first.sequence)));
+    const newerAcceptedEvidenceCount = workspace.readPoint?.interval.id === history.interval.id
+      ? Math.max(0, (history.committedEvidenceBoundary?.sequence ?? 0) - (workspace.readPoint.committedEvidenceBoundary?.sequence ?? 0)) : 0;
+    const rows = workspace.records.map(record => {
+      const compact = eventFromDeterministicRecord(record);
+      const phase = record.facets.phase?.value;
+      const event = Object.freeze({ ...compact,
+        ...(phase === "SNAPSHOT" || phase === "LIVE" ? { update: { ...compact.update, isSnapshot: phase === "SNAPSHOT" } } : {}),
+        raw: { summary: record.summary, searchText: record.searchText.slice(0, 240) } });
+      const reference = state.drafts.get(state.scenario.steps[0]!.id)!;
+      const reason = expired ? "This Capture read boundary expired. Refresh captures before selecting Sources." : this.validateLocalInjectionTarget(reference.anchor)[0]?.message
+        ?? (event.subscription?.mode !== state.scenario.target.mode ? "Different Subscription mode; cannot join this Scenario." : null);
+      const availability = { available: reason === null, reason };
+      const alreadyUsed = used.has(event.id);
+      return Object.freeze({ identity: record.identity, event, preview: record.searchText.slice(0, 240), available: availability.available && !alreadyUsed,
+        reason: alreadyUsed ? "Already in this Scenario. Duplicate its Step to deliberately reuse this Capture." : availability.reason,
+        alreadyUsed, selected: workspace.selected.has(scenarioCaptureIdentityKey(record.identity)) });
+    });
+    return Object.freeze({ search: workspace.search, commandFilter: workspace.commandFilter, queryState: workspace.queryState, expired, newerAcceptedEvidenceCount, remainingStepCapacity: Math.max(0, 100 - state.scenario.steps.length),
+      readPoint: workspace.readPoint, rows: Object.freeze(rows), selected: Object.freeze([...workspace.selected.values()]),
+      total: workspace.total, pageOffset: workspace.pageOffset, pageSize: 40,
+      canShowOlder: workspace.queryState === "ready" && workspace.nextCursor !== null,
+      canShowNewer: workspace.queryState === "ready" && workspace.pageOffset > 0,
+      error: workspace.error, feedback: workspace.feedback, adding: workspace.adding, scrollTop: workspace.scrollTop });
+  }
+
+  private scenarioCaptureRequest(state: ScenarioState): Pick<EvidenceInvestigationQueryRequest, "scope" | "filter"> {
+    const target = state.scenario.target;
+    const workspace = state.captureWorkspace;
+    const criteria: Filter["criteria"] = Object.fromEntries([
+      ["kind", "ITEM-UPDATE"], ["provenance", "SERVER"], ["observationPath", target.deliveryPath === "listener" ? "LISTENER" : "WIRE"],
+      ...(workspace.commandFilter === "ALL" ? [] : [["operation", workspace.commandFilter]])
+    ].map(([facet, value]) => [facet!, { include: [createTypedFilterValue(facet!, "enum", value!)], exclude: [] }]));
+    return { scope: { kind: "SUBSCRIPTION", clientId: target.clientId, sessionId: target.sessionId, subscriptionId: target.subscriptionId,
+        ...(target.listenerId ? { listenerId: target.listenerId } : {}) },
+      filter: { ...createFilter(), text: workspace.search, criteria } };
+  }
+
+  private loadScenarioCaptures(): void {
+    const state = this.scenarioState;
+    if (!state || state.captureWorkspace.adding) return;
+    const workspace = state.captureWorkspace;
+    const generation = ++workspace.generation;
+    workspace.queryState = "loading";
+    workspace.error = null;
+    const cursor = workspace.cursors[workspace.pageOffset / 40];
+    const request: EvidenceInvestigationQueryRequest = {
+      ...this.scenarioCaptureRequest(state), at: workspace.readPoint ?? "LATEST_COMMITTED",
+      page: { order: "NEWEST_FIRST", size: 40, ...(cursor ? { cursor } : {}) }, discover: []
+    };
+    this.publish();
+    void this.evidenceQuery.query(request).then(result => {
+      if (this.disposed || this.scenarioState !== state || workspace.generation !== generation) return;
+      if (!result.ok) {
+        workspace.queryState = "error";
+        workspace.error = `${result.problem.message} Refresh captures to read the current Retained Range. Selected identities remain explicit; unavailable Sources cannot be added.`;
+        workspace.records = [];
+        workspace.nextCursor = null;
+      } else {
+        workspace.queryState = "ready";
+        workspace.readPoint = result.value.readPoint;
+        workspace.records = result.value.page.evidence.map(({ payload: _payload, ...record }) => Object.freeze({ ...record, searchText: scenarioCapturePreview(record) }));
+        workspace.total = result.value.totals.matching;
+        workspace.nextCursor = result.value.page.nextCursor;
+      }
+      this.publish();
+    }, error => {
+      if (this.disposed || this.scenarioState !== state || workspace.generation !== generation) return;
+      workspace.queryState = "error";
+      workspace.error = `${error instanceof Error ? error.message : "Capture read failed."} Refresh captures to recover.`;
+      workspace.records = [];
+      workspace.nextCursor = null;
+      this.publish();
+    });
+  }
+
+  private toggleScenarioCapture(identity: EvidenceIdentity): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit" || state.captureWorkspace.adding) return;
+    const workspace = state.captureWorkspace;
+    const key = scenarioCaptureIdentityKey(identity);
+    if (workspace.selected.has(key)) workspace.selected.delete(key);
+    else {
+      const row = this.scenarioCaptureSnapshot(state).rows.find(row => scenarioCaptureIdentityKey(row.identity) === key);
+      if (!row || !row.available) return;
+      if (workspace.selected.size >= 100 - state.scenario.steps.length) {
+        workspace.error = "Scenario admits at most 100 Steps. Remove a Step or a selected Capture before selecting another.";
+        this.publish();
+        return;
+      }
+      workspace.selected.set(key, Object.freeze({ ...identity }));
+    }
+    workspace.error = null;
+    workspace.feedback = null;
+    this.publish();
+  }
+
+  private async addScenarioCaptures(): Promise<void> {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit" || state.captureWorkspace.adding) return;
+    const workspace = state.captureWorkspace;
+    const identities = [...workspace.selected.values()].sort((left, right) => left.sequence - right.sequence);
+    if (!identities.length) return;
+    const revision = state.scenario.revision;
+    const reference = state.drafts.get(state.scenario.steps[0]!.id)!;
+    const fingerprint = this.scenarioTargetFingerprint(reference);
+    workspace.adding = true;
+    workspace.error = null;
+    workspace.feedback = null;
+    this.publish();
+    try {
+      const assertUnchanged = () => {
+        if (this.disposed || this.scenarioState !== state || state.phase !== "edit" || state.scenario.revision !== revision) throw new Error("Scenario changed while reading selected Captures. Select and add against the current revision; no Steps were added.");
+        const status = this.history.status();
+        if (identities.some(identity => identity.intervalId !== status.interval.id || !status.retainedRange || identity.sequence < status.retainedRange.first.sequence || identity.sequence > status.retainedRange.last.sequence)) throw new Error("A selected Capture is no longer retained. Unselect it or refresh captures; no Steps were added.");
+        if (this.scenarioTargetFingerprint(reference) !== fingerprint || this.validateLocalInjectionTarget(reference.anchor).length) throw new Error("The exact Local Injection Target changed while reading selected Captures; no Steps were added.");
+      };
+      assertUnchanged();
+      let at: EvidenceReadPoint | "LATEST_COMMITTED" = "LATEST_COMMITTED";
+      let definition = state.scenario;
+      const drafts = new Map<string, LocalInjectionDraftState>();
+      const existing = new Set(definition.steps.map(step => step.draft.sourceEventId));
+      for (const identity of identities) {
+        if (existing.has(identity.eventId)) throw new Error("A selected Capture is already in this Scenario. Duplicate its Step to deliberately reuse it; no Steps were added.");
+        const result = await this.evidenceQuery.query({ at, scope: { kind: "NONE" }, filter: createFilter(), page: { order: "OLDEST_FIRST", size: 1 }, discover: [], lookup: identity, includePayload: true });
+        assertUnchanged();
+        if (!result.ok) throw new Error(`${result.problem.message} Refresh captures; no Steps were added.`);
+        at = result.value.readPoint;
+        if (result.value.lookup?.state !== "RETAINED") throw new Error("A selected Capture is no longer retained; no Steps were added.");
+        const event = lightstreamerPayload(result.value.lookup.evidence.payload);
+        if (!event) throw new Error("A selected Capture's complete payload is unavailable; no Steps were added.");
+        const availability = this.scenarioMembershipAvailability(event);
+        if (!availability.available) throw new Error(`Capture ${identity.eventId}: ${availability.reason} No Steps were added.`);
+        const candidate = this.createLocalInjectionCandidate({ kind: "selected-event", eventId: identity.eventId }, event, { recordError: false });
+        if (!candidate) throw new Error("A selected Capture cannot create a compatible Draft; no Steps were added.");
+        const resultAddition = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: state.retainedRunBytes });
+        if (!resultAddition.ok) throw new Error(`Capture ${identity.eventId}: ${resultAddition.reason}`);
+        definition = resultAddition.scenario;
+        drafts.set(definition.steps.at(-1)!.id, candidate);
+      }
+      assertUnchanged();
+      state.lastCaptureAddition = { revision: definition.revision, ids: [...drafts.keys()] };
+      state.scenario = definition;
+      for (const [id, draft] of drafts) state.drafts.set(id, draft);
+      workspace.selected.clear();
+      workspace.feedback = `Added ${identities.length} captured ${identities.length === 1 ? "Step" : "Steps"} in retained Evidence order.`;
+      state.membershipError = null;
+    } catch (error) {
+      if (this.scenarioState === state) {
+        workspace.error = error instanceof Error ? error.message : "Selected Captures could not be added; no Steps were added.";
+        state.membershipError = workspace.error;
+      }
+    } finally {
+      workspace.adding = false;
+      if (!this.disposed && this.scenarioState === state) this.publish();
+    }
   }
 
   private addSelectedEvidenceToScenario(): void {
@@ -5114,9 +5258,24 @@ class Runtime implements WorkbenchRuntime {
     this.publish();
   }
 
+  private pruneScenarioInvalidPrimitiveAssertions(state: ScenarioState): void {
+    const current = new Set(state.scenario.members.flatMap((member) => member.kind === "checkpoint"
+      ? member.assertions.filter((assertion) => assertion.kind === "command-field-equals").map(({ id }) => id)
+      : []));
+    for (const id of state.invalidPrimitiveAssertionIds) {
+      if (!current.has(id)) state.invalidPrimitiveAssertionIds.delete(id);
+    }
+  }
+
   private reviewCurrentScenario(): void {
     const state = this.scenarioState;
-    if (!state || state.phase !== "edit") return;
+    if (!state || state.phase !== "edit" || state.captureWorkspace.adding) return;
+    this.pruneScenarioInvalidPrimitiveAssertions(state);
+    if (state.invalidPrimitiveAssertionIds.size > 0) {
+      state.membershipError = "Correct the Primitive JSON value before Review. No Injection was attempted.";
+      this.publish();
+      return;
+    }
     const validated = this.scenarioWithOrderedValidation(state);
     if (!validated.ok) {
       state.membershipError = validated.reason;
@@ -5630,9 +5789,6 @@ class Runtime implements WorkbenchRuntime {
         if (this.mode === "frozen" && source !== "passive" && source !== "visibility") {
           this.frozenInvestigationContract = committedContract;
         }
-        const selectionNeedsLookup = this.selectionEventId !== null &&
-          this.selectedPayloadLoadedForEventId !== this.selectionEventId &&
-          request.lookup?.eventId !== this.selectionEventId;
         if (result.value.page.nextCursor !== null) {
           this.evidencePageCursors.set(
             effectiveOffset + result.value.page.evidence.length,
@@ -5642,6 +5798,10 @@ class Runtime implements WorkbenchRuntime {
           this.evidencePageCursors.delete(effectiveOffset + result.value.page.evidence.length);
         }
         this.applyInvestigationSnapshot(result.value, source, effectiveOffset, preserveCommandOffset);
+        const selectionNeedsLookup = this.selectionEventId !== null &&
+          this.selectedPayloadLoadedForEventId !== this.selectionEventId &&
+          request.lookup?.eventId !== this.selectionEventId &&
+          this.selectedLookupIdentity()?.eventId === this.selectionEventId;
         const selectionNeedsTimelinePage = this.timelineEvidenceRevealActive && this.timelineEvidenceOffset !== null &&
           !this.displayedEvidence().events.some((event) => event.id === this.selectionEventId);
         if (selectionNeedsLookup || selectionNeedsTimelinePage) {
@@ -5961,10 +6121,21 @@ class Runtime implements WorkbenchRuntime {
   private identityForEventId(eventId: string | null): EvidenceIdentity | null {
     if (!eventId) return null;
     const investigation = this.findInvestigation ?? this.liveInvestigation ?? this.frozenInvestigation;
-    return investigation?.page.evidence.find((record) => record.identity.eventId === eventId)?.identity ??
+    const visible = investigation?.page.evidence.find((record) => record.identity.eventId === eventId)?.identity ??
       (investigation?.lookup?.state === "RETAINED" && investigation.lookup.evidence.identity.eventId === eventId
         ? investigation.lookup.evidence.identity
         : null);
+    if (visible) return visible;
+    // The renderer page and its payload cache are bounded. An explicit retained
+    // selection may live outside both; resolve its accepted sequence from the
+    // compact follower index using this read point's canonical identity namespace.
+    // Frozen selection remains bounded by the same interval and committed cutoff.
+    const boundary = investigation?.readPoint.committedEvidenceBoundary;
+    const first = investigation?.readPoint.retainedRange?.first;
+    if (!boundary || !first) return null;
+    const retained = this.activityEvidence.find(entry => entry.event.id === eventId
+      && entry.intervalId === boundary.intervalId && entry.sequence >= first.sequence && entry.sequence <= boundary.sequence);
+    return retained ? Object.freeze({ ...boundary, sequence: retained.sequence, eventId }) : null;
   }
 
   private findIdentity(eventId: string | null): EvidenceIdentity | null {
@@ -6138,6 +6309,7 @@ class Runtime implements WorkbenchRuntime {
             scenario: this.scenarioState.scenario,
             run: this.scenarioState.run,
             membershipError: this.scenarioState.membershipError,
+            captureWorkspace: this.scenarioCaptureSnapshot(this.scenarioState),
             pickerOpen: this.scenarioState.pickerOpen,
             membership: Object.freeze(this.displayedEvidence().events.map((event) => this.scenarioMembershipAvailability(event))),
             membershipPreview: this.scenarioState.membershipPreview
@@ -6154,6 +6326,7 @@ class Runtime implements WorkbenchRuntime {
               : null,
             focusedMemberId: this.scenarioState.focusedMemberId,
             focusedStepId: this.scenarioState.focusedStepId,
+            canUndoCaptureAddition: this.scenarioState.lastCaptureAddition?.revision === this.scenarioState.scenario.revision,
             canUndoRemoval: this.scenarioState.scenario.removedSteps.length > 0,
             priorRuns: Object.freeze([...this.scenarioState.priorRuns]),
             retainedRunBytes: this.scenarioState.retainedRunBytes,
@@ -6306,7 +6479,6 @@ class Runtime implements WorkbenchRuntime {
               : "no-source" as const,
             compareOpen: draft.compareOpen,
             editorPresentation: draft.editorPresentation,
-            minimized: draft.minimized,
             parked: draft.parked,
             open: draft.open,
             restorationOrigin: draft.restorationOrigin,
@@ -6948,66 +7120,17 @@ class Runtime implements WorkbenchRuntime {
         );
       }
     }
-    const coalesced = this.activityOpen && this.activityPublicationPending && this.activityPublishedProjection !== null;
-    let presentedProjection = coalesced ? this.activityPublishedProjection! : projection;
-    if (this.activityOpen && !coalesced) this.activityPublishedProjection = projection;
-    if (this.activityOpen && !this.activityDocumentState) {
-      this.activityDocumentState = openActivityDocument(presentedProjection, {
-        scope: activityScope,
-        filter: this.canonicalFilter,
-        readPoint,
-        evidenceSelectionId: this.selectionEventId,
-        evidenceFocusId: this.focusedEventId,
-        evidenceScrollTop: this.evidenceScrollTop,
-        view: this.mode === "frozen" ? "FROZEN" : "FOLLOW LIVE",
-        localDraftId: this.localInjectionDraft?.id ?? null
-      });
-    }
-    if (this.activityDocumentState) {
-      const document = this.activityDocumentState;
-      const scopeChanged = JSON.stringify(document.scope) !== JSON.stringify(activityScope);
-      const filterChanged = document.filter.revision !== this.canonicalFilter.revision;
-      const intervalChanged = document.readPoint.intervalId !== readPoint.intervalId;
-      if (scopeChanged || filterChanged || intervalChanged) {
-        this.flushActivityPublication();
-        presentedProjection = projection;
-        this.activityPublishedProjection = projection;
-        this.activityDocumentState = reduceActivityDocument(document, {
-          type: "scope-or-filter-changed",
-          scope: activityScope,
-          filter: this.canonicalFilter,
-          readPoint,
-          projection: presentedProjection
-        }).state;
-      } else if (document.view === "FROZEN") {
-        const frozenSequence = document.readPoint.committedEvidenceBoundary?.sequence ?? 0;
-        const newer = this.activityEvidence.filter((entry) => entry.intervalId === document.readPoint.intervalId && entry.sequence > frozenSequence && matchesActivityEvidence(entry, document.filter, document.scope)).length;
-        this.activityDocumentState = Object.freeze({ ...document, newerMatchingEvidence: newer });
-      } else if (!coalesced) {
-        this.activityDocumentState = reconcileActivityDocumentProjection(
-          Object.freeze({ ...document, scope: activityScope, filter: this.canonicalFilter, newerMatchingEvidence: 0 }),
-          readPoint,
-          projection
-        );
-      }
-    }
-    const document = this.activityDocumentState;
-    const presentedReadPoint = document?.view === "FROZEN" ? document.readPoint : presentedProjection.readPoint;
-    const finalProjection = document?.view === "FROZEN" ? document.projection : presentedProjection;
     if (this.projectionRecovery === null) {
-      const failureReason = finalProjection.reason?.trim();
-      this.activityAggregationFailureReason = finalProjection.state === "AGGREGATION_FAILED"
+      const failureReason = projection.reason?.trim();
+      this.activityAggregationFailureReason = projection.state === "AGGREGATION_FAILED"
         ? failureReason || "Activity aggregation failed."
         : null;
     }
     return Object.freeze({
-      open: this.activityOpen,
-      transition: this.activityTransition,
       scope: activityScope,
       filter: this.canonicalFilter,
-      readPoint: presentedReadPoint,
-      projection: finalProjection,
-      document
+      readPoint,
+      projection
     });
   }
 
@@ -7025,44 +7148,6 @@ class Runtime implements WorkbenchRuntime {
     const evidence = Object.freeze(this.activityEvidence.slice(0, low).filter((entry) => entry.intervalId === intervalId));
     this.activityEvidenceReadPointCache = Object.freeze({ intervalId, through, evidence });
     return evidence;
-  }
-
-  private async hydrateActivityEvidence(): Promise<void> {
-    // Activity is a projection of accepted Evidence, not a second query
-    // surface. The paged investigation contract deliberately caps pages at
-    // 100 records for renderer work, but using it for retained-history
-    // hydration would rescan the complete journal once per page. Read the
-    // already-latched authoritative candidates once, then merge any arrivals
-    // accepted while that read was in flight below.
-    const requestedIntervalId = this.historyStatus.interval.id;
-    const result = await this.evidencePipeline.read({
-      intervalId: requestedIntervalId,
-      order: "asc"
-    });
-    if (!result.ok) return;
-    const hydrated: ActivityEvidence[] = result.value.evidence.flatMap((entry) =>
-      isLightstreamerEvidenceCandidate(entry.candidate)
-        ? [compactActivityEvidence(entry.intervalId, entry.sequence, entry.candidate)]
-        : []
-    );
-    if (this.disposed || this.historyStatus.interval.id !== requestedIntervalId) return;
-    const latchedIntervalId = hydrated[0]?.intervalId ?? this.historyStatus.interval.id;
-    const latchedBoundary = hydrated.reduce((highest, entry) => Math.max(highest, entry.sequence), 0);
-    const retainedAfterLatch = this.activityEvidence.filter((entry) =>
-      entry.intervalId !== latchedIntervalId || entry.sequence > latchedBoundary
-    );
-    const byKey = new Map<string, ActivityEvidence>();
-    for (const entry of hydrated) byKey.set(`${entry.intervalId}\u0000${entry.sequence}`, entry);
-    for (const entry of retainedAfterLatch) byKey.set(`${entry.intervalId}\u0000${entry.sequence}`, entry);
-    const rebuilt = [...byKey.values()].sort((left, right) => left.sequence - right.sequence);
-    this.activityEvidence.splice(0, this.activityEvidence.length, ...rebuilt);
-    this.activityEvidenceKeys.clear();
-    for (const entry of rebuilt) this.activityEvidenceKeys.add(`${entry.intervalId}\u0000${entry.sequence}`);
-    this.activityEvidenceRevision += 1;
-    this.activityProjectionCache = null;
-    this.activityEvidenceReadPointCache = null;
-    this.activityHydrated = true;
-    if (this.activityOpen) this.publish();
   }
 
   private exportSnapshot(): WorkbenchExportSnapshot {
@@ -7107,10 +7192,7 @@ class Runtime implements WorkbenchRuntime {
       const dossier = runtimeObjectDossier(
         findTopologySelection(topology, this.scopeId ?? "page"),
         scope.label,
-        scope.coverage,
-        this.captureSnapshot(),
-        events.length,
-        this.liveEvidence.total
+        scope.coverage
       );
       return dossier;
     }
@@ -7185,6 +7267,7 @@ class Runtime implements WorkbenchRuntime {
         title: condition.title,
         affected: condition.affected,
         detail: condition.detail,
+        technicalDetail: condition.technicalDetail,
         recovery: condition.recovery
       });
     }
@@ -7197,6 +7280,7 @@ class Runtime implements WorkbenchRuntime {
         title: storageDiagnostic.title,
         affected: storageDiagnostic.affected,
         detail: storageDiagnostic.detail,
+        technicalDetail: storageDiagnostic.technicalDetail,
         recovery: storageDiagnostic.recovery
       });
     }
@@ -7219,8 +7303,9 @@ class Runtime implements WorkbenchRuntime {
         severity: "Warning",
         title: "Session recovering",
         affected: recovering.affectedLabel,
-        detail: "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change.",
-        recovery: "Inspect the affected Session and wait for recovery or reconnect the inspected page"
+        detail: "Runtime availability may change while the Session recovers; Evidence remains ordered.",
+        technicalDetail: "The official client is attempting Session recovery.",
+        recovery: "Inspect the Session while it recovers, or reconnect the inspected page"
       });
     }
     if (capture.coverage !== "USEFUL" && !this.captureBoundary) {
@@ -7550,6 +7635,7 @@ class Runtime implements WorkbenchRuntime {
       title: string;
       affectedLabel: string;
       detail: string;
+      technicalDetail?: string;
       recovery: string;
       dismissalId: string;
       limitation: string;
@@ -7563,7 +7649,7 @@ class Runtime implements WorkbenchRuntime {
         lifecycle: { kind: "condition", conditionId: input.conditionId },
         affected: input.affected,
         observedAt: Date.now(),
-        observed: boundedDiagnosticText(input.detail),
+        observed: boundedDiagnosticText(input.technicalDetail ?? input.detail),
         limitation: boundedDiagnosticText(input.limitation),
         consequence: boundedDiagnosticText(input.consequence),
         route: { kind: "recover", action: input.route }
@@ -7579,6 +7665,7 @@ class Runtime implements WorkbenchRuntime {
         input.title,
         input.affectedLabel,
         input.detail,
+        input.technicalDetail,
         input.recovery,
         input.dismissalId,
         input.limitation,
@@ -7602,6 +7689,7 @@ class Runtime implements WorkbenchRuntime {
         affected: input.affectedLabel,
         affectedIdentity: adapted.observation.affected,
         detail: input.detail,
+        ...(input.technicalDetail ? { technicalDetail: input.technicalDetail } : {}),
         limitation: presentation.limitation,
         consequence: presentation.consequence,
         recovery: input.recovery
@@ -7651,6 +7739,7 @@ class Runtime implements WorkbenchRuntime {
         title: condition.title,
         affectedLabel: condition.affected,
         detail: condition.detail,
+        technicalDetail: condition.technicalDetail,
         recovery: condition.recovery,
         dismissalId: `history:${condition.kind}:${condition.severity.toLowerCase()}`,
         limitation: "The condition describes the current History Interval and its committed boundary only.",
@@ -7660,7 +7749,7 @@ class Runtime implements WorkbenchRuntime {
     }
     const storage = storageHeadroomDiagnostic(this.storageEstimate);
     if (storage) {
-      record({ family: "storage", localCode: "headroom-limited", conditionId: "storage-headroom", severity: "warning", affected: page, title: storage.title, affectedLabel: storage.affected, detail: storage.detail, recovery: storage.recovery, dismissalId: `storage:${storage.title}:${storage.severity.toLowerCase()}`, limitation: "Browser storage estimates are advisory and do not reserve capacity.", consequence: "A later History write can still fail even while the estimate reports headroom.", route: "inspect-storage-headroom" });
+      record({ family: "storage", localCode: "headroom-limited", conditionId: "storage-headroom", severity: "warning", affected: page, title: storage.title, affectedLabel: storage.affected, detail: storage.detail, technicalDetail: storage.technicalDetail, recovery: storage.recovery, dismissalId: `storage:${storage.title}:${storage.severity.toLowerCase()}`, limitation: "Browser storage estimates are advisory and do not reserve capacity.", consequence: "A later History write can still fail even while the estimate reports headroom.", route: "inspect-storage-headroom" });
     }
     const capture = this.captureSnapshot();
     if (this.captureStatus === "bridge disconnected") {
@@ -7678,8 +7767,9 @@ class Runtime implements WorkbenchRuntime {
         affected: recovering.affected,
         title: "Session recovering",
         affectedLabel: recovering.affectedLabel,
-        detail: "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change.",
-        recovery: "Inspect the affected Session and wait for recovery or reconnect the inspected page",
+        detail: "Runtime availability may change while the Session recovers; Evidence remains ordered.",
+        technicalDetail: "The official client is attempting Session recovery.",
+        recovery: "Inspect the Session while it recovers, or reconnect the inspected page",
         dismissalId: recovering.dismissalId,
         limitation: recovering.sessionKnown
           ? "Recovery status does not prove whether the prior Session will resume."
@@ -7948,181 +8038,6 @@ export function settleScenarioCoordinatorExecution(execution: LocalInjectionCoor
     ? execution.record.evidence.reference
     : null;
   return { kind: "attempted" as const, outcome: execution.record.outcome, evidence };
-}
-
-function runtimeObjectDossier(
-  target: TopologySelectionTarget | null,
-  title: string,
-  topologyCoverage: WorkbenchSnapshot["scope"]["coverage"],
-  capture: WorkbenchCaptureSnapshot,
-  visibleEvidenceCount: number,
-  matchingEvidenceCount: number
-): WorkbenchContextSnapshot {
-  const fields: Array<readonly [string, string]> = [];
-  const add = (name: string, value: unknown): void => {
-    fields.push(Object.freeze([name, dossierValue(value)] as const));
-  };
-
-  if (!target) {
-    add("Scope type", "Unknown");
-    add("Identity", "Unknown");
-  } else {
-    switch (target.kind) {
-      case "page":
-        add("Scope type", "Page");
-        add("Clients", target.state.clientCount);
-        add("Active sessions", target.state.activeSessionCount);
-        add("Historical sessions", target.state.historicalSessionCount);
-        add("Subscriptions", target.state.subscriptionCount);
-        add("Items", target.state.itemCount);
-        add("Listeners", target.state.listenerCount);
-        add("Observing since", dossierTimestamp(target.state.observingSince));
-        break;
-      case "client":
-        add("Scope type", "Client");
-        add("Client ID", target.client.id);
-        add("Status", target.client.status);
-        add("Normalized status", target.client.normalizedStatus);
-        add("Current Session ID", target.client.sessionId);
-        add("Server address", target.client.serverAddress);
-        add("Adapter set", target.client.adapterSet);
-        add("Library version", target.client.libraryVersion);
-        add("Transport", target.client.transport);
-        add("Active sessions", target.client.sessions.filter(({ active, historical }) => active && !historical).length);
-        add("Historical sessions", target.client.sessions.filter(({ historical }) => historical).length);
-        add("Waiting Subscriptions", target.client.waitingSubscriptions.length);
-        break;
-      case "session":
-        add("Scope type", "Session");
-        add("Session ID", target.session.id);
-        add("Client ID", target.client.id);
-        add("Status", target.session.normalizedStatus);
-        add("Client status", target.session.status);
-        add("Active", yesNo(target.session.active));
-        add("Historical", yesNo(target.session.historical));
-        add("Transport", target.session.transport);
-        add("Subscriptions", target.session.subscriptions.length);
-        add("Connection epochs", target.session.connectionEpochCount);
-        add("Recoveries", target.session.recoveryCount);
-        break;
-      case "subscription":
-        addSubscriptionDossier(fields, target);
-        break;
-      case "item":
-        add("Scope type", "Item");
-        add("Item name", target.item.name);
-        add("Position", target.item.position);
-        add("Resolution", target.item.resolution);
-        add("Subscription ID", target.subscription.id);
-        add("Client ID", target.client?.id);
-        add("Session ID", target.session?.id);
-        add("Historical", yesNo(target.subscription.historical));
-        add("Snapshot phase", target.item.snapshotPhase);
-        add("Updates", target.item.updateCount);
-        add("Synthetic updates", target.item.syntheticUpdateCount);
-        add("Deliveries", target.item.deliveryCount);
-        add("Lost updates", target.item.lostUpdateCount);
-        add("Listeners", target.item.listenerIds.length);
-        add("Last COMMAND operation", target.item.lastCommand);
-        add("Active COMMAND keys", target.item.activeCommandKeyCount);
-        add("Deleted COMMAND keys", target.item.deletedCommandKeyCount);
-        break;
-      case "listener":
-        add("Scope type", "Listener");
-        add("Listener ID", target.listener.id);
-        add("Subscription ID", target.subscription.id);
-        add("Item", target.item?.name);
-        add("Client ID", target.client?.id);
-        add("Session ID", target.session?.id);
-        add("Active", yesNo(target.listener.active));
-        add("Callbacks", dossierList(target.listener.callbacks));
-        add("Registration count", target.listener.registrationCount);
-        add("Metric owner", yesNo(target.listener.metricOwner));
-        add("Deliveries", target.listener.deliveryCount);
-        add("First delivery", dossierTimestamp(target.listener.firstDeliveryAt));
-        add("Last delivery", dossierTimestamp(target.listener.lastDeliveryAt));
-        break;
-      case "generation":
-      case "inferred-child":
-        // COMMAND generations are Evidence attached to structural Scope, never Scope peers.
-        add("Scope type", "Unknown");
-        add("Identity", "Unknown");
-        break;
-    }
-  }
-
-  add("Capture coverage", capture.coverage);
-  add(
-    "Topology coverage",
-    `${topologyCoverage.semantic ? "Semantic" : "Legacy"} · ${topologyCoverage.status}`
-  );
-  add("Visible Evidence", visibleEvidenceCount);
-  add("Matching retained Evidence", matchingEvidenceCount);
-
-  return Object.freeze({
-    kind: "runtime",
-    title,
-    fields: Object.freeze(fields),
-    selectedUpdate: null,
-    filterActions: Object.freeze([])
-  });
-}
-
-function addSubscriptionDossier(
-  fields: Array<readonly [string, string]>,
-  target: Extract<TopologySelectionTarget, { kind: "subscription" }>
-): void {
-  const add = (name: string, value: unknown): void => {
-    fields.push(Object.freeze([name, dossierValue(value)] as const));
-  };
-  const subscription = target.subscription;
-  add("Scope type", "Subscription");
-  add("Subscription ID", subscription.id);
-  add("Client ID", target.client?.id);
-  add("Session ID", target.session?.id);
-  add("Mode", subscription.mode);
-  add("Status", subscription.statusLabel);
-  add("Active", yesNo(subscription.active));
-  add("Server established", yesNo(subscription.serverEstablished));
-  add("Historical", yesNo(subscription.historical));
-  add("Configured items", dossierList(subscription.configuredItems));
-  add("Fields", dossierList(subscription.fields));
-  add("Requested snapshot", subscription.requestedSnapshot);
-  add("Requested buffer size", subscription.requestedBufferSize);
-  add("Requested max frequency", subscription.requestedMaxFrequency);
-  add("Real max frequency", subscription.realMaxFrequency);
-  add("Data Adapter", subscription.dataAdapter);
-  add("Selector", subscription.selector);
-  add("Snapshot phase", dossierSnapshotPhases(subscription.items));
-  add("Items", subscription.items.length);
-  add("Listeners", subscription.listenerCount);
-  add("Updates", subscription.updateCount);
-  add("Synthetic updates", subscription.syntheticUpdateCount);
-  add("Deliveries", subscription.deliveryCount);
-  add("Lost updates", subscription.lostUpdateCount);
-  add("COMMAND generations", subscription.commandGenerations.length);
-}
-
-function dossierValue(value: unknown): string {
-  if (value === undefined || value === null || value === "") return "Unknown";
-  return String(value);
-}
-
-function dossierList(values: readonly unknown[] | undefined): string {
-  return values && values.length > 0 ? values.map(String).join(", ") : "Unknown";
-}
-
-function dossierSnapshotPhases(items: readonly { snapshotPhase: string }[]): string {
-  const phases = [...new Set(items.map(({ snapshotPhase }) => snapshotPhase))];
-  return phases.length > 0 ? phases.join(", ") : "Unknown";
-}
-
-function dossierTimestamp(value: number | null): string {
-  return value === null ? "Unknown" : new Date(value).toISOString();
-}
-
-function yesNo(value: boolean): "Yes" | "No" {
-  return value ? "Yes" : "No";
 }
 
 function freezeEvidence(
@@ -9063,131 +8978,6 @@ function structuralEvidenceScope(target: TopologySelectionTarget | null): Struct
         subscriptionId: target.subscription.id
       });
   }
-}
-
-export function activityScopeFor(target: TopologySelectionTarget | null): ActivityScope {
-  if (!target || target.kind === "page") return { kind: "PAGE" };
-  if (target.kind === "client") return { kind: "CLIENT", clientId: target.client.id };
-  if (target.kind === "session") return { kind: "SESSION", clientId: target.client.id, sessionId: target.session.id };
-  if (target.kind === "subscription" || target.kind === "generation" || target.kind === "inferred-child") {
-    return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
-  }
-  if (target.kind === "item") {
-    return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
-  }
-  return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
-}
-
-/** Builds the Activity-only metadata index without retaining update payloads. */
-function compactActivityEvidence(intervalId: string, sequence: number, event: LightstreamerEventEnvelope): ActivityEvidence {
-  const client = event.client;
-  const subscription = event.subscription;
-  const listener = event.listener;
-  const item = event.item;
-  const update = event.update;
-  const raw = compactActivityRaw(event.raw);
-  const compact: LightstreamerEventEnvelope = Object.freeze({
-    id: event.id,
-    timestamp: event.timestamp,
-    direction: event.direction,
-    source: event.source,
-    ...(event.captureSource ? { captureSource: event.captureSource } : {}),
-    synthetic: event.synthetic,
-    kind: event.kind,
-    ...(event.logicalEventId ? { logicalEventId: event.logicalEventId } : {}),
-    ...(client ? { client: Object.freeze({
-      id: client.id,
-      ...(client.status !== undefined ? { status: client.status } : {}),
-      ...(client.sessionId !== undefined ? { sessionId: client.sessionId } : {}),
-      ...(client.requestedMaxBandwidth !== undefined ? { requestedMaxBandwidth: client.requestedMaxBandwidth } : {}),
-      ...(client.realMaxBandwidth !== undefined ? { realMaxBandwidth: client.realMaxBandwidth } : {}),
-      ...(client.semanticValueStates ? { semanticValueStates: compactSemanticStates(client.semanticValueStates, ["id", "sessionId"]) } : {})
-    }) } : {}),
-    ...(subscription ? { subscription: Object.freeze({
-      id: subscription.id,
-      ...(subscription.mode !== undefined ? { mode: subscription.mode } : {}),
-      ...(subscription.requestedMaxFrequency !== undefined ? { requestedMaxFrequency: subscription.requestedMaxFrequency } : {}),
-      ...(subscription.realMaxFrequency !== undefined ? { realMaxFrequency: subscription.realMaxFrequency } : {}),
-      ...(subscription.semanticValueStates ? { semanticValueStates: compactSemanticStates(subscription.semanticValueStates, ["id", "mode"]) } : {})
-    }) } : {}),
-    ...(listener ? { listener: Object.freeze({ id: listener.id, ...(listener.metricOwner !== undefined ? { metricOwner: listener.metricOwner } : {}) }) } : {}),
-    ...(item ? { item: Object.freeze({ ...(item.name !== undefined ? { name: item.name } : {}), ...(item.position !== undefined ? { position: item.position } : {}) }) } : {}),
-    ...(update ? { update: Object.freeze({
-      ...(update.isSnapshot !== undefined ? { isSnapshot: update.isSnapshot } : {}),
-      ...(update.command !== undefined ? { command: update.command } : {}),
-      ...(update.key !== undefined ? { key: update.key } : {}),
-      ...(update.lostUpdates !== undefined ? { lostUpdates: update.lostUpdates } : {})
-    }) } : {}),
-    ...(raw ? { raw } : {}),
-    ...(event.topology ? { topology: compactActivityTopology(event.topology) } : {})
-  });
-  const identity = { intervalId, pageId: intervalId, ownerId: event.subscription?.id ?? event.client?.id ?? "page", sequence, eventId: event.id };
-  const extracted = extractEvidenceFacets(event, { identity });
-  return Object.freeze({
-    intervalId,
-    sequence,
-    event: compact,
-    filterRecord: Object.freeze({
-      timestamp: event.timestamp,
-      intervalId,
-      searchText: canonicalEvidenceSearchTextWithExtraction(event, { identity }, extracted),
-      facets: extracted.facets
-    })
-  });
-}
-
-function compactSemanticStates(
-  states: NonNullable<LightstreamerEventEnvelope["client"]>["semanticValueStates"],
-  keys: readonly string[]
-): Record<string, NonNullable<NonNullable<LightstreamerEventEnvelope["client"]>["semanticValueStates"]>[string]> {
-  return Object.freeze(Object.fromEntries(keys.flatMap((key) => states?.[key] ? [[key, Object.freeze({ ...states[key] })]] : [])));
-}
-
-function compactActivityRaw(raw: LightstreamerEventEnvelope["raw"]): LightstreamerEventEnvelope["raw"] | undefined {
-  if (!raw) return undefined;
-  const selected = Object.fromEntries(["status", "code", "message"].flatMap((key) => {
-    const value = raw[key];
-    return typeof value === "string" || typeof value === "number" ? [[key, value]] : [];
-  }));
-  return Object.keys(selected).length ? Object.freeze(selected) as LightstreamerEventEnvelope["raw"] : undefined;
-}
-
-function compactActivityTopology(topology: NonNullable<LightstreamerEventEnvelope["topology"]>): NonNullable<LightstreamerEventEnvelope["topology"]> {
-  return Object.freeze({
-    version: topology.version,
-    kind: topology.kind,
-    pageEpoch: topology.pageEpoch,
-    captureSequence: topology.captureSequence,
-    ...(topology.timestamp === undefined ? {} : { timestamp: topology.timestamp }),
-    provenance: topology.provenance,
-    coverage: Object.freeze({ status: topology.coverage.status, getters: {} }),
-    ...(topology.client ? { client: compactActivityTopologyRecord(topology.client, ["id", "sessionId", "status"]) } : {}),
-    ...(topology.subscription ? { subscription: compactActivityTopologyRecord(topology.subscription, ["id"]) } : {}),
-    ...(topology.item ? { item: compactActivityTopologyRecord(topology.item, ["name", "position"]) } : {})
-  }) as NonNullable<LightstreamerEventEnvelope["topology"]>;
-}
-
-function compactActivityTopologyRecord(record: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
-  return Object.freeze(Object.fromEntries(keys.flatMap((key) => record[key] === undefined ? [] : [[key, record[key]]])));
-}
-
-function activityProjectionCacheKey(revision: number, input: ActivityProjectionInput): string {
-  const boundary = input.readPoint.committedEvidenceBoundary;
-  const range = input.readPoint.retainedRange;
-  return JSON.stringify([
-    revision,
-    input.scope,
-    input.filter.revision,
-    boundary?.intervalId ?? null,
-    boundary?.sequence ?? null,
-    range?.first.timestamp ?? null,
-    range?.first.sequence ?? null,
-    range?.last.timestamp ?? null,
-    range?.last.sequence ?? null,
-    input.readPoint.coverage,
-    input.readPoint.terminal,
-    input.coherent !== false
-  ]);
 }
 
 function eventFromDeterministicRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {

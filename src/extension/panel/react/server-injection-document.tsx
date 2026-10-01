@@ -64,7 +64,6 @@ export function ServerInjectionDocument({
   >
     <header className="workbench-react__server-header">
       <div>
-        <span className="workbench-react__eyebrow">Temporary promoted document</span>
         <h1>Server Injection Draft</h1>
         <span>{state.source.kind === "captured-message" ? `Immutable Source ${state.source.eventId}` : "Newly authored Client Message"}</span>
       </div>
@@ -189,7 +188,7 @@ export function ServerInjectionDocument({
         <p>{serverOutcomeDetail(outcome)}</p>
         {typeof outcome.response === "string" && outcome.response.length > 0 ? <dl><dt>Response</dt><dd>{outcome.response}</dd></dl> : null}
         {outcome.code !== undefined && outcome.code !== null ? <dl><dt>Code</dt><dd>{outcome.code}</dd></dl> : null}
-        <span>Request {outcome.requestId}</span>
+        <details><summary>Trace details</summary><span>Request {outcome.requestId}</span></details>
         <footer className="workbench-react__server-actions">
           <button ref={outcomeAction} type="button" onClick={() => dispatch({ type: "finish-server-injection" })}>Finish</button>
           <button type="button" onClick={() => dispatch({ type: "prepare-server-injection-repeat" })}>Prepare separate Repeat…</button>

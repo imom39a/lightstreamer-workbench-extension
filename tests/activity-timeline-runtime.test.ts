@@ -27,7 +27,7 @@ async function settle(): Promise<void> {
 
 async function settleReplay(): Promise<void> {
   for (let index = 0; index < 16; index += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
     await settle();
   }
 }
@@ -106,7 +106,7 @@ describe("compact Activity timeline runtime seam", () => {
     await settle();
 
     const activity = runtime.getSnapshot().activity!;
-    expect(activity.open).toBe(false);
+    expect(activity).not.toHaveProperty("open");
     expect(activity.projection.logicalUpdateTotal).toBe(1_001);
     expect(activity.readPoint.retainedRange).toEqual({
       first: { timestamp: 1_000, sequence: 1 },
@@ -148,13 +148,12 @@ describe("compact Activity timeline runtime seam", () => {
     const history = createAuthoritativeHistory({ precommitted: [update(1), update(2)] });
     const runtime = createWorkbenchRuntime({ history });
     await settle();
-    runtime.dispatch({ type: "open-activity" });
-    runtime.dispatch({ type: "freeze-activity" });
+    runtime.dispatch({ type: "freeze-evidence" });
     history.offer(update(3));
     await settle();
 
     const activity = runtime.getSnapshot().activity!;
-    expect(activity.document?.view).toBe("FROZEN");
+    expect(runtime.getSnapshot().evidence.mode).toBe("frozen");
     expect(activity.readPoint.committedEvidenceBoundary?.sequence).toBe(2);
     expect(activity.projection.timeline).toMatchObject({
       domain: { start: 1_000, end: 2_001 },
@@ -167,7 +166,6 @@ describe("compact Activity timeline runtime seam", () => {
     const history = createAuthoritativeHistory({ precommitted: [update(1)] });
     const runtime = createWorkbenchRuntime({ history });
     await settle();
-    runtime.dispatch({ type: "open-activity" });
     runtime.dispatch({ type: "request-clear-history" });
     runtime.dispatch({ type: "confirm-clear-history" });
     await settle();
@@ -184,8 +182,8 @@ describe("compact Activity timeline runtime seam", () => {
     await settle();
 
     const activity = runtime.getSnapshot().activity!;
-    expect(activity.open).toBe(false);
-    expect(activity.document).toBeNull();
+    expect(activity).not.toHaveProperty("open");
+    expect(activity).not.toHaveProperty("document");
     expect(activity.readPoint.committedEvidenceBoundary?.sequence).toBe(2);
     expect(activity.projection.logicalUpdateTotal).toBe(2);
     expect(activity.projection.timeline.domain).toEqual({ start: 1_000, end: 2_001 });
@@ -326,9 +324,8 @@ describe("compact Activity timeline runtime seam", () => {
 
   it("keeps a held focused source point actionable after a later projection no longer represents it", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update(1), update(2), update(3)] });
-    const runtime = createWorkbenchRuntime({ history, activityPublicationDelayMs: 0 });
+    const runtime = createWorkbenchRuntime({ history });
     await settle();
-    runtime.dispatch({ type: "open-activity" });
     await settle();
     const before = runtime.getSnapshot();
     const anchor = before.activity!.projection.timeline.sourcePoints.find((point) => point.eventId === "timeline-3")!;
@@ -337,7 +334,7 @@ describe("compact Activity timeline runtime seam", () => {
     await settle();
     expect(runtime.getSnapshot().evidence.selectedEventId).toBeNull();
     history.offer(update(301));
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
     await settle();
 
     const beforeSelection = runtime.getSnapshot();

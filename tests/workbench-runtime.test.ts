@@ -235,7 +235,8 @@ function commandUpdate(
 }
 
 function contextFields(runtime: ReturnType<typeof createWorkbenchRuntime>): Record<string, string> {
-  return Object.fromEntries(runtime.getSnapshot().context.fields);
+  const context = runtime.getSnapshot().context;
+  return Object.fromEntries([...context.fields, ...(context.groups ?? []).flatMap(({ fields }) => fields)]);
 }
 
 describe("WorkbenchRuntime", () => {
@@ -2068,7 +2069,6 @@ describe("WorkbenchRuntime", () => {
       Subscriptions: "1",
       Items: "1",
       Listeners: "1",
-      "Capture coverage": "USEFUL"
     });
 
     const selectScope = (kind: "client" | "session" | "subscription" | "item" | "listener") => {
@@ -2087,7 +2087,6 @@ describe("WorkbenchRuntime", () => {
       "Client ID": "dossier-client",
       Status: "CONNECTED:WS-STREAMING",
       "Library version": "Unknown",
-      "Capture coverage": "USEFUL"
     });
     expect(selectScope("session")).toMatchObject({
       "Scope type": "Session",
@@ -2106,6 +2105,9 @@ describe("WorkbenchRuntime", () => {
       Listeners: "1",
       Updates: "1"
     });
+    expect(runtime.getSnapshot().context.fields.map(([name]) => name)).not.toContain("Requested buffer size");
+    expect(runtime.getSnapshot().context.groups).toEqual(expect.arrayContaining([expect.objectContaining({ title: "Settings" }), expect.objectContaining({ title: "Counters" })]));
+    expect(runtime.getSnapshot().context.fields.map(([name]) => name)).not.toContain("Capture coverage");
     const itemDossier = selectScope("item");
     expect(runtime.getSnapshot().scope.label).toBe(
       "Inspected page › dossier-client › Session dossier-session › dossier-subscription › dossier-item · #1"

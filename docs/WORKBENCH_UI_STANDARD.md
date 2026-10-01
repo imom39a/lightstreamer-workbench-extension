@@ -80,7 +80,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 - Keep at most one necessary primary action in each decision context. Accent does not imply domain success.
 - Separate global/session actions from Scope- or selection-owned actions, and keep destructive actions visually apart from both.
 - Use labelled controls for consequential and unfamiliar actions. A familiar compact icon control still requires an accessible name and discoverable purpose.
-- Keep active Filters, shown/total counts, and a one-step reset visible. Find moves among matches; it never silently changes the visible Evidence set.
+- Keep active Filters, shown/total counts, and a one-step reset visible. Equal Shown, Matching and In Scope counts may share one concise label; differing counts remain explicitly qualified. Find moves among matches; it never silently changes the visible Evidence set.
 - Evidence Find searches retained Evidence within the current Scope and Filter. Keep the query focused while revealing each match below the sticky ledger header, highlight matching text, and explain matches in hidden fields with a bounded field/value excerpt. **Inspect match** deliberately selects the event and opens Context; Find navigation alone does not replace selection.
 - Keep Find results at one committed read point while Capture continues. Report newer Evidence for explicit refresh and expired retained results for recovery. Closing Find restores the originating Live/Frozen investigation and available scroll anchor. Next/Previous and match counts cover all results, independently of the bounded rendered window.
 - **Search scopes** lives within the existing Scope surface. It searches the complete structural projection, including collapsed branches, and identifies results by type, identity, ancestor path, and lifecycle. Typing and result navigation do not commit Scope; Enter or pointer activation does. Closing restores tree expansion, scroll, and the exact trigger. Search adds no permanent destination or COMMAND-key Topology nodes.
@@ -286,3 +286,56 @@ The rules above govern complete retained matching, deliberate inspection, explic
 refresh, Scope commitment, and contextual keyboard routing. The existing Dark-only
 and forced-colors theme decision remains in effect. Verification and independent
 review are recorded with the implementation pull request.
+
+
+## Panel simplification amendment — 2026-09-30
+
+The maintainer requested removal of the audit's redundant controls and repeated
+copy, with implementation and verification through local tickets 01–18. This
+Material UI batch retains the accepted workspace, provenance, exact-target
+Injection and diagnostic boundaries.
+
+- Park is the standalone Draft return route. Resume preserves its editor and
+  investigation; no separate minimized Draft state is maintained.
+- Standalone Draft readiness appears once beside Inject locally. Exact target,
+  Session, Source, delivery and Local-only boundary remain protected and visible.
+- Short captured Source/Draft comparisons show their unchanged payload without
+  automatic unchanged-region folding.
+- Scope belongs in the workspace Scope strip. Equal Evidence counts share one
+  label; differing or range-qualified counts retain their distinct meanings.
+- Filter discovery counts describe Scope and the other applied Filter criteria,
+  excluding the explored facet's criterion. A value-label search qualifies the
+  distinct value count, never the Evidence count.
+- Copy and Export lead More actions, with destructive Clear separated last.
+  Settings, counters, technical diagnoses and trace identities use the existing
+  native Details pattern. Material limitations, drift, unavailable Evidence,
+  invalid authoring and delivery outcomes remain visible at their owning boundary.
+
+The earlier Light theme requirements are superseded by the accepted Dark-only
+product amendment; forced-colors verification remains required. This batch does
+not add a permanent surface or a shared component library.
+
+Implementation, regression and independent-review evidence is recorded in
+[panel simplification verification](agents/panel-simplification-evidence.md).
+
+## Captured-update Scenario workspace amendment — 2026-10-01
+
+The maintainer selected captured-update prototype C because composition across
+thousands of events needs persistent search and selection beside an ordered
+Scenario queue. The maintainer explicitly authorized implementation and thorough
+regression and MCP verification with Sol 6.1 medium subagents in Codex thread
+`01a0f513-11cb-7870-aad6-51697e61b98c`.
+
+This Material UI change replaces the Scenario overlay picker and all-mounted
+member editors inside the existing temporary Scenario document. Bounded capture
+pages, explicit batch Add, one focused editor, visible refusal/recovery and
+compact/shallow surface switching are accepted. Native controls and private
+Scenario components introduce no permanent destination or shared component
+library. The Dark-only and forced-colors decision remains in effect.
+
+The directly affected workspace, keyboard and ADR 0012 interaction contracts
+record the new composition model. Immutable Source, explicit membership, exact
+target/Session, Local-only delivery, capacity, Checkpoints, separate reviewed
+Run and human/agent execution ownership remain protected. Implementation and
+verification are recorded in
+[Scenario capture workspace evidence](agents/scenario-capture-workspace-evidence.md).

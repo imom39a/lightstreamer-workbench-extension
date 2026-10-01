@@ -294,7 +294,6 @@ function activeLocalInjection(
       compareStatus: "unchanged",
       compareOpen: true,
       editorPresentation: { cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, scrollLeft: 0, compareOpen: true, serializedState: null },
-      minimized: false,
       parked: false,
       open: true,
       restorationOrigin: {
@@ -357,6 +356,8 @@ function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "pau
     scenario,
     run,
     membershipError: null,
+    captureWorkspace: { expired: false, newerAcceptedEvidenceCount: 0, remainingStepCapacity: 99, search: "", commandFilter: "ALL", queryState: "idle", readPoint: null, rows: [], selected: [], total: 0, pageOffset: 0, pageSize: 40, canShowOlder: false, canShowNewer: false, error: null, feedback: null, adding: false, scrollTop: 0 },
+    canUndoCaptureAddition: false,
     pickerOpen: false,
     membership: [],
     membershipPreview: null,
@@ -1266,7 +1267,7 @@ describe("React Workbench Diagnose panel", () => {
 
     expect(rootElement.textContent).toContain("Filter: orders");
     expect(rootElement.textContent).toContain("Shown 2");
-    expect(rootElement.textContent).toContain("Matching 2");
+    expect(rootElement.textContent).not.toContain("Matching 2");
     expect(rootElement.textContent).toContain("In Scope 20");
     const clear = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
       (button) => button.textContent === "Reset Filter"
@@ -1850,13 +1851,12 @@ describe("React Workbench Diagnose panel", () => {
     };
     await click("Compare Source");
     await click("Inject locally");
-    await click("Collapse Draft event");
+    expect(region.textContent).not.toContain("Collapse Draft event");
     await click("Park draft and return to Evidence");
     await click("Discard draft");
     expect(runtime.commands).toEqual(expect.arrayContaining([
       { type: "set-local-injection-compare", open: false },
       { type: "execute-local-injection" },
-      { type: "set-local-injection-minimized", minimized: true },
       { type: "park-local-injection" },
       { type: "request-discard-local-injection" }
     ]));
@@ -1995,22 +1995,26 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("restores the Scenario heading when its picker closes in a terminal phase", async () => {
+  it("keeps the captured workspace mounted without an overlay and restores terminal Scenario focus after Park", async () => {
     const reviewed = reviewedScenario();
     const complete = {
       ...reviewed,
       phase: "complete" as const,
-      pickerOpen: true,
+      pickerOpen: false,
       run: { ...reviewed.run!, status: "complete" as const, nextOrdinal: 2 },
       runner: { ...reviewed.runner!, phase: "complete" as const, nextOrdinal: 2, run: { ...reviewed.run!, status: "complete" as const, nextOrdinal: 2 } }
     };
     const runtime = createTestRuntime(snapshot({ scenario: complete }));
     const root = createRoot(document.querySelector("#app")!);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
-    await vi.waitFor(() => expect(document.querySelector('[aria-label="Scenario Evidence picker"]')).toBeTruthy());
-
-    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...complete, pickerOpen: false } })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Scenario captured updates"]')).toBeTruthy());
+    const captureRegion = document.querySelector('[aria-label="Scenario captured updates"]');
+    expect(document.querySelector('[aria-label="Scenario Evidence picker"]')).toBeNull();
     const heading = document.querySelector<HTMLHeadingElement>('[aria-label="Local Injection Scenario"] h1')!;
+    await act(async () => heading.focus());
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...complete, parked: true } })));
+    expect(document.querySelector('[aria-label="Scenario captured updates"]')).toBe(captureRegion);
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...complete, parked: false } })));
     expect(document.activeElement).toBe(heading);
     await act(async () => root.unmount());
   });
@@ -2047,7 +2051,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...drifted, runner: { ...drifted.runner!, pauseReason: "DRIFT_REVIEW_REQUIRED" } } })));
     expect(find("Re-review immutable plan")?.disabled).toBe(false);
     expect(find("Step next")).toBeUndefined();
-    const ledgerText = document.querySelector('[aria-label="Scenario Run ledger"]')?.textContent ?? "";
+    const ledgerText = document.querySelector('[aria-label="Scenario Run ledger"] ol')?.textContent ?? "";
     expect(ledgerText).toContain("listener-2");
     expect(ledgerText.indexOf("AUTHORIZED")).toBeLessThan(ledgerText.indexOf("DRIFT"));
     expect(ledgerText.indexOf("DRIFT")).toBeLessThan(ledgerText.indexOf("RE-AUTHORIZED"));
@@ -2155,11 +2159,11 @@ describe("React Workbench Diagnose panel", () => {
     await vi.waitFor(() => expect(document.querySelector('[aria-label="Scenario Checkpoint Portfolio row is locally settled"]')).toBeTruthy());
 
     const region = document.querySelector<HTMLElement>('[aria-label="Local Injection Scenario"]')!;
-    const checkpointRegion = document.querySelector<HTMLElement>('[aria-label="Scenario Checkpoint Portfolio row is locally settled"]')!;
+    let checkpointRegion = document.querySelector<HTMLElement>('[aria-label="Scenario Checkpoint Portfolio row is locally settled"]')!;
     expect(checkpointRegion.textContent).toContain("CHECKPOINT 1");
     expect(checkpointRegion.textContent).toContain("Zero Injections");
-    expect(checkpointRegion.textContent).toContain("Correlated committed Local Evidence exists after Step 1");
-    expect(checkpointRegion.textContent).toContain("within 2000 ms active time");
+    expect(checkpointRegion.querySelector<HTMLSelectElement>('select[aria-label="Assertion assertion-1 kind"]')?.value).toBe("correlated-local-evidence-exists");
+    expect(checkpointRegion.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe("2000");
     expect(checkpointRegion.querySelector("textarea, [contenteditable='true'], .cm-editor")).toBeNull();
     const assertionKinds = checkpointRegion.querySelector<HTMLSelectElement>('[aria-label="Assertion assertion-1 kind"]')!;
     expect(Array.from(assertionKinds.options).map(({ value }) => value)).toEqual([
@@ -2171,12 +2175,25 @@ describe("React Workbench Diagnose panel", () => {
       "diagnostic-observation-exists"
     ]);
     expect(Array.from(assertionKinds.options).some(({ textContent }) => textContent?.includes("Diagnostic Observation"))).toBe(true);
+    const authoringState = runtime.getSnapshot().scenario!;
+    const selectMember = async (label: string, memberId: string): Promise<void> => {
+      const queueButton = region.querySelector<HTMLButtonElement>(`[aria-label="Ordered Scenario Steps"] button[aria-label="${label}"]`)!;
+      expect(queueButton).toBeTruthy();
+      await act(async () => queueButton.click());
+      expect(runtime.commands.at(-1)).toEqual({ type: "focus-scenario-member", memberId });
+      await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...authoringState, focusedMemberId: memberId, focusedStepId: memberId.startsWith("step-") ? memberId : authoringState.focusedStepId } })));
+    };
+    await selectMember("Step 1", "step-1");
     const firstStepActions = region.querySelector<HTMLElement>('[aria-label="Step 1 actions"]')!;
     expect(Array.from(firstStepActions.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Move earlier")?.disabled).toBe(false);
-    const secondStepButton = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Step 2")!;
-    expect(secondStepButton).toBeTruthy();
+    expect(region.querySelector('[aria-label="Step 2 actions"]')).toBeNull();
+    await selectMember("Step 2", "step-2");
     const secondStepActions = region.querySelector<HTMLElement>('[aria-label="Step 2 actions"]')!;
     expect(Array.from(secondStepActions.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Move later")?.disabled).toBe(false);
+    expect(region.querySelector('[aria-label="Step 1 actions"]')).toBeNull();
+    await selectMember("Checkpoint 1", checkpoint.id);
+    checkpointRegion = document.querySelector<HTMLElement>('[aria-label="Scenario Checkpoint Portfolio row is locally settled"]')!;
+    expect(checkpointRegion.querySelector("textarea, [contenteditable='true'], .cm-editor")).toBeNull();
     const name = checkpointRegion.querySelector<HTMLInputElement>('[aria-label="Checkpoint 1 name"]')!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -2248,7 +2265,7 @@ describe("React Workbench Diagnose panel", () => {
     expect(region.textContent).toContain("Diagnostic Observation boundary diagnostic-interval · sequence 7");
     expect(region.textContent).toContain("Evidence boundary unavailable · Diagnostic Observation current cursor diagnostic-interval · sequence 9");
     expect(document.querySelector('[aria-label="Prior Scenario Run ledgers"]')?.textContent).toContain("Diagnostic Observation current cursor diagnostic-interval · sequence 9");
-    expect(region.textContent).toContain("Compact reference only · raw diagnostic messages are not copied into Scenario Trace");
+    expect(region.querySelectorAll("details > summary").length).toBeGreaterThan(0);
     expect(region.textContent).toContain("Route inspect affected");
     const inspect = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Inspect Diagnostic Observation subscription.lost-updates");
     expect(inspect).toBeTruthy();
@@ -2267,7 +2284,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps a high-volume Checkpoint Scenario collapsed with no JSON editor cost", async () => {
+  it("keeps all high-volume Scenario members in the queue with one focused Checkpoint and no JSON editor cost", async () => {
     const reviewed = reviewedScenario();
     const checkpoints = Array.from({ length: 99 }, (_, index) => ({
       id: `checkpoint-${index + 1}`,
@@ -2279,11 +2296,13 @@ describe("React Workbench Diagnose panel", () => {
     const runtime = createTestRuntime(snapshot({ scenario: { ...reviewed, phase: "edit", scenario, run: null, runner: null, focusedMemberId: "checkpoint-1" } }));
     const root = createRoot(document.querySelector("#app")!);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
-    await vi.waitFor(() => expect(document.querySelectorAll(".workbench-react__scenario-checkpoint")).toHaveLength(99));
+    await vi.waitFor(() => expect(document.querySelectorAll('[aria-label="Ordered Scenario Steps"] ol > li')).toHaveLength(100));
+    expect(document.querySelectorAll(".workbench-react__scenario-checkpoint")).toHaveLength(1);
 
     expect(document.querySelectorAll(".workbench-react__scenario-assertions")).toHaveLength(1);
     expect(document.querySelectorAll(".workbench-react__scenario-checkpoint .cm-editor")).toHaveLength(0);
-    expect(document.querySelectorAll(".workbench-react__scenario-checkpoint .workbench-react__scenario-collapsed")).toHaveLength(98);
+    expect(document.querySelectorAll('[aria-label="Focused Scenario member"] .cm-editor')).toHaveLength(0);
+    expect(document.querySelectorAll('[aria-label="Ordered Scenario Steps"] button[aria-pressed="true"]')).toHaveLength(1);
     expect(document.querySelectorAll('[data-step-focused="true"]')).toHaveLength(1);
 
     await act(async () => root.unmount());

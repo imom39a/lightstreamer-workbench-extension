@@ -14,6 +14,7 @@ import type { DiagnosticObservationInput } from "../../src/core/diagnostic-obser
 export const WORKBENCH_SCENARIO_IDS = [
   "live-selected",
   "active-no-selection",
+  "topology-deleted-key-retention",
   "selected-local-evidence",
   "frozen-high-volume",
   "activity-10k",
@@ -81,6 +82,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   ,"local-injection-scenario-complete"
   ,"local-injection-scenario-partial"
   ,"local-injection-scenario-high-volume"
+  ,"local-injection-scenario-capture-volume"
   ,"local-injection-scenario-stop-in-flight"
   ,"local-injection-scenario-listener-drift"
   ,"local-injection-scenario-server-drift"
@@ -143,7 +145,6 @@ export type WorkbenchScenario = Readonly<{
     entry: "selection" | "scope";
     rawText?: string;
     compareOpen?: boolean;
-    minimized?: boolean;
     parked?: boolean;
     review?: boolean;
     staleBeforeReview?: boolean;
@@ -207,6 +208,39 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       };
     case "active-no-selection":
       return { id, initialEvents: canonical, captureStatus: "capturing" };
+    case "topology-deleted-key-retention": {
+      const source = topology.capturedEvents.find(event => event.kind === "item-update");
+      if (!source) throw new Error("Deleted-key retention requires a captured COMMAND Item Update.");
+      // A few large identities exercise the same qualifier without making the
+      // geometry check depend on thousands of rendered Evidence publications.
+      const deferredEvents = Array.from({ length: 9 }, (_, ordinal): LightstreamerEventEnvelope => {
+        const key = `${ordinal}-${"x".repeat(250_000)}`;
+        const identity = `deleted-key-retention-${ordinal}`;
+        return {
+          ...source,
+          id: identity, logicalEventId: identity, timestamp: source.timestamp + ordinal + 1,
+          update: {
+            command: "DELETE", key, isSnapshot: false,
+            fields: { command: "DELETE", key },
+            changedFields: { command: "DELETE", key }
+          },
+          topology: {
+            version: TOPOLOGY_OBSERVATION_VERSION,
+            kind: "item-update", pageEpoch: "topology-small-page", captureSequence: ordinal + 7,
+            provenance: { instrumentationSource: "official-public-api" },
+            coverage: { status: "complete", getters: {} },
+            client: { id: "topology-small-client", sessionId: "topology-small-session" },
+            subscription: { id: "topology-small-subscription", mode: "COMMAND" },
+            item: { name: "topology-small-item", position: 1 }
+          }
+        };
+      });
+      return {
+        id, initialEvents: [], deferredEvents, captureStatus: "capturing",
+        topologySyncFrames: topology.topologySyncFrames,
+        captureMessages: topology.captureMessages
+      };
+    }
     case "selected-local-evidence":
       return { id, initialEvents: canonical, selectedEventId: "scenario-event-5", captureStatus: "capturing" };
     case "frozen-high-volume":
@@ -805,6 +839,8 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return localInjectionScenario(id, true, 1, "partial");
     case "local-injection-scenario-high-volume":
       return localInjectionHighVolumeScenario(id);
+    case "local-injection-scenario-capture-volume":
+      return localInjectionCaptureVolumeScenario(id);
     case "local-injection-scenario-stop-in-flight":
       return localInjectionScenario(id, true, 0, "delayed", { play: true });
     case "local-injection-scenario-listener-drift":
@@ -1145,6 +1181,19 @@ function withAmbiguousServerNull(scenario: WorkbenchScenario): WorkbenchScenario
       scenario: { ...scenario.localInjection!.scenario!, addEventId: undefined }
     }
   };
+}
+
+function localInjectionCaptureVolumeScenario(id: WorkbenchScenarioId): WorkbenchScenario {
+  const base = localInjectionScenario(id, false, 0);
+  const source = base.initialEvents.find(({ id }) => id === "scenario-compatible-bulk-update")!;
+  const capture = (index: number): LightstreamerEventEnvelope => {
+    const ordinal = String(index).padStart(5, "0");
+    const value = `capture-value-${ordinal}`;
+    return { ...source, id: `scenario-capture-${ordinal}`, timestamp: source.timestamp + index,
+      update: { ...source.update!, fields: { ...source.update!.fields, value }, changedFields: { value } } };
+  };
+  return { ...base, initialEvents: [...base.initialEvents, ...Array.from({ length: 5_000 }, (_, index) => capture(index + 1))],
+    deferredEvents: [capture(5_001), capture(5_002)] };
 }
 
 function localInjectionHighVolumeScenario(id: WorkbenchScenarioId): WorkbenchScenario {

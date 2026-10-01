@@ -53,6 +53,7 @@ function scenarioHarnessSource() {
 import { createRoot } from "react-dom/client";
 import { createElement } from "react";
 import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
+import { createIndexedDbEventHistory } from ${source("src/core/event-history-indexeddb.ts")};
 import { createMemoryDiagnosticObservationJournal, createUnavailableDiagnosticObservationJournal } from ${source("src/core/diagnostic-observation.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
@@ -78,8 +79,8 @@ const diagnosticObservations = scenario.diagnosticJournal === "unsupported"
   : createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostics-" + scenario.id });
 let failSyntheticEvidenceRetention = false;
 let configuredHistoryCommitFailures = 0;
-const history = createInMemoryEventHistory({
-  panelSessionId: "scenario-" + scenario.id,
+const historyOptions = {
+  panelSessionId: "scenario-" + scenario.id + (params.get("history") === "indexeddb" ? "-" + crypto.randomUUID() : ""),
   ...(scenario.historyCapacity ? { capacity: scenario.historyCapacity } : {}),
   ...(scenario.historyOversizedEventId || scenario.failLocalEvidenceRetention
     ? {
@@ -113,7 +114,12 @@ const history = createInMemoryEventHistory({
           : "PRIMARY_JOURNAL_UNAVAILABLE"
       }
     : {}),
-});
+};
+// Real durable history is an opt-in browser fixture, independent of the footer
+// storage-label override. Default scenes retain their original memory semantics.
+const history = params.get("history") === "indexeddb"
+  ? await createIndexedDbEventHistory(historyOptions)
+  : createInMemoryEventHistory(historyOptions);
 await Promise.all(scenario.initialEvents.map((event) => {
   const selectedFidelity = params.get("selected-values") === "fidelity" && event.id === scenario.selectedEventId;
   const candidate = selectedFidelity ? { ...event, logicalEventId: "logical-fidelity-update", listener: { ...event.listener, id: "listener-fidelity" },
@@ -265,11 +271,21 @@ await Promise.all((scenario.laterEvents ?? []).map((event) => history.offer(even
 if (scenario.openRawEvidence && scenario.selectedEventId) runtime.dispatch({ type: "open-raw-evidence", eventId: scenario.selectedEventId });
 await new Promise((resolve) => setTimeout(resolve, 48));
 failSyntheticEvidenceRetention = Boolean(scenario.failLocalEvidenceRetention);
+async function waitForFixtureSource(eventId) {
+  const deadline = performance.now() + 20_000;
+  while (runtime.getSnapshot().selectedEvidence?.id !== eventId && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  if (runtime.getSnapshot().selectedEvidence?.id !== eventId) throw new Error("IndexedDB fixture could not resolve its exact retained Source: " + eventId);
+}
 if (scenario.localInjection) {
+  if (params.get("history") === "indexeddb" && scenario.localInjection.entry === "selection" && scenario.selectedEventId) await waitForFixtureSource(scenario.selectedEventId);
   runtime.dispatch({ type: scenario.localInjection.entry === "selection" ? "begin-local-injection-from-selection" : "begin-local-injection-from-scope" });
+  if (params.get("history") === "indexeddb") {
+    const deadline = performance.now() + 10_000;
+    while (runtime.getSnapshot().localInjection.state !== "active" && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    if (runtime.getSnapshot().localInjection.state !== "active") throw new Error("IndexedDB fixture could not load its exact captured Source.");
+  }
   if (scenario.localInjection.rawText !== undefined) runtime.dispatch({ type: "set-local-injection-json", text: scenario.localInjection.rawText });
   if (scenario.localInjection.compareOpen) runtime.dispatch({ type: "set-local-injection-compare", open: true });
-  if (scenario.localInjection.minimized) runtime.dispatch({ type: "set-local-injection-minimized", minimized: true });
   if (scenario.localInjection.parked) runtime.dispatch({ type: "park-local-injection" });
   if (scenario.localInjection.staleBeforeReview) runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
   if (scenario.localInjection.staleAfterReview) runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
@@ -280,8 +296,15 @@ if (scenario.localInjection) {
     if (scenario.localInjection.scenario.addEventId) {
       runtime.dispatch({ type: "open-scenario-evidence-picker" });
       runtime.dispatch({ type: "select-evidence", eventId: scenario.localInjection.scenario.addEventId });
-      await new Promise((resolve) => setTimeout(resolve, 48));
+      if (params.get("history") === "indexeddb") await waitForFixtureSource(scenario.localInjection.scenario.addEventId);
+      else await new Promise((resolve) => setTimeout(resolve, 48));
+      const previousCount = runtime.getSnapshot().scenario?.scenario.steps.length ?? 0;
       runtime.dispatch({ type: "add-selected-evidence-to-scenario" });
+      if (params.get("history") === "indexeddb") {
+        const deadline = performance.now() + 20_000;
+        while ((runtime.getSnapshot().scenario?.scenario.steps.length ?? 0) === previousCount && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+        if ((runtime.getSnapshot().scenario?.scenario.steps.length ?? 0) !== previousCount + 1) throw new Error("IndexedDB fixture did not accept its configured captured Scenario member.");
+      }
     }
     for (let index = 0; index < (scenario.localInjection.scenario.authoredSteps ?? 0); index += 1) {
       runtime.dispatch({ type: "add-authored-scenario-step" });
@@ -350,6 +373,12 @@ document.documentElement.dataset.reactSceneReady = "true";
 window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
 window.__serverInjectionExecutionCount = () => serverInjectionExecutionCount;
 window.__setWorkbenchVisible = (visible) => { runtime.dispatch({ type: "set-visible", visible }); analyticsObserver.setVisible(visible); };
+// Harness-only seam: proves Review fails closed while authoring has an invalid
+// primitive value, even when the command does not originate at the UI button.
+window.__reviewWorkbenchScenario = () => runtime.dispatch({ type: "review-scenario" });
+window.__getWorkbenchScenarioSnapshot = () => runtime.getSnapshot().scenario;
+window.__clearWorkbenchScenarioHistory = () => history.clear();
+window.__closeWorkbenchScenarioHistory = () => history.close();
 window.__setWorkbenchCaptureStatus = (status) => runtime.dispatch({ type: "set-capture-status", status });
 window.__setWorkbenchStorageMode = (mode) => runtime.dispatch({
   type: "set-storage-state",

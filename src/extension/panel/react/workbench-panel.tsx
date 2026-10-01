@@ -14,11 +14,9 @@ import {
 import { FACET_DESCRIPTORS, type EvidenceFacetKey } from "../../../core/evidence-facets";
 import {
   type FacetCount,
-  type FacetDiscoveryResult,
   type TypedFacetValue
 } from "../../../core/evidence-filter-contract";
 import {
-  createTypedFilterValue,
   filterSummary,
   type Filter,
   type FilterMutation,
@@ -27,18 +25,20 @@ import {
 import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filter-actions";
 import type { LightstreamerEventEnvelope } from "../../../core/event-envelope";
 import { renderTopologyHtmlReport } from "../topology-html-report";
-import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { UNAVAILABLE_ANALYTICS, type AnalyticsClient } from "../../analytics/client";
-import { UsageAnalytics } from "./usage-analytics";
-import { AgentAccess, AgentAccessStatus } from "./agent-access";
+import { AgentAccessStatus } from "./agent-access";
 import type { AgentConnection } from "../agent-connection";
 import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
-import { NotificationsDocument } from "./notifications-document";
+import { NotificationsDocument, notificationEntryId, notificationForCondition } from "./notifications-document";
 import { activityRangeLabel } from "./activity-timeline-format";
 import type { TimelineEvidenceAnchor } from "./activity-timeline-events";
-import { FilterValueControl, type FilterValueState } from "./filter-value-control";
+import type { FilterValueState } from "./filter-value-control";
+import { FilterDraftDocument, SelectedFilterActions, filterValueForDraft, filterValueState, filterValueMutations } from "./filter-workflow";
+export { filterValueState, filterValueMutations } from "./filter-workflow";
 import { EVIDENCE_CODE_DEFINITIONS, evidenceStreamPresentation } from "../evidence-stream-presentation";
+import { DiagnosticDetails } from "./diagnostic-details";
+import { SessionOperations } from "./session-operations";
 import { ScopeSearch } from "./scope-search";
 
 import "./workbench-panel.css";
@@ -85,129 +85,6 @@ function SelectedUpdateDetails({
       ])}</dl> : <p>No captured fields.</p>}
     </section>
   </section>;
-}
-
-function SelectedFilterActions({
-  actions,
-  filter,
-  open,
-  onOpenChange,
-  onAction,
-  onValueChange
-}: Readonly<{
-  actions: readonly EvidenceFilterActionDescriptor[];
-  filter: Filter;
-  open: boolean;
-  onOpenChange(open: boolean): void;
-  onAction(action: EvidenceFilterActionDescriptor): void;
-  onValueChange(value: TypedFilterValue, state: FilterValueState): void;
-}>): JSX.Element | null {
-  const summaryRef = useRef<HTMLElement>(null);
-  const focusWithin = useRef(false);
-  const previousActionCount = useRef(actions.length);
-  useLayoutEffect(() => {
-    const actionsBecameUnavailable = previousActionCount.current > 0 && actions.length === 0;
-    previousActionCount.current = actions.length;
-    if (actionsBecameUnavailable && focusWithin.current) summaryRef.current?.focus();
-  }, [actions.length]);
-  return <details
-    className="workbench-react__filter-actions workbench-context-disclosure"
-    aria-label="Filter selected Evidence"
-    open={open}
-    onToggle={event => onOpenChange(event.currentTarget.open)}
-    onFocusCapture={() => { focusWithin.current = true; }}
-    onBlurCapture={event => {
-      if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) focusWithin.current = false;
-    }}
-  >
-    <summary ref={summaryRef}>Filter selected Evidence</summary>
-    <div className="workbench-react__filter-actions-content">
-      {actions.length ? <SelectedFilterActionList actions={actions} filter={filter} onAction={onAction} onValueChange={onValueChange} /> : <p role="status">No Filter values are available for this Evidence.</p>}
-    </div>
-  </details>;
-}
-
-type SelectedFilterValue = Readonly<{
-  facet: string;
-  label: string;
-  value: TypedFilterValue;
-}>;
-
-const PRIMARY_SELECTED_FILTER_FACETS = new Set(["client", "subscription", "mode", "item", "key"]);
-const EXPANDABLE_FILTER_VALUE_LENGTH = 48;
-
-function SelectedFilterActionList({
-  actions,
-  filter,
-  onAction,
-  onValueChange
-}: Readonly<{
-  actions: readonly EvidenceFilterActionDescriptor[];
-  filter: Filter;
-  onAction(action: EvidenceFilterActionDescriptor): void;
-  onValueChange(value: TypedFilterValue, state: FilterValueState): void;
-}>): JSX.Element {
-  const { values, around } = useMemo(() => {
-    const grouped = new Map<string, Partial<Record<"include" | "exclude", EvidenceFilterActionDescriptor>>>();
-    const aroundActions: EvidenceFilterActionDescriptor[] = [];
-    for (const action of actions) {
-      if (action.kind === "around") { aroundActions.push(action); continue; }
-      if (!action.facet || !action.value) continue;
-      const pair = grouped.get(action.value.identity) ?? {};
-      pair[action.kind] = action;
-      grouped.set(action.value.identity, pair);
-    }
-    const paired = [...grouped.values()].flatMap((pair): SelectedFilterValue[] => {
-      const include = pair.include;
-      const exclude = pair.exclude;
-      if (!include?.facet || !include.value || !exclude) return [];
-      return [{ facet: include.facet, label: include.facetDescriptor?.label ?? include.facet, value: include.value }];
-    });
-    return { values: paired, around: aroundActions };
-  }, [actions]);
-  const primary = values.filter(({ facet }) => PRIMARY_SELECTED_FILTER_FACETS.has(facet));
-  const secondary = values.filter(({ facet }) => !PRIMARY_SELECTED_FILTER_FACETS.has(facet));
-  const activeSecondary = secondary.filter(({ value }) => filterValueState(filter.criteria[value.facet], value) !== "off").length;
-  return <>
-    <p>Choose how this exact value affects the current Filter. Changes apply immediately and keep other Filter criteria.</p>
-    <div className="workbench-react__filter-action-list" role="list" aria-label="Selected Evidence Filter values">
-      {primary.map((value) => <SelectedFilterValueRow key={value.value.identity} value={value} state={filterValueState(filter.criteria[value.value.facet], value.value)} onChange={onValueChange} />)}
-      {around.map((action) => <div className="workbench-react__filter-action-row" role="listitem" data-filter-action-kind="around" key={action.id}>
-        <span>Retained Evidence interval</span><button type="button" aria-label={action.label} onClick={() => onAction(action)}>Around</button>
-      </div>)}
-    </div>
-    {secondary.length ? <details className="workbench-react__filter-action-more">
-      <summary>More properties{activeSecondary ? ` · ${activeSecondary} active` : ""}</summary>
-      <div className="workbench-react__filter-action-list" role="list" aria-label="More selected Evidence Filter values">
-        {secondary.map((value) => <SelectedFilterValueRow key={value.value.identity} value={value} state={filterValueState(filter.criteria[value.value.facet], value.value)} onChange={onValueChange} />)}
-      </div>
-    </details> : null}
-  </>;
-}
-
-function SelectedFilterValueRow({ value, state, onChange }: Readonly<{
-  value: SelectedFilterValue;
-  state: FilterValueState;
-  onChange(value: TypedFilterValue, state: FilterValueState): void;
-}>): JSX.Element {
-  const label = `${value.label}: ${value.value.label}`;
-  const expandable = value.value.label.length > EXPANDABLE_FILTER_VALUE_LENGTH;
-  return <div className="workbench-react__filter-action-row" role="listitem" data-filter-facet={value.facet} data-filter-value-identity={value.value.identity}>
-    {expandable
-      ? <details className="workbench-react__filter-action-value"><summary><strong>{value.label}</strong><span>{value.value.label}</span></summary><code>{value.value.label}</code></details>
-      : <span className="workbench-react__filter-action-value workbench-react__filter-action-value--plain"><strong>{value.label}</strong><span>{value.value.label}</span></span>}
-    <FilterValueControl label={label} state={state} onChange={(next) => onChange(value.value, next)} />
-  </div>;
-}
-
-function FilterExplorerValueLabel({ value }: Readonly<{ value: TypedFacetValue }>): JSX.Element {
-  const exactValue = `${value.type} · ${value.value}`;
-  const expandable = value.label.length > EXPANDABLE_FILTER_VALUE_LENGTH || exactValue.length > EXPANDABLE_FILTER_VALUE_LENGTH;
-  return expandable
-    ? <details className="workbench-react__filter-value-label workbench-react__filter-value-label--expandable">
-      <summary><strong>{value.label}</strong><small>{exactValue}</small></summary><code>{exactValue}</code>
-    </details>
-    : <span className="workbench-react__filter-value-label"><strong>{value.label}</strong><small>{exactValue}</small></span>;
 }
 
 const ScopeTreeRow = memo(function ScopeTreeRow({
@@ -483,21 +360,6 @@ function criterionSignature(criterion: Filter["criteria"][string] | undefined): 
   });
 }
 
-export function filterValueState(
-  criterion: Filter["criteria"][string] | undefined,
-  value: TypedFilterValue
-): FilterValueState {
-  if (criterion?.include.some((candidate) => candidate.identity === value.identity)) return "include";
-  if (criterion?.exclude.some((candidate) => candidate.identity === value.identity)) return "exclude";
-  return "off";
-}
-
-export function filterValueMutations(value: TypedFilterValue, state: FilterValueState): readonly FilterMutation[] {
-  return [state === "off"
-    ? { type: "remove-criterion", facet: value.facet, value }
-    : { type: "set-polarity", facet: value.facet, value, polarity: state }];
-}
-
 function draftFilterOperations(
   applied: Filter,
   text: string,
@@ -517,27 +379,6 @@ function draftFilterOperations(
     });
   }
   return operations;
-}
-
-function filterValueForDraft(value: TypedFacetValue): TypedFilterValue {
-  let scalar: string | number | boolean | null = value.value;
-  if (value.type === "number") scalar = Number(value.value);
-  else if (value.type === "boolean") scalar = value.value === "true";
-  else if (value.type === "null") scalar = null;
-  return createTypedFilterValue(value.facet, value.type, scalar, value.label);
-}
-
-function discoveryUnavailableMessage(result: Extract<FacetDiscoveryResult, { state: "UNAVAILABLE" }>): string {
-  switch (result.reason) {
-    case "ZERO_BASE": return "No Evidence is in the current Scope, so there are no values to discover.";
-    case "NO_CONCRETE_VALUES": return "No observed concrete values exist for this facet at the current read point.";
-    case "DISCOVERY_FAILED": return "Exact value discovery is unavailable for this read point. The Evidence query remains usable.";
-    case "UNSUPPORTED_AT_READ_POINT": return "This facet is unavailable at the current read point.";
-  }
-}
-
-function countLabel(count: number, singular: string, plural = `${singular}s`): string {
-  return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
 }
 
 function sensitiveCategoryLabel(category: TopologySensitiveCategory): string {
@@ -2221,49 +2062,8 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
           {snapshot.activity ? <ActivityTimeline projection={snapshot.activity.projection} filter={appliedFilter} frozen={evidence.mode === "frozen"} selectedEventId={selectedEventId} onSelect={selectTimelineEvidence} onShowEvidence={() => evidenceLedger.current?.focus()} onFilter={(expectedRevision, operations) => dispatch(runtime, { type: "apply-filter-mutations", expectedRevision, operations })} /> : null}
-          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>{activeTimelineRange ? "Before range" : "Matching"} {matching.toLocaleString()}</span><span>{activeTimelineRange ? "In range" : "In Scope"} {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : <button type="button" aria-controls="workbench-context" onClick={openScopeContext}>Open Scope Context</button>}</div></header>
-          {filterOpen ? <form className={`workbench-react__filter${filterStep !== "composer" ? " workbench-react__filter--structured-open" : ""}${filterStep === "explorer" ? " workbench-react__filter--explorer-open" : ""}`} id="workbench-filter" aria-label="Filter ordered Evidence" onKeyDown={handleFilterEscape} onSubmit={(event) => {
-            event.preventDefault();
-            setFilterSubmitVersion(snapshot.version);
-            dispatch(runtime, {
-              type: "apply-filter-mutations",
-              expectedRevision: filterDraftRevision ?? appliedFilter.revision,
-              operations: draftFilterOperations(appliedFilter, filterDraft, filterDraftCriteria)
-            });
-          }}>
-            {filterStep === "composer" ? <>
-              <div className="workbench-react__filter-controls"><label htmlFor="workbench-filter-query">Filter Evidence</label><input ref={filterInput} id="workbench-filter-query" value={filterDraft} onChange={(event) => setFilterDraft(event.currentTarget.value)} /><button type="submit">Apply</button><button type="button" onClick={closeFilter}>Cancel</button></div>
-              <div className="workbench-react__filter-draft-summary" aria-label="Structured criteria draft"><strong>Structured criteria draft</strong>{Object.entries(filterDraftCriteria).flatMap(([facet, criterion]) => [
-                ...criterion.include.map((value) => <span key={`${facet}-include-${value.identity}`}>Include {facet}: {value.label}</span>),
-                ...criterion.exclude.map((value) => <span key={`${facet}-exclude-${value.identity}`}>Exclude {facet}: {value.label}</span>)
-              ])}{Object.values(filterDraftCriteria).every((criterion) => criterion.include.length === 0 && criterion.exclude.length === 0) ? <span>No structured criteria added.</span> : null}</div>
-              <button ref={structuredCriterionTrigger} type="button" onClick={openStructuredCriteria}>Add structured criterion</button><span id="workbench-filter-structured-note" className="workbench-react__filter-note">Choose one of twelve Evidence facets to browse exact observed values.</span>
-              {evidence.filterMutation.state === "stale" || evidence.filterMutation.state === "invalid" ? <p className="workbench-react__filter-status" role="alert">{evidence.filterMutation.message ?? "The Filter could not be applied."} Draft remains editable; review it and Apply again.</p> : null}
-            </> : filterStep === "facets" ? <section className="workbench-react__filter-facet-step" role="dialog" aria-label="Choose structured facet">
-              <header><div><strong>Add structured criterion</strong><span>Select a Lightstreamer-native facet.</span></div><button type="button" onClick={() => { setFilterStep("composer"); window.requestAnimationFrame(() => structuredCriterionTrigger.current?.focus()); }}>Back to Filter</button></header>
-              <div className="workbench-react__filter-facet-grid" role="listbox" aria-label="Evidence facets">{FACET_DESCRIPTORS.map((descriptor, index) => <button ref={(element) => { if (index === 0) facetPickerFirst.current = element; if (element) facetButtons.current.set(descriptor.key, element); else facetButtons.current.delete(descriptor.key); }} type="button" role="option" key={descriptor.key} aria-label={`Add ${descriptor.label} criterion`} onClick={() => openFacetExplorer(descriptor.key)}><strong>{descriptor.label}</strong><span>{descriptor.valueType} · exact observed values</span></button>)}</div>
-              <footer><span>All twelve facets are available without query syntax.</span><button type="button" onClick={closeFilter}>Cancel</button></footer>
-            </section> : <section className="workbench-react__filter-explorer" role="dialog" aria-label={`${activeFacetDescriptor?.label ?? "Facet"} exact values`}>
-              <header className="workbench-react__filter-explorer-header"><div><strong>{activeFacetDescriptor?.label ?? "Facet"} exact values</strong><span>Bounded contextual explorer · typed identities remain stable at this read point.</span></div><button type="button" onClick={() => { clearFilterDiscovery(); setFilterStep("facets"); setFilterFacet(null); setFilterDiscoveryCursor(null); window.requestAnimationFrame(() => facetPickerFirst.current?.focus()); }}>Back to facets</button></header>
-              <div className="workbench-react__filter-explorer-search"><label htmlFor="workbench-filter-value-search">Search exact values</label><input ref={facetSearchInput} id="workbench-filter-value-search" value={filterDiscoverySearch} onChange={(event) => { const search = event.currentTarget.value; setFilterDiscoverySearch(search); setFilterDiscoveryCursor(null); requestFacetDiscovery(search); }} /><span aria-live="polite">{activeFacetDiscovery?.state === "AVAILABLE" ? countLabel(activeFacetDiscovery.distinctTotal, "exact value") : "Exact contextual counts"}</span></div>
-              {!activeFacetDiscovery || evidence.investigation.queryState === "loading" ? <div className="workbench-react__filter-explorer-empty" role="status"><strong>Loading exact values…</strong><span>Reading the current Scope and Filter at one coherent Evidence read point.</span></div> : activeFacetDiscovery.state === "UNAVAILABLE" ? <div className="workbench-react__filter-explorer-empty" role="status"><strong>Exact values unavailable</strong><span>{discoveryUnavailableMessage(activeFacetDiscovery)}</span></div> : <>
-                <p className="workbench-react__filter-explorer-counts" role="status">Exact contextual counts: {activeFacetDiscovery.baseEvidenceCount.toLocaleString()} Evidence · {countLabel(activeFacetDiscovery.distinctTotal, "distinct value")}{filterDiscoverySearch ? ` matching “${filterDiscoverySearch}”` : ""}.</p>
-                <div className="workbench-react__filter-value-list" role="list" aria-label={`${activeFacetDescriptor?.label ?? "Facet"} values`}>
-                  {filterDiscoveryValues.length ? filterDiscoveryValues.map((entry) => {
-                    const draftValue = filterValueForDraft(entry.value);
-                    const criterion = filterDraftCriteria[entry.value.facet];
-                    const valueState = filterValueState(criterion, draftValue);
-                    const completeIdentity = `${entry.value.facet} · ${entry.value.type} · ${entry.value.identity}`;
-                    const controlLabel = `${activeFacetDescriptor?.label ?? entry.value.facet} value ${entry.value.label} (${entry.value.type})`;
-                    return <div className="workbench-react__filter-value-row" role="listitem" data-filter-value-identity={entry.value.identity} key={entry.value.identity} title={completeIdentity}><FilterExplorerValueLabel value={entry.value} /><span className="workbench-react__filter-value-count">{entry.count.toLocaleString()} in current Evidence{entry.pinned ? ` · pinned${entry.count === 0 ? " · zero" : ""}` : ""}</span><div className="workbench-react__filter-value-actions"><FilterValueControl label={controlLabel} state={valueState} onChange={(state) => chooseFacetValue(entry.value, state)} /></div></div>;
-                  }) : <div className="workbench-react__filter-explorer-empty" role="status"><strong>No values match this search.</strong><span>Clear the label search to inspect the exhaustive observed set.</span></div>}
-                </div>
-                {activeFacetDiscovery.nextCursor ? <button className="workbench-react__filter-next" type="button" onClick={() => { const cursor = activeFacetDiscovery.nextCursor; setFilterDiscoveryCursor(cursor); requestFacetDiscovery(filterDiscoverySearch, cursor); }}>Show more exact values</button> : <span className="workbench-react__filter-complete">All exact values for this search are shown.</span>}
-              </>}
-              {evidence.filterMutation.state === "stale" || evidence.filterMutation.state === "invalid" ? <p className="workbench-react__filter-status" role="alert">{evidence.filterMutation.message ?? "The Filter could not be applied."} Draft remains editable; review it and Apply again.</p> : null}
-              <footer><button type="submit">Apply</button><button type="button" onClick={closeFilter}>Cancel</button></footer>
-            </section>}
-          </form> : null}
+          <header className="workbench-react__pane-header"><div><strong>Ordered Evidence</strong></div><div className="workbench-react__evidence-summary">{!activeTimelineRange && shown === matching && matching === inScope ? <span title="All matching Evidence in the current Scope is shown">{shown.toLocaleString()} Evidence</span> : <><span>Shown {shown.toLocaleString()}</span>{!activeTimelineRange && matching === inScope ? <span>Matching {matching.toLocaleString()} in Scope</span> : <>{activeTimelineRange || matching !== shown ? <span>{activeTimelineRange ? "Before range" : "Matching"} {matching.toLocaleString()}</span> : null}<span>{activeTimelineRange ? "In range" : "In Scope"} {inScope.toLocaleString()}</span></>}</>}{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : <button type="button" aria-controls="workbench-context" onClick={openScopeContext}>Open Scope Context</button>}</div></header>
+          {filterOpen ? <FilterDraftDocument filterStep={filterStep} filterDraft={filterDraft} filterDraftCriteria={filterDraftCriteria} filterDiscoverySearch={filterDiscoverySearch} filterDiscoveryValues={filterDiscoveryValues} activeFacetDescriptor={activeFacetDescriptor} activeFacetDiscovery={activeFacetDiscovery} evidence={evidence} filterInput={filterInput} structuredCriterionTrigger={structuredCriterionTrigger} facetPickerFirst={facetPickerFirst} facetButtons={facetButtons} facetSearchInput={facetSearchInput} setFilterDraft={setFilterDraft} setFilterStep={setFilterStep} setFilterFacet={setFilterFacet} setFilterDiscoveryCursor={setFilterDiscoveryCursor} setFilterDiscoverySearch={setFilterDiscoverySearch} clearFilterDiscovery={clearFilterDiscovery} closeFilter={closeFilter} openStructuredCriteria={openStructuredCriteria} openFacetExplorer={openFacetExplorer} requestFacetDiscovery={requestFacetDiscovery} chooseFacetValue={chooseFacetValue} onEscape={handleFilterEscape} onApply={() => { setFilterSubmitVersion(snapshot.version); dispatch(runtime, { type: "apply-filter-mutations", expectedRevision: filterDraftRevision ?? appliedFilter.revision, operations: draftFilterOperations(appliedFilter, filterDraft, filterDraftCriteria) }); }} /> : null}
           {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : <button type="button" disabled aria-label="Reveal selected Evidence unavailable">Reveal selected Evidence · Unavailable</button>}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div>{hiddenSelection.revealUnavailableReason ? <small>{hiddenSelection.revealUnavailableReason}</small> : null}</div> : null}
           <div className="workbench-react__evidence-window" data-complete-window={!evidence.hasOlder && !evidence.hasNewer || undefined} aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}
@@ -2289,14 +2089,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
         <aside className="workbench-react__pane workbench-react__context" id="workbench-context" aria-label="Context">
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? `Selected Evidence · ${selected.source}` : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div>{contextMode !== "actions" ? <button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button> : null}{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
           <div className="workbench-react__context-body" ref={contextBody}>
-            {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
-              <AgentAccess connection={agentConnection} detailsRef={agentAccessDetails} controlRef={agentAccessControl} />
-              <p>The current Panel Session owns one temporary Event History using <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong>. Closing attempts controlled erasure; abnormal termination relies on guarded cleanup, and residual data may remain until the extension next runs.</p>
-              <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}). Client Message bodies and outcome text are always redacted from this bulk copy.</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading retained Evidence: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy retained scoped Evidence</button>}</section>
-              <section className="workbench-react__operations-danger"><h3>Clear retained Evidence</h3><p>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>{snapshot.retention.clearState === "confirming" ? <div className="workbench-react__confirmation"><strong>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button className="workbench-react__confirmation-primary" type="button" onClick={() => dispatch(runtime, { type: "confirm-clear-history" })}>Clear retained events</button><button type="button" onClick={() => dispatch(runtime, { type: "cancel-clear-history" })}>Keep Evidence</button></div></div> : <button type="button" onClick={() => dispatch(runtime, { type: "request-clear-history" })}>Clear retained Evidence…</button>}</section>
-              <section><h3>Help &amp; resources</h3><p>Open first-party guides and reporting routes for this Workbench release.</p><nav className="workbench-react__resource-links" aria-label="Help and resources">{WORKBENCH_PUBLIC_RESOURCES.map((resource) => <a className="workbench-react__resource-link" href={resource.href} target="_blank" rel="noopener noreferrer" key={resource.href} onClick={() => analytics.track({ name: "feature_used", params: { feature: resource.label === "Documentation" ? "documentation" : resource.label === "Privacy" ? "privacy" : "support", action: "open" } })}>{resource.label}</a>)}</nav><UsageAnalytics client={analytics} /></section>
-              <section><h3>Scoped export</h3><p>Prepare a versioned download for the current Scope. Credentials are always excluded.</p>{snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing retained-Evidence export: {(snapshot.export.operation.progress.completed ?? 0).toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence · {snapshot.export.operation.progress.excludedAfterLatch} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : <button ref={exportTrigger} type="button" onClick={() => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); }}>Export Scope…</button>}</section>
-            </section> : contextMode === "export" ? <section className="workbench-react__export" aria-label="Scoped export options">
+            {contextMode === "actions" ? <SessionOperations snapshot={snapshot} shown={shown} analytics={analytics} agentConnection={agentConnection} agentAccessDetails={agentAccessDetails} agentAccessControl={agentAccessControl} scopedCopyTrigger={scopedCopyTrigger} exportTrigger={exportTrigger} onCommand={command => dispatch(runtime, command)} onCopy={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }} onExport={() => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); }} /> : contextMode === "export" ? <section className="workbench-react__export" aria-label="Scoped export options">
               <p>Download the current Scope as versioned JSON or offline HTML. Credentials are always excluded.</p>
               {snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing retained-Evidence export: {snapshot.export.operation.progress.completed.toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : null}
               {snapshot.export.operation && snapshot.export.operation.state !== "preparing" && snapshot.export.operation.error ? <p className="workbench-react__copy-status" role="status">{snapshot.export.operation.error} {snapshot.export.operation.recovery ?? ""}</p> : null}
@@ -2305,7 +2098,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
               <div className="workbench-react__context-actions"><button type="button" disabled={!snapshot.export.json} onClick={() => downloadExport("json")}>Download JSON</button><button type="button" disabled={!snapshot.export.document} onClick={() => downloadExport("html")}>Download HTML</button></div>
               {exportDownloadStatus ? <p className="workbench-react__copy-status" role="status" aria-live="polite">{exportDownloadStatus}</p> : null}
             </section> : <>
-              {snapshot.activity ? <ActivityContextSummary projection={snapshot.activity.projection} scopeLabel={scopeLabel} filterSummary={appliedFilterSummary} hasActiveFilter={hasActiveFilter} frozen={evidence.mode === "frozen"} open={activitySummaryOpen} onOpenChange={setActivitySummaryOpen} onRankingFilter={(expectedRevision, rankingId) => dispatch(runtime, { type: "apply-activity-ranking-filter", expectedRevision, rankingId })} onResetFilter={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })} /> : null}
+              {snapshot.activity ? <ActivityContextSummary projection={snapshot.activity.projection} filterSummary={appliedFilterSummary} hasActiveFilter={hasActiveFilter} frozen={evidence.mode === "frozen"} open={activitySummaryOpen} onOpenChange={setActivitySummaryOpen} onRankingFilter={(expectedRevision, rankingId) => dispatch(runtime, { type: "apply-activity-ranking-filter", expectedRevision, rankingId })} onResetFilter={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })} /> : null}
               {selected ? <SelectedFilterActions
                 actions={snapshot.context.filterActions ?? []}
                 filter={appliedFilter}
@@ -2318,6 +2111,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
                 <summary>Evidence metadata</summary>
                 <dl className="workbench-react__context-fields">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               </details> : <dl className="workbench-react__context-fields" aria-label="Runtime metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>}
+              {snapshot.context.groups?.map(group => <details key={group.title} className="workbench-context-disclosure" aria-label={group.title}><summary>{group.title}</summary><dl className="workbench-react__context-fields">{group.fields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl></details>)}
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
               <div className="workbench-react__context-actions">
                 {selected ? <>
@@ -2409,26 +2203,15 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
                 dispatch(runtime, { type: "dismiss-diagnostic", dismissalId: diagnostic.dismissalId! });
               }}
             >Dismiss</button> : null}
-            {geometry === "shallow" ? <details className="workbench-react__status-disclosure">
-              <summary>Diagnostic details</summary>
-              <div className="workbench-react__status-disclosure-content">
-                <span className="workbench-react__status-detail">{diagnostic.detail}</span>
-                {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
-                {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
-                {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
-                {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
-                  ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
-                  : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
-              </div>
-            </details> : <>
-              <span className="workbench-react__status-detail">{diagnostic.detail}</span>
-              {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
-              {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
-              {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
-              {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
-                ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
-                : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
-            </>}
+            {notificationsPresented && notificationForCondition(snapshot.notifications.entries, diagnostic) ? <button type="button" aria-label={`View ${diagnostic.title} for ${diagnostic.affected} in Notifications`} onClick={() => {
+              const notification = notificationForCondition(snapshot.notifications.entries, diagnostic);
+              const entry = notification ? document.getElementById(notificationEntryId(notification)) : null;
+              entry?.focus({ preventScroll: true });
+              entry?.scrollIntoView({ block: "nearest" });
+            }}>View in Notifications</button> : <DiagnosticDetails diagnostic={diagnostic} compact={notificationsPresented || geometry === "shallow"} onInspect={() => {
+              if (!diagnostic.route) return;
+              dispatch(runtime, diagnostic.route.kind === "inspect-evidence" ? { type: "inspect-diagnostic-evidence", evidence: diagnostic.route.evidence } : { type: "inspect-diagnostic-affected", affected: diagnostic.route.affected });
+            }} />}
           </section>)}
         </div> : null}
         <div className="workbench-react__status-line"><span

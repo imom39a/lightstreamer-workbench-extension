@@ -31,6 +31,7 @@ const indexedDbFiles = Object.freeze([
   "tests/history-100k-04-indexeddb.test.ts",
   "tests/history-index-block-query.test.ts",
   "tests/history-index-write-amplification.test.ts",
+  "tests/scenario-capture-runtime.test.ts",
   "tests/workbench-find.test.ts"
 ]);
 

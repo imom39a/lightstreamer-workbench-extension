@@ -79,6 +79,38 @@ describe("MCP query efficiency contract", () => {
       const target = discovered.scopes.find((scope: any) => scope.kind === "item" && String(scope.label).includes("eff-target-item-1"));
       expect(target, "scope discovery locates the exact COMMAND item").toBeDefined();
 
+      // A human Scenario is open while the stdio companion performs independent
+      // retained reads. Its 40-row capture workspace is not an MCP query window.
+      runtime.dispatch({ type: "select-evidence", eventId: "eff-event-9996" });
+      await waitFor(() => runtime.getSnapshot().selectedEvidence?.id === "eff-event-9996", "human selects a retained capture");
+      runtime.dispatch({ type: "begin-local-injection-from-selection" });
+      runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+      await waitFor(() => runtime.getSnapshot().scenario?.captureWorkspace.queryState === "ready", "human capture workspace loads all retained target Evidence");
+      runtime.dispatch({ type: "set-scenario-capture-search", text: "KEY-" });
+      await waitFor(() => runtime.getSnapshot().scenario?.captureWorkspace.queryState === "ready", "human capture search settles");
+      runtime.dispatch({ type: "show-older-scenario-captures" });
+      await waitFor(() => runtime.getSnapshot().scenario?.captureWorkspace.queryState === "ready", "human capture page settles");
+      const capture = runtime.getSnapshot().scenario!.captureWorkspace.rows.find(row => row.available)!;
+      runtime.dispatch({ type: "toggle-scenario-capture", identity: capture.identity });
+      runtime.dispatch({ type: "set-scenario-capture-scroll", scrollTop: 183 });
+      runtime.dispatch({ type: "apply-filter-mutations", expectedRevision: runtime.getSnapshot().evidence.investigation.filter.revision, operations: [{ type: "set-text", text: "SHARED-KEY" }] });
+      runtime.dispatch({ type: "set-find", value: "SHARED-KEY" });
+      await waitFor(() => !runtime.getSnapshot().evidence.findState.loading, "human Evidence Find settles");
+      const humanWorkspace = () => {
+        const snapshot = runtime.getSnapshot();
+        return { scopeId: snapshot.scopeId, selectionEventId: snapshot.selectionEventId, filter: snapshot.evidence.investigation.filter, find: snapshot.evidence.find, scenario: snapshot.scenario };
+      };
+      const humanBefore = humanWorkspace();
+      expect(humanBefore.scenario!.captureWorkspace.total).toBeGreaterThan(1_000);
+      expect(humanBefore.scenario!.captureWorkspace.pageOffset).toBe(40);
+      const searched = await callMeasured("search_evidence", { panelSessionId, within: "page", text: "KEY-", limit: 100 });
+      expect(searched.bytes).toBeLessThanOrEqual(8192);
+      expect(searched.value.nextCursor).toBeTruthy();
+      const searchedNext = await callMeasured("search_evidence", { panelSessionId, cursor: searched.value.nextCursor });
+      expect(searchedNext.bytes).toBeLessThanOrEqual(8192);
+      expect(searchedNext.value.readPoint).toEqual(searched.value.readPoint);
+      expect(humanWorkspace()).toEqual(humanBefore);
+
       const summaryResult = await callMeasured("summarize_evidence", { panelSessionId, scopeId: target.scopeId, facet: "key", limit: 40 });
       const summary = summaryResult.value;
       expect(summary.readPoint.committedEvidenceBoundary.sequence).toBe(10_000);
@@ -139,6 +171,15 @@ describe("MCP query efficiency contract", () => {
       expect(legacy.value.evidence).toHaveLength(3);
       expect(compactThree.value.evidence).toHaveLength(3);
       expect(compactThree.value.evidence.map((row: any) => row.identity)).toEqual(legacy.value.evidence.map((row: any) => row.identity));
+      const payloadNext = await callMeasured("query_evidence", { panelSessionId, cursor: legacy.value.nextCursor }, true);
+      expect(payloadNext.value.readPoint).toEqual(legacy.value.readPoint);
+      expect(payloadNext.value.evidence[0].identity.sequence).toBeGreaterThan(legacy.value.evidence.at(-1).identity.sequence);
+      const humanAfterCapture = humanWorkspace();
+      expect(humanBefore.scenario!.captureWorkspace.newerAcceptedEvidenceCount).toBe(0);
+      expect(humanAfterCapture.scenario!.captureWorkspace.newerAcceptedEvidenceCount).toBe(1);
+      expect({ ...humanAfterCapture, scenario: { ...humanAfterCapture.scenario!,
+        captureWorkspace: { ...humanAfterCapture.scenario!.captureWorkspace, newerAcceptedEvidenceCount: 0 }
+      } }).toEqual(humanBefore);
       const reduction = 1 - compactThree.bytes / legacy.bytes;
       expect(reduction).toBeGreaterThan(0.5);
       expect(resources.worstResponseBytes()).toBeLessThanOrEqual(8192);
@@ -191,13 +232,13 @@ async function connectRealMcp(runtime: WorkbenchRuntime, cli: string) {
       if (result.isError) throw new Error(`${name}: ${JSON.stringify(result.structuredContent ?? result.content)}`);
       return result.structuredContent ?? JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
     },
-    callMeasured: async (name: string, args: Record<string, unknown> = {}) => {
+    callMeasured: async (name: string, args: Record<string, unknown> = {}, inheritsLargerBudget = false) => {
       callCount++;
       const started = performance.now();
       const result = await client.callTool({ name, arguments: args });
       const bytes = serializedResultBytes(result);
       responseBytes.set(name, bytes);
-      if (args.maxBytes === undefined || Number(args.maxBytes) <= 8192) worstResponseBytes = Math.max(worstResponseBytes, bytes);
+      if (!inheritsLargerBudget && (args.maxBytes === undefined || Number(args.maxBytes) <= 8192)) worstResponseBytes = Math.max(worstResponseBytes, bytes);
       if (result.isError) throw new Error(`${name}: ${JSON.stringify(result.structuredContent ?? result.content)}`);
       return { value: result.structuredContent ?? JSON.parse((result.content as Array<{ text: string }>)[0]!.text), bytes, elapsedMs: performance.now() - started };
     },

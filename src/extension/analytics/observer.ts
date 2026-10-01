@@ -42,7 +42,6 @@ const features: Partial<Record<WorkbenchCommand["type"], Feature>> = {
   "inspect-diagnostic-evidence": { feature: "notifications", action: "inspect" },
   "inspect-diagnostic-affected": { feature: "notifications", action: "inspect" },
   "dismiss-diagnostic": { feature: "notifications", action: "dismiss" },
-  "select-activity": { feature: "activity", action: "select" },
   "apply-activity-ranking-filter": { feature: "activity", action: "apply" }
 };
 const scenarioActions: Partial<Record<WorkbenchCommand["type"], Extract<AnalyticsEvent, { name: "scenario_action" }>["params"]["action"]>> = {
@@ -243,7 +242,7 @@ export function observeWorkbenchAnalytics(runtime: WorkbenchRuntime, client: Ana
 
 function screenFor(snapshot: WorkbenchSnapshot): AnalyticsScreen {
   if (snapshot.scenario) return "scenario";
-  if (snapshot.localInjection.draft?.open && !snapshot.localInjection.draft.parked && !snapshot.localInjection.draft.minimized) return "local_injection";
+  if (snapshot.localInjection.draft?.open && !snapshot.localInjection.draft.parked) return "local_injection";
   if (snapshot.serverInjection?.state === "active") return "server_injection";
   if (snapshot.contextId === "notifications") return "notifications";
   if (snapshot.contextId === "context:actions") return "session_operations";

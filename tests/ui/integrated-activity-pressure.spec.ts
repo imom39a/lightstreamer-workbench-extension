@@ -93,9 +93,7 @@ test("Shallow forced-color anomaly diagnostics keep Evidence summary controls be
   const evidence = page.locator('[aria-label="Ordered Evidence"]');
   const header = evidence.locator(":scope > .workbench-react__pane-header");
   const controls = [
-    header.getByText("Shown 10", { exact: true }),
-    header.getByText("Matching 10", { exact: true }),
-    header.getByText("In Scope 10", { exact: true }),
+    header.getByText("10 Evidence", { exact: true }),
     header.getByRole("button", { name: "Open Scope Context", exact: true })
   ];
 

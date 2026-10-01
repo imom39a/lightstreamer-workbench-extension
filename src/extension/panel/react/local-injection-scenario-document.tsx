@@ -1,9 +1,11 @@
-import { useLayoutEffect, useRef, type JSX } from "react";
+import { useLayoutEffect, useRef, useState, type JSX } from "react";
 
 import type { WorkbenchRuntime, WorkbenchSnapshot } from "../workbench-runtime";
 import type { ScenarioAssertion, ScenarioCheckpoint, ScenarioStep, ScenarioTraceEntry } from "../../../core/local-injection-scenario";
 import type { DiagnosticAffectedIdentity, DiagnosticObservationRef } from "../../../core/diagnostic-observation";
 import { LocalInjectionCodeEditor } from "./local-injection-code-editor";
+import { ScenarioCapturePanel } from "./scenario-capture-panel";
+import "./scenario-capture-document.css";
 
 type Props = Readonly<{
   runtime: WorkbenchRuntime;
@@ -12,9 +14,57 @@ type Props = Readonly<{
 
 export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JSX.Element | null {
   const state = snapshot.scenario;
+  const [primitiveInputs, setPrimitiveInputs] = useState<Readonly<Record<string, string>>>({});
+  const primitiveInputKey = (assertionId: string): string => `${state?.scenario.id}:${assertionId}`;
+  useLayoutEffect(() => {
+    // Pending text belongs to this Scenario, including while it is parked.
+    // A discarded/replaced document must not retain another author's input.
+    setPrimitiveInputs({});
+  }, [state?.scenario.id]);
   const heading = useRef<HTMLHeadingElement | null>(null);
-  const addButton = useRef<HTMLButtonElement | null>(null);
-  const previousPicker = useRef(false);
+  const [surface, setSurface] = useState<"capture" | "queue" | "editor">("editor");
+  const editorHeading = useRef<HTMLHeadingElement | null>(null);
+  const memberPane = useRef<HTMLDivElement | null>(null);
+  const memberScroll = useRef(new Map<string, Readonly<{ top: number; left: number }>>());
+  const scrollScenarioId = useRef<string | null>(null);
+  const scrollMemberId = useRef<string | null>(null);
+  const rememberMemberScroll = (): void => {
+    const pane = memberPane.current;
+    // Compact working-surface changes hide the pane without changing its member.
+    // Hidden/clamped DOM positions must not replace the member's reading point.
+    if (!pane || pane.clientHeight === 0 || !scrollMemberId.current) return;
+    memberScroll.current.set(scrollMemberId.current, { top: pane.scrollTop, left: pane.scrollLeft });
+  };
+  useLayoutEffect(() => {
+    if (scrollScenarioId.current !== (state?.scenario.id ?? null)) {
+      memberScroll.current.clear();
+      scrollScenarioId.current = state?.scenario.id ?? null;
+    }
+    // Removed Steps keep their identity and editor state while Undo can restore
+    // them. Their reading point has the same lifetime; permanent removals do not.
+    const members = new Set([
+      ...(state?.scenario.members.map(({ id }) => id) ?? []),
+      ...(state?.scenario.removedSteps.map(({ step }) => step.id) ?? [])
+    ]);
+    for (const id of memberScroll.current.keys()) if (!members.has(id)) memberScroll.current.delete(id);
+  }, [state?.scenario.id, state?.scenario.members, state?.scenario.removedSteps]);
+  useLayoutEffect(() => {
+    scrollMemberId.current = state?.focusedMemberId ?? null;
+    const pane = memberPane.current;
+    if (!pane || state?.parked || !state?.focusedMemberId) return;
+    const position = memberScroll.current.get(state.focusedMemberId) ?? { top: 0, left: 0 };
+    const restore = (): void => {
+      pane.scrollTop = position.top;
+      pane.scrollLeft = position.left;
+    };
+    restore();
+    // CodeMirror measures a newly mounted large document on its next frame.
+    // Restore again after that measurement, before accepting a clamped position.
+    const frame = requestAnimationFrame(restore);
+    return () => cancelAnimationFrame(frame);
+  }, [state?.scenario.id, state?.focusedMemberId, state?.parked, surface]);
+  const focusEditor = useRef(false);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const openedScenarioId = useRef<string | null>(null);
   const wasParked = useRef(false);
   const discardTrigger = useRef<HTMLButtonElement | null>(null);
@@ -26,22 +76,16 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
     if (!state) return;
     if (state.parked) {
       wasParked.current = true;
-      previousPicker.current = false;
       return;
     }
     if (wasParked.current) {
-      heading.current?.focus();
+      (returnFocus.current?.isConnected ? returnFocus.current : heading.current)?.focus();
       wasParked.current = false;
-    } else if (!previousPicker.current && state.pickerOpen) {
-      document.querySelector<HTMLElement>('[aria-label="Scenario Evidence picker"] button:not(:disabled)')?.focus();
-    } else if (previousPicker.current && !state.pickerOpen) {
-      (addButton.current ?? heading.current)?.focus();
     } else if (openedScenarioId.current !== state.scenario.id) {
       heading.current?.focus();
       openedScenarioId.current = state.scenario.id;
     }
-    previousPicker.current = state.pickerOpen;
-  }, [state?.scenario.id, state?.pickerOpen, state?.parked]);
+  }, [state?.scenario.id, state?.parked]);
   useLayoutEffect(() => {
     if (!state || state.parked) return;
     if (!previousDiscardConfirmation.current && state.discardConfirmation) discardDialog.current?.focus();
@@ -69,11 +113,19 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
     document.querySelector<HTMLButtonElement>('[aria-label="Local Injection Scenario"] [data-scenario-control="run-again"]')?.focus();
     recoverTerminalFocus.current = false;
   }, [state?.phase]);
+  useLayoutEffect(() => {
+    if (!focusEditor.current || state?.parked) return;
+    editorHeading.current?.focus({ preventScroll: true });
+    focusEditor.current = false;
+  }, [state?.focusedMemberId, surface, state?.parked]);
   const dispatchWithFocus = (intent: NonNullable<typeof focusIntent.current>, command: Parameters<WorkbenchRuntime["dispatch"]>[0]): void => {
     focusIntent.current = intent;
     runtime.dispatch(command);
   };
   if (!state) return null;
+  const pendingPrimitiveErrors = state.scenario.members.flatMap((member) => member.kind === "checkpoint"
+    ? member.assertions.filter((assertion) => assertion.kind === "command-field-equals" && primitiveInputs[primitiveInputKey(assertion.id)] !== undefined && !parsePrimitive(primitiveInputs[primitiveInputKey(assertion.id)]!).ok)
+    : []);
   const run = state.run;
   const focusedMemberId = state.focusedMemberId;
   const scenarioMembers: readonly (ScenarioStep | ScenarioCheckpoint)[] = state.scenario.members;
@@ -89,7 +141,8 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   const nextMember = state.runner?.cursor.members[state.runner.cursor.index] ?? (run ? run.members[run.nextMemberIndex] : null) ?? null;
   const nextStep = nextMember?.kind === "step" ? nextMember : null;
   const nextMemberLabel = nextMember?.kind === "checkpoint" ? `Checkpoint ${nextMember.name}` : nextStep ? `Step ${nextStep.ordinal}` : "—";
-  return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase} hidden={state.parked} onFocusCapture={(event) => {
+  return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase} hidden={state.parked} onClickCapture={rememberMemberScroll} onFocusCapture={(event) => {
+    if (!state.parked) returnFocus.current = event.target as HTMLElement;
     const control = (event.target as HTMLElement).dataset.scenarioControl;
     recoverTerminalFocus.current = control === "pause" || control === "stop";
   }} onBlurCapture={(event) => {
@@ -97,7 +150,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
     recoverTerminalFocus.current = false;
   }}>
     <header className="workbench-react__scenario-header">
-      <div><span className="workbench-react__eyebrow">Temporary promoted document</span><h1 tabIndex={-1} ref={heading}>Local Injection Scenario</h1><span>{state.scenario.id} · revision {state.scenario.revision}</span></div>
+      <div><h1 tabIndex={-1} ref={heading}>Local Injection Scenario</h1><span>{state.scenario.id} · revision {state.scenario.revision}</span></div>
       <div className="workbench-react__scenario-header-actions"><strong>{(state.runner?.phase ?? state.phase).toUpperCase()}</strong><button type="button" disabled={state.phase === "running" || state.discardConfirmation} aria-describedby={state.phase === "running" ? "scenario-navigation-reason" : undefined} onClick={() => runtime.dispatch({ type: "park-scenario" })}>Back to Evidence</button><button type="button" ref={discardTrigger} disabled={state.phase === "running"} aria-describedby={state.phase === "running" ? "scenario-navigation-reason" : undefined} onClick={() => runtime.dispatch({ type: "request-discard-scenario" })}>Discard Scenario</button>{state.phase === "running" ? <span id="scenario-navigation-reason">Stop the Run before leaving or discarding.</span> : null}</div>
     </header>
     {state.discardConfirmation ? <section className="workbench-react__local-confirmation workbench-react__scenario-discard-confirmation" role="alertdialog" aria-label="Discard Local Injection Scenario" tabIndex={-1} ref={discardDialog} onKeyDown={(event) => {
@@ -111,66 +164,70 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       <div><dt>Delivery</dt><dd>{state.scenario.target.deliveryPath.toUpperCase()} · exact shared Subscription target</dd></div>
       <div><dt>Boundary</dt><dd>LOCAL ONLY · one ordinary Local Injection per Step · Lightstreamer Server is not contacted</dd></div>
       <div><dt>Scenario Clock</dt><dd>{state.scenario.speed}× speed · monotonic active time · hidden and paused time excluded</dd></div>
-      {run ? <><div><dt>Reviewed Run</dt><dd>{run.id} · Scenario revision {run.scenarioRevision} · target fingerprint {run.targetFingerprint}</dd></div><div><dt>Evidence seed</dt><dd>{run.committedEvidenceSeed ? `${run.committedEvidenceSeed.intervalId} · sequence ${run.committedEvidenceSeed.sequence}` : "Empty committed Evidence boundary"}</dd></div></> : null}
+      {run ? <div><dt>Reviewed Run</dt><dd>{run.id} · revision {run.scenarioRevision}</dd></div> : null}
     </dl>
     {state.membershipError ? <p className="workbench-react__scenario-problem" role="alert"><strong>BLOCKED.</strong> {state.membershipError} No Injection was attempted.</p> : null}
-    {state.pickerOpen ? <section className="workbench-react__scenario-picker" aria-label="Scenario Evidence picker" onKeyDown={(event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      runtime.dispatch({ type: "close-scenario-evidence-picker" });
-    }}>
-      <header><strong>Add captured updates</strong><span>Visible or filtered Evidence is only a candidate set. Membership changes after an individual add or confirmed preview.</span></header>
-      <div className="workbench-react__scenario-picker-actions">
-        <button type="button" onClick={() => runtime.dispatch({ type: "preview-visible-evidence-for-scenario" })}>Preview visible set</button>
-        {state.membershipPreview ? <><span>{state.membershipPreview.members.filter(({ available }) => available).length} compatible · {state.membershipPreview.members.filter(({ available }) => !available).length} unavailable</span><button type="button" disabled={!state.membershipPreview.members.some(({ available }) => available)} onClick={() => runtime.dispatch({ type: "confirm-scenario-membership-preview" })}>Confirm compatible Steps</button></> : null}
-      </div>
-      <ul>{snapshot.evidence.events.map((event) => {
-        const membership = state.membership.find(({ eventId }) => eventId === event.id);
-        const preview = state.membershipPreview?.members.find(({ eventId }) => eventId === event.id);
-        const compatible = membership?.available ?? false;
-        const reasonId = `scenario-membership-${event.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-        return <li key={event.id}><div><strong>{event.id}</strong><span>{event.object} · {event.command ?? event.kind}{preview ? ` · retained ${preview.intervalId} sequence ${preview.retainedSequence}` : ""}</span>{preview ? <small>{preview.available ? "Will add after confirmation" : `Unavailable · ${preview.reason}`}</small> : !compatible ? <small id={reasonId}>Unavailable · {membership?.reason ?? "compatibility could not be proven."}</small> : null}</div><button type="button" disabled={!compatible} aria-describedby={!compatible ? reasonId : undefined} onClick={() => {
-          runtime.dispatch({ type: "select-evidence", eventId: event.id });
-          runtime.dispatch({ type: "add-selected-evidence-to-scenario" });
-        }}>Add this update</button></li>;
-      })}</ul>
-      {snapshot.evidence.events.length === 0 ? <p>No retained Evidence is available to add.</p> : null}
-      <button type="button" onClick={() => runtime.dispatch({ type: "close-scenario-evidence-picker" })}>Cancel</button>
-    </section> : null}
-    <div className="workbench-react__scenario-steps" aria-label="Ordered Scenario Steps">
+    <nav className="workbench-react__scenario-surface-controls" aria-label="Scenario working surface">
+      {(["capture", "queue", "editor"] as const).map((choice) => <button key={choice} type="button" aria-pressed={surface === choice} onClick={() => setSurface(choice)}>{choice === "capture" ? "Captured updates" : choice === "queue" ? "Scenario queue" : "Focused editor"}</button>)}
+    </nav>
+    <div className="workbench-react__scenario-workspace" data-surface={surface}>
+      <ScenarioCapturePanel runtime={runtime} state={state} />
+      <nav className="workbench-react__scenario-queue" aria-label="Ordered Scenario Steps">
+        <header><strong>Scenario queue</strong><span>{state.scenario.steps.length}/100 Steps · explicit execution order</span></header>
+        <ol>{scenarioMembers.map((member, index) => {
+          const ordinal = scenarioMembers.slice(0, index + 1).filter(({ kind }) => kind === member.kind).length;
+          const memberTrace = run?.trace.find((entry) => entry.kind === "checkpoint" ? entry.checkpointId === member.id : entry.stepId === member.id);
+          const status = memberTrace ? memberTrace.kind === "attempted" ? memberTrace.outcome.headline : memberTrace.kind === "checkpoint" ? memberTrace.status.toUpperCase() : "NOT RUN" : nextMember?.id === member.id ? "NEXT" : member.kind === "step" ? member.draft.ready ? "READY" : "BLOCKED" : "CHECKPOINT";
+          return <li key={member.id} data-focused={member.id === focusedMemberId || undefined}>
+            <button type="button" aria-label={member.kind === "step" ? `Step ${ordinal}` : `Checkpoint ${ordinal}`} aria-describedby={`scenario-queue-${member.id} scenario-queue-status-${member.id}`} aria-pressed={member.id === focusedMemberId} onClick={() => {
+              runtime.dispatch({ type: "focus-scenario-member", memberId: member.id });
+              focusEditor.current = true;
+              setSurface("editor");
+            }}><strong>{member.kind === "step" ? `Step ${ordinal}` : `Checkpoint ${ordinal}`}</strong><span id={`scenario-queue-${member.id}`}>{member.kind === "step" ? `${member.draft.document?.command ?? "Item update"} ${member.draft.document?.key ?? member.draft.item.name ?? `item ${member.draft.item.position ?? "unknown"}`} · ${member.draft.sourceEventId ?? "Authored update"} · ${member.draft.relativeDelayMs} ms` : `${member.name} · ${member.assertions.length} assertions · zero Injections`}</span><small id={`scenario-queue-status-${member.id}`}>{status}</small></button>
+          </li>;
+        })}</ol>
+      </nav>
+      <div className="workbench-react__scenario-steps" aria-label="Focused Scenario member" ref={memberPane} onScroll={rememberMemberScroll}>
+        <h2 className="workbench-react__scenario-focused-heading" ref={editorHeading} tabIndex={-1}>Focused {scenarioMembers.find(({ id }) => id === focusedMemberId)?.kind === "checkpoint" ? "Checkpoint" : "Step"}</h2>
       {run ? <section className="workbench-react__scenario-ledger" aria-label="Scenario Run ledger">
-        <header><strong>Persistent Run ledger</strong><span>Panel Session-local · append-only authorization, drift, outcome, retention, assertion, and Evidence correlations</span></header>
+        <header><strong>Run Trace</strong></header>
+        {run.drifts.map((entry) => <p key={entry.id}><strong>DRIFT</strong>{` · ${entry.kind} before Step ${entry.detectedBeforeOrdinal} · ${entry.detail}`}</p>)}
+        <details><summary>Trace details</summary>
+        <dl><div><dt>Target fingerprint</dt><dd>{run.targetFingerprint}</dd></div><div><dt>Evidence seed</dt><dd>{run.committedEvidenceSeed ? `${run.committedEvidenceSeed.intervalId} · sequence ${run.committedEvidenceSeed.sequence}` : "Empty committed Evidence boundary"}</dd></div></dl>
         <ol>
           {ledgerChronology.map((record) => record.kind === "authorization"
             ? <li key={record.entry.id}><strong>{record.entry.kind === "INITIAL_REVIEW" ? "AUTHORIZED" : "RE-AUTHORIZED"}</strong>{` · ${record.entry.id} · remaining from Step ${record.entry.authorizedRemainingFromOrdinal} · target ${record.entry.targetFingerprint} · listeners ${record.entry.listenerIds.join(", ") || "none"} · Evidence boundary ${record.entry.committedEvidenceBoundary?.eventId ?? "empty"} · Diagnostic Observation cursor ${formatDiagnosticBoundary(record.entry.diagnosticObservationBoundary)}`}</li>
             : <li key={record.entry.id}><strong>DRIFT</strong>{` · ${record.entry.kind} before Step ${record.entry.detectedBeforeOrdinal} · added ${record.entry.addedListenerIds.join(", ") || "none"} · removed ${record.entry.removedListenerIds.join(", ") || "none"} · Evidence ${record.entry.evidence?.eventId ?? "none"} · ${record.entry.detail}`}</li>)}
-        </ol>
+        </ol></details>
       </section> : null}
       {state.priorRuns.length > 0 ? <section className="workbench-react__scenario-ledger" aria-label="Prior Scenario Run ledgers">
         <header><strong>Prior Run ledgers</strong><span>Preserved until this Panel Session closes</span></header>
         {state.priorRuns.map((prior) => <details key={prior.id}>
-          <summary>{prior.id} · {prior.status.toUpperCase()} · revision {prior.scenarioRevision} · {prior.trace.length} terminal member records</summary>
+          <summary>Trace details · {prior.id} · {prior.status.toUpperCase()} · revision {prior.scenarioRevision} · {prior.trace.length} results{prior.trace.some((entry) => "evidenceAvailability" in entry && entry.evidenceAvailability === "UNAVAILABLE_AFTER_CLEAR") ? " · Evidence is unavailable after Clear" : ""}{prior.trace.some((entry) => entry.kind === "checkpoint" && entry.diagnosticAvailability === "UNAVAILABLE_AFTER_CLEAR") ? " · Diagnostic Observations unavailable after Clear" : ""}</summary>
           <ol>{prior.trace.map((entry) => entry.kind === "checkpoint"
-            ? <li key={`checkpoint:${entry.checkpointId}:${entry.memberOrdinal}`}><strong>{entry.status.toUpperCase()}</strong>{` · Scenario ${prior.scenarioId} · Run ${prior.id} · Checkpoint ${entry.checkpointName}/${entry.memberOrdinal} · zero Injections · Evidence boundary ${entry.resultBoundary?.eventId ?? "unavailable"} · Diagnostic Observation current cursor ${formatDiagnosticBoundary(entry.diagnosticCurrentBoundary)}`}</li>
-            : <li key={`${entry.stepId}:${entry.ordinal}`}><strong>{entry.kind === "attempted" ? entry.outcome.headline : "NOT RUN"}</strong>{entry.kind === "attempted" ? ` · Scenario ${prior.scenarioId} · Run ${prior.id} · Step ${entry.stepId}/${entry.ordinal} · Injection ${entry.injectionId} · execution ${entry.outcome.executionId} · request ${entry.outcome.requestId ?? "not allocated"} · outcome ${entry.outcome.status} · retention ${entry.retention} · assertion ${entry.assertion} · Evidence ${entry.evidence?.eventId ?? entry.evidenceAvailability}` : ` · Scenario ${prior.scenarioId} · Run ${prior.id} · Step ${entry.stepId}/${entry.ordinal} · no Injection/execution/request · assertion ${entry.assertion}`}</li>)}</ol>
+            ? <li key={`checkpoint:${entry.checkpointId}:${entry.memberOrdinal}`}><strong>{entry.status.toUpperCase()}</strong>{` · Scenario ${prior.scenarioId} · Run ${prior.id} · Checkpoint ${entry.checkpointName}/${entry.memberOrdinal} · zero Injections · Evidence boundary ${entry.resultBoundary?.eventId ?? "unavailable"} · availability ${entry.evidenceAvailability} · Diagnostic Observation current cursor ${formatDiagnosticBoundary(entry.diagnosticCurrentBoundary)} · availability ${entry.diagnosticAvailability}`}</li>
+            : <li key={`${entry.stepId}:${entry.ordinal}`}><strong>{entry.kind === "attempted" ? entry.outcome.headline : "NOT RUN"}</strong>{entry.kind === "attempted" ? ` · Scenario ${prior.scenarioId} · Run ${prior.id} · Step ${entry.stepId}/${entry.ordinal} · Injection ${entry.injectionId} · execution ${entry.outcome.executionId} · request ${entry.outcome.requestId ?? "not allocated"} · outcome ${entry.outcome.status} · retention ${entry.retention} · assertion ${entry.assertion} · Evidence ${entry.evidence?.eventId ?? "none"} · availability ${entry.evidenceAvailability}${entry.evidence ? ` · interval ${entry.evidence.intervalId} · sequence ${entry.evidence.sequence}` : ""}` : ` · Scenario ${prior.scenarioId} · Run ${prior.id} · Step ${entry.stepId}/${entry.ordinal} · no Injection/execution/request · assertion ${entry.assertion}`}</li>)}</ol>
         </details>)}
       </section> : null}
       {scenarioMembers.map((member, index) => {
+        if (member.id !== focusedMemberId) return null;
         if (member.kind === "checkpoint") {
           const checkpointOrdinal = scenarioMembers.slice(0, index + 1).filter(({ kind }) => kind === "checkpoint").length;
           const checkpointTrace = run?.trace.find((entry) => entry.kind === "checkpoint" && entry.checkpointId === member.id);
           const activeCheckpoint = state.runner && "activeCheckpoint" in state.runner && state.runner.activeCheckpoint?.checkpointId === member.id
             ? state.runner.activeCheckpoint
             : null;
-          return <ScenarioCheckpointDocument key={member.id} runtime={runtime} checkpoint={member} ordinal={checkpointOrdinal} phase={state.phase} focused={focusedMemberId === member.id} canMoveEarlier={index > 0} canMoveLater={index < scenarioMembers.length - 1} precedingStepIds={scenarioMembers.slice(0, index).filter((candidate): candidate is ScenarioStep => candidate.kind === "step").map(({ id }) => id)} trace={checkpointTrace?.kind === "checkpoint" ? checkpointTrace : null} active={activeCheckpoint as ActiveCheckpointPresentation | null} />;
+          return <ScenarioCheckpointDocument key={member.id} runtime={runtime} checkpoint={member} ordinal={checkpointOrdinal} phase={state.phase} focused={focusedMemberId === member.id} canMoveEarlier={index > 0} canMoveLater={index < scenarioMembers.length - 1} precedingStepIds={scenarioMembers.slice(0, index).filter((candidate): candidate is ScenarioStep => candidate.kind === "step").map(({ id }) => id)} trace={checkpointTrace?.kind === "checkpoint" ? checkpointTrace : null} active={activeCheckpoint as ActiveCheckpointPresentation | null} primitiveInputs={primitiveInputs} primitiveInputKey={primitiveInputKey} onPrimitiveInput={(assertionId, text) => {
+            setPrimitiveInputs((previous) => ({ ...previous, [primitiveInputKey(assertionId)]: text }));
+            runtime.dispatch({ type: "set-scenario-assertion-authoring-validity", assertionId, valid: parsePrimitive(text).ok });
+          }} />;
         }
         const step = member;
         const stepOrdinal = scenarioMembers.slice(0, index + 1).filter(({ kind }) => kind === "step").length;
         const trace = run?.trace.find((entry): entry is Exclude<ScenarioTraceEntry, { kind: "checkpoint" }> => entry.kind !== "checkpoint" && entry.stepId === step.id);
         const focused = focusedMemberId === step.id;
         return <article key={step.id} data-step-state={trace ? "complete" : nextMember?.id === step.id ? "next" : "waiting"} data-step-focused={focused ? "true" : "false"}>
-          <header><button type="button" className="workbench-react__scenario-step-focus" aria-pressed={focused} onClick={() => runtime.dispatch({ type: "focus-scenario-step", stepId: step.id })}>Step {stepOrdinal}</button><span>{step.id} · stable identity · delay {step.draft.relativeDelayMs} ms</span></header>
+          <header><strong>Step {stepOrdinal}</strong><span>{step.id} · delay {step.draft.relativeDelayMs} ms</span></header>
           {state.phase !== "stopped" ? <dl><div><dt>Source</dt><dd>{step.draft.sourceEventId ?? "None · newly authored"}</dd></div><div><dt>Validation</dt><dd>{step.draft.ready ? "READY" : "BLOCKED"}</dd></div></dl> : null}
           {state.phase === "edit" ? <div className="workbench-react__scenario-step-actions" aria-label={`Step ${stepOrdinal} actions`}>
             <button type="button" disabled={index === 0} onClick={() => runtime.dispatch({ type: "move-scenario-step", stepId: step.id, direction: "earlier" })}>Move earlier</button>
@@ -197,12 +254,21 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
             />
           </section> : null}
           {state.phase !== "edit" && state.phase !== "stopped" ? <pre tabIndex={0} aria-label={`Step ${stepOrdinal} reviewed JSON`}>{step.draft.rawText}</pre> : null}
-          {trace ? trace.kind === "attempted" ? <><p><strong>{trace.outcome.headline}</strong>{` · Injection ${trace.injectionId} · execution ${trace.outcome.executionId} · request ${trace.outcome.requestId ?? "not allocated"}`}{trace.outcome.attemptedCount !== undefined ? ` · listeners ${trace.outcome.deliveredCount ?? 0}/${trace.outcome.attemptedCount} delivered${trace.outcome.failedCount ? `, ${trace.outcome.failedCount} failed` : ""}` : ""} · {trace.outcome.detail}{trace.evidence ? ` · Local Evidence ${trace.evidence.eventId}` : " · no committed Local Evidence"}{` · retention ${trace.retention} · assertion ${trace.assertion} · Evidence ${trace.evidenceAvailability}`}</p>{trace.timing ? <p className="workbench-react__scenario-timing">Scenario Clock · delay {trace.timing.originalDelayMs} ms → {trace.timing.scaledDelayMs} ms · planned {trace.timing.plannedDispatchActiveOffsetMs} ms · dispatched {trace.timing.actualDispatchActiveOffsetMs} ms · settled {trace.timing.settlementActiveOffsetMs} ms · late {trace.timing.latenessMs} ms{trace.timing.manualOverride ? ` · STEP NEXT bypassed ${trace.timing.bypassedDelayMs} ms` : ""}</p> : null}{trace.outcome.limitations?.map((limitation) => <p role="note" key={limitation.field}><strong>TRACE VALUE LIMITED.</strong>{` ${limitation.field} retained ${limitation.retainedBytes} of ${limitation.originalBytes} UTF-8 bytes for bounded Scenario accounting. Delivery semantics are unchanged; inspect the page's own diagnostics for the original value.`}</p>)}</> : <p><strong>NOT RUN</strong> · {trace.reason} · no Injection attempted · assertion {trace.assertion} · {trace.detail}</p> : null}
+          {trace ? trace.kind === "attempted" ? <>
+            <p><strong>{trace.outcome.headline}</strong>{trace.outcome.attemptedCount !== undefined ? ` · listeners ${trace.outcome.deliveredCount ?? 0}/${trace.outcome.attemptedCount} delivered${trace.outcome.failedCount ? `, ${trace.outcome.failedCount} failed` : ""}` : ""} · {trace.outcome.detail}{trace.evidenceAvailability === "UNAVAILABLE_AFTER_CLEAR" ? " · Local Evidence is unavailable after Clear; the delivered outcome is preserved" : trace.evidence ? " · Local Evidence committed" : " · no committed Local Evidence"}</p>
+            <details><summary>Trace details</summary>
+              <p>{`Injection ${trace.injectionId} · execution ${trace.outcome.executionId} · request ${trace.outcome.requestId ?? "not allocated"} · retention ${trace.retention} · assertion ${trace.assertion} · Evidence ${trace.evidence?.eventId ?? "none"} · availability ${trace.evidenceAvailability}${trace.evidence ? ` · interval ${trace.evidence.intervalId} · sequence ${trace.evidence.sequence}` : ""}`}</p>
+              {trace.timing ? <p className="workbench-react__scenario-timing">Scenario Clock · delay {trace.timing.originalDelayMs} ms → {trace.timing.scaledDelayMs} ms · planned {trace.timing.plannedDispatchActiveOffsetMs} ms · dispatched {trace.timing.actualDispatchActiveOffsetMs} ms · settled {trace.timing.settlementActiveOffsetMs} ms · late {trace.timing.latenessMs} ms{trace.timing.manualOverride ? ` · STEP NEXT bypassed ${trace.timing.bypassedDelayMs} ms` : ""}</p> : null}
+            </details>
+            {trace.outcome.limitations?.map((limitation) => <p role="note" key={limitation.field}><strong>TRACE VALUE LIMITED.</strong>{` ${limitation.field} retained ${limitation.retainedBytes} of ${limitation.originalBytes} UTF-8 bytes for bounded Scenario accounting. Delivery semantics are unchanged; inspect the page's own diagnostics for the original value.`}</p>)}
+          </> : <p><strong>NOT RUN</strong> · {trace.reason} · no Injection attempted · assertion {trace.assertion} · {trace.detail}</p> : null}
         </article>;
       })}
+      </div>
     </div>
+    {pendingPrimitiveErrors.length ? <p id="scenario-primitive-error" role="alert">Correct the Primitive JSON value before Review. No Injection attempted.</p> : null}
     <footer className="workbench-react__local-footer">
-      {state.phase === "edit" ? <><button type="button" ref={addButton} data-scenario-control="edit" onClick={() => runtime.dispatch({ type: "open-scenario-evidence-picker" })}>Add captured update</button><button type="button" onClick={() => runtime.dispatch({ type: "add-authored-scenario-step" })}>Add authored update</button><button type="button" onClick={() => runtime.dispatch({ type: "add-scenario-checkpoint" })}>Add checkpoint</button>{state.canUndoRemoval ? <button type="button" onClick={() => runtime.dispatch({ type: "undo-scenario-step-removal" })}>Undo removal</button> : null}<label>Speed <select aria-label="Scenario speed" value={state.scenario.speed} onChange={(event) => runtime.dispatch({ type: "set-scenario-speed", speed: Number(event.currentTarget.value) as 0.25 | 0.5 | 1 | 2 | 4 })}><option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><span>{state.scenario.steps.length}/100 explicit Steps · {formatScenarioBytes(state.scenario.accountedBytes)}/8 MiB · no execution shortcut</span><button type="button" className="workbench-react__primary" onClick={() => dispatchWithFocus("play", { type: "review-scenario" })}>Review Scenario</button></> : null}
+      {state.phase === "edit" ? <><button type="button" data-scenario-control="edit" onClick={() => setSurface("capture")}>Choose captured updates</button><button type="button" onClick={() => runtime.dispatch({ type: "add-authored-scenario-step" })}>Add authored update</button><button type="button" onClick={() => runtime.dispatch({ type: "add-scenario-checkpoint" })}>Add checkpoint</button>{state.canUndoRemoval ? <button type="button" onClick={() => runtime.dispatch({ type: "undo-scenario-step-removal" })}>Undo removal</button> : null}<label>Speed <select aria-label="Scenario speed" value={state.scenario.speed} onChange={(event) => runtime.dispatch({ type: "set-scenario-speed", speed: Number(event.currentTarget.value) as 0.25 | 0.5 | 1 | 2 | 4 })}><option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><span>{state.scenario.steps.length}/100 explicit Steps · {formatScenarioBytes(state.scenario.accountedBytes)}/8 MiB</span><button type="button" className="workbench-react__primary" disabled={pendingPrimitiveErrors.length > 0} aria-describedby={pendingPrimitiveErrors.length ? "scenario-primitive-error" : undefined} onClick={() => { if (!pendingPrimitiveErrors.length) dispatchWithFocus("play", { type: "review-scenario" }); }}>Review Scenario</button></> : null}
       {state.phase === "review" ? <><button type="button" onClick={() => dispatchWithFocus("edit", { type: "edit-scenario" })}>Edit Scenario</button><span>{nextMember ? `Next: ${nextMemberLabel}${nextStep ? ` · delay ${state.runner?.remainingDelayMs ?? 0} ms` : " · exact read boundary"}` : "All members settled"}</span><button type="button" onClick={() => dispatchWithFocus("resume-or-run-again", { type: "step-next-scenario" })}>Step next</button><button type="button" data-scenario-control="play" className="workbench-react__primary" onClick={() => dispatchWithFocus("pause", { type: "play-scenario" })}>Play</button><button type="button" data-scenario-control="stop" onClick={() => dispatchWithFocus("stop-or-run-again", { type: "stop-scenario" })}>Stop</button></> : null}
       {state.phase === "paused" ? state.runner?.pauseReason === "DRIFT_REVIEW_REQUIRED" ? <><span>PAUSED — DRIFT REVIEW REQUIRED · immutable remaining payload, order, timing, and prior outcomes preserved.</span><button type="button" data-scenario-control="stop" onClick={() => dispatchWithFocus("stop-or-run-again", { type: "stop-scenario" })}>Stop</button><button type="button" data-scenario-control="resume" className="workbench-react__primary" onClick={() => dispatchWithFocus("resume", { type: "re-review-scenario" })}>Re-review immutable plan</button></> : <><button type="button" onClick={() => dispatchWithFocus("edit", { type: "edit-scenario" })}>Edit Scenario</button><span>{state.runner?.activeCheckpoint ? `PAUSED${state.runner.pauseReason === "HIDDEN" ? " — PANEL HIDDEN" : ""} · ${state.runner.remainingDelayMs} ms active assertion window remains for ${nextMemberLabel} · explicit Resume required` : state.runner?.pauseReason === "HIDDEN" ? "PAUSED — PANEL HIDDEN · explicit Resume required" : state.runner?.controlCapacityReached ? "PAUSED — CONTROL TRACE CAPACITY REACHED · Edit and Review again to continue." : `PAUSED · ${state.runner?.remainingDelayMs ?? 0} ms remains before ${nextMemberLabel}`}</span><button type="button" disabled={!nextMember || Boolean(state.runner?.activeCheckpoint) || state.runner?.controlCapacityReached} onClick={() => dispatchWithFocus("resume-or-run-again", { type: "step-next-scenario" })}>Step next</button><button type="button" data-scenario-control="resume" className="workbench-react__primary" disabled={!nextMember || !snapshot.visible || state.runner?.controlCapacityReached} onClick={() => dispatchWithFocus("pause", { type: "play-scenario" })}>Resume</button><button type="button" data-scenario-control="stop" onClick={() => dispatchWithFocus("stop-or-run-again", { type: "stop-scenario" })}>Stop</button></> : null}
       {state.phase === "running" ? <><span>{state.runner?.phase === "checkpoint-waiting" ? `WAITING · ${nextMemberLabel} is observing committed Workbench Evidence on active time.` : state.runner?.phase === "waiting" ? `WAITING · ${nextMemberLabel} dispatch is scheduled on active time.` : state.runner?.phase === "in-flight" ? `IN FLIGHT · ${nextMemberLabel} is settling its real Outcome and committed Evidence.` : state.runner?.phase === "pause-pending" ? "PAUSE PENDING · current Injection will settle truthfully." : "STOP PENDING · current Injection will settle truthfully; remainder will be NOT RUN."}</span>{state.runner?.phase === "waiting" || state.runner?.phase === "checkpoint-waiting" || state.runner?.phase === "in-flight" ? <button type="button" data-scenario-control="pause" className="workbench-react__primary" onClick={() => dispatchWithFocus("resume", { type: "pause-scenario" })}>Pause</button> : null}<button type="button" data-scenario-control="stop" onClick={() => dispatchWithFocus("stop-or-run-again", { type: "stop-scenario" })}>Stop</button></> : null}
@@ -223,7 +289,7 @@ type ActiveCheckpointPresentation = Readonly<{
   assertions: readonly import("../../../core/local-injection-scenario-checkpoint").ScenarioAssertionResult[];
 }>;
 
-function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focused, canMoveEarlier, canMoveLater, precedingStepIds, trace, active }: Readonly<{
+function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focused, canMoveEarlier, canMoveLater, precedingStepIds, trace, active, primitiveInputs, primitiveInputKey, onPrimitiveInput }: Readonly<{
   runtime: WorkbenchRuntime;
   checkpoint: ScenarioCheckpoint;
   ordinal: number;
@@ -234,6 +300,9 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
   precedingStepIds: readonly string[];
   trace: Extract<ScenarioTraceEntry, { kind: "checkpoint" }> | null;
   active: ActiveCheckpointPresentation | null;
+  primitiveInputs: Readonly<Record<string, string>>;
+  primitiveInputKey(assertionId: string): string;
+  onPrimitiveInput(assertionId: string, text: string): void;
 }>): JSX.Element {
   const status = trace?.status ?? active?.status ?? (phase === "edit" ? "authoring" : "reviewed");
   const results = trace?.assertions ?? active?.assertions ?? [];
@@ -243,7 +312,7 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
   const terminalFailure = status === "fail" || status === "expired" || status === "invalid" || status === "unavailable" || status === "not-evaluable";
   const updateCheckpoint = (next: ScenarioCheckpoint): void => runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: next });
   return <article className="workbench-react__scenario-checkpoint" aria-label={`Scenario Checkpoint ${checkpoint.name}`} data-checkpoint-state={status} data-step-focused={focused ? "true" : "false"}>
-    <header><button type="button" className="workbench-react__scenario-step-focus" aria-pressed={focused} onClick={() => runtime.dispatch({ type: "focus-scenario-member", memberId: checkpoint.id })}><strong>CHECKPOINT {ordinal}</strong></button><span>{checkpoint.id} · stable identity · Zero Injections</span></header>
+    <header><button type="button" className="workbench-react__scenario-step-focus" aria-pressed={focused} onClick={() => runtime.dispatch({ type: "focus-scenario-member", memberId: checkpoint.id })}><strong>CHECKPOINT {ordinal}</strong></button><span>{checkpoint.id} · Zero Injections</span></header>
     {!focused ? <button type="button" className="workbench-react__scenario-collapsed" onClick={() => runtime.dispatch({ type: "focus-scenario-member", memberId: checkpoint.id })}>{status.toUpperCase()} · {checkpoint.name} · {checkpoint.assertions.length} assertion{checkpoint.assertions.length === 1 ? "" : "s"} · zero Injections</button> : <>
     <dl aria-label="Protected Checkpoint authoring">
       <div><dt>Name</dt><dd>{phase === "edit" ? <input aria-label={`Checkpoint ${ordinal} name`} value={checkpoint.name} onChange={(event) => updateCheckpoint({ ...checkpoint, name: event.currentTarget.value })} /> : checkpoint.name}</dd></div>
@@ -254,19 +323,18 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
         const result = results.find(({ assertionId }) => assertionId === assertion.id);
         const replace = (next: ScenarioAssertion): void => updateCheckpoint({ ...checkpoint, assertions: checkpoint.assertions.map((candidate, index) => index === assertionIndex ? next : candidate) });
         const remove = (): void => updateCheckpoint({ ...checkpoint, assertions: checkpoint.assertions.filter((_, index) => index !== assertionIndex) });
-        return <li key={assertion.id}>{phase === "edit" ? <><CheckpointAssertionAuthoring assertion={assertion} precedingStepIds={precedingStepIds} onChange={replace} /><button type="button" disabled={checkpoint.assertions.length === 1} onClick={remove}>Remove assertion {assertionIndex + 1}</button></> : <><strong>{assertionLabel(assertion)}</strong>{assertionWithin(assertion)}</>}{result ? <span>{` · ${result.status.toUpperCase()} · observed ${formatObserved(result.observed.state, result.observed.value)} · ${result.observed.certainty} · ${result.observed.provenance}`}{result.observed.valueLimited ? ` · TRACE VALUE LIMITED: observed preview retained ${result.observed.valueLimited.retainedBytes} of ${result.observed.valueLimited.originalBytes} UTF-8 bytes; full value ${result.observed.valueLimited.comparison}` : ""}</span> : null}</li>;
+        return <li key={assertion.id}>{phase === "edit" ? <><CheckpointAssertionAuthoring assertion={assertion} precedingStepIds={precedingStepIds} onChange={replace} primitiveInput={primitiveInputs[primitiveInputKey(assertion.id)]} onPrimitiveInput={(text) => onPrimitiveInput(assertion.id, text)} /><button type="button" disabled={checkpoint.assertions.length === 1} onClick={remove}>Remove assertion {assertionIndex + 1}</button></> : <><strong>{assertionLabel(assertion)}</strong>{assertionWithin(assertion)}</>}{result ? <span>{` · ${result.status.toUpperCase()} · observed ${formatObserved(result.observed.state, result.observed.value)} · ${result.observed.certainty} · ${result.observed.provenance}`}{result.observed.valueLimited ? ` · TRACE VALUE LIMITED: observed preview retained ${result.observed.valueLimited.retainedBytes} of ${result.observed.valueLimited.originalBytes} UTF-8 bytes; full value ${result.observed.valueLimited.comparison}` : ""}</span> : null}</li>;
       })}
     </ol>
     {phase === "edit" ? <div className="workbench-react__scenario-step-actions" aria-label={`${checkpoint.name} actions`}><button type="button" disabled={checkpoint.assertions.length >= 16} onClick={() => updateCheckpoint({ ...checkpoint, assertions: [...checkpoint.assertions, defaultAssertion(nextAssertionId(checkpoint), "correlated-local-evidence-exists", precedingStepIds.at(-1) ?? "")] })}>Add assertion</button><button type="button" disabled={!canMoveEarlier} onClick={() => runtime.dispatch({ type: "move-scenario-member", memberId: checkpoint.id, direction: "earlier" })}>Move checkpoint earlier</button><button type="button" disabled={!canMoveLater} onClick={() => runtime.dispatch({ type: "move-scenario-member", memberId: checkpoint.id, direction: "later" })}>Move checkpoint later</button><button type="button" onClick={() => runtime.dispatch({ type: "remove-scenario-checkpoint", checkpointId: checkpoint.id })}>Remove checkpoint</button></div> : null}
-    {phase === "edit" ? <p>Protected Scenario authoring · assertions are outside raw Item Update JSON and invalidate Review when changed.</p>
-      : <p role={terminalFailure ? "alert" : "status"} aria-live="polite"><strong>{status.toUpperCase()}</strong>{active ? ` · Scenario Clock ${active.startedActiveOffsetMs} ms${active.deadlineActiveOffsetMs === null ? "" : ` · deadline ${active.deadlineActiveOffsetMs} ms`}` : ""} · {resultBoundary ? `Evidence boundary ${resultBoundary.eventId} · sequence ${resultBoundary.sequence}` : "Evidence boundary unavailable"} · Diagnostic Observation current cursor {formatDiagnosticBoundary(diagnosticCurrentBoundary)} · zero Injections dispatched.</p>}
+    {phase !== "edit" ? <><p role={terminalFailure ? "alert" : "status"} aria-live="polite"><strong>{status.toUpperCase()}</strong>{active ? ` · Scenario Clock ${active.startedActiveOffsetMs} ms${active.deadlineActiveOffsetMs === null ? "" : ` · deadline ${active.deadlineActiveOffsetMs} ms`}` : ""} · zero Injections dispatched.</p><details><summary>Trace details</summary><p>{resultBoundary ? `Evidence boundary ${resultBoundary.eventId} · sequence ${resultBoundary.sequence}` : "Evidence boundary unavailable"} · Diagnostic Observation current cursor {formatDiagnosticBoundary(diagnosticCurrentBoundary)}</p></details></> : null}
     {trace?.evidenceAvailability === "UNAVAILABLE_AFTER_CLEAR"
       ? <p role="note">Related Evidence is unavailable after Clear; the immutable Checkpoint result and exact identity remain in this Trace.</p>
       : uniqueRelatedEvidence(results).map((evidence) => <button key={`${evidence.intervalId}:${evidence.sequence}:${evidence.eventId}`} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-checkpoint-evidence", evidence })}>Inspect Evidence {evidence.eventId}</button>)}
     {trace?.diagnosticAvailability === "UNAVAILABLE_AFTER_CLEAR" ? <p role="note">Related Diagnostic Observations are unavailable after Clear; bounded references remain in this immutable Trace.</p> : null}
     {relatedDiagnostics.map((observation) => <section key={observation.id} aria-label={`Diagnostic Observation Trace reference ${observation.code}`}>
-      <p>Diagnostic Observation boundary {formatDiagnosticBoundary(observation.observationBoundary)} · Exact affected identity {formatDiagnosticAffectedIdentity(observation.affected)} · Route {formatDiagnosticRoute(observation.route)}</p>
-      <p role="note">Compact reference only · raw diagnostic messages are not copied into Scenario Trace.</p>
+      <strong>{observation.code}</strong>
+      <details><summary>Trace details</summary><p>Diagnostic Observation boundary {formatDiagnosticBoundary(observation.observationBoundary)} · Exact affected identity {formatDiagnosticAffectedIdentity(observation.affected)} · Route {formatDiagnosticRoute(observation.route)}</p></details>
       {trace?.diagnosticAvailability === "UNAVAILABLE_AFTER_CLEAR"
         ? <span>Inspection unavailable after Clear</span>
         : observation.route.kind === "recover"
@@ -277,15 +345,23 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
   </article>;
 }
 
-function CheckpointAssertionAuthoring({ assertion, precedingStepIds, onChange }: Readonly<{
+function CheckpointAssertionAuthoring({ assertion, precedingStepIds, onChange, primitiveInput, onPrimitiveInput }: Readonly<{
   assertion: ScenarioAssertion;
   precedingStepIds: readonly string[];
   onChange(assertion: ScenarioAssertion): void;
+  primitiveInput: string | undefined;
+  onPrimitiveInput(text: string): void;
 }>): JSX.Element {
   const priorStepId = "stepId" in assertion ? assertion.stepId : precedingStepIds.at(-1) ?? "";
-  const setKind = (kind: ScenarioAssertion["kind"]): void => onChange(defaultAssertion(assertion.id, kind, priorStepId));
+  const setKind = (kind: ScenarioAssertion["kind"]): void => {
+    const next = defaultAssertion(assertion.id, kind, priorStepId);
+    onPrimitiveInput(kind === "command-field-equals" ? JSON.stringify("") : "");
+    onChange(next);
+  };
+  const primitiveText = primitiveInput ?? (assertion.kind === "command-field-equals" ? JSON.stringify(assertion.expected) : "");
+  const primitiveInvalid = assertion.kind === "command-field-equals" && !parsePrimitive(primitiveText).ok;
+  const primitiveErrorId = `primitive-error-${assertion.id}`;
   return <div className="workbench-react__scenario-assertion-authoring">
-    <span>{assertionLabel(assertion)}{assertionWithin(assertion)}</span>
     <label>Assertion <select aria-label={`Assertion ${assertion.id} kind`} value={assertion.kind} onChange={(event) => setKind(event.currentTarget.value as ScenarioAssertion["kind"])}><option value="prior-injection-outcome">Preceding Injection Outcome</option><option value="listener-count">Listener count</option><option value="correlated-local-evidence-exists">Correlated committed Local Evidence</option><option value="command-key-exists">Local Effective COMMAND key</option><option value="command-field-equals">Primitive field equality</option><option value="diagnostic-observation-exists">Diagnostic Observation exists</option></select></label>
     {"stepId" in assertion ? <label>Earlier Step <select value={assertion.stepId} onChange={(event) => onChange({ ...assertion, stepId: event.currentTarget.value })}>{precedingStepIds.map((stepId) => <option key={stepId} value={stepId}>{stepId}</option>)}</select></label> : null}
     {assertion.kind === "prior-injection-outcome" ? <label>Outcome <select value={assertion.expectedDisposition} onChange={(event) => onChange({ ...assertion, expectedDisposition: event.currentTarget.value as typeof assertion.expectedDisposition })}><option value="delivered">delivered</option><option value="partial">partial</option><option value="failed">failed</option><option value="acknowledgement-unknown">acknowledgement unknown</option><option value="blocked">blocked</option></select></label> : null}
@@ -295,7 +371,7 @@ function CheckpointAssertionAuthoring({ assertion, precedingStepIds, onChange }:
       const expected = event.currentTarget.value as "present" | "absent";
       onChange(expected === "absent" ? withWithin({ ...assertion, expected }, undefined) : { ...assertion, expected });
     }}><option value="present">present</option><option value="absent">absent</option></select></label></> : null}
-    {assertion.kind === "command-field-equals" ? <><label>Key <input value={assertion.key} onChange={(event) => onChange({ ...assertion, key: event.currentTarget.value })} /></label><label>Field <input value={assertion.field} onChange={(event) => onChange({ ...assertion, field: event.currentTarget.value })} /></label><label>Primitive JSON <input value={JSON.stringify(assertion.expected)} onChange={(event) => { const parsed = parsePrimitive(event.currentTarget.value); if (parsed.ok) onChange({ ...assertion, expected: parsed.value }); }} /></label></> : null}
+    {assertion.kind === "command-field-equals" ? <><label>Key <input value={assertion.key} onChange={(event) => onChange({ ...assertion, key: event.currentTarget.value })} /></label><label>Field <input value={assertion.field} onChange={(event) => onChange({ ...assertion, field: event.currentTarget.value })} /></label><label>Primitive JSON <input value={primitiveText} aria-invalid={primitiveInvalid || undefined} aria-describedby={primitiveInvalid ? primitiveErrorId : undefined} onChange={(event) => { const text = event.currentTarget.value; onPrimitiveInput(text); const parsed = parsePrimitive(text); if (parsed.ok) onChange({ ...assertion, expected: parsed.value }); }} /></label>{primitiveInvalid ? <span id={primitiveErrorId} role="alert">Enter a JSON string, number, boolean, or null; finish quotes or digits before Review.</span> : null}</> : null}
     {assertion.kind === "diagnostic-observation-exists" ? <>
       <span>Diagnostic Observation contract v{assertion.contractVersion} · normalized journal only</span>
       <label>Rule code <input aria-label="Diagnostic rule code" value={assertion.ruleCode} onChange={(event) => onChange({ ...assertion, ruleCode: event.currentTarget.value })} /></label>
@@ -339,7 +415,7 @@ function withWithin(assertion: Extract<ScenarioAssertion, { kind: "correlated-lo
 function parsePrimitive(text: string): Readonly<{ ok: true; value: string | number | boolean | null }> | Readonly<{ ok: false }> {
   try {
     const value: unknown = JSON.parse(text);
-    return value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? { ok: true, value } : { ok: false };
+    return value === null || typeof value === "string" || (typeof value === "number" && Number.isFinite(value)) || typeof value === "boolean" ? { ok: true, value } : { ok: false };
   } catch {
     return { ok: false };
   }

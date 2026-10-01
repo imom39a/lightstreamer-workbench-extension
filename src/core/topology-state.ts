@@ -1,3 +1,4 @@
+import { COMMAND_HISTORICAL_KEY_LIMIT, COMMAND_HISTORICAL_KEY_BYTE_LIMIT } from "./command-state";
 import {
   type EventCaptureSource,
   type EventClient,
@@ -80,6 +81,8 @@ export type TopologyItem = {
   lostUpdateCount: number;
   activeCommandKeyCount: number;
   deletedCommandKeyCount: number;
+  /** The deleted-key count covers retained unique identities after auxiliary history eviction. */
+  deletedCommandKeysHasOlder?: true;
   lastCommand: string | null;
   listenerIds: string[];
 };
@@ -185,8 +188,17 @@ type MutableItem = Omit<
 > & {
   logicalUpdateIds: Set<string>;
   activeCommandKeys: Set<string>;
-  deletedCommandKeys: Set<string>;
+  deletedCommandKeys: Map<string, DeletedCommandKey>;
 };
+
+type DeletedCommandKeyHistory = { entries: Set<DeletedCommandKey>; bytes: number };
+type DeletedCommandKey = {
+  key: string;
+  item: MutableItem;
+  history: DeletedCommandKeyHistory;
+  bytes: number;
+};
+const COMMAND_KEY_BYTE_ENCODER = new TextEncoder();
 
 type MutableSubscription = {
   metadata: EventSubscription;
@@ -241,6 +253,7 @@ export function createTopologyStateIndex(): TopologyStateIndex {
   const clients = new Map<string, MutableClient>();
   const subscriptions = new Map<string, MutableSubscription>();
   const appliedEventIds = new Set<string>();
+  const deletedCommandHistory: DeletedCommandKeyHistory = { entries: new Set(), bytes: 0 };
   let observingSince: number | null = null;
 
   function ingest(event: LightstreamerEventEnvelope): void {
@@ -261,7 +274,7 @@ export function createTopologyStateIndex(): TopologyStateIndex {
     }
 
     const client = applyClientEvent(event, clients, subscriptions);
-    applySubscriptionEvent(event, client, clients, subscriptions);
+    applySubscriptionEvent(event, client, clients, subscriptions, deletedCommandHistory);
   }
 
   return {
@@ -280,6 +293,8 @@ export function createTopologyStateIndex(): TopologyStateIndex {
       clients.clear();
       subscriptions.clear();
       appliedEventIds.clear();
+      deletedCommandHistory.entries.clear();
+      deletedCommandHistory.bytes = 0;
       observingSince = null;
       return createSnapshot(clients, subscriptions, observingSince);
     },
@@ -311,6 +326,7 @@ export function createTopologyStateIndex(): TopologyStateIndex {
       }
       for (const [id, subscription] of subscriptions) {
         if (subscription.archived && !subscription.active) {
+          for (const item of subscription.items.values()) clearDeletedCommandKeys(item);
           subscriptions.delete(id);
         }
       }
@@ -398,7 +414,8 @@ function applySubscriptionEvent(
   event: LightstreamerEventEnvelope,
   client: MutableClient | null,
   clients: Map<string, MutableClient>,
-  subscriptions: Map<string, MutableSubscription>
+  subscriptions: Map<string, MutableSubscription>,
+  deletedCommandHistory: DeletedCommandKeyHistory
 ): void {
   const metadata = event.subscription;
   if (!metadata?.id) {
@@ -427,7 +444,7 @@ function applySubscriptionEvent(
   applySubscriptionLifecycle(subscription, event);
   syncConfiguredItems(subscription);
   promoteNoSnapshotItemsToLive(subscription);
-  applyItemEvent(subscription, event);
+  applyItemEvent(subscription, event, deletedCommandHistory);
   reconcileSubscriptionOwnership(subscription, client, event.timestamp);
 }
 
@@ -655,7 +672,8 @@ function reconcileSubscriptionOwnership(
 
 function applyItemEvent(
   subscription: MutableSubscription,
-  event: LightstreamerEventEnvelope
+  event: LightstreamerEventEnvelope,
+  deletedCommandHistory: DeletedCommandKeyHistory
 ): void {
   const hasItem =
     event.item?.name !== undefined ||
@@ -693,7 +711,7 @@ function applyItemEvent(
         ? "snapshot-complete"
         : "snapshot"
       : "live";
-    applyCommandSummary(item, subscription, event);
+    applyCommandSummary(item, subscription, event, deletedCommandHistory);
     return;
   }
 
@@ -816,7 +834,7 @@ function ensureItem(
     lastCommand: null,
     logicalUpdateIds: new Set(),
     activeCommandKeys: new Set(),
-    deletedCommandKeys: new Set()
+    deletedCommandKeys: new Map()
   };
   subscription.items.set(id, item);
   return item;
@@ -825,7 +843,8 @@ function ensureItem(
 function applyCommandSummary(
   item: MutableItem,
   subscription: MutableSubscription,
-  event: LightstreamerEventEnvelope
+  event: LightstreamerEventEnvelope,
+  history: DeletedCommandKeyHistory
 ): void {
   if (subscription.metadata.mode?.toUpperCase() !== "COMMAND") {
     return;
@@ -841,11 +860,44 @@ function applyCommandSummary(
   }
   if (command === "DELETE") {
     item.activeCommandKeys.delete(key);
-    item.deletedCommandKeys.add(key);
+    retainDeletedCommandKey(item, subscription, key, history);
   } else if (command === "ADD" || command === "UPDATE") {
     item.activeCommandKeys.add(key);
-    item.deletedCommandKeys.delete(key);
+    removeDeletedCommandKey(item.deletedCommandKeys.get(key));
   }
+}
+
+/** Auxiliary deleted identities share one count/byte budget across this index's items. */
+function retainDeletedCommandKey(
+  item: MutableItem, subscription: MutableSubscription, key: string, history: DeletedCommandKeyHistory
+): void {
+  if (item.deletedCommandKeys.has(key)) return;
+  const bytes = COMMAND_KEY_BYTE_ENCODER.encode(JSON.stringify({ subscriptionId: subscription.metadata.id, itemId: item.id, key })).byteLength;
+  if (bytes > COMMAND_HISTORICAL_KEY_BYTE_LIMIT) {
+    item.deletedCommandKeysHasOlder = true;
+    return;
+  }
+  const record = { key, item, history, bytes };
+  item.deletedCommandKeys.set(key, record);
+  history.entries.add(record);
+  history.bytes += bytes;
+  while (history.entries.size > COMMAND_HISTORICAL_KEY_LIMIT || history.bytes > COMMAND_HISTORICAL_KEY_BYTE_LIMIT) {
+    const oldest = history.entries.values().next().value as DeletedCommandKey;
+    removeDeletedCommandKey(oldest);
+    oldest.item.deletedCommandKeysHasOlder = true;
+  }
+}
+
+function removeDeletedCommandKey(record: DeletedCommandKey | undefined): void {
+  if (!record) return;
+  record.item.deletedCommandKeys.delete(record.key);
+  record.history.entries.delete(record);
+  record.history.bytes -= record.bytes;
+}
+
+function clearDeletedCommandKeys(item: MutableItem): void {
+  for (const record of item.deletedCommandKeys.values()) removeDeletedCommandKey(record);
+  delete item.deletedCommandKeysHasOlder;
 }
 
 function ensureClient(
@@ -1267,6 +1319,7 @@ function snapshotItem(
     lostUpdateCount: item.lostUpdateCount,
     activeCommandKeyCount: item.activeCommandKeys.size,
     deletedCommandKeyCount: item.deletedCommandKeys.size,
+    ...(item.deletedCommandKeysHasOlder ? { deletedCommandKeysHasOlder: true as const } : {}),
     lastCommand: item.lastCommand,
     listenerIds: [...listenerIds]
   };
@@ -1436,7 +1489,7 @@ function resetSubscriptionForNewSession(
       subscription.captureSource
     );
     item.activeCommandKeys.clear();
-    item.deletedCommandKeys.clear();
+    clearDeletedCommandKeys(item);
     item.lastCommand = null;
   }
 }

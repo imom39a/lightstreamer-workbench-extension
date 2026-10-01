@@ -1348,20 +1348,19 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("parks, resumes, minimizes, and discards without losing the safe draft or investigation origin", async () => {
+  it("parks, resumes, and discards without losing the safe draft or investigation origin", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(7) });
     const before = runtime.getSnapshot().localInjection.draft;
-    runtime.dispatch({ type: "set-local-injection-minimized", minimized: true });
+    expect(before).not.toHaveProperty("minimized");
     runtime.dispatch({ type: "park-local-injection" });
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       id: before?.id,
       rawText: before?.rawText,
       open: false,
       parked: true,
-      minimized: false,
       restorationOrigin: before?.restorationOrigin
     });
     runtime.dispatch({ type: "resume-local-injection" });

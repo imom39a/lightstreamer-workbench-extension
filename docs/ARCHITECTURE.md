@@ -1025,6 +1025,8 @@ Run `npm run fixture:browser:install` once to install the pinned Chrome for Test
 
 All fixture lifecycle and test entry points route through `scripts/lightstreamer/fixture.mjs`; the browser installer uses Puppeteer's cross-platform CLI. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
 
+`npm run fixture:start` builds the browser client and Java adapter, deploys the adapter JAR into the current checkout, starts the fixture container, and waits for HTTP readiness before reporting success. This prepares the ignored build artifacts in fresh worktrees; a separate `fixture:build` is optional. A build or readiness failure returns a nonzero exit code instead of claiming that the fixture is available.
+
 Coverage is organized by architectural boundary:
 
 | Test File | Boundary Covered |

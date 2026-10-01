@@ -141,6 +141,29 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.equal((await call("validate_agent_candidate", { panelSessionId, pageEpoch: status.pageEpoch, members })).valid, true);
     const scenario = await call("prepare_scenario", { panelSessionId, pageEpoch: status.pageEpoch, members });
     assert.equal(scenario.scenario.phase, "review", JSON.stringify(scenario));
+    await waitForCondition(panel, `document.querySelectorAll('[aria-label="Ordered Scenario Steps"] ol li').length === 3 && document.querySelector('[aria-label="Step 1 reviewed JSON"]')?.textContent.includes('Agent Scenario first')`, "agent-prepared Scenario projects the explicit queue and one focused reviewed document");
+    assert.equal(await evaluateByValue(panel, `document.querySelectorAll('[aria-label="Focused Scenario member"] article').length`), 1, "Only one focused Step document is mounted for a multi-member MCP Scenario.");
+    assert.ok(await evaluateByValue(panel, `document.querySelector('[aria-label="Focused Scenario member"]').textContent.includes(${JSON.stringify(source.identity.eventId)})`), "Focused Step retains the captured Source identity separately from its amended Draft.");
+    // Human focus is presentation state, so opening the second Step must retain
+    // the reviewed execution plan/token and must not alter the next Run ordinal.
+    await click(panel, "button", "Scenario queue");
+    const secondStepLabel = await evaluateByValue<string>(panel, `document.querySelector('[aria-label="Ordered Scenario Steps"] ol li:nth-child(2) button').textContent.trim()`);
+    await click(panel, '[aria-label="Ordered Scenario Steps"] ol li:nth-child(2) button', secondStepLabel);
+    await waitForCondition(panel, `document.querySelector('[aria-label="Step 2 reviewed JSON"]')?.textContent.includes('Agent Scenario second')`, "human opens the second agent-prepared reviewed Step");
+    const projection = () => evaluateByValue<string>(panel, `JSON.stringify({
+      focused: document.querySelector('[aria-label="Ordered Scenario Steps"] button[aria-pressed="true"]')?.textContent,
+      document: document.querySelector('[aria-label="Step 2 reviewed JSON"]')?.textContent,
+      captureSearch: document.querySelector('[aria-label="Search captured updates"]')?.value,
+      captureOperation: document.querySelector('[aria-label="Captured operation"]')?.value,
+      captureSelection: [...document.querySelectorAll('[aria-label="Scenario captured updates"] input[type="checkbox"]')].map(input => [input.getAttribute('aria-label'), input.checked]),
+      queueScroll: document.querySelector('[aria-label="Ordered Scenario Steps"] ol')?.scrollTop
+    })`);
+    const projectionBefore = await projection();
+    await call("get_scenario_trace", { panelSessionId, limit: 1 });
+    const independentRead = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, limit: 1 });
+    if (independentRead.nextCursor) await call("query_evidence", { panelSessionId, cursor: independentRead.nextCursor });
+    await call("search_evidence", { panelSessionId, scopeId: liveItem.scopeId, text: "scenario", limit: 1 });
+    assert.equal(await projection(), projectionBefore, "Real stdio MCP reads preserve human capture controls, focused queue member and reviewed Draft.");
     for (const [ordinal, message] of [[1, "Agent Scenario first"], [2, "Agent Scenario second"]] as const) {
       const command = { panelSessionId, runId: scenario.scenario.run.id, requestId: `browser-step-${ordinal}`, action: "step" };
       await call("control_scenario", command); await call("control_scenario", command);

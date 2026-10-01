@@ -149,9 +149,20 @@ export function LocalInjectionCodeEditor({
         parent,
         highlightChanges: compareOpen,
         gutter: compareOpen,
-        collapseUnchanged: compareOpen ? { margin: 3, minSize: 6 } : undefined,
+        // An identical document otherwise becomes a single "unchanged lines"
+        // widget, hiding the payload that the developer is about to deliver.
+        // Leave automatic comparison folding off; explicit JSON folding stays
+        // available and the owning document provides the shared scroll.
         diffConfig: { scanLimit: 5_000, timeout: 250 }
       });
+      // Each comparison label travels with its own document when narrow
+      // geometry stacks the panes inside the shared scroll owner.
+      for (const [view, label] of [[merge.a, "Immutable Source"], [merge.b, "Injection Draft"]] as const) {
+        const heading = document.createElement("strong");
+        heading.className = "workbench-react__local-compare-label";
+        heading.textContent = label;
+        view.dom.parentElement?.prepend(heading);
+      }
       handle.current = { draftId, merge, view: merge.b, diagnostics: diagnosticCompartment, tabs: tabCompartment };
     } else {
       const view = new EditorView({
@@ -208,7 +219,6 @@ export function LocalInjectionCodeEditor({
     handle.current?.merge?.reconfigure({
       highlightChanges: compareOpen,
       gutter: compareOpen,
-      collapseUnchanged: compareOpen ? { margin: 3, minSize: 6 } : undefined,
       diffConfig: { scanLimit: 5_000, timeout: 250 }
     });
   }, [compareOpen]);

@@ -19,6 +19,17 @@ function notificationKey(entry: WorkbenchDiagnostic): string {
   return JSON.stringify([entry.code, entry.id, entry.affectedIdentity ?? entry.affected]);
 }
 
+export function notificationEntryId(entry: WorkbenchDiagnostic): string {
+  return `workbench-notification-${encodeURIComponent(notificationKey(entry))}`;
+}
+
+/** Footer conditions may omit journal code/id; their active presentation identity is stable. */
+export function notificationForCondition(entries: readonly WorkbenchDiagnostic[], condition: WorkbenchDiagnostic): WorkbenchDiagnostic | undefined {
+  return entries.find(entry => condition.dismissalId && entry.dismissalId
+    ? entry.dismissalId === condition.dismissalId
+    : entry.title === condition.title && entry.category === condition.category && entry.severity === condition.severity && entry.affected === condition.affected);
+}
+
 function criterionValues(
   criterion: DiagnosticFilterCriteria[DiagnosticFilterFacet]
 ): Readonly<{ include: readonly TypedFacetValue[]; exclude: readonly TypedFacetValue[] }> {
@@ -47,7 +58,7 @@ export function NotificationsDocument({ open, notifications, onBack, onCommand, 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const filterValueRows = useRef(new Map<string, HTMLDivElement>());
   const pendingOffFocus = useRef<string | null>(null);
-  const { entries, total, limit, filter } = notifications;
+  const { entries, total, filter } = notifications;
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -91,10 +102,7 @@ export function NotificationsDocument({ open, notifications, onBack, onCommand, 
       }}
     >
       <div className="workbench-react__notifications-summary">
-        <strong>{entries.length} of {total} notifications · All runtime Scopes</strong>
-        <p>Active Workbench conditions and recent Lightstreamer diagnostics for this Panel Session, oldest first. Notification filters do not change Evidence.</p>
-        <p>Dismissing an active footer condition keeps its notification here until that condition ends.</p>
-        <p>Up to {limit} recent diagnostics are kept here. Supporting Evidence follows Event History retention.</p>
+        <strong>{entries.length} of {total} notifications · All runtime Scopes · oldest first</strong>
       </div>
       {inspectionUnavailable ? <p role="status">This notification’s inspection target is no longer available. Choose another notification or return to Evidence.</p> : null}
       <div className="workbench-react__notifications-filters">
@@ -156,7 +164,7 @@ export function NotificationsDocument({ open, notifications, onBack, onCommand, 
         {entries.map((entry) => {
           const key = notificationKey(entry);
           return <li key={key}>
-            <article className="workbench-react__notification" data-severity={entry.severity.toLowerCase()}>
+            <article className="workbench-react__notification" id={notificationEntryId(entry)} tabIndex={-1} data-severity={entry.severity.toLowerCase()}>
               <div className="workbench-react__notification-heading">
                 <strong>{entry.severity} · {entry.title}</strong>
                 {entry.route ? <button type="button" onClick={() => setInspectionUnavailable(!onInspect(entry.route!))}>{entry.route.label}</button> : null}
@@ -176,6 +184,7 @@ export function NotificationsDocument({ open, notifications, onBack, onCommand, 
                 });
               }}>
                 <summary>Details</summary>
+                {entry.technicalDetail && entry.technicalDetail !== entry.detail ? <p>{entry.technicalDetail}</p> : null}
                 {entry.limitation ? <p>Limit: {entry.limitation}</p> : null}
                 {entry.consequence ? <p>Consequence: {entry.consequence}</p> : null}
                 {entry.route && entry.recovery ? <p>Recovery: {entry.recovery}</p> : null}

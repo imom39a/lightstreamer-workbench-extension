@@ -9,6 +9,99 @@ import {
 } from "../src/core/topology-state";
 
 describe("topology state", () => {
+  it("bounds deleted COMMAND identities across items while keeping active keys exact", () => {
+    const index = createTopologyStateIndex();
+    let ordinal = 0;
+    const send = (subscriptionId: string, command: string, key: string) => {
+      const id = `bounded-${++ordinal}`;
+      index.ingest(eventEnvelope(id, {
+        subscription: { ...eventPayload().subscription, id: subscriptionId },
+        update: { isSnapshot: false, command, key, fields: { command, key }, changedFields: { command, key } },
+        raw: { logicalEventId: id, callback: "onItemUpdate" }
+      }));
+    };
+    send("subscription-1", "ADD", "kept-1");
+    send("subscription-2", "ADD", "kept-2");
+    for (let key = 0; key < 1_000; key++) send("subscription-1", "DELETE", `first-${key}`);
+    for (let key = 0; key < 1_500; key++) send("subscription-2", "DELETE", `second-${key}`);
+    const subscriptions = index.snapshot().clients[0].sessions[0].subscriptions;
+    expect(subscriptions.find(sub => sub.id === "subscription-1")?.items[0]).toMatchObject({
+      activeCommandKeyCount: 1, deletedCommandKeyCount: 548, deletedCommandKeysHasOlder: true
+    });
+    expect(subscriptions.find(sub => sub.id === "subscription-2")?.items[0]).toMatchObject({
+      activeCommandKeyCount: 1, deletedCommandKeyCount: 1_500
+    });
+    expect(subscriptions.find(sub => sub.id === "subscription-2")?.items[0]).not.toHaveProperty("deletedCommandKeysHasOlder");
+    for (let key = 0; key < 3_000; key++) send("subscription-1", "ADD", `live-${key}`);
+    expect(index.snapshot().clients[0].sessions[0].subscriptions.find(sub => sub.id === "subscription-1")?.items[0]).toMatchObject({
+      activeCommandKeyCount: 3_001, deletedCommandKeyCount: 548, deletedCommandKeysHasOlder: true
+    });
+  });
+
+  it("keeps retained deleted-key identity counts truthful through duplicates, reactivation and resets", () => {
+    const index = createTopologyStateIndex();
+    let ordinal = 0;
+    let sessionId = "session-A";
+    const send = (command: string, key: string) => {
+      const id = `lifecycle-${++ordinal}`;
+      index.ingest(eventEnvelope(id, {
+        client: { id: "client-1", sessionId, status: "CONNECTED:WS-STREAMING" },
+        update: { isSnapshot: false, command, key, fields: { command, key }, changedFields: { command, key } },
+        raw: { logicalEventId: id, callback: "onItemUpdate" }
+      }));
+    };
+    const currentItem = () => index.snapshot().clients[0].sessions.find(session => session.id === sessionId)!.subscriptions[0].items[0];
+    send("ADD", "kept");
+    for (let key = 0; key < 2_100; key++) send("DELETE", `key-${key}`);
+    expect(currentItem()).toMatchObject({ activeCommandKeyCount: 1, deletedCommandKeyCount: 2_048, deletedCommandKeysHasOlder: true });
+    send("DELETE", "key-2099");
+    expect(currentItem().deletedCommandKeyCount).toBe(2_048);
+    send("UPDATE", "key-2099");
+    expect(currentItem()).toMatchObject({ activeCommandKeyCount: 2, deletedCommandKeyCount: 2_047, deletedCommandKeysHasOlder: true });
+    send("ADD", "key-0"); // Its forgotten tombstone cannot change another retained identity.
+    expect(currentItem()).toMatchObject({ activeCommandKeyCount: 3, deletedCommandKeyCount: 2_047, deletedCommandKeysHasOlder: true });
+    send("DELETE", "key-0");
+    send("DELETE", "key-0");
+    expect(currentItem()).toMatchObject({ activeCommandKeyCount: 2, deletedCommandKeyCount: 2_048 });
+    index.ingest(eventEnvelope("snapshot-clear", { kind: "clear-snapshot", update: undefined, raw: { callback: "onClearSnapshot" } }));
+    expect(currentItem()).toMatchObject({ activeCommandKeyCount: 0, deletedCommandKeyCount: 2_048, snapshotPhase: "cleared", deletedCommandKeysHasOlder: true });
+    index.resetCurrentObservations(5_000);
+    expect(currentItem()).toMatchObject({ activeCommandKeyCount: 0, deletedCommandKeyCount: 2_048, deletedCommandKeysHasOlder: true });
+    sessionId = "session-B";
+    index.ingest(eventEnvelope("new-session", { kind: "client-status", client: { id: "client-1", sessionId, status: "CONNECTED:WS-STREAMING" }, subscription: undefined, item: undefined, update: undefined, raw: {} }));
+    send("ADD", "new-session-key");
+    expect(currentItem()).toMatchObject({ activeCommandKeyCount: 1, deletedCommandKeyCount: 0 });
+    expect(currentItem()).not.toHaveProperty("deletedCommandKeysHasOlder");
+    expect(index.snapshot().clients[0].sessions.find(session => session.id === "session-A")?.subscriptions[0].items[0]).toMatchObject({ deletedCommandKeyCount: 2_048, deletedCommandKeysHasOlder: true });
+    index.clear();
+    send("DELETE", "after-clear");
+    expect(currentItem()).toMatchObject({ activeCommandKeyCount: 0, deletedCommandKeyCount: 1 });
+    expect(currentItem()).not.toHaveProperty("deletedCommandKeysHasOlder");
+  });
+
+  it("bounds large deleted identities by bytes and releases the shared budget on a new Session", () => {
+    const index = createTopologyStateIndex();
+    let ordinal = 0;
+    let sessionId = "session-A";
+    const send = (key: string) => {
+      const id = `large-${++ordinal}`;
+      index.ingest(eventEnvelope(id, {
+        client: { id: "client-1", sessionId, status: "CONNECTED:WS-STREAMING" },
+        update: { isSnapshot: false, command: "DELETE", key, fields: { command: "DELETE", key }, changedFields: { command: "DELETE", key } },
+        raw: { logicalEventId: id, callback: "onItemUpdate" }
+      }));
+    };
+    const item = () => index.snapshot().clients[0].sessions.find(session => session.id === sessionId)!.subscriptions[0].items[0];
+    for (let key = 0; key < 10; key++) send(`${key}-${"x".repeat(250_000)}`);
+    expect(item()).toMatchObject({ deletedCommandKeyCount: 8, deletedCommandKeysHasOlder: true });
+    send("x".repeat(2_200_000));
+    expect(item()).toMatchObject({ deletedCommandKeyCount: 8, deletedCommandKeysHasOlder: true });
+    sessionId = "session-B";
+    for (let key = 0; key < 8; key++) send(`${key}-${"x".repeat(250_000)}`);
+    expect(item().deletedCommandKeyCount).toBe(8);
+    expect(item()).not.toHaveProperty("deletedCommandKeysHasOlder");
+  });
+
   it("builds client, session, subscription, item, and listener topology", () => {
     const normalize = createEventNormalizer().normalize;
     const events = [

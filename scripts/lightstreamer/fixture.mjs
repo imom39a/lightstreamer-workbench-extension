@@ -43,7 +43,7 @@ const usage = `Usage: fixture.mjs <build|start|wait|stop|test|browser-test> [--d
 
 Commands:
   build  Build and deploy the Java fixture adapter
-  start  Replace and start the fixture Docker container
+  start  Build the fixture, replace its Docker container, and wait for HTTP readiness
   wait   Wait until the fixture HTTP endpoint is ready
   stop   Remove the fixture Docker container
   test   Build everything, run smoke and real-browser extension tests, then stop
@@ -67,7 +67,10 @@ try {
       break;
     case "start":
       await buildFixtureClient();
+      await buildAdapter();
       await startFixture();
+      await waitForFixture();
+      console.log(`Lightstreamer fixture started at http://localhost:${fixtureConfig().port}/`);
       break;
     case "wait":
       await waitForFixture();
@@ -144,7 +147,6 @@ async function startFixture() {
     ],
     { stdio: ["ignore", "ignore", "inherit"] }
   );
-  console.log(`Lightstreamer fixture started at http://localhost:${config.port}/`);
 }
 
 async function stopFixture({ quiet = false } = {}) {

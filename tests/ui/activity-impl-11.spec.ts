@@ -25,7 +25,7 @@ async function openSummary(page: Page): Promise<Locator> {
   }).click();
   const summary = page.locator('details[aria-label="Activity summary"]');
   await expect(summary).toBeVisible();
-  await expect(summary.locator("summary")).toHaveText(/^Activity summary — /);
+  await expect(summary.locator("summary")).toHaveText(/^Activity summary$/);
   await summary.locator("summary").click();
   await expect(summary).toHaveAttribute("open", "");
   return summary;
@@ -34,7 +34,7 @@ async function openSummary(page: Page): Promise<Locator> {
 async function includeItemUpdates(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
-  await page.getByRole("option", { name: "Add Evidence kind criterion" }).click();
+  await page.getByRole("button", { name: "Add Evidence kind criterion" }).click();
   await page.getByRole("radiogroup", { name: /^Evidence kind value item-update \(/ }).getByRole("radio", { name: "Include", exact: true }).click();
   await page.getByRole("button", { name: "Apply", exact: true }).click();
 }
@@ -45,7 +45,7 @@ test("Activity offers scope Context with a collapsed summary when Evidence has n
   await evidence.getByRole("button", { name: "Open Scope Context" }).click();
 
   const summary = page.locator('details[aria-label="Activity summary"]');
-  await expect(summary.locator("summary")).toHaveText(/^Activity summary — Inspected page$/);
+  await expect(summary.locator("summary")).toHaveText(/^Activity summary$/);
   await expect(summary).not.toHaveAttribute("open", "");
 });
 

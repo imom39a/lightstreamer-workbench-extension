@@ -170,7 +170,8 @@ describe("history-impl-10 continuity-first History condition", () => {
       severity: "Warning"
     });
     expect(condition?.detail).toContain("Capture continues");
-    expect(condition?.detail).toContain("Observation Coverage is unchanged");
+    expect(condition?.technicalDetail).toContain("Observation Coverage is unchanged");
+    expect(condition?.detail).toBe("Capture continues with bounded rolling memory; retained Evidence remains readable.");
   });
 
   it("prioritizes an exact Evidence gap while Capture remains running", () => {
@@ -192,8 +193,8 @@ describe("history-impl-10 continuity-first History condition", () => {
       title: "History has an Evidence gap",
       severity: "Warning"
     });
-    expect(condition?.detail).toContain("#42 (event-42)");
-    expect(condition?.detail).toContain("Later Capture continues");
+    expect(condition?.technicalDetail).toContain("#42 (event-42)");
+    expect(condition?.technicalDetail).toContain("Later Capture continues");
     expect(condition?.detail).toContain("LIMITED");
   });
 
@@ -230,8 +231,8 @@ describe("history-impl-10 continuity-first History condition", () => {
     await flushRuntime();
     const snapshot = runtime.getSnapshot();
     expect(snapshot.storage).toMatchObject({ mode: "memory", reason: expect.stringContaining("AbortError") });
-    expect(snapshot.historyCondition).toMatchObject({ title: "History using memory", detail: expect.stringContaining("AbortError") });
-    expect(snapshot.historyCondition?.detail).toContain("3 failed journal attempts");
+    expect(snapshot.historyCondition).toMatchObject({ title: "History using memory", technicalDetail: expect.stringContaining("AbortError") });
+    expect(snapshot.historyCondition?.technicalDetail).toContain("3 failed journal attempts");
     runtime.dispatch({ type: "set-storage-state", storage: { mode: "indexeddb" } });
     expect(runtime.getSnapshot().storage.mode).toBe("memory");
     runtime.dispose();
@@ -325,7 +326,7 @@ describe("history-impl-10 continuity-first History condition", () => {
       codes: ["workbench.history.evidence-gap"]
     });
     expect(afterContinuation.observations).toHaveLength(1);
-    expect(runtime.getSnapshot().historyCondition?.detail).toContain("1 Evidence gap");
+    expect(runtime.getSnapshot().historyCondition?.technicalDetail).toContain("1 Evidence gap");
 
     await history.offer(candidate("too-large-latest")).settled;
     await flushRuntime();
@@ -335,9 +336,9 @@ describe("history-impl-10 continuity-first History condition", () => {
       codes: ["workbench.history.evidence-gap"]
     });
     expect(afterSecondGap.observations).toHaveLength(2);
-    expect(runtime.getSnapshot().historyCondition?.detail).toContain("2 Evidence gaps");
-    expect(runtime.getSnapshot().historyCondition?.detail).toContain("too-large-first");
-    expect(runtime.getSnapshot().historyCondition?.detail).toContain("too-large-latest");
+    expect(runtime.getSnapshot().historyCondition?.technicalDetail).toContain("2 Evidence gaps");
+    expect(runtime.getSnapshot().historyCondition?.technicalDetail).toContain("too-large-first");
+    expect(runtime.getSnapshot().historyCondition?.technicalDetail).toContain("too-large-latest");
     expect(runtime.getSnapshot().notifications.entries.filter(
       ({ title }) => title === "History has an Evidence gap"
     )).toHaveLength(1);
@@ -350,8 +351,8 @@ describe("history-impl-10 continuity-first History condition", () => {
       codes: ["workbench.history.evidence-gap"]
     });
     expect(afterConsecutiveGap.observations).toHaveLength(3);
-    expect(runtime.getSnapshot().historyCondition?.detail).toContain("3 Evidence gaps");
-    expect(runtime.getSnapshot().historyCondition?.detail).toContain("too-large-consecutive");
+    expect(runtime.getSnapshot().historyCondition?.technicalDetail).toContain("3 Evidence gaps");
+    expect(runtime.getSnapshot().historyCondition?.technicalDetail).toContain("too-large-consecutive");
 
     runtime.dispose();
   });

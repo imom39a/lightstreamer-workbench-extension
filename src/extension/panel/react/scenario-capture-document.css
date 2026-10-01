@@ -1,0 +1,69 @@
+/* Temporary Scenario document: captured Evidence remains beside explicit membership. */
+.workbench-react__scenario-workspace { display: grid; grid-template-columns: minmax(0, 55fr) minmax(0, 45fr); grid-template-rows: minmax(100px, 28%) minmax(0, 1fr); flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
+.workbench-react__scenario-capture { grid-row: 1 / 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--wb-border-strong); background: var(--wb-surface); }
+.workbench-react__scenario-capture > header, .workbench-react__scenario-queue > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 7px 9px; border-bottom: 1px solid var(--wb-border); }
+.workbench-react__scenario-capture > header span, .workbench-react__scenario-queue > header span { color: var(--wb-muted); font-size: 11px; }
+.workbench-react__scenario-capture-filter { display: flex; flex-wrap: wrap; align-items: end; gap: 5px; padding: 7px 9px; }
+.workbench-react__scenario-capture-filter label { display: grid; gap: 3px; min-width: 0; color: var(--wb-muted); }
+.workbench-react__scenario-capture-filter label:first-child { flex: 1 1 140px; }
+.workbench-react__scenario-capture-filter input { min-width: 0; width: 100%; }
+.workbench-react__scenario-capture-count { margin: 0; padding: 0 9px 6px; color: var(--wb-muted); overflow-wrap: anywhere; }
+.workbench-react__scenario-capture-notice { margin: 0; padding: 7px 9px; border-block: 1px solid var(--wb-border-strong); overflow-wrap: anywhere; }
+.workbench-react__scenario-capture-notice[role="alert"] { border-left: 3px solid var(--wb-error); background: var(--wb-error-soft); }
+.workbench-react__scenario-capture-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; overflow-anchor: none; }
+.workbench-react__scenario-capture-scroll > p { margin: 9px; }
+.workbench-react__scenario-capture-scroll ul { list-style: none; margin: 0; padding: 0 9px; }
+.workbench-react__scenario-capture-scroll li { border-bottom: 1px solid var(--wb-border); padding: 7px 0; }
+.workbench-react__scenario-capture-scroll li > label { display: flex; align-items: start; gap: 8px; }
+.workbench-react__scenario-capture-scroll input { flex: 0 0 auto; margin-top: 4px; }
+.workbench-react__scenario-capture-scroll label > span { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; min-width: 0; gap: 3px 8px; overflow-wrap: anywhere; }
+.workbench-react__scenario-capture-scroll strong { font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.workbench-react__scenario-capture-scroll small { grid-column: 1 / -1; color: var(--wb-muted); font-size: 11px; }
+.workbench-react__scenario-capture-scroll li[data-used] { background: var(--wb-raised); }
+.workbench-react__scenario-capture-pagination, .workbench-react__scenario-capture-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 9px; border-top: 1px solid var(--wb-border); }
+.workbench-react__scenario-capture-pagination span, .workbench-react__scenario-capture-add span { flex: 1 1 140px; color: var(--wb-muted); font-size: 11px; }
+.workbench-react__scenario-queue { grid-column: 2; min-width: 0; min-height: 0; overflow: auto; border-bottom: 1px solid var(--wb-border-strong); }
+.workbench-react__scenario-queue ol { list-style: none; margin: 0; padding: 5px; }
+.workbench-react__scenario-queue li { margin-bottom: 3px; border-left: 3px solid transparent; }
+.workbench-react__scenario-queue li[data-focused] { border-left-color: var(--wb-info); }
+.workbench-react__scenario-queue li button { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 5px; width: 100%; text-align: left; padding: 5px; background: transparent; border: 1px solid transparent; }
+.workbench-react__scenario-queue li button[aria-pressed="true"] { border-color: var(--wb-border-strong); background: var(--wb-raised); }
+.workbench-react__scenario-queue li span { min-width: 0; overflow-wrap: anywhere; color: var(--wb-muted); font-size: 11px; }
+.workbench-react__scenario-queue li small { color: var(--wb-muted); font-size: 10px; }
+.workbench-react__scenario-workspace > .workbench-react__scenario-steps { grid-column: 2; display: flex; flex-direction: column; min-width: 0; gap: 7px; }
+.workbench-react__scenario-steps > h2 { margin: 0; font-size: 12px; }
+.workbench-react__scenario-steps article { min-width: 0; }
+.workbench-react__scenario .workbench-react__local-code { overflow: visible; }
+.workbench-react__scenario-workspace .workbench-react__scenario-steps pre { max-height: none; overflow: visible; }
+.workbench-react__scenario-surface-controls { display: none; }
+.workbench-react[data-geometry="compact"] .workbench-react__scenario-surface-controls,
+.workbench-react[data-geometry="shallow"] .workbench-react__scenario-surface-controls { display: flex; flex: 0 0 auto; gap: 5px; padding: 4px 7px; border-bottom: 1px solid var(--wb-border); }
+.workbench-react[data-geometry="compact"] .workbench-react__scenario-workspace,
+.workbench-react[data-geometry="shallow"] .workbench-react__scenario-workspace { display: flex; }
+.workbench-react[data-geometry="compact"] .workbench-react__scenario-workspace > *,
+.workbench-react[data-geometry="shallow"] .workbench-react__scenario-workspace > * { display: none; }
+.workbench-react[data-geometry="compact"] .workbench-react__scenario-workspace[data-surface="capture"] > .workbench-react__scenario-capture,
+.workbench-react[data-geometry="shallow"] .workbench-react__scenario-workspace[data-surface="capture"] > .workbench-react__scenario-capture,
+.workbench-react[data-geometry="compact"] .workbench-react__scenario-workspace[data-surface="editor"] > .workbench-react__scenario-steps,
+.workbench-react[data-geometry="shallow"] .workbench-react__scenario-workspace[data-surface="editor"] > .workbench-react__scenario-steps { display: flex; flex: 1 1 auto; }
+.workbench-react[data-geometry="compact"] .workbench-react__scenario-workspace[data-surface="queue"] > .workbench-react__scenario-queue,
+.workbench-react[data-geometry="shallow"] .workbench-react__scenario-workspace[data-surface="queue"] > .workbench-react__scenario-queue { display: block; flex: 1 1 auto; }
+@media (forced-colors: active) {
+  .workbench-react__scenario-queue li[data-focused] { border-left-color: Highlight; }
+  .workbench-react__scenario-queue li button[aria-pressed="true"] { border-color: Highlight; }
+  .workbench-react__scenario-capture-notice[role="alert"] { border-color: CanvasText; }
+}
+
+/* At shallow height the entire capture pane owns its one scroll. Static controls
+   must not consume the list's complete available height. */
+.workbench-react[data-geometry="shallow"] .workbench-react__scenario-workspace[data-surface="capture"] > .workbench-react__scenario-capture { display: block; overflow: auto; overflow-anchor: none; }
+.workbench-react[data-geometry="shallow"] .workbench-react__scenario-capture-scroll { overflow: visible; }
+
+.workbench-react__scenario-steps article > header { flex-wrap: wrap; }
+.workbench-react__scenario-steps article > header span { min-width: 0; overflow-wrap: anywhere; }
+.workbench-react__scenario-focused-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.workbench-react__scenario-steps:has(> .workbench-react__scenario-focused-heading:focus-visible) { outline: 2px solid var(--wb-focus); outline-offset: -2px; }
+
+@media (forced-colors: active) {
+  .workbench-react__scenario-steps:has(> .workbench-react__scenario-focused-heading:focus-visible) { outline-color: Highlight; }
+}

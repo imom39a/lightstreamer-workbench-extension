@@ -514,6 +514,10 @@ function snapshotItem(
       lostUpdateCount: item.lostUpdateCount,
       activeCommandKeyCount: item.activeCommandKeyCount,
       deletedCommandKeyCount: item.deletedCommandKeyCount,
+      ...(item.deletedCommandKeysHasOlder ? {
+        deletedCommandKeysHasOlder: true,
+        deletedCommandKeyCountBasis: "retained-identities"
+      } : {}),
       firstUpdateAt: isoTime(item.firstUpdateAt),
       lastUpdateAt: isoTime(item.lastUpdateAt),
       lastLocalInjectedUpdateAt: isoTime(item.lastSyntheticUpdateAt),

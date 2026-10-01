@@ -76,7 +76,6 @@ describe("activity-followup-04 Page ranking investigation query", () => {
           await waitForCurrentReady(runtime, (current) => current.counts.inScope === retained.length);
           await waitForCurrentReady(runtime, (current) => current.page.evidence.length === retained.length);
 
-          runtime.dispatch({ type: "open-activity" });
           await waitForCurrentReady(runtime, (current) => current.counts.inScope === retained.length);
 
           const ranking = runtime.getSnapshot().activity?.projection.allRankings.find(
@@ -90,18 +89,14 @@ describe("activity-followup-04 Page ranking investigation query", () => {
             expect.objectContaining({ facet: "subscription", type: "add-criterion", polarity: "include" })
           ]));
 
-          const mutations = ranking?.supportingFilterMutations ?? [];
           runtime.dispatch({
-            type: "show-activity-supporting-evidence",
-            start: ranking?.range?.start,
-            end: ranking?.range?.end,
-            filterMutations: mutations
+            type: "apply-activity-ranking-filter",
+            expectedRevision: runtime.getSnapshot().evidence.investigation.filter.revision,
+            rankingId: ranking!.identity
           });
 
           await waitForCurrentReady(runtime, (current) =>
-            current.counts.matching === 2 &&
-            current.filter.around?.start === 1_000 &&
-            current.filter.around?.end === 3_001
+            current.counts.matching === 2
           );
 
           const current = investigation(runtime);
@@ -116,11 +111,7 @@ describe("activity-followup-04 Page ranking investigation query", () => {
           expect(itemCriteria).toHaveLength(0);
           expect(current.filter.criteria.kind?.include[0]?.value).toBe("ITEM-UPDATE");
           expect(current.filter.criteria.provenance?.include[0]?.value).toBe("SERVER");
-          expect(current.filter.around).toEqual({
-            intervalId: expect.any(String),
-            start: ranking?.range?.start,
-            end: ranking?.range?.end
-          });
+          expect(current.filter.around).toBeNull();
           expect(current.page.evidence.map((record) => record.facets.item?.label)).toEqual([
             "item-b",
             "item-a"

@@ -20,9 +20,9 @@ export async function prepareFilterStateVisual(page, scene) {
   } else if (scene.flow === "editor") {
     await page.getByRole("button", { name: "Filter", exact: true }).click();
     await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
-    await page.getByRole("option", { name: "Add Item criterion", exact: true }).click();
-    await page.getByRole("dialog", { name: "Item exact values", exact: true }).waitFor();
-    await page.getByLabel("Search exact values", { exact: true }).focus();
+    await page.getByRole("button", { name: "Add Item criterion", exact: true }).click();
+    await page.getByRole("dialog", { name: "Item values", exact: true }).waitFor();
+    await page.getByLabel("Search values", { exact: true }).focus();
   } else {
     await page.getByRole("button", { name: /^Notifications/ }).click();
     await page.getByText("Filter notifications", { exact: true }).click();

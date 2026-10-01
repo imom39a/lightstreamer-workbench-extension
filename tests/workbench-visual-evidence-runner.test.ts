@@ -20,7 +20,7 @@ describe("Workbench visual-evidence runner", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
     expect(result.stdout).toContain("--print-review-scope");
-    expect(matrix).toHaveLength(107);
+    expect(matrix).toHaveLength(115);
   });
 
   it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
@@ -99,7 +99,7 @@ describe("Workbench visual-evidence runner", () => {
     const result = spawnSync(process.execPath, [runner, "--print-review-scope"], {
       cwd: rootDir,
       encoding: "utf8",
-      maxBuffer: 8 * 1_024
+      maxBuffer: 16 * 1_024
     });
     const diagnosticIds = matrix
       .filter((scenario: { production?: { setup?: string } }) =>
@@ -137,9 +137,11 @@ describe("Workbench visual-evidence runner", () => {
     const serverInjectionIds = matrix
       .filter((scenario: { id: string }) => scenario.id.startsWith("server-injection-"))
       .map((scenario: { id: string }) => scenario.id);
+    const captureIds = matrix.filter((scenario: { id: string }) => scenario.id.startsWith("scenario-capture-")).map((scenario: { id: string }) => scenario.id);
+    const scenarioIds = matrix.filter((scenario: { id: string }) => scenario.id.startsWith("scenario-")).map((scenario: { id: string }) => scenario.id);
 
     expect(result.status, result.stderr).toBe(0);
-    expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
+    expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(16 * 1_024);
     expect(diagnosticIds).toHaveLength(12);
     expect(notificationIds).toHaveLength(7);
     expect(historyNotificationIds).toEqual([
@@ -156,10 +158,12 @@ describe("Workbench visual-evidence runner", () => {
     expect(readabilityIds).toHaveLength(2);
     const reviewScope = JSON.parse(result.stdout);
     expect(reviewScope).toMatchObject({
-      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...historyFooterIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds]),
-      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds]),
-      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds])
+      contactSheetScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...historyFooterIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...captureIds]),
+      accessibilityScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...scenarioIds]),
+      focusScenarioIds: expect.arrayContaining([...diagnosticIds, ...notificationIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...captureIds])
     });
+    expect(captureIds).toHaveLength(8);
+    expect(scenarioIds).toHaveLength(40);
     expect(localInjectionIds).toHaveLength(5);
     expect(serverInjectionIds).toHaveLength(6);
     for (const id of historyFooterIds) {
@@ -178,6 +182,17 @@ describe("Workbench visual-evidence runner", () => {
       expect(jpeg.subarray(0, 3)).toEqual(Buffer.from([255, 216, 255]));
       expect(scenario.reference.path).toMatch(/\.jpg$/);
     }
+  });
+
+  it("bounds filtered Scenario capture inspection without starting a browser", () => {
+    const result = spawnSync(process.execPath, [runner, "--print-review-scope", "--grep", "scenario-capture-"], {
+      cwd: rootDir, encoding: "utf8", maxBuffer: 16 * 1_024
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const scope = JSON.parse(result.stdout);
+    const ids = matrix.filter((scenario: { id: string }) => scenario.id.startsWith("scenario-capture-")).map((scenario: { id: string }) => scenario.id);
+    expect(scope).toEqual({ contactSheetScenarioIds: ids, accessibilityScenarioIds: ids, focusScenarioIds: ids });
+    expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(16 * 1_024);
   });
 
   it("keeps the approved Variant C normal asset and compact prototype as readability references", () => {

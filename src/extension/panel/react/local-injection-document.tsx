@@ -17,7 +17,6 @@ type LocalInjectionDocumentProps = Readonly<{
 type LocalInjectionPresentation = Readonly<{
   draftId: string;
   phase: NonNullable<WorkbenchLocalInjectionSnapshot["draft"]>["phase"];
-  minimized: boolean;
   hidden: boolean;
   discardConfirmation: boolean;
   blockedEntry: boolean;
@@ -49,29 +48,10 @@ function sourceLabel(localInjection: WorkbenchLocalInjectionSnapshot): string {
     : "Newly authored";
 }
 
-function phaseLabel(localInjection: WorkbenchLocalInjectionSnapshot): string {
-  const draft = localInjection.draft;
-  if (!draft) return "NO DRAFT";
-  if (draft.phase === "pending") return "DELIVERY PENDING";
-  if (draft.phase === "outcome") return draft.outcome?.headline ?? "OUTCOME";
-  if (!draft.ready) return "BLOCKED";
-  return "READY TO INJECT";
-}
-
 function deliveryCounts(localInjection: WorkbenchLocalInjectionSnapshot): string | null {
   const outcome = localInjection.draft?.outcome;
   if (!outcome || outcome.attemptedCount === undefined) return null;
   return `${outcome.deliveredCount ?? 0} delivered · ${outcome.failedCount ?? 0} failed · ${outcome.attemptedCount} attempted`;
-}
-
-function validationLabel(localInjection: WorkbenchLocalInjectionSnapshot): string {
-  const draft = localInjection.draft;
-  if (!draft) return "No Draft is available.";
-  if (draft.ready) return "READY";
-  const firstProblem = draft.diagnostics[0]?.message;
-  return firstProblem
-    ? `BLOCKED · ${firstProblem}`
-    : "BLOCKED · The protected target is not currently valid for Local Injection.";
 }
 
 /** Full-canvas, single-event Local Injection document. */
@@ -83,12 +63,12 @@ export function LocalInjectionDocument({
 }: LocalInjectionDocumentProps): JSX.Element | null {
   const [tabIndents, setTabIndents] = useState(false);
   const regionRef = useRef<HTMLElement | null>(null);
+  const draftHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const problemsRef = useRef<HTMLElement | null>(null);
   const pendingHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const outcomeHeadingRef = useRef<HTMLHeadingElement | null>(null);
-  const minimizeButtonRef = useRef<HTMLButtonElement | null>(null);
   const discardDialogRef = useRef<HTMLElement | null>(null);
   const lastDraftFocusRef = useRef<HTMLElement | null>(null);
-  const minimizeReturnFocusRef = useRef<HTMLElement | null>(null);
   const parkReturnFocusRef = useRef<HTMLElement | null>(null);
   const discardReturnFocusRef = useRef<HTMLElement | null>(null);
   const restoreDiscardFocusRef = useRef(false);
@@ -96,7 +76,6 @@ export function LocalInjectionDocument({
   const scrollOwnerRef = useRef<HTMLDivElement | null>(null);
   const scrollPositionsRef = useRef<Record<string, Readonly<{ top: number; left: number }> | undefined>>({});
   const draft = localInjection.draft;
-  const minimized = draft?.minimized ?? false;
   const editing = draft?.phase === "edit";
   const authoring = draft?.phase === "edit" || draft?.phase === "review";
   const scrollKey = draft
@@ -105,11 +84,11 @@ export function LocalInjectionDocument({
 
   useLayoutEffect(() => {
     const owner = scrollOwnerRef.current;
-    if (!owner || hidden || minimized) return;
+    if (!owner || hidden) return;
     const position = scrollPositionsRef.current[scrollKey] ?? { top: 0, left: 0 };
     owner.scrollTop = position.top;
     owner.scrollLeft = position.left;
-  }, [hidden, inlineCompare, minimized, scrollKey]);
+  }, [hidden, inlineCompare, scrollKey]);
 
   useLayoutEffect(() => {
     if (!draft) return;
@@ -135,37 +114,36 @@ export function LocalInjectionDocument({
 
     if (!previous || previous.draftId !== draft.id) {
       lastDraftFocusRef.current = null;
-      minimizeReturnFocusRef.current = null;
       parkReturnFocusRef.current = null;
       discardReturnFocusRef.current = null;
       restoreDiscardFocusRef.current = false;
-      if (!hidden && !minimized) lastDraftFocusRef.current = focusPhase();
+      if (!hidden) {
+        if (authoring && inlineCompare && draft.compareOpen && draft.source.rawText !== null) {
+          draftHeadingRef.current?.focus({ preventScroll: true });
+          lastDraftFocusRef.current = draftHeadingRef.current;
+        } else lastDraftFocusRef.current = focusPhase();
+      }
     } else if (!previous.discardConfirmation && localInjection.discardConfirmation && !hidden) {
       discardDialogRef.current?.focus();
     } else if (previous.discardConfirmation && !localInjection.discardConfirmation && restoreDiscardFocusRef.current) {
       restoreDiscardFocusRef.current = false;
       restore(discardReturnFocusRef.current);
-    } else if (!previous.minimized && minimized && !hidden) {
-      minimizeButtonRef.current?.focus();
-    } else if (previous.minimized && !minimized && !hidden) {
-      restore(minimizeReturnFocusRef.current ?? lastDraftFocusRef.current);
-    } else if (previous.hidden && !hidden && !minimized) {
+    } else if (previous.hidden && !hidden) {
       restore(parkReturnFocusRef.current ?? lastDraftFocusRef.current);
-    } else if (previous.blockedEntry && !localInjection.blockedEntry && !hidden && !minimized) {
+    } else if (previous.blockedEntry && !localInjection.blockedEntry && !hidden) {
       restore(lastDraftFocusRef.current);
-    } else if (previous.phase !== draft.phase && !hidden && !minimized) {
+    } else if (previous.phase !== draft.phase && !hidden) {
       lastDraftFocusRef.current = focusPhase();
     }
 
     previousPresentationRef.current = {
       draftId: draft.id,
       phase: draft.phase,
-      minimized,
       hidden,
       discardConfirmation: localInjection.discardConfirmation,
       blockedEntry: !!localInjection.blockedEntry
     };
-  }, [draft?.id, draft?.phase, hidden, localInjection.blockedEntry, localInjection.discardConfirmation, minimized]);
+  }, [draft?.id, draft?.phase, hidden, localInjection.blockedEntry, localInjection.discardConfirmation]);
 
   if (!draft) return null;
   const pending = draft.phase === "pending";
@@ -216,7 +194,6 @@ export function LocalInjectionDocument({
     aria-label="Local Injection Draft"
     data-phase={draft.phase}
     data-compare-layout={inlineCompare ? "inline" : "side-by-side"}
-    data-minimized={minimized || undefined}
     hidden={hidden}
     ref={regionRef}
     onFocusCapture={(event) => {
@@ -227,16 +204,8 @@ export function LocalInjectionDocument({
     }}
   >
     <header className="workbench-react__local-header">
-      <div><span className="workbench-react__eyebrow">One event · one Local Injection</span><h1>Local Injection Draft</h1><span>{draft.id}</span></div>
-      <strong data-readiness={draft.ready ? "ready" : "blocked"}>{phaseLabel(localInjection)}</strong>
+      <div><span className="workbench-react__eyebrow">One event · one Local Injection</span><h1 ref={draftHeadingRef} tabIndex={-1}>Local Injection Draft</h1><span>{draft.id}</span></div>
       <div className="workbench-react__local-header-actions">
-        <button type="button" ref={minimizeButtonRef} disabled={pending} data-local-focus-transition="true" onClick={() => {
-          if (!minimized) {
-            rememberScroll();
-            minimizeReturnFocusRef.current = currentDraftFocus();
-          }
-          dispatch(runtime, { type: "set-local-injection-minimized", minimized: !minimized });
-        }}>{minimized ? "Expand Draft event" : "Collapse Draft event"}</button>
         <button type="button" disabled={pending} data-local-focus-transition="true" onClick={() => {
           rememberScroll();
           parkReturnFocusRef.current = currentDraftFocus();
@@ -250,7 +219,6 @@ export function LocalInjectionDocument({
       <div data-protected-boundary="target"><dt>Target</dt><dd>{draft.anchor.subscriptionId} · {draft.anchor.itemName ?? `Item #${draft.anchor.itemPosition ?? "Unknown"}`} · {draft.anchor.subscriptionMode ?? "Unknown mode"}</dd></div>
       <div data-protected-boundary="session"><dt>Session</dt><dd>Session {draft.anchor.sessionId ?? "Unknown"} · Client {draft.anchor.clientId ?? "Unknown"}</dd></div>
       <div data-protected-boundary="source"><dt>Source</dt><dd>{sourceLabel(localInjection)}</dd></div>
-      <div data-protected-boundary="validation"><dt>Validation</dt><dd>{validationLabel(localInjection)}</dd></div>
       <div data-protected-boundary="delivery"><dt>Delivery</dt><dd>One Logical Update to each current listener on this Subscription</dd></div>
       <div className="workbench-react__local-only" data-protected-boundary="local-only"><dt>Boundary</dt><dd>LOCAL ONLY · inspected-page runtime · Lightstreamer Server is not contacted</dd></div>
     </dl>
@@ -274,24 +242,30 @@ export function LocalInjectionDocument({
       <button type="button" disabled={pending} data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "confirm-discard-local-injection" })}>Confirm discard</button>
     </section> : null}
 
-    <div className="workbench-react__local-canvas" hidden={minimized}>
+    <div className="workbench-react__local-canvas">
       <div
         className="workbench-react__local-scroll"
         data-shared-scroll-owner="true"
-        tabIndex={authoring ? undefined : 0}
+        tabIndex={0}
         ref={scrollOwnerRef}
         onKeyDownCapture={(event) => {
+          const owner = scrollOwnerRef.current;
+          if (!owner) return;
+          if (event.target === owner && event.key === "Home" && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            owner.scrollTop = 0;
+            owner.scrollLeft = 0;
+            return;
+          }
           if ((event.key !== "PageDown" && event.key !== "PageUp")
             || event.altKey
             || event.ctrlKey
             || event.metaKey) return;
-          const owner = scrollOwnerRef.current;
-          if (!owner) return;
           event.preventDefault();
           scrollLocalInjectionOwnerByPage(owner, event.key);
         }}
         onScroll={(event) => {
-          if (hidden || minimized) return;
+          if (hidden) return;
           scrollPositionsRef.current[scrollKey] = {
             top: event.currentTarget.scrollTop,
             left: event.currentTarget.scrollLeft
@@ -309,7 +283,10 @@ export function LocalInjectionDocument({
               <label><input type="checkbox" checked={tabIndents} onChange={(event) => setTabIndents(event.currentTarget.checked)} />Tab inserts indentation</label>
             </div>
           </header>
-          {draft.compareOpen && compareAvailable ? <div className="workbench-react__local-compare-labels"><strong>Immutable Source</strong><strong>Injection Draft</strong></div> : null}
+          {draft.diagnostics.length ? <section className="workbench-react__local-problems" aria-label="Local Injection validation" id="local-injection-problems" tabIndex={-1} ref={problemsRef}>
+            <strong>{draft.diagnostics.length} blocking problem{draft.diagnostics.length === 1 ? "" : "s"}</strong>
+            <ul>{draft.diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}-${diagnostic.path ?? "document"}-${index}`}><b>{diagnostic.category.toUpperCase()}</b><span>{diagnostic.path ? `${diagnostic.path} · ` : ""}{diagnostic.message}</span></li>)}</ul>
+          </section> : null}
           <LocalInjectionCodeEditor
             draftId={draft.id}
             value={draft.rawText}
@@ -322,10 +299,6 @@ export function LocalInjectionDocument({
             onChange={(text) => dispatch(runtime, { type: "set-local-injection-json", text })}
             onPresentationChange={(presentation) => dispatch(runtime, { type: "set-local-injection-editor-presentation", presentation })}
           />
-          <section className="workbench-react__local-problems" aria-label="Local Injection validation">
-            <strong>{draft.ready ? "Ready to inject" : `${draft.diagnostics.length} blocking problem${draft.diagnostics.length === 1 ? "" : "s"}`}</strong>
-            {draft.diagnostics.length ? <ul>{draft.diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}-${diagnostic.path ?? "document"}-${index}`}><b>{diagnostic.category.toUpperCase()}</b><span>{diagnostic.path ? `${diagnostic.path} · ` : ""}{diagnostic.message}</span></li>)}</ul> : <p>JSON, schema, COMMAND semantics, and the protected live target are valid.</p>}
-          </section>
         </section>
 
         {pending ? <section className="workbench-react__local-pending" role="status" aria-live="polite"><h2 ref={pendingHeadingRef} tabIndex={-1}>Local Injection pending</h2><p>Workbench is waiting for one trustworthy delivery acknowledgement. No repeat or automatic retry is available.</p><pre tabIndex={0}>{draft.rawText}</pre></section> : null}
@@ -334,7 +307,19 @@ export function LocalInjectionDocument({
       </div>
 
       <footer className="workbench-react__local-footer">
-        {authoring ? <><button type="button" data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "convert-local-injection-to-scenario" })}>Convert to Scenario</button><span>{draft.ready ? draft.source.kind === "captured-event" ? "READY · Compare Source and Draft, then inject locally." : "READY · Verify the protected Draft and target, then inject locally." : "BLOCKED · No Injection will be attempted."}</span><button type="button" disabled={!draft.ready} data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "execute-local-injection" })}>Inject locally</button></> : null}
+        {authoring ? <><button type="button" data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "convert-local-injection-to-scenario" })}>Convert to Scenario</button><span id="local-injection-readiness" data-protected-boundary="validation" data-readiness={draft.ready ? "ready" : "blocked"} role="status">{draft.ready ? "READY · JSON and target validated" : `BLOCKED · ${draft.diagnostics[0]?.message ?? "The protected target is unavailable."} · No Injection attempted.`}</span>{!draft.ready && draft.diagnostics.length ? <button type="button" data-local-focus-transition="true" onClick={() => {
+          const owner = scrollOwnerRef.current;
+          problemsRef.current?.focus({ preventScroll: true });
+          if (owner) {
+            owner.scrollTop = 0;
+            owner.scrollLeft = 0;
+            const firstProblem = problemsRef.current?.querySelector("li");
+            const toolbar = owner.querySelector(".workbench-react__local-editor-toolbar");
+            if (firstProblem && toolbar) {
+              owner.scrollTop = Math.max(0, firstProblem.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom);
+            }
+          }
+        }}>Show validation details</button> : null}<button type="button" disabled={!draft.ready} aria-describedby={!draft.ready ? "local-injection-readiness" : undefined} data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "execute-local-injection" })}>Inject locally</button></> : null}
         {pending ? <span>DELIVERY PENDING · keep this document open until the outcome is known.</span> : null}
         {outcome ? <><span>{outcome.headline} · outcome is retained in this document until you finish.</span><button type="button" data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "finish-local-injection" })}>Finish Local Injection</button></> : null}
       </footer>

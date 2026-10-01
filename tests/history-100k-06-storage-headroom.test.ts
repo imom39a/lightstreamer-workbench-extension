@@ -44,6 +44,8 @@ describe("history-100k-06 storage headroom", () => {
       detail: expect.stringContaining("advisory"),
       recovery: expect.stringContaining("Free browser storage")
     });
+    expect(storageHeadroomDiagnostic(observation)?.detail).toBe("Future History writes may fail; the browser estimate is advisory.");
+    expect(storageHeadroomDiagnostic(observation)?.technicalDetail).toContain("168 MiB");
     expect(PROPOSED_NORMAL_HISTORY_HEADROOM).toEqual({
       recordCount: 100_000,
       canonicalBytes: 256 * MIB
@@ -126,7 +128,7 @@ describe("history-100k-06 storage headroom", () => {
       expect.objectContaining({
         category: "storage",
         title: "Estimated storage headroom is low",
-        detail: expect.stringContaining("QuotaExceededError")
+        technicalDetail: expect.stringContaining("QuotaExceededError")
       })
     );
     expect(runtime.getSnapshot().retention.historyStatus.accepted).toBe(1);

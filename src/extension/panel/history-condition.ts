@@ -23,6 +23,7 @@ export type WorkbenchHistoryCondition = Readonly<{
   title: string;
   affected: string;
   detail: string;
+  technicalDetail?: string;
   recovery: string;
   announcement: string;
   announcementKey: string;
@@ -68,8 +69,9 @@ export function historyConditionsFor(
       severity: "Error",
       title: "Event History unavailable",
       affected: intervalLabel(status),
-      detail: `Event History cannot currently accept activity. ${boundaryLabel(status.committedEvidenceBoundary)}.`,
-      recovery: "Keep DevTools open while Workbench attempts recovery; retained Evidence remains available",
+      detail: "New activity cannot enter Event History; retained Evidence remains readable.",
+      technicalDetail: boundaryLabel(status.committedEvidenceBoundary),
+      recovery: "Keep DevTools open while Workbench attempts recovery",
       announcement: "Event History is temporarily unavailable."
     }));
   }
@@ -102,9 +104,12 @@ function evidenceGapCondition(
     severity: "Warning",
     title: "History has an Evidence gap",
     affected: intervalLabel(status),
-    detail: `${gapSummary} Later Capture continues. ${boundaryLabel(gap.afterEvidence)} immediately before the latest gap. ${projectionDetail}`,
+    detail: topologyBasisRestoredAt
+      ? "Capture continues; COMMAND-dependent conclusions remain LIMITED."
+      : "Capture continues; continuity-dependent conclusions remain LIMITED.",
+    technicalDetail: `${gapSummary} Later Capture continues. ${boundaryLabel(gap.afterEvidence)} immediately before the latest gap. ${projectionDetail} Complete History remains incomplete until a new History Interval begins.`,
     recovery: topologyBasisRestoredAt
-      ? "Use a later trustworthy COMMAND Snapshot before relying on COMMAND-dependent conclusions; Complete History remains incomplete because the Evidence Gap is not restored"
+      ? "Use a later trustworthy COMMAND Snapshot before relying on COMMAND-dependent conclusions"
       : "Inspect the gap in Notifications and use a later trustworthy snapshot or checkpoint before relying on continuity-dependent conclusions",
     announcement: "History has an Evidence gap; Capture continues with limited continuity."
   });
@@ -129,8 +134,9 @@ function memoryFallbackCondition(
     severity: "Warning",
     title: "History using memory",
     affected: intervalLabel(status),
-    detail: `${reason}.${cause}${attempts} Capture continues with a rolling memory Retained Range of ${limits.count.toLocaleString()} Evidence records or ${bytesInMiB(limits.bytes)}. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.`,
-    recovery: "Keep investigating; reopen DevTools later if durable session storage is required",
+    detail: "Capture continues with bounded rolling memory; retained Evidence remains readable.",
+    technicalDetail: `${reason}.${cause}${attempts} Rolling memory Retained Range: ${limits.count.toLocaleString()} Evidence records or ${bytesInMiB(limits.bytes)}. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.`,
+    recovery: "Keep investigating, or reopen DevTools to retry IndexedDB",
     announcement: "History is using bounded memory; Capture continues."
   });
 }
@@ -148,8 +154,9 @@ function pendingPressureCondition(
     severity: "Warning",
     title: "History catching up",
     affected: intervalLabel(status),
-    detail: `Pending ${formatBytes(measurements.pendingBytes)} and oldest pending age ${age}. ${boundaryLabel(status.committedEvidenceBoundary)}. Capture remains running while bounded commit recovery catches up.`,
-    recovery: `Keep investigating recent Evidence. Workbench bounds pending work at ${formatBytes(limits.pendingStopBytes)} and reports an exact gap only if a candidate cannot enter any canonical segment`,
+    detail: "Capture remains running; recent activity is awaiting acceptance into Event History.",
+    technicalDetail: `Pending ${formatBytes(measurements.pendingBytes)} and oldest pending age ${age}. ${boundaryLabel(status.committedEvidenceBoundary)}. Pending work limit: ${formatBytes(limits.pendingStopBytes)}.`,
+    recovery: "Keep investigating retained Evidence while History catches up",
     announcement: "History is catching up; Capture continues."
   });
 }

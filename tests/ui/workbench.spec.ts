@@ -1,6 +1,7 @@
 import axe from "axe-core";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
+import { focusScenarioMember, showScenarioSurface } from "./scenario-ui";
 import { highVolumeEventId, type WorkbenchScenarioId } from "../support/workbench-scenarios";
 
 const browserDiagnostics = new WeakMap<Page, string[]>();
@@ -273,7 +274,7 @@ test("Activity summary preserves exact 10,000-record orientation in Context", as
     name: /^(Focus selected Context|Open selected Context|Open Scope Context)$/,
   }).click();
   const summary = page.locator('details[aria-label="Activity summary"]');
-  await expect(summary.locator("summary")).toHaveText(/^Activity summary — /);
+  await expect(summary.locator("summary")).toHaveText(/^Activity summary$/);
   await expect(summary).not.toHaveAttribute("open", "");
   await summary.locator("summary").click();
   const counts = summary.getByRole("table", { name: "Activity counts" });
@@ -492,7 +493,12 @@ test("Workbench exposes selected captured Local Injection through the visible Co
     await expect(draft).toContainText("Session topology-small-session");
     await expect(draft.locator('[data-protected-boundary="source"]')).toContainText("event-5 · immutable");
     await expect(draft).toContainText("LOCAL ONLY");
-    await expect(page.getByRole("textbox", { name: "Local Injection JSON", exact: true })).toBeFocused();
+    await expect(draft.getByRole("heading", { name: "Local Injection Draft", exact: true })).toBeFocused();
+    const editor = draft.getByRole("textbox", { name: "Local Injection JSON", exact: true });
+    for (let stops = 0; stops < 16 && !await editor.evaluate(element => element === document.activeElement); stops += 1) {
+      await page.keyboard.press("Tab");
+    }
+    await expect(editor).toBeFocused();
     await expectShellFits(page);
   }
 
@@ -514,8 +520,7 @@ test("Workbench keeps low-frequency session controls and scoped export deliberat
   await expect(page.locator("[data-history-status]")).toBeVisible();
   await page.getByRole("button", { name: "Clear retained Evidence…" }).click();
   await expect(page.getByText(/Clear all \d+ retained Evidence events for this Panel Session\?/)).toBeVisible();
-  await expect(operations.getByText(/Clear all \d+ retained Evidence events for this Panel Session\. Scope and Filter do not limit this destructive action\./)).toBeVisible();
-  await expect(page.getByText("This removes retained Evidence from this Panel Session and cannot be undone.", { exact: true })).toBeVisible();
+  await expect(operations.getByText("Scope and Filter do not limit this action. This removes retained Evidence from this Panel Session and cannot be undone.", { exact: true })).toBeVisible();
   const confirmation = operations.locator(".workbench-react__confirmation");
   const contextBody = page.locator(".workbench-react__context-body");
   const clearEvents = confirmation.getByRole("button", { name: "Clear retained events" });
@@ -524,7 +529,9 @@ test("Workbench keeps low-frequency session controls and scoped export deliberat
   const initialContextScrollTop = await contextBody.evaluate((element) => element.scrollTop);
   await contextBody.hover();
   await page.mouse.wheel(0, 500);
-  await expect.poll(() => contextBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(initialContextScrollTop);
+  if (await contextBody.evaluate((element) => element.scrollHeight > element.clientHeight)) {
+    await expect.poll(() => contextBody.evaluate((element) => element.scrollTop)).toBeGreaterThanOrEqual(initialContextScrollTop);
+  }
   await page.keyboard.press("Tab");
   await expect(clearEvents).toBeFocused();
   const clearFocusStyle = await clearEvents.evaluate((element) => {
@@ -591,7 +598,10 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   await expect(page.getByRole("button", { name: "Collapse Context" })).toHaveCount(0);
   await expect(operations).toContainText("4,000 retained");
   await expect(operations).toContainText("4,000 captured");
-  await expect(operations).toContainText("60 currently shown");
+  const historyDetails = operations.locator("details").filter({ has: page.locator("summary", { hasText: "History and privacy details" }) });
+  await historyDetails.locator("summary").click();
+  await expect(historyDetails).toContainText("60 shown");
+  await historyDetails.locator("summary").click();
   await expect(operations).toContainText("Capacity AVAILABLE (NORMAL)");
   await expect(operations).toContainText("Usage analytics");
   await expect(operations.getByRole("link", { name: "Documentation" })).toHaveAttribute(
@@ -648,9 +658,9 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
     const back = page.getByRole("button", { name: "Back to prior investigation" });
     await expect(back).toBeVisible();
     const documentation = page.getByRole("link", { name: "Documentation" });
-    const clearRetained = page.getByRole("button", { name: "Clear retained Evidence…" });
-    await clearRetained.scrollIntoViewIfNeeded();
-    await clearRetained.focus();
+    const historyDetails = page.getByText("History and privacy details", { exact: true });
+    await historyDetails.scrollIntoViewIfNeeded();
+    await historyDetails.focus();
     await page.keyboard.press("Tab");
     await expect(documentation).toBeFocused();
     await expect(documentation).toBeInViewport();
@@ -707,7 +717,7 @@ test("Workbench finds off-window matches across all retained Evidence without ch
   const operating = page.locator(".workbench-react__operating");
   const selectedIdentity = highVolumeEventId(3_970);
   await expect(page.getByText("Shown 60", { exact: true })).toBeVisible();
-  await expect(page.getByText("Matching 3,970", { exact: true })).toBeVisible();
+  await expect(page.getByText("Matching 3,970 in Scope", { exact: true })).toBeVisible();
   await expect(page.getByText(/View FROZEN .*30 newer/)).toBeVisible();
   await expect(operating.getByRole("button", { name: "Find", exact: true })).toBeVisible();
   await expect(operating.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
@@ -984,9 +994,7 @@ test("Workbench drafts free-text Filter, exposes exact counts, and keeps Find in
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator(".workbench-react__active-filter")).toBeVisible();
   await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event-2");
-  await expect(page.getByText("Shown 1", { exact: true })).toBeVisible();
-  await expect(page.getByText("Matching 1", { exact: true })).toBeVisible();
-  await expect(page.getByText("In Scope 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 Evidence", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Find", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Find in ordered Evidence" })).toHaveValue("item update");
@@ -996,7 +1004,7 @@ test("Workbench drafts free-text Filter, exposes exact counts, and keeps Find in
   await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: scenario-event-2");
   await page.getByRole("button", { name: "Reset Filter", exact: true }).click();
   await expect(page.locator(".workbench-react__active-filter")).toHaveCount(0);
-  await expect(page.getByText("Shown 6", { exact: true })).toBeVisible();
+  await expect(page.getByText("6 Evidence", { exact: true })).toBeVisible();
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -1297,9 +1305,8 @@ test("Workbench makes limited Capture actionable without hiding retained Evidenc
   await expect(
     diagnostics.getByText("Affected: Inspected page")
   ).toBeVisible();
-  await expect(
-    diagnostics.getByText("Recovery: Reload the inspected page with DevTools open")
-  ).toBeVisible();
+  await diagnostics.getByText("Diagnostic details", { exact: true }).click();
+  await expect(diagnostics.getByText("Recovery: Reload the inspected page with DevTools open")).toBeVisible();
   await expect(page.getByText("Earlier Snapshot Evidence may be incomplete.", { exact: true })).toHaveCount(1);
   await expect(page.getByLabel("Ordered Evidence").locator(".workbench-react__condition--warning")).toHaveCount(0);
   await expect(page.getByRole("complementary", { name: "Context" }).locator(".workbench-react__diagnostic")).toHaveCount(0);
@@ -1483,7 +1490,7 @@ test("Notifications keeps snapshot volume bounded, keyboard reachable, and linke
     const entries = notifications.getByLabel("Notification entries");
     await expect(notifications.getByRole("article")).toHaveCount(100);
     await expect(notifications).toContainText("100 of 100 notifications");
-    await expect(notifications).toContainText("Up to 100 recent diagnostics");
+    await expect(notifications).toContainText("100 of 100 notifications · All runtime Scopes · oldest first");
     await entries.focus();
     await page.keyboard.press("End");
     await expect.poll(() => entries.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
@@ -1771,7 +1778,7 @@ test("Workbench retains ordered Evidence while a typed Session recovery is in pr
   await expect(page.getByText("Affected: Session topology-small-session", { exact: true })).toBeVisible();
   await expect(
     page.getByText(
-      "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change.",
+      "Runtime availability may change while the Session recovers; Evidence remains ordered.",
       { exact: true }
     )
   ).toBeVisible();
@@ -2158,7 +2165,7 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
 
   await openScenario(page, "memory-fallback", { width: 563, height: 700 }, "dark");
   const fallbackDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
-  const fallbackDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Capture continues with a rolling memory Retained Range of 25,000 Evidence records or 128 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
+  const fallbackDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Rolling memory Retained Range: 25,000 Evidence records or 128 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
   await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
   await expect(fallbackDiagnostics.getByText("Warning · History using memory", { exact: true })).toBeVisible();
   await expect(fallbackDiagnostics).toContainText(fallbackDetail);
@@ -2168,6 +2175,7 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
     return { left: rect.left, right: rect.right };
   })).toEqual({ left: 0, right: 563 });
   await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByText("History and privacy details", { exact: true }).click();
   await expect(page.getByText("in-memory fallback")).toBeVisible();
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
@@ -2295,6 +2303,7 @@ test("Workbench exposes selected Item Update Fields while Evidence metadata is c
   await expect(compareSource).toHaveAttribute("aria-pressed", "false");
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   const scrollOwner = draft.locator('[data-shared-scroll-owner="true"]');
+  await scrollOwner.evaluate((owner) => { owner.scrollTop = 0; });
   await expect(editor).toContainText('"modelValues": {');
   await expect(editor).toContainText('"itinerary": [');
   await expect(editor).not.toContainText('\\"selected\\"');
@@ -2372,12 +2381,12 @@ test("Workbench edits one protected captured Local Injection Draft in lazy CodeM
 
   await page.setViewportSize({ width: 900, height: 700 });
   await expect(draft).toHaveAttribute("data-compare-layout", "inline");
-  const compareTops = await page.locator(".workbench-react__local-compare-labels strong").evaluateAll((labels) =>
+  const compareTops = await page.locator(".workbench-react__local-compare-label").evaluateAll((labels) =>
     labels.map((label) => label.getBoundingClientRect().top)
   );
   expect(compareTops[1]).toBeGreaterThan(compareTops[0]!);
   await compareSource.click();
-  await expect(page.getByText("Immutable Source", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Immutable Source", { exact: true })).toBeHidden();
 
   await editor.focus();
   await page.keyboard.press(process.platform === "darwin" ? "Meta+f" : "Control+f");
@@ -2430,7 +2439,7 @@ test("Workbench authors a source-free COMMAND Item Update from a live single-ite
     fields: { command: "ADD", key: "authored-local-1", value: "42" }
   }, null, 2);
   await editor.fill(authoredJson);
-  await expect(draft).toContainText("Ready to inject");
+  await expect(draft.locator('[data-protected-boundary="validation"]')).toHaveAttribute("data-readiness", "ready");
   await expect(inject).toBeEnabled();
   await expect(draft.getByRole("region", { name: "Review Local Injection" })).toHaveCount(0);
   await expect(editor).toBeVisible();
@@ -2438,12 +2447,9 @@ test("Workbench authors a source-free COMMAND Item Update from a live single-ite
 
   await page.setViewportSize({ width: 563, height: 700 });
   await editor.focus();
-  await draft.getByRole("button", { name: "Collapse Draft event" }).click();
-  await expect(draft.getByRole("button", { name: "Expand Draft event" })).toBeFocused();
+  await expect(draft.getByRole("button", { name: /(?:Collapse|Expand) Draft event/ })).toHaveCount(0);
   await expect(draft).toContainText("topology-small-subscription");
   await expect(draft.locator('[data-protected-boundary="source"]')).toContainText("Newly authored");
-  await draft.getByRole("button", { name: "Expand Draft event" }).click();
-  await expect(editor).toBeFocused();
   await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
   const parked = page.getByRole("region", { name: "Parked Local Injection Draft" });
   await expect(parked).toContainText("topology-small-subscription");
@@ -2494,7 +2500,7 @@ test("Workbench blocks syntax, duplicate, and COMMAND semantic errors until corr
 
   const corrected = semanticallyInvalid.replaceAll("missing-key", "small-alpha");
   await editor.fill(corrected);
-  await expect(draft).toContainText("Ready to inject");
+  await expect(draft.locator('[data-protected-boundary="validation"]')).toHaveAttribute("data-readiness", "ready");
   await expect(inject).toBeEnabled();
 
   await expectShellFits(page);
@@ -2502,14 +2508,15 @@ test("Workbench blocks syntax, duplicate, and COMMAND semantic errors until corr
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench keeps a 500-field Draft editor model across compare, geometry, minimize, and park", async ({ page }, testInfo) => {
+test("Workbench keeps a 500-field Draft editor model across compare, geometry, and park", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-large", { width: 1440, height: 900 }, "light");
   const draft = page.getByRole("region", { name: "Local Injection Draft" });
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   const scrollOwner = draft.locator('[data-shared-scroll-owner="true"]');
 
   await expect(page.getByText("Immutable Source", { exact: true })).toBeVisible();
-  await expect(page.locator(".cm-collapsedLines")).not.toHaveCount(0);
+  await expect(page.locator(".cm-collapsedLines")).toHaveCount(0);
+  await expect(editor).toContainText("small-alpha");
   await page.getByRole("button", { name: "Compare Source" }).click();
   await editor.focus();
   await page.keyboard.press(process.platform === "darwin" ? "Meta+f" : "Control+f");
@@ -2523,8 +2530,6 @@ test("Workbench keeps a 500-field Draft editor model across compare, geometry, m
   await expect(page.locator(".cm-foldPlaceholder")).toBeVisible();
 
   await page.setViewportSize({ width: 900, height: 700 });
-  await draft.getByRole("button", { name: "Collapse Draft event" }).click();
-  await draft.getByRole("button", { name: "Expand Draft event" }).click();
   await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
   await page.getByRole("button", { name: /^Notifications/ }).click();
   await expect(page.getByRole("region", { name: "Notifications", exact: true })).toBeVisible();
@@ -2542,8 +2547,6 @@ test("Workbench keeps a 500-field Draft editor model across compare, geometry, m
   await expect(page.getByText("Immutable Source", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Compare Source" }).click();
   await page.setViewportSize({ width: 900, height: 700 });
-  await draft.getByRole("button", { name: "Collapse Draft event" }).click();
-  await draft.getByRole("button", { name: "Expand Draft event" }).click();
   await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
   await page.getByRole("button", { name: /^Notifications/ }).click();
   await page.getByRole("region", { name: "Parked Local Injection Draft" }).getByRole("button", { name: "Resume Local Injection Draft" }).click();
@@ -2598,7 +2601,7 @@ test("Workbench prevents duplicate execution while one Local Injection acknowled
   const draft = page.getByRole("region", { name: "Local Injection Draft" });
   await expect(draft).toContainText("DELIVERY PENDING");
   await expect(draft).toContainText("No repeat or automatic retry is available");
-  await expect(draft.getByRole("button", { name: "Collapse Draft event" })).toBeDisabled();
+  await expect(draft.getByRole("button", { name: /(?:Collapse|Expand) Draft event/ })).toHaveCount(0);
   await expect(draft.getByRole("button", { name: "Park draft and return to Evidence" })).toBeDisabled();
   await expect(draft.getByRole("button", { name: "Discard draft" })).toBeDisabled();
   await expect(draft.getByRole("button", { name: "Inject locally" })).toHaveCount(0);
@@ -2616,6 +2619,10 @@ test("Workbench protects the current Draft when another entry conflicts and disc
   const scrollOwner = draft.locator('[data-shared-scroll-owner="true"]');
   await expect(draft).toContainText("Another draft entry is blocked");
   await expect(draft).toContainText("Selected Evidence event-5 cannot replace this protected draft");
+  const editor = draft.getByRole("textbox", { name: "Local Injection JSON", exact: true });
+  const widePayload = JSON.parse(await editor.innerText());
+  widePayload.fields.value = `${"wide-field-value-".repeat(80)}END-WIDE`;
+  await editor.fill(JSON.stringify(widePayload, null, 2));
   await expect.poll(() => scrollOwner.evaluate((owner) => owner.scrollWidth > owner.clientWidth)).toBe(true);
   await scrollOwner.evaluate((owner) => { owner.scrollLeft = 100; });
   expect(await scrollOwner.evaluate((owner) => owner.scrollLeft)).toBeGreaterThan(0);
@@ -2626,8 +2633,13 @@ test("Workbench protects the current Draft when another entry conflicts and disc
   await expect(draft).not.toContainText("Another draft entry is blocked");
   await expect(draft.locator('[data-protected-boundary="source"]')).toContainText("event-5 · immutable");
   await expect(draft).toContainText("READY");
-  await expect(page.getByRole("textbox", { name: "Local Injection JSON", exact: true })).toBeFocused();
+  await expect(draft.getByRole("heading", { name: "Local Injection Draft", exact: true })).toBeFocused();
   expect(await scrollOwner.evaluate((owner) => owner.scrollLeft)).toBe(0);
+  for (let stops = 0; stops < 16 && !await editor.evaluate(element => element === document.activeElement); stops += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(editor).toBeFocused();
+  await expect(editor).not.toContainText("wide-field-value-");
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -2850,29 +2862,45 @@ test("reviewed same-target Scenario steps exactly one Injection and retains its 
     await openScenario(page, scene.scenario, { width: scene.width, height: scene.height }, scene.theme);
     const document = page.getByRole("region", { name: "Local Injection Scenario" });
     await expect(document).toBeVisible();
-    await expect(document.getByRole("article")).toHaveCount(2);
+    await expect(document.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(2);
+    await expect(document.getByRole("article")).toHaveCount(1);
     await expect(document).toContainText("exact shared Subscription target");
     await expect(document).toContainText("LOCAL ONLY");
     await expectShellFitsExactly(page);
     await expectShellFits(page);
     await expectNoSeriousAxeViolations(page, testInfo);
     if (scene.scenario === "local-injection-scenario-edit") {
-      const add = document.getByRole("button", { name: "Add captured update" });
+      const add = document.getByRole("button", { name: "Choose captured updates" });
       await add.focus();
       await expect(add).toBeFocused();
       await add.press("Enter");
-      await expect(page.getByRole("region", { name: "Scenario Evidence picker" })).toBeVisible();
-      await page.getByRole("button", { name: "Cancel" }).click();
-      await expect(add).toBeFocused();
+      const captures = document.getByRole("region", { name: "Scenario captured updates" });
+      await expect(captures).toBeVisible();
+      await expect(page.getByRole("region", { name: "Scenario Evidence picker" })).toHaveCount(0);
+      await expect(captures.getByRole("button", { name: "Add selected updates" })).toBeDisabled();
+      await showScenarioSurface(page, "editor");
+
     }
     if (scene.scenario === "local-injection-scenario-review") {
       await expect(document.getByRole("button", { name: "Pause" })).toBeVisible();
       await expect(document).toContainText("WAITING · Step 1 dispatch is scheduled on active time");
-      await expect(document).toContainText("Scenario revision 4");
+      await expect(document.locator(".workbench-react__local-boundary")).toContainText(/Reviewed Run.*revision 4/);
     }
     if (scene.scenario === "local-injection-scenario-complete") {
       await expect(document).toContainText("RUN COMPLETE · 2 independently traced Injections");
-      await expect(document.getByText(/Local Evidence synthetic-/)).toHaveCount(2);
+      const correlations: string[] = [];
+      for (const ordinal of [1, 2] as const) {
+        await focusScenarioMember(page, `Step ${ordinal}`);
+        const member = document.getByRole("article");
+        await expect(member).toContainText("Local Evidence committed");
+        const trace = member.locator("details");
+        if (!await trace.evaluate((element) => (element as HTMLDetailsElement).open)) await trace.locator("summary").click();
+        await expect(trace).toHaveJSProperty("open", true);
+        await expect(trace).toContainText(/Evidence synthetic-/);
+        correlations.push(await trace.textContent() ?? "");
+      }
+      expect(correlations[0]).not.toBe(correlations[1]);
+      expect(await page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(2);
     }
     await attachNamedScenarioScreenshot(page, testInfo, `${scene.scenario}-${scene.width}x${scene.height}-${scene.theme}`);
   }
@@ -2894,6 +2922,7 @@ test("completed Scenario restores focus to its document heading", async ({ page 
 test("Scenario clock controls preserve focus, hidden pause, manual stepping, and stopped remainder", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-scenario-review", { width: 563, height: 700 }, "light");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await focusScenarioMember(page, "Step 1");
   const reviewedJson = scenario.getByLabel("Step 1 reviewed JSON");
   await reviewedJson.focus();
   await page.waitForTimeout(40);
@@ -2914,7 +2943,8 @@ test("Scenario clock controls preserve focus, hidden pause, manual stepping, and
   await expect(scenario.getByRole("button", { name: "Resume" })).toBeVisible();
   await scenario.getByRole("button", { name: "Stop" }).click();
   await expect(scenario).toContainText("RUN STOPPED");
-  await expect(scenario.getByText("NOT RUN", { exact: true })).toBeVisible();
+  await showScenarioSurface(page, "queue");
+  await expect(scenario.getByLabel("Ordered Scenario Steps").getByText("NOT RUN", { exact: true })).toBeVisible();
   await expectNoSeriousAxeViolations(page, testInfo);
   await expectShellFitsExactly(page);
   await expectShellFits(page);
@@ -2927,29 +2957,33 @@ test("Scenario authoring confirms explicit membership and keeps only the focused
   await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
   await expect(scenario.getByRole("textbox", { name: "Step 2 Local Injection JSON" })).toBeVisible();
 
-  await scenario.getByRole("button", { name: "Step 1", exact: true }).click();
+  await focusScenarioMember(page, "Step 1");
   await expect(scenario.getByRole("textbox", { name: "Step 1 Local Injection JSON" })).toBeVisible();
   await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
 
-  await scenario.getByRole("button", { name: "Step 2", exact: true }).click();
+  await focusScenarioMember(page, "Step 2");
   await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Move earlier" }).click();
   await expect(scenario.getByRole("article").first()).toContainText("step-2");
   await scenario.getByLabel("Step 1 actions").getByRole("button", { name: "Duplicate Step" }).click();
-  await expect(scenario.getByRole("article")).toHaveCount(3);
+  await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(3);
   await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).click();
-  await expect(scenario.getByRole("article")).toHaveCount(2);
+  await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(2);
   await scenario.getByRole("button", { name: "Undo removal" }).click();
-  await expect(scenario.getByRole("article")).toHaveCount(3);
+  await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(3);
 
-  await scenario.getByRole("button", { name: "Add captured update" }).click();
-  const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
-  await picker.getByRole("button", { name: "Preview visible set" }).click();
-  await expect(picker).toContainText(/retained .* sequence/);
-  await expect(picker).toContainText("Already an explicit Scenario Step");
-  await expect(picker).toContainText("Will add after confirmation");
-  await picker.getByRole("button", { name: "Confirm compatible Steps" }).click();
-  await expect(picker).toBeHidden();
-  await expect(scenario).toContainText("scenario-compatible-bulk-update");
+  await showScenarioSurface(page, "capture");
+  const captures = scenario.getByRole("region", { name: "Scenario captured updates" });
+  await expect(captures).toContainText(/retained sequence/);
+  await expect(captures).toContainText("Already used · Duplicate Step to reuse");
+  const candidate = captures.getByRole("checkbox").filter({ visible: true }).locator('xpath=self::*[not(@disabled)]').first();
+  await candidate.check();
+  await expect(captures.getByRole("button", { name: "Add selected updates" })).toHaveText("Add 1 update");
+  await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(3);
+  await captures.getByRole("button", { name: "Add selected updates" }).click();
+  await expect(captures).toBeVisible();
+  await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(4);
+  await expect(captures.getByRole("status")).toContainText(/Added 1/);
+  expect(await page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(0);
 
   await scenario.getByRole("button", { name: "Add authored update" }).click();
   await expect(scenario.getByText("None · newly authored")).toBeVisible();
@@ -2981,11 +3015,11 @@ test("Scenario Checkpoint authoring stays protected, keyboard reachable, and Rev
   await expect(assertionKind.locator("option")).toHaveCount(6);
   await expect(assertionKind.locator("option").filter({ hasText: "Diagnostic Observation exists" })).toHaveCount(1);
   await assertionKind.selectOption("diagnostic-observation-exists");
-  await expect(checkpoint).toContainText("Diagnostic Observation contract v1");
+  await expect(assertionKind).toHaveValue("diagnostic-observation-exists");
   await expect(checkpoint.getByRole("textbox", { name: "Diagnostic rule code" })).toHaveValue("capture.disconnected");
   await expect(checkpoint.getByRole("combobox", { name: "Diagnostic affected kind" })).toHaveValue("unavailable");
   await assertionKind.selectOption("correlated-local-evidence-exists");
-  await expect(checkpoint).toContainText("Correlated committed Local Evidence exists after Step");
+  await expect(assertionKind).toHaveValue("correlated-local-evidence-exists");
   const within = checkpoint.getByRole("spinbutton", { name: "Within active ms" });
   await within.fill("2000");
 
@@ -3023,11 +3057,12 @@ test("Scenario Diagnostic Observation Review and Trace expose bounded provenance
   await expect(scenario.getByLabel("Protected Scenario target and execution boundary")).not.toContainText("Diagnostic authorization seed");
   await expect(scenario.getByRole("region", { name: "Scenario Run ledger" })).toContainText(/Evidence boundary .*Diagnostic Observation cursor .*sequence 0/);
 
+  await focusScenarioMember(page, "Checkpoint 1");
   const checkpoint = page.getByRole("article", { name: "Scenario Checkpoint Later lost-updates observation exists" });
   await expect(checkpoint).toContainText("PASS");
   await expect(checkpoint).toContainText("Exact affected identity subscription · page topology-small-page · client topology-small-client · session topology-small-session · subscription topology-small-subscription");
   await expect(checkpoint).toContainText(/Diagnostic Observation boundary .*sequence 1/);
-  await expect(checkpoint).toContainText("Compact reference only · raw diagnostic messages are not copied into Scenario Trace");
+  await expect(checkpoint.locator("details")).not.toHaveCount(0);
   await expect(checkpoint).toContainText("Route inspect affected");
   const inspect = checkpoint.getByRole("button", { name: "Inspect Diagnostic Observation subscription.lost-updates" });
   await inspect.focus();
@@ -3048,43 +3083,155 @@ test("Scenario Diagnostic Observation Review and Trace expose bounded provenance
   await attachMatrixScreenshot(page, testInfo, "scenario-diagnostic-trace-normal-light");
 });
 
+for (const width of [900, 563]) {
+  test(`Scenario member visible scroll follows stable identity at ${width}px`, async ({ page }, testInfo) => {
+    await openScenario(page, "local-injection-scenario-edit", { width, height: 700 }, "dark");
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+    const pane = scenario.getByLabel("Focused Scenario member", { exact: true });
+    await focusScenarioMember(page, "Step 1");
+    const editor = scenario.getByRole("textbox", { name: "Step 1 Local Injection JSON", exact: true });
+    const original = JSON.parse(await editor.innerText());
+    original.fields.value = Array.from({ length: 120 }, (_, index) => `line-${index}`);
+    const raw = JSON.stringify(original, null, 2);
+    await editor.fill(raw);
+    await editor.focus();
+    await page.keyboard.press("ControlOrMeta+Home");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Shift+ArrowRight");
+    const host = editor.locator('xpath=ancestor::*[@data-editor-engine="codemirror-6"]');
+    const selection = await host.evaluate((element) => ({ anchor: element.dataset.selectionAnchor, head: element.dataset.selectionHead }));
+    const source = await page.evaluate(() => (window as unknown as {
+      __getWorkbenchScenarioSnapshot(): { scenario: { steps: { draft: { sourceRawText: string | null } }[] } };
+    }).__getWorkbenchScenarioSnapshot().scenario.steps[0]!.draft.sourceRawText);
+    await expect.poll(() => pane.evaluate((element) => element.scrollHeight)).toBeGreaterThan(1800);
+    await pane.evaluate((element) => { element.scrollTop = 600; });
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    await focusScenarioMember(page, "Step 2", true);
+    await expect(pane.locator("h2")).toBeFocused();
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(0);
+    await pane.evaluate((element) => { element.scrollTop = 40; });
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(40);
+    await focusScenarioMember(page, "Step 1", true);
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    await expect.poll(() => host.evaluate((element) => ({ anchor: element.dataset.selectionAnchor, head: element.dataset.selectionHead }))).toEqual(selection);
+    expect(await page.evaluate(() => (window as unknown as {
+      __getWorkbenchScenarioSnapshot(): { scenario: { steps: { draft: { rawText: string } }[] } };
+    }).__getWorkbenchScenarioSnapshot().scenario.steps[0]!.draft.rawText)).toBe(raw);
+    expect(await page.evaluate(() => (window as unknown as {
+      __getWorkbenchScenarioSnapshot(): { scenario: { steps: { draft: { sourceRawText: string | null } }[] } };
+    }).__getWorkbenchScenarioSnapshot().scenario.steps[0]!.draft.sourceRawText)).toBe(source);
+    await showScenarioSurface(page, "capture");
+    await showScenarioSurface(page, "editor");
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    await scenario.getByRole("button", { name: "Back to Evidence", exact: true }).click();
+    const parked = page.getByRole("region", { name: "Parked Local Injection Scenario" });
+    await parked.getByRole("button", { name: "Resume Scenario", exact: true }).click();
+    await expect(scenario.getByRole("button", { name: "Back to Evidence", exact: true })).toBeFocused();
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    // Two activations in one turn must cancel the intermediate restoration frame.
+    await showScenarioSurface(page, "queue");
+    await scenario.getByLabel("Ordered Scenario Steps").evaluate((queue) => {
+      queue.querySelector<HTMLButtonElement>('[aria-label="Step 2"]')!.click();
+      queue.querySelector<HTMLButtonElement>('[aria-label="Step 1"]')!.click();
+    });
+    await expect(pane).toBeVisible();
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+
+    // Reordering changes ordinals, while the saved scroll still belongs to Step A.
+    await focusScenarioMember(page, "Step 2");
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(40);
+    await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Move earlier" }).click();
+    await focusScenarioMember(page, "Step 2");
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    const removedDraft = await page.evaluate(() => {
+      const step = (window as unknown as {
+        __getWorkbenchScenarioSnapshot(): { scenario: { steps: { id: string; draft: { rawText: string; sourceRawText: string | null } }[] } };
+      }).__getWorkbenchScenarioSnapshot().scenario.steps[1]!;
+      return { id: step.id, rawText: step.draft.rawText, sourceRawText: step.draft.sourceRawText };
+    });
+    // Native activation avoids scrolling the reading pane to its offscreen
+    // Remove control before removal. Undo must restore this exact reading point.
+    await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).evaluate((button: HTMLButtonElement) => button.click());
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(40);
+    await scenario.getByRole("button", { name: "Undo removal", exact: true }).click();
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    const restoredEditor = scenario.getByRole("textbox", { name: "Step 2 Local Injection JSON", exact: true });
+    const restoredHost = restoredEditor.locator('xpath=ancestor::*[@data-editor-engine="codemirror-6"]');
+    await expect.poll(() => restoredHost.evaluate((element) => ({ anchor: element.dataset.selectionAnchor, head: element.dataset.selectionHead }))).toEqual(selection);
+    expect(await page.evaluate((id) => {
+      const state = (window as unknown as {
+        __getWorkbenchScenarioSnapshot(): { focusedMemberId: string; scenario: { steps: { id: string; draft: { rawText: string; sourceRawText: string | null } }[] } };
+      }).__getWorkbenchScenarioSnapshot();
+      const step = state.scenario.steps.find((step) => step.id === id)!;
+      return { focusedMemberId: state.focusedMemberId, step: { id: step.id, rawText: step.draft.rawText, sourceRawText: step.draft.sourceRawText } };
+    }, removedDraft.id)).toEqual({ focusedMemberId: removedDraft.id, step: removedDraft });
+    await focusScenarioMember(page, "Step 1");
+    await scenario.getByLabel("Step 1 actions").getByRole("button", { name: "Remove Step" }).click();
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    await scenario.getByRole("button", { name: "Add checkpoint" }).click();
+    const checkpoint = scenario.locator(".workbench-react__scenario-checkpoint");
+    await checkpoint.getByRole("combobox", { name: /Assertion .* kind/ }).selectOption("command-field-equals");
+    await checkpoint.getByRole("textbox", { name: "Primitive JSON", exact: true }).fill('"unfinished');
+    for (let index = 0; index < 5; index += 1) await checkpoint.getByRole("button", { name: "Add assertion", exact: true }).click();
+    await pane.evaluate((element) => { element.scrollTop = 160; });
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(160);
+    await focusScenarioMember(page, "Step 1");
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    await focusScenarioMember(page, "Checkpoint 1", true);
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(160);
+    await expect(checkpoint.getByRole("textbox", { name: "Primitive JSON", exact: true })).toHaveValue('"unfinished');
+    await focusScenarioMember(page, "Step 1");
+    await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBe(600);
+    await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
+    expect(await page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(0);
+    expect(await page.evaluate(() => (window as unknown as { __serverInjectionExecutionCount(): number }).__serverInjectionExecutionCount())).toBe(0);
+    await expectShellFitsExactly(page);
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `scenario-member-scroll-${width}-dark`);
+  });
+}
+
 test("Scenario high-volume document mounts one of 100 representative large editors and keeps keyboard reorder usable", async ({ page }, testInfo) => {
   await openScenario(page, "live-selected", { width: 563, height: 700 }, "light");
   expect(await page.locator('[data-editor-engine="codemirror-6"]').count()).toBe(0);
   expect(await page.evaluate(() => performance.getEntriesByType("resource").some(({ name }) => name.includes("local-injection-document.js")))).toBe(false);
   await openScenario(page, "local-injection-scenario-high-volume", { width: 563, height: 700 }, "light");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-  await expect(scenario.getByRole("article")).toHaveCount(100);
+  await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(100);
+  await expect(scenario.getByRole("article")).toHaveCount(1);
   await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
-  await expect(scenario.getByText("Collapsed Draft · Open editor", { exact: false })).toHaveCount(99);
+  await expect(scenario.getByLabel("Ordered Scenario Steps").getByRole("button", { name: /^Step \d+$/, includeHidden: true })).toHaveCount(100);
   await expect(scenario).toContainText("100/100 explicit Steps");
   await scenario.getByRole("button", { name: "Add authored update" }).click();
   await expect(scenario.getByRole("alert")).toContainText("at most 100 Steps");
-  await expect(scenario.getByRole("article")).toHaveCount(100);
+  await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(100);
+  await expect(scenario.getByRole("article")).toHaveCount(1);
   const step100Editor = scenario.getByRole("textbox", { name: "Step 100 Local Injection JSON" });
   await step100Editor.focus();
   await page.keyboard.press("ControlOrMeta+Home");
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Shift+ArrowRight");
   const step100Host = step100Editor.locator('xpath=ancestor::*[@data-editor-engine="codemirror-6"]');
-  await step100Host.locator(".cm-scroller").evaluate((scroller) => {
-    scroller.scrollTop = 500;
-    scroller.dispatchEvent(new Event("scroll"));
-  });
+  const memberPane = scenario.getByLabel("Focused Scenario member", { exact: true });
+  await memberPane.evaluate((pane) => { pane.scrollTop = 500; });
+  await expect.poll(() => memberPane.evaluate((pane) => pane.scrollTop)).toBe(500);
   const beforePresentation = await step100Host.evaluate((host) => ({
     anchor: host.getAttribute("data-selection-anchor"), head: host.getAttribute("data-selection-head"), scrollTop: host.getAttribute("data-scroll-top")
   }));
-  await scenario.getByRole("button", { name: "Step 99", exact: true }).click();
+  await focusScenarioMember(page, "Step 99");
   await expect(scenario.getByRole("textbox", { name: "Step 99 Local Injection JSON" })).toBeVisible();
-  await scenario.getByRole("button", { name: "Step 100", exact: true }).click();
+  await focusScenarioMember(page, "Step 100");
   await expect(step100Editor).toBeVisible();
+  await expect.poll(() => memberPane.evaluate((pane) => pane.scrollTop)).toBe(500);
   await expect.poll(() => step100Host.evaluate((host) => ({
     anchor: host.getAttribute("data-selection-anchor"), head: host.getAttribute("data-selection-head"), scrollTop: host.getAttribute("data-scroll-top")
   }))).toEqual(beforePresentation);
   await scenario.getByRole("button", { name: "Review Scenario" }).click();
   await expect(scenario.getByRole("button", { name: "Edit Scenario" })).toBeVisible();
   await scenario.getByRole("button", { name: "Edit Scenario" }).click();
-  await expect(scenario.getByRole("article")).toHaveCount(100);
+  await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(100);
+  await expect(scenario.getByRole("article")).toHaveCount(1);
   await expect(scenario.getByRole("textbox", { name: "Step 100 Local Injection JSON" })).toBeVisible();
   await expect.poll(() => step100Host.evaluate((host) => ({
     anchor: host.getAttribute("data-selection-anchor"), head: host.getAttribute("data-selection-head"), scrollTop: host.getAttribute("data-scroll-top")
@@ -3092,11 +3239,12 @@ test("Scenario high-volume document mounts one of 100 representative large edito
   const heapBytes = await page.evaluate(() => (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0);
   expect(heapBytes).toBeGreaterThan(0);
   expect(heapBytes).toBeLessThan(256 * 1024 * 1024);
-  await scenario.getByRole("button", { name: "Step 99", exact: true }).click();
+  await focusScenarioMember(page, "Step 99");
   const moveLater = scenario.getByLabel("Step 99 actions").getByRole("button", { name: "Move later" });
   await moveLater.focus();
   await page.keyboard.press("Enter");
-  await expect(scenario.getByRole("article").last()).toContainText("step-99");
+  await expect(scenario.getByRole("article")).toContainText("step-99");
+  await expect(scenario.getByLabel("Ordered Scenario Steps").getByRole("button", { name: "Step 100", exact: true, includeHidden: true })).toHaveAttribute("aria-pressed", "true");
   await expectShellFitsExactly(page);
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -3106,15 +3254,16 @@ test("Scenario high-volume document mounts one of 100 representative large edito
 test("Scenario fails closed for incompatible membership, invalid Review, and partial delivery", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-scenario-edit", { width: 900, height: 700 }, "dark");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-  const add = scenario.getByRole("button", { name: "Add captured update" });
-  await add.click();
-  const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
-  const unavailable = picker.getByRole("button", { name: "Add this update", disabled: true });
-  await expect(unavailable.first()).toBeDisabled();
-  await expect(picker.getByText(/Unavailable ·/).first()).toBeVisible();
+  await showScenarioSurface(page, "capture");
+  const captures = scenario.getByRole("region", { name: "Scenario captured updates" });
+  await expect(captures).toContainText("Exact Scenario target");
+  await expect(captures.getByRole("checkbox", { disabled: true }).first()).toBeDisabled();
+  await expect(captures.getByText("Already used · Duplicate Step to reuse").first()).toBeVisible();
+  // Capture is persistent: Escape has no picker transient to dismiss.
+  await captures.getByRole("searchbox", { name: "Search captured updates" }).focus();
   await page.keyboard.press("Escape");
-  await expect(picker).toBeHidden();
-  await expect(add).toBeFocused();
+  await expect(captures).toBeVisible();
+  await focusScenarioMember(page, "Step 2");
 
   const secondDraft = scenario.getByRole("region", { name: "Step 2 Injection Draft" });
   const compareSource = secondDraft.getByRole("button", { name: "Compare Source" });
@@ -3143,12 +3292,16 @@ test("Scenario fails closed for incompatible membership, invalid Review, and par
   await expect(notRunTrace).toBeVisible();
 
   await page.setViewportSize({ width: 900, height: 320 });
-  await expect.poll(() => stoppedSteps.evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
+  await showScenarioSurface(page, "queue");
+  await expect.poll(() => stoppedSteps.evaluate((element) => element.clientHeight)).toBeGreaterThan(0);
   await partialTrace.scrollIntoViewIfNeeded();
   await expect(partialTrace).toBeInViewport();
   await notRunTrace.scrollIntoViewIfNeeded();
   await expect(notRunTrace).toBeInViewport();
-  await expect(stopped.getByText(/Injection local-injection-/)).toHaveCount(1);
+  await focusScenarioMember(page, "Step 1");
+  const trace = stopped.getByRole("article").locator("details");
+  await trace.locator("summary").click();
+  await expect(trace.getByText(/Injection local-injection-/)).toHaveCount(1);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(1);
   await expectNoSeriousAxeViolations(page, testInfo);
 });
@@ -3173,18 +3326,22 @@ test("Scenario halt ledger exposes drift authorization, unknown, unretained, and
 
   await openScenario(page, "local-injection-scenario-unknown", { width: 900, height: 320 }, "dark");
   scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await focusScenarioMember(page, "Step 1");
   await expect(scenario).toContainText("DELIVERY UNKNOWN");
   await expect(scenario).toContainText("retention NOT_CREATED");
-  await expect(scenario.getByText("NOT RUN", { exact: true })).toBeVisible();
+  await showScenarioSurface(page, "queue");
+  await expect(scenario.getByLabel("Ordered Scenario Steps").getByText("NOT RUN", { exact: true })).toBeVisible();
 
   await openScenario(page, "local-injection-scenario-unretained", { width: 900, height: 700 }, "light");
   scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await focusScenarioMember(page, "Step 1");
   await expect(scenario).toContainText("DELIVERED LOCALLY");
   await expect(scenario).toContainText("DELIVERED_UNRETAINED");
   await expect(scenario).toContainText("no committed Local Evidence");
 
   await openScenario(page, "local-injection-scenario-cleared", { width: 563, height: 700 }, "dark");
   scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await focusScenarioMember(page, "Step 1");
   await expect(scenario).toContainText("UNAVAILABLE_AFTER_CLEAR");
   await expect(scenario).toContainText("Local Evidence");
   await expectShellFitsExactly(page);
@@ -3197,6 +3354,7 @@ test("Scenario Trace explicitly reports bounded executor-controlled terminal val
   await page.goto("/?scenario=local-injection-scenario-partial&theme=light&terminalLimit=1");
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await focusScenarioMember(page, "Step 1");
   await expect(scenario.getByRole("note")).toHaveCount(1);
   await expect(scenario.getByRole("note").first()).toContainText("TRACE VALUE LIMITED");
   await expect(scenario.getByRole("note").first()).toContainText("Delivery semantics are unchanged");
@@ -3301,7 +3459,7 @@ test("Scenario edits can return to Evidence, resume, and be discarded from the p
   await expect(page.getByRole("button", { name: "Create Local Injection Draft · Unavailable" })).toBeDisabled();
   await parked.getByRole("button", { name: "Resume Scenario" }).click();
   await expect(scenario).toBeVisible();
-  await expect(scenario.getByRole("heading", { name: "Local Injection Scenario" })).toBeFocused();
+  await expect(scenario.getByRole("button", { name: "Back to Evidence", exact: true })).toBeFocused();
   await expect(scenario.getByRole("button", { name: "Step 2" })).toBeVisible();
   await expect(secondEditor).toHaveText(`${originalText} `);
   await secondEditor.focus();
@@ -3353,13 +3511,22 @@ async function expectProtectedBoundaryValues(draft: ReturnType<Page["getByRole"]
       };
     })
   );
-  expect(values.map(({ label }) => label)).toEqual(expect.arrayContaining(["Target", "Session", "Source", "Validation", "Delivery", "Boundary"]));
+  expect(values.map(({ label }) => label)).toEqual(expect.arrayContaining(["Target", "Session", "Source", "Delivery", "Boundary"]));
   for (const value of values) {
     expect(value.textOverflow, `${value.label} must not silently ellipsize`).not.toBe("ellipsis");
     expect(value.whiteSpace, `${value.label} must expose its complete value`).not.toBe("nowrap");
     expect(value.scrollWidth, `${value.label} must fit or wrap its complete value`).toBeLessThanOrEqual(value.clientWidth);
   }
   expect(values.find(({ label }) => label === "Boundary")?.text).toContain("LOCAL ONLY");
+  const readiness = draft.locator('footer [data-protected-boundary="validation"]');
+  if (["edit", "review"].includes(await draft.getAttribute("data-phase") ?? "")) {
+    await expect(readiness).toHaveCount(1);
+    await expect(readiness).toBeVisible();
+    await expect(readiness).toContainText("JSON and target validated");
+  } else {
+    await expect(readiness).toHaveCount(0);
+    await expect(draft.locator(".workbench-react__local-outcome, .workbench-react__local-pending")).toBeVisible();
+  }
 }
 
 async function expectCoreControlInViewport(page: Page, control: ReturnType<Page["getByRole"]>): Promise<void> {

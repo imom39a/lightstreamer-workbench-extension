@@ -44,10 +44,10 @@ test("Filter editor stages the same value states and preserves Cancel and Apply"
   const openValues = async () => {
     await page.getByRole("button", { name: "Filter", exact: true }).click();
     await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
-    await page.getByRole("option", { name: "Add Evidence kind criterion", exact: true }).click();
+    await page.getByRole("button", { name: "Add Evidence kind criterion", exact: true }).click();
   };
   await openValues();
-  const group = page.getByRole("dialog", { name: "Evidence kind exact values" }).getByRole("radiogroup").first();
+  const group = page.getByRole("dialog", { name: "Evidence kind values" }).getByRole("radiogroup").first();
   await group.getByRole("radio", { name: "Include", exact: true }).check();
   await group.getByRole("radio", { name: "Exclude", exact: true }).check();
   await expect(group.getByRole("radio", { name: "Include", exact: true })).not.toBeChecked();

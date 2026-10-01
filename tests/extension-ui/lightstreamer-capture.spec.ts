@@ -52,6 +52,7 @@ type OfficialClientScenario =
   | "server-injection"
   | "server-injection-recipe"
   | "scenario"
+  | "captured-scenario"
   | "diagnostics"
   | "high-volume-loading"
   | "issue-16"
@@ -235,8 +236,9 @@ async function runOfficialClientPanelJourney(
       );
     }
 
-    if (scenario === "scenario") {
-      await runOfficialClientScenarioJourney(pageCdp, panelCdp);
+    if (scenario === "scenario" || scenario === "captured-scenario") {
+      if (scenario === "captured-scenario") await runOfficialClientCapturedScenarioJourney(pageCdp, panelCdp);
+      else await runOfficialClientScenarioJourney(pageCdp, panelCdp);
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
       return;
     }
@@ -362,7 +364,7 @@ async function runOfficialClientPanelJourney(
         `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
             .find((candidate) => candidate.getAttribute("data-scope-id") === ${JSON.stringify(subscription.id)})
             ?.getAttribute("aria-selected") === "true" &&
-          document.querySelector(".workbench-react__evidence-summary")?.textContent?.includes("Matching 50") &&
+          document.querySelector(".workbench-react__evidence-summary")?.textContent?.includes("50 Evidence") &&
           [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
             .some((row) => row.textContent?.includes("store-nyc-001-invoice")) &&
           [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
@@ -379,7 +381,7 @@ async function runOfficialClientPanelJourney(
         `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
             .find((candidate) => candidate.getAttribute("data-scope-id") === ${JSON.stringify(invoice.id)})
             ?.getAttribute("aria-selected") === "true" &&
-          document.querySelector(".workbench-react__evidence-summary")?.textContent?.includes("Matching 30") &&
+          document.querySelector(".workbench-react__evidence-summary")?.textContent?.includes("30 Evidence") &&
           [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
             .some((row) => row.textContent?.includes("store-nyc-001-invoice")) &&
           ![...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
@@ -935,8 +937,8 @@ async function runOfficialClientServerInjectionJourney(
   await clickVisiblePanelElement(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .find((row) => row.textContent?.includes("fixture-message.TICKER") && row.getAttribute("data-evidence-source") === "SERVER")`,
-    "the deterministic Server Evidence"
+      .find((row) => row.textContent?.includes("fixture-message.TICKER") && row.getAttribute("data-evidence-source") === "SERVER")?.querySelector(".workbench-react__evidence-op")`,
+    "the deterministic Server Evidence operation"
   );
   await waitForCondition(
     panelCdp,
@@ -1053,8 +1055,8 @@ async function runOfficialClientScenarioJourney(
   await clickVisiblePanelElement(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .find((candidate) => candidate.textContent?.includes("fixture-message.TICKER") && candidate.getAttribute("data-evidence-source") === "SERVER")`,
-    "the deterministic Server ADD used to anchor the Scenario target"
+      .find((candidate) => candidate.textContent?.includes("fixture-message.TICKER") && candidate.getAttribute("data-evidence-source") === "SERVER")?.querySelector(".workbench-react__evidence-op")`,
+    "the deterministic Server ADD operation used to anchor the Scenario target"
   );
   await waitForCondition(
     panelCdp,
@@ -1216,12 +1218,83 @@ async function runOfficialClientScenarioJourney(
   );
 }
 
+async function runOfficialClientCapturedScenarioJourney(pageCdp: CdpClient, panelCdp: CdpClient): Promise<void> {
+  // Obtain three genuine server snapshots through the official client's normal
+  // subscription lifecycle. No captured callback or inbound stream is fabricated.
+  for (const expected of [2, 3]) {
+    await evaluateByValue(pageCdp, `(() => { const {client, subscription} = window.LSEW_MUTATE_FIXTURE; client.unsubscribe(subscription); })()`);
+    await waitForCondition(pageCdp, `!window.LSEW_MUTATE_FIXTURE.subscription.isSubscribed()`, "official Subscription settles unsubscribe");
+    await evaluateByValue(pageCdp, `(() => { const {client, subscription} = window.LSEW_MUTATE_FIXTURE; client.subscribe(subscription); })()`);
+    await waitForCondition(pageCdp, `Number(document.querySelector('#update-count').textContent) === ${expected}`, "a new real Server snapshot reaches the application");
+  }
+  await evaluateByValue(pageCdp, `(() => {
+    const bridge = globalThis.__LSEW_REINJECTION_BRIDGE__, original = bridge.reinject;
+    globalThis.__LSEW_SCENARIO_BRIDGE_CALLS__ = [];
+    bridge.reinject = function(requestId, panelSessionId, draft) {
+      const result = original.call(bridge, requestId, panelSessionId, draft);
+      globalThis.__LSEW_SCENARIO_BRIDGE_CALLS__.push({requestId, panelSessionId, draft: structuredClone(draft), result: structuredClone(result)});
+      return result;
+    };
+  })()`);
+  await waitForCondition(panelCdp, `document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-source="SERVER"]').length >= 3`, "all real snapshots are retained");
+  await clickVisiblePanelElement(panelCdp, `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')].find(row => row.textContent.includes('fixture-message.TICKER') && row.getAttribute('data-evidence-source') === 'SERVER')?.querySelector('.workbench-react__evidence-op')`, "a real captured Source operation anchors the Scenario");
+  await waitForCondition(panelCdp, `[...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Create Local Injection Draft' && !button.disabled)`, "captured Source offers Draft authoring");
+  if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Create Local Injection Draft')`)) await clickPanelButton(panelCdp, "Open selected Context");
+  await pressVisiblePanelButton(panelCdp, "Create Local Injection Draft");
+  await waitForCondition(panelCdp, `document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]')`, "captured Draft opens");
+  await clickPanelButton(panelCdp, "Convert to Scenario");
+  await waitForCondition(panelCdp, `document.querySelector('[aria-label="Scenario captured updates"]')`, "the promoted capture workspace mounts");
+  await showScenarioSurface(panelCdp, "Captured updates");
+  await waitForCondition(panelCdp, `document.querySelectorAll('[aria-label="Scenario captured updates"] input[type="checkbox"]').length === 3`, "the Capture workspace queries every retained target snapshot");
+  // Type through the native input, exercising the actual React search transition.
+  await clickVisiblePanelElement(panelCdp, `document.querySelector('[aria-label="Search captured updates"]')`, "capture search");
+  await panelCdp.request("Input.insertText", {text: "fixture-message.TICKER"});
+  await waitForCondition(panelCdp, `document.querySelector('[aria-label="Scenario captured updates"]').getAttribute('aria-busy') === 'false' && document.querySelectorAll('[aria-label="Scenario captured updates"] input[type="checkbox"]').length === 3`, "retained capture search settles independently");
+  const candidates = await evaluateByValue<Array<{id: string; sequence: number}>>(panelCdp, `[...document.querySelectorAll('[aria-label="Scenario captured updates"] input[type="checkbox"]')].filter(input => !input.disabled).map(input => ({id: input.getAttribute('aria-label').replace('Select captured update ', ''), sequence: Number(input.closest('label').textContent.match(/retained sequence ([0-9]+)/)[1])}))`);
+  expect(candidates).toHaveLength(2);
+  for (const candidate of candidates) await clickVisiblePanelElement(panelCdp, `document.querySelector(${JSON.stringify(`[aria-label="Select captured update ${candidate.id}"]`)})`, "choose a retained captured update");
+  await clickVisiblePanelElement(panelCdp, `document.querySelector('[aria-label="Add selected updates"]')`, "append the selected retained captures atomically");
+  await waitForCondition(panelCdp, `document.querySelectorAll('[aria-label="Ordered Scenario Steps"] ol li').length === 3`, "explicit queued Steps appear after the async batch");
+  const queue = await evaluateByValue<string[]>(panelCdp, `[...document.querySelectorAll('[aria-label="Ordered Scenario Steps"] ol li')].map(row => row.textContent)`);
+  candidates.sort((a, b) => a.sequence - b.sequence).forEach((candidate, index) => expect(queue[index + 1]).toContain(candidate.id));
+  expect(await evaluateByValue(pageCdp, `globalThis.__LSEW_SCENARIO_BRIDGE_CALLS__.length`)).toBe(0);
+  expect(await evaluateByValue(pageCdp, `Number(document.querySelector('#update-count').textContent)`)).toBe(3);
+  for (let step = 1; step <= 3; step += 1) {
+    await replaceScenarioStepJson(panelCdp, step, {command: "UPDATE", key: "fixture-message.TICKER", isSnapshot: false, fields: {key: "fixture-message.TICKER", command: "UPDATE", modelId: "MESSENGER", modelValues: {messageId: "fixture-1", messageType: "TICKER", messageText: `Captured batch Step ${step}`}}});
+  }
+  await clickPanelButton(panelCdp, "Review Scenario");
+  await waitForCondition(panelCdp, `[...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Step next' && !button.disabled)`, "captured batch freezes a reviewed Run");
+  for (let step = 1; step <= 3; step += 1) {
+    await clickPanelButton(panelCdp, "Step next");
+    await waitForCondition(pageCdp, `document.querySelector('#message-text').textContent === 'Captured batch Step ${step}' && Number(document.querySelector('#update-count').textContent) === ${3 + step} && globalThis.__LSEW_SCENARIO_BRIDGE_CALLS__.length === ${step}`, "captured Step reaches ordinary app listeners once");
+    await waitForCondition(panelCdp, `document.querySelector('[aria-label="Local Injection Scenario"]').textContent.includes(${JSON.stringify(step === 3 ? "RUN COMPLETE" : "PAUSED")})`, "delivery settles before the next deliberate Step");
+  }
+  const proof = await readScenarioProof(pageCdp, panelCdp, "fixture-message.TICKER");
+  expect(proof.commands).toEqual(["UPDATE", "UPDATE", "UPDATE"]);
+  expect(new Set(proof.requestIds).size).toBe(3);
+  expect(new Set(proof.evidenceIds).size).toBe(3);
+  expect(proof.correlations).toHaveLength(3);
+  expect(proof.correlations.map(entry => entry.outcome)).toEqual(["delivered", "delivered", "delivered"]);
+  expect(proof.applicationEvents.slice(-3)).toEqual([1, 2, 3].map(step => `live | scenario.mutate-reinject | UPDATE | fixture-message.TICKER | Captured batch Step ${step}`));
+  await clickPanelButton(panelCdp, "Finish Scenario");
+}
+
+async function showScenarioSurface(panelCdp: CdpClient, label: string): Promise<void> {
+  const button = `[...document.querySelectorAll('[aria-label="Scenario working surface"] button')].find(button => button.textContent.trim() === ${JSON.stringify(label)})`;
+  if (await isPanelElementVisible(panelCdp, button)) await clickVisiblePanelElement(panelCdp, button, `${label} surface`);
+}
+
+async function focusScenarioStep(panelCdp: CdpClient, ordinal: number): Promise<void> {
+  await showScenarioSurface(panelCdp, "Scenario queue");
+  await clickVisiblePanelElement(panelCdp, `[...document.querySelectorAll('[aria-label="Ordered Scenario Steps"] ol li button')].find(button => button.querySelector('strong')?.textContent === ${JSON.stringify(`Step ${ordinal}`)})`, `queue Step ${ordinal}`);
+}
+
 async function replaceScenarioStepJson(
   panelCdp: CdpClient,
   step: number,
   document: unknown
 ): Promise<void> {
-  await clickPanelButton(panelCdp, `Step ${step}`);
+  await focusScenarioStep(panelCdp, step);
   await waitForCondition(
     panelCdp,
     `document.querySelector('[aria-label="Step ${step} Local Injection JSON"][contenteditable="true"]')`,
@@ -1296,6 +1369,16 @@ async function readScenarioProof(
         .reverse()
     };
   })()`);
+  // The accepted builder mounts one document. Visit each queue member to
+  // collect its independent immutable trace rather than assuming all articles
+  // exist simultaneously. Queue navigation is presentation only.
+  const queueSize = await evaluateByValue<number>(panelCdp, `document.querySelectorAll('[aria-label="Ordered Scenario Steps"] ol li').length`);
+  const currentStepTexts: string[] = [];
+  for (let ordinal = 1; ordinal <= queueSize; ordinal += 1) {
+    await focusScenarioStep(panelCdp, ordinal);
+    await waitForCondition(panelCdp, `document.querySelector('[aria-label="Focused Scenario member"] article header')?.textContent?.includes('Step ${ordinal}')`, `focused trace for Step ${ordinal}`);
+    currentStepTexts.push(await evaluateByValue<string>(panelCdp, `document.querySelector('[aria-label="Focused Scenario member"] article').textContent ?? ""`));
+  }
   const correlations = await evaluateByValue<Array<{
     scenarioId: string;
     runId: string;
@@ -1314,14 +1397,13 @@ async function readScenarioProof(
       ?.querySelector("dd")?.textContent ?? "";
     const currentRunId = runBoundary.match(/local-injection-run-\\d+/)?.[0];
     if (!scenarioId || !currentRunId) throw new Error("Scenario or current Run identity is missing.");
-    const current = [...scenario.querySelectorAll('[aria-label="Ordered Scenario Steps"] > article')].map((article) => {
-      const text = article.textContent ?? "";
-      const stepId = text.match(/(step-\\d+) · stable identity/)?.[1];
+    const current = ${JSON.stringify(currentStepTexts)}.map((text) => {
+      const stepId = text.match(/(step-\\d+) · delay/)?.[1];
       const injectionId = text.match(/Injection (local-injection-\\d+)/)?.[1];
       const executionId = text.match(/execution (local-injection-execution-\\d+)/)?.[1];
       const requestId = text.match(/request ([^\\s·]+)/)?.[1];
-      const evidenceId = text.match(/Local Evidence ([^\\s·]+)/)?.[1];
-      const headline = article.querySelector("p strong")?.textContent?.trim().toLowerCase();
+      const evidenceId = text.match(/Evidence (synthetic-[^\\s·]+)/)?.[1];
+      const headline = text.match(/(DELIVERED LOCALLY|DELIVERY UNKNOWN|BLOCKED|FAILED|NOT RUN) · listeners/)?.[1]?.toLowerCase();
       const outcome = headline?.startsWith("delivered") ? "delivered" : headline;
       if (!stepId || !injectionId || !executionId || !requestId || !evidenceId || !outcome) {
         throw new Error("Current Scenario correlation is incomplete: " + text);
@@ -1676,3 +1758,8 @@ async function readBrowserErrors(cdp: CdpClient): Promise<string[]> {
       : ["browser error capture missing"]`
   );
 }
+
+
+test("official-client human capture search and selected batch deliver reviewed Steps with committed Local Evidence", async () => {
+  await runOfficialClientPanelJourney("2664,727", {width: 900, height: 700}, "captured-scenario");
+});

@@ -26,6 +26,7 @@ export type StorageHeadroomDiagnostic = Readonly<{
   title: string;
   affected: string;
   detail: string;
+  technicalDetail: string;
   recovery: string;
 }>;
 
@@ -176,7 +177,8 @@ export function storageHeadroomDiagnostic(
     severity: "Warning",
     title: "Estimated storage headroom is low",
     affected: "Extension origin",
-    detail: `The browser estimates about ${headroomMiB} MiB free, below the proposed normal History Capacity of ${PROPOSED_NORMAL_HISTORY_HEADROOM.recordCount.toLocaleString()} Evidence records or ${targetMiB} MiB canonical accounted bytes. This is advisory only: rough, not a reservation or acceptance guarantee. Canonical count/byte admission and actual QuotaExceededError remain authoritative.`,
-    recovery: "Free browser storage or reduce extension-origin usage, then reopen DevTools. No unlimitedStorage permission is requested."
+    detail: "Future History writes may fail; the browser estimate is advisory.",
+    technicalDetail: `The browser estimates about ${headroomMiB} MiB free, below normal History Capacity of ${PROPOSED_NORMAL_HISTORY_HEADROOM.recordCount.toLocaleString()} Evidence records or ${targetMiB} MiB canonical accounted bytes. This is advisory only: rough, not a reservation or acceptance guarantee. Canonical count/byte admission and actual QuotaExceededError remain authoritative.`,
+    recovery: "Free browser storage or reduce extension-origin usage, then reopen DevTools."
   });
 }

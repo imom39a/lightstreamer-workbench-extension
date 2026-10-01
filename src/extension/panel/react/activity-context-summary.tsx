@@ -7,9 +7,8 @@ function logicalCount(identified: number, unidentifiedDeliveries: number): strin
 }
 
 /** Scope-owned facts alongside Evidence; the parent retains disclosure state. */
-export function ActivityContextSummary({ projection, scopeLabel, filterSummary, hasActiveFilter, frozen, open, onOpenChange, onRankingFilter, onResetFilter }: Readonly<{
+export function ActivityContextSummary({ projection, filterSummary, hasActiveFilter, frozen, open, onOpenChange, onRankingFilter, onResetFilter }: Readonly<{
   projection: ActivityProjection;
-  scopeLabel: string;
   filterSummary: string;
   hasActiveFilter: boolean;
   frozen: boolean;
@@ -34,7 +33,7 @@ export function ActivityContextSummary({ projection, scopeLabel, filterSummary, 
   const usable = projection.state === "AVAILABLE" || projection.state === "LIMITED" || projection.state === "EMPTY_MATCH" || projection.state === "EMPTY_INTERVAL";
   const identity = projection.logicalUpdateIdentity;
   return <details className="workbench-activity-summary workbench-context-disclosure" aria-label="Activity summary" open={open} onToggle={event => onOpenChange(event.currentTarget.open)}>
-    <summary>Activity summary — {scopeLabel}</summary>
+    <summary>Activity summary</summary>
     <div className="workbench-activity-summary__content" aria-busy={projection.state === "LOADING"}>
       <p>Current Scope and Filter · {frozen ? "Frozen" : "Committed"} read point · {projection.readPoint.coverage} observation Coverage.</p>
       <div className="workbench-activity-summary__filter"><span>Filter: {filterSummary}</span>{hasActiveFilter ? <button type="button" onClick={onResetFilter}>Reset Filter</button> : null}</div>

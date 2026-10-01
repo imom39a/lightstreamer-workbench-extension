@@ -3467,11 +3467,9 @@ function readEvaluatedProjectionPage(
     })();
   }
   telemetry.fullRetainedScan = true;
-  const range = anchor === null
-    ? queryBoundRange(first, last)
-    : page.order === "NEWEST_FIRST"
-      ? queryOpenUpperBoundRange(first, Math.min(last, anchor.sequence))
-      : queryOpenLowerBoundRange(Math.max(first, anchor.sequence), last);
+  // Totals describe the complete latched retained result, including Evidence
+  // before the cursor. Only page membership is narrowed by isAfterAnchor.
+  const range = queryBoundRange(first, last);
   const state = { reads: 0, bound: telemetry.cursorWorkBound };
   return new Promise((resolve, reject) => {
     const request = store.openCursor(range, page.order === "NEWEST_FIRST" ? "prev" : "next");

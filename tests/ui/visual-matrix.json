@@ -872,5 +872,143 @@
       "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
       "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
     }
+  },
+  {
+    "id": "scenario-capture-default5000-normal-dark",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "theme": "dark",
+    "reference": {
+      "source": "git",
+      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-review-normal-dark-darwin.png"
+    },
+    "production": {
+      "scenario": "local-injection-scenario-capture-volume",
+      "setup": "scenario-capture-default"
+    }
+  },
+  {
+    "id": "scenario-capture-default5000-wide-dark",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "dark",
+    "reference": {
+      "source": "git",
+      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-authored-undo-wide-dark-darwin.png"
+    },
+    "production": {
+      "scenario": "local-injection-scenario-capture-volume",
+      "setup": "scenario-capture-default"
+    }
+  },
+  {
+    "id": "scenario-capture-default5000-compact-dark",
+    "viewport": {
+      "width": 563,
+      "height": 700
+    },
+    "theme": "dark",
+    "reference": {
+      "source": "git",
+      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-edit-compact-dark-darwin.png"
+    },
+    "production": {
+      "scenario": "local-injection-scenario-capture-volume",
+      "setup": "scenario-capture-default"
+    }
+  },
+  {
+    "id": "scenario-capture-default5000-shallow-forced-dark",
+    "viewport": {
+      "width": 900,
+      "height": 320
+    },
+    "theme": "dark",
+    "reference": {
+      "source": "git",
+      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-capacity-refusal-shallow-forced-dark-darwin.png"
+    },
+    "production": {
+      "scenario": "local-injection-scenario-capture-volume",
+      "setup": "scenario-capture-default"
+    },
+    "forcedColors": true
+  },
+  {
+    "id": "scenario-capture-selected-batch-normal-dark",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "theme": "dark",
+    "reference": {
+      "source": "git",
+      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-review-normal-dark-darwin.png"
+    },
+    "production": {
+      "scenario": "local-injection-scenario-capture-volume",
+      "setup": "scenario-capture-selected-batch"
+    }
+  },
+  {
+    "id": "scenario-capture-empty-normal-dark",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "theme": "dark",
+    "reference": {
+      "source": "git",
+      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-review-normal-dark-darwin.png"
+    },
+    "production": {
+      "scenario": "local-injection-scenario-edit",
+      "setup": "scenario-capture-empty"
+    }
+  },
+  {
+    "id": "scenario-capture-read-failure-wide-dark",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "dark",
+    "reference": {
+      "source": "git",
+      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-authored-undo-wide-dark-darwin.png"
+    },
+    "production": {
+      "scenario": "local-injection-scenario-edit",
+      "setup": "scenario-capture-read-failure"
+    }
+  },
+  {
+    "id": "scenario-capture-100-refusal-normal-dark",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "theme": "dark",
+    "reference": {
+      "source": "git",
+      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
+      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-review-normal-dark-darwin.png"
+    },
+    "production": {
+      "scenario": "local-injection-scenario-high-volume",
+      "setup": "scenario-capacity-refusal"
+    }
   }
+
 ]

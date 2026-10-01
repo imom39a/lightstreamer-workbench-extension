@@ -430,6 +430,28 @@ export function removeScenarioStep(scenario: LocalInjectionScenario, stepId: str
   }, true, admission.retainedRunBytes ?? 0);
 }
 
+/**
+ * Reverses an explicit addition against the current definition. Surviving
+ * authoring state, the monotonic allocator and prior removal Undo remain owned
+ * by that definition; added Steps do not become generic removed-Step entries.
+ */
+export function undoScenarioStepAddition(
+  scenario: LocalInjectionScenario,
+  stepIds: readonly string[],
+  admission: ScenarioAdmissionContext = {}
+): ScenarioMutation {
+  const ids = new Set(stepIds);
+  if (ids.size === 0 || ids.size !== stepIds.length || stepIds.some(id => !scenario.steps.some(step => step.id === id))) {
+    return freeze({ ok: false as const, reason: "The exact added Scenario Steps are no longer available to undo." });
+  }
+  const steps = scenario.steps.filter(step => !ids.has(step.id));
+  if (steps.length === 0) return freeze({ ok: false as const, reason: "A Scenario must retain at least one Step." });
+  return commitScenarioMutation(scenario, {
+    steps,
+    members: scenario.members.filter(member => !ids.has(member.id))
+  }, true, admission.retainedRunBytes ?? 0);
+}
+
 export function undoScenarioStepRemoval(scenario: LocalInjectionScenario, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
   const removed = scenario.removedSteps.at(-1);
   if (!removed) return freeze({ ok: false as const, reason: "No removed Scenario Step is available to restore." });

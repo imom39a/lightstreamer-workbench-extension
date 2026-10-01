@@ -23,9 +23,9 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/base-compact-light.png` });
   await openExplorer(page, "filter-find", { width: 563, height: 700 }, "light", "Evidence kind");
-  await expect(page.getByRole("listbox", { name: "Evidence facets" })).toHaveCount(0);
-  await expect(page.getByText("1 exact value", { exact: true })).toBeVisible();
-  await expect(page.getByText(/1 distinct value/)).toBeVisible();
+  await expect(page.getByRole("group", { name: "Evidence facets" })).toHaveCount(0);
+  await expect(page.locator(".workbench-react__filter-explorer-counts")).toContainText("1 value");
+  await expect(page.locator(".workbench-react__filter-explorer-counts")).toHaveCount(1);
   await assertExplorerLayout(page);
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/current-compact-light.png` });
   await testInfo.attach("current-compact-light.png", { path: `${evidenceRoot}/current-compact-light.png`, contentType: "image/png" });
@@ -35,7 +35,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await expect(include).toBeChecked();
   await assertAxe(page);
   await page.emulateMedia({ colorScheme: "light", forcedColors: "active" });
-  await expect(page.getByRole("dialog", { name: "Evidence kind exact values" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Evidence kind values" })).toBeVisible();
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/current-forced-colors-light.png` });
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator(".workbench-react__active-filter")).toContainText("kind");
@@ -43,11 +43,11 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await page.emulateMedia({ colorScheme: "light", forcedColors: "none" });
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
-  await page.getByRole("option", { name: "Add Evidence kind criterion" }).click();
-  await expect(page.getByRole("dialog", { name: "Evidence kind exact values" })).toBeVisible();
+  await page.getByRole("button", { name: "Add Evidence kind criterion" }).click();
+  await expect(page.getByRole("dialog", { name: "Evidence kind values" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("listbox", { name: "Evidence facets" })).toBeVisible();
-  await expect(page.getByRole("option", { name: "Add Evidence kind criterion" })).toBeFocused();
+  await expect(page.getByRole("group", { name: "Evidence facets" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add Evidence kind criterion" })).toBeFocused();
   await expect.poll(() => page.evaluate(() => window.__getWorkbenchFilterDiscoveryCount())).toBe(0);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Add structured criterion", exact: true })).toBeFocused();
@@ -74,7 +74,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
 
   await openExplorer(page, "filter-high-cardinality", { width: 900, height: 320 }, "light", "Item");
   const valueList = page.locator('[role="list"][aria-label="Item values"]');
-  await expect(page.getByText("220 exact values", { exact: true })).toBeVisible();
+  await expect(page.locator(".workbench-react__filter-explorer-counts")).toContainText("220 values");
   await expect(valueList.getByRole("listitem")).toHaveCount(12);
   const initialScroll = await valueList.evaluate((element) => ({
     clientHeight: element.clientHeight,
@@ -84,7 +84,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   }));
   expect(initialScroll.overflowY).toMatch(/auto|scroll/);
   expect(initialScroll.scrollHeight).toBeGreaterThan(initialScroll.clientHeight);
-  await page.getByRole("button", { name: "Show more exact values", exact: true }).click();
+  await page.getByRole("button", { name: "Show more values", exact: true }).click();
   await expect(valueList.getByRole("listitem")).toHaveCount(24);
   await valueList.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect.poll(() => valueList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
@@ -92,7 +92,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await lastValue.scrollIntoViewIfNeeded();
   await lastValue.getByRole("radio", { name: "Include", exact: true }).focus();
   await expect(lastValue.getByRole("radio", { name: "Include", exact: true })).toBeFocused();
-  await page.getByLabel("Search exact values").fill("220");
+  await page.getByLabel("Search values").fill("220");
   await expect(valueList.getByRole("listitem")).toHaveCount(1);
   await expect(valueList.getByRole("listitem").first()).toContainText("high-scope-item-220");
   await assertExplorerLayout(page);
@@ -115,7 +115,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await expect(page.locator(".workbench-react__active-filter")).toHaveText("Filter: filter-zero-result");
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
-  await page.getByRole("option", { name: "Add Evidence kind criterion" }).click();
+  await page.getByRole("button", { name: "Add Evidence kind criterion" }).click();
   await expect(page.getByText("Exact values unavailable", { exact: true })).toBeVisible();
   await expect(page.getByText("No Evidence is in the current Scope", { exact: false })).toBeVisible();
   await assertExplorerLayout(page);
@@ -138,10 +138,10 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByLabel("Filter Evidence").fill("filter-active-zero-client-status");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByText("Shown 0", { exact: true })).toBeVisible();
+  await expect(page.getByText("0 Evidence", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
-  await page.getByRole("option", { name: "Add Evidence kind criterion" }).click();
+  await page.getByRole("button", { name: "Add Evidence kind criterion" }).click();
   await expect(page.getByText(/pinned · zero/)).toBeVisible();
   await assertExplorerLayout(page);
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/current-active-zero-light.png` });
@@ -184,9 +184,9 @@ test("filter-impl-13 reveals a long exact explorer value with native keyboard di
   await summary.focus();
   await page.keyboard.press("Enter");
   await expect(disclosure).toHaveAttribute("open", "");
-  const exact = disclosure.locator("code");
-  await expect(exact).toContainText("string · customer-order-command-key-with-long-production-identity-");
-  await expect(exact).toHaveCSS("white-space", "pre-wrap");
+  const exact = disclosure.locator("summary strong");
+  await expect(exact).toContainText("customer-order-command-key-with-long-production-identity-");
+  await expect(exact).toHaveCSS("white-space", "normal");
   await assertExplorerLayout(page);
   await assertAxe(page);
 });
@@ -203,8 +203,8 @@ test("filter-impl-13 keeps expanded long values inspectable in compact and shall
     await disclosure.locator("summary").focus();
     await page.keyboard.press("Enter");
     await expect(disclosure).toHaveAttribute("open", "");
-    await expect(disclosure.locator("code")).toContainText("customer-order-command-key-with-long-production-identity-");
-    await assertExplorerControlsHitTestable(page, page.getByRole("dialog", { name: "COMMAND key exact values" }), list);
+    await expect(disclosure.locator("summary strong")).toContainText("customer-order-command-key-with-long-production-identity-");
+    await assertExplorerControlsHitTestable(page, page.getByRole("dialog", { name: "COMMAND key values" }), list);
     const path = `test-results/ui-terra/filter-explorer-long-${id}-dark.png`;
     await page.locator(".workbench-react").screenshot({ path });
     await testInfo.attach(`filter-explorer-long-${id}-dark.png`, { path, contentType: "image/png" });
@@ -219,7 +219,7 @@ test("filter-impl-13 keeps compact and docked high-cardinality explorer controls
     ["wide", { width: 1440, height: 900 }]
   ] as const) {
     await openExplorer(page, "filter-high-cardinality", viewport, "dark", "Item");
-    const dialog = page.getByRole("dialog", { name: "Item exact values" });
+    const dialog = page.getByRole("dialog", { name: "Item values" });
     const list = dialog.getByRole("list", { name: "Item values" });
     await expect(list.getByRole("listitem")).toHaveCount(12);
     await expect(list.getByRole("listitem").first()).toBeInViewport({ ratio: 1 });
@@ -249,10 +249,10 @@ async function openExplorer(
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByRole("button", { name: "Add structured criterion", exact: true }).click();
-  await expect(page.getByRole("listbox", { name: "Evidence facets" })).toBeVisible();
-  await expect(page.getByRole("listbox", { name: "Evidence facets" }).getByRole("option")).toHaveCount(12);
-  await page.getByRole("option", { name: `Add ${facetLabel} criterion` }).click();
-  await expect(page.getByRole("dialog", { name: `${facetLabel} exact values` })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Evidence facets" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Evidence facets" }).getByRole("button")).toHaveCount(12);
+  await page.getByRole("button", { name: `Add ${facetLabel} criterion` }).click();
+  await expect(page.getByRole("dialog", { name: `${facetLabel} values` })).toBeVisible();
 }
 
 async function assertExplorerLayout(page: Page): Promise<void> {

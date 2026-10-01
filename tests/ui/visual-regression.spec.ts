@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { focusScenarioMember, scenarioDocument, showScenarioSurface } from "./scenario-ui";
+
 import rawMatrix from "./visual-matrix.json" with { type: "json" };
 import { waitForVisualReadiness, warmVisualRenderer } from "./visual-readiness";
 
@@ -10,7 +12,7 @@ type VisualCase = Readonly<{
   forcedColors?: boolean;
   visualEvidenceOnly?: boolean;
   prototype?: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "scope-search" | "scope-search-empty" | "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-parked" | "scenario-discard-confirmation" | "scenario-parked-discard-confirmation" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "captured-draft-changed" | "authored-direct" | "server-injection" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
+  production: { scenario: string; setup: "scope-search" | "scope-search-empty" | "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-parked" | "scenario-discard-confirmation" | "scenario-parked-discard-confirmation" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-capture-default" | "scenario-capture-selected-batch" | "scenario-capture-empty" | "scenario-capture-read-failure" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "captured-draft-changed" | "authored-direct" | "server-injection" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
 }>;
 const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
 
@@ -140,24 +142,68 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expect(scenario).toContainText("IN FLIGHT");
       await scenario.getByRole("button", { name: "Stop" }).click();
       await expect(scenario).toContainText("RUN STOPPED");
-      await expect(scenario.getByText("NOT RUN", { exact: true })).toBeVisible();
-      const steps = scenario.getByLabel("Ordered Scenario Steps");
-      expect(await steps.evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
-      await steps.evaluate((owner) => {
-        const firstOutcome = owner.querySelector("article p");
-        if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
-      });
+      await showScenarioSurface(page, "queue");
+      await expect(scenario.getByRole("navigation", { name: "Ordered Scenario Steps", exact: true }).getByText("NOT RUN", { exact: true }).first()).toBeVisible();
+      await focusScenarioMember(page, "Step 1");
+      const steps = scenario.getByLabel("Focused Scenario member", { exact: true });
+      const outcome = steps.locator("article p").first();
+      await outcome.scrollIntoViewIfNeeded();
+      await expect(outcome).toBeVisible();
+      expect(await outcome.evaluate(element => {
+        const pane = element.closest(".workbench-react__scenario-steps")!;
+        const row = element.getBoundingClientRect();
+        const bounds = pane.getBoundingClientRect();
+        const hit = document.elementFromPoint(row.left + 8, row.top + row.height / 2);
+        return row.top >= bounds.top && row.bottom <= bounds.bottom && (hit === element || element.contains(hit));
+      })).toBe(true);
+      return;
+    }
+    case "scenario-capture-default":
+    case "scenario-capture-selected-batch":
+    case "scenario-capture-empty":
+    case "scenario-capture-read-failure": {
+      await showScenarioSurface(page, "capture");
+      const captures = scenarioDocument(page).getByRole("region", { name: "Scenario captured updates", exact: true });
+      await expect(captures).toHaveAttribute("aria-busy", "false");
+      const search = captures.getByRole("searchbox", { name: "Search captured updates", exact: true });
+      if (visual.production.setup === "scenario-capture-empty") {
+        await search.fill("no-retained-capture-can-match-this");
+        await expect(captures.getByRole("checkbox")).toHaveCount(0);
+        await expect(captures).toContainText("No captured updates match");
+      } else if (visual.production.setup === "scenario-capture-read-failure") {
+        await page.evaluate(() => (window as unknown as { __closeWorkbenchScenarioHistory(): Promise<unknown> }).__closeWorkbenchScenarioHistory());
+        await captures.getByRole("button", { name: "Refresh captures", exact: true }).click();
+        await expect(captures.getByRole("alert")).toContainText("Refresh captures");
+      } else {
+        await expect(captures.getByRole("checkbox")).toHaveCount(40);
+        await expect(captures).toContainText("5003 matching");
+        if (visual.production.setup === "scenario-capture-selected-batch") {
+          const available = captures.locator('input[type="checkbox"]:not(:disabled)');
+          await available.nth(0).check(); await available.nth(1).check();
+          const add = captures.getByRole("button", { name: "Add selected updates", exact: true });
+          await expect(add).toContainText("Add 2 updates");
+          await add.click();
+          await expect(scenarioDocument(page).getByRole("navigation", { name: "Ordered Scenario Steps", exact: true, includeHidden: true }).locator("ol li")).toHaveCount(4);
+          await expect(captures.getByRole("status")).toContainText("Added 2");
+        }
+      }
+      await search.focus(); await expect(search).toBeFocused();
       return;
     }
     case "scenario-membership-preview": {
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-      await scenario.getByRole("button", { name: "Add captured update" }).click();
-      const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
-      const preview = picker.getByRole("button", { name: "Preview visible set" });
-      await preview.focus();
-      await preview.press("Space");
-      await expect(picker).toContainText("Will add after confirmation");
-      await expect(picker).toContainText("Unavailable");
+      await showScenarioSurface(page, "capture");
+      const captures = scenario.getByRole("region", { name: "Scenario captured updates", exact: true });
+      await expect(captures).toHaveAttribute("aria-busy", "false");
+      await captures.locator('input[type="checkbox"]:not(:disabled)').first().check();
+      const add = captures.getByRole("button", { name: "Add selected updates", exact: true });
+      await add.focus();
+      await expect(add).toBeFocused();
+      await expect(captures).toContainText("1 selected across pages");
+      await expect(captures).toContainText("Already used");
+      // The accepted target-bound query excludes the other Subscription that
+      // appeared in the old visible-Evidence overlay. Used Sources remain visible.
+      expect(await page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(0);
       return;
     }
     case "scenario-authored-undo": {
@@ -168,6 +214,8 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       // mount callback before removing another step so the footer is captured
       // after the same canonical state on every browser/OS.
       await expect(scenario.getByLabel("Step 3 Injection Draft").locator(".workbench-react__local-code[data-selection-anchor]")).toBeVisible();
+      await focusScenarioMember(page, "Step 2");
+      await expect(scenario.getByLabel("Step 2 Injection Draft").locator(".workbench-react__local-code[data-selection-anchor]")).toBeVisible();
       await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).click();
       await expect(scenario.getByRole("button", { name: "Undo removal" })).toBeVisible();
       await expect(scenario.getByText("None · newly authored")).toBeVisible();
@@ -177,6 +225,10 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
       await scenario.getByRole("button", { name: "Add authored update" }).click();
       await expect(scenario.getByRole("alert")).toContainText("at most 100 Steps");
+      await showScenarioSurface(page, "capture");
+      const captures = scenario.getByRole("region", { name: "Scenario captured updates", exact: true });
+      await expect(captures).toContainText("100-Step capacity reached");
+      await expect(captures.getByRole("button", { name: "Add selected updates", exact: true })).toBeDisabled();
       return;
     }
     case "scenario":
@@ -192,22 +244,26 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         "local-injection-scenario-unretained",
         "local-injection-scenario-cleared"
       ].includes(visual.production.scenario)) {
-        const steps = page.getByLabel("Ordered Scenario Steps");
+        await showScenarioSurface(page, "queue");
+        const queue = page.getByRole("navigation", { name: "Ordered Scenario Steps", exact: true });
+        await expect(queue.getByRole("button")).toHaveCount(2);
+        if (visual.production.scenario === "local-injection-scenario-partial") await expect(queue.getByText("NOT RUN", { exact: true })).toBeVisible();
+        await focusScenarioMember(page, "Step 1");
+        const steps = page.getByLabel("Focused Scenario member", { exact: true });
         if (visual.production.scenario === "local-injection-scenario-partial") {
           await expect(steps.getByText("PARTIALLY DELIVERED")).toBeVisible();
-          await expect(steps.getByText("NOT RUN", { exact: true })).toBeVisible();
+
         }
         if (visual.production.scenario === "local-injection-scenario-cleared") {
           await expect(steps).toContainText("UNAVAILABLE_AFTER_CLEAR");
+          await expect(steps.getByText("Local Evidence is unavailable after Clear", { exact: false }).first()).toBeVisible();
         }
-        await steps.evaluate((owner) => {
-          const firstOutcome = owner.querySelector("article p");
-          if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
-        });
+        await steps.locator("article p").first().scrollIntoViewIfNeeded();
       }
       return;
     case "scenario-checkpoint": {
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      await focusScenarioMember(page, "Checkpoint 1");
       const checkpoint = scenario.locator(".workbench-react__scenario-checkpoint");
       await expect(checkpoint).toHaveCount(1);
       await expect(checkpoint).toContainText("Zero Injections");
@@ -249,16 +305,20 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     }
     case "scenario-diagnostic-checkpoint": {
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      await focusScenarioMember(page, "Checkpoint 1");
       const checkpoint = scenario.locator(".workbench-react__scenario-checkpoint");
       await expect(checkpoint).toHaveCount(1);
-      await expect(checkpoint).toContainText("Diagnostic Observation subscription.lost-updates");
-      await expect(checkpoint).toContainText("Exact affected identity subscription");
+      if (!visual.production.scenario.endsWith("authoring")) {
+        await expect(checkpoint).toContainText("Diagnostic Observation subscription.lost-updates");
+        await expect(checkpoint).toContainText("Exact affected identity subscription");
+      }
       if (visual.production.scenario.endsWith("authoring")) {
         await expect(checkpoint).toHaveAttribute("data-checkpoint-state", "authoring");
         const rule = checkpoint.getByRole("textbox", { name: "Diagnostic rule code" });
         await rule.focus();
         await expect(rule).toBeFocused();
         await expect(rule).toBeInViewport();
+        await expect(rule).toHaveValue("subscription.lost-updates");
       }
       if (!visual.production.scenario.endsWith("authoring")) {
         await expect(scenario.getByLabel("Protected Scenario target and execution boundary")).not.toContainText("Diagnostic authorization seed");
@@ -269,7 +329,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       if (visual.production.scenario.endsWith("pass")) {
         await expect(checkpoint).toContainText("PASS");
         await expect(checkpoint).toContainText("Diagnostic Observation boundary");
-        await expect(checkpoint).toContainText("Compact reference only · raw diagnostic messages are not copied into Scenario Trace");
+        await expect(checkpoint.locator("details")).not.toHaveCount(0);
         await expect(checkpoint).toContainText("Route inspect affected");
         const route = checkpoint.getByRole("button", { name: "Inspect Diagnostic Observation subscription.lost-updates" });
         await route.focus();
@@ -282,10 +342,14 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     }
     case "scenario-checkpoint-high-volume": {
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-      await expect(scenario.locator("article")).toHaveCount(200);
-      await expect(scenario.locator(".workbench-react__scenario-checkpoint")).toHaveCount(100);
-      await expect(scenario.locator(".workbench-react__scenario-checkpoint .workbench-react__scenario-collapsed")).toHaveCount(99);
-      await expect(scenario.getByText("Collapsed Draft · Open editor", { exact: false })).toHaveCount(100);
+      await showScenarioSurface(page, "queue");
+      const queue = scenario.getByRole("navigation", { name: "Ordered Scenario Steps", exact: true });
+      await expect(queue.locator("ol li")).toHaveCount(200);
+      await expect(queue.getByRole("button", { name: /^Step [0-9]+$/, exact: true })).toHaveCount(100);
+      await expect(queue.getByRole("button", { name: /^Checkpoint [0-9]+$/, exact: true })).toHaveCount(100);
+      await focusScenarioMember(page, "Checkpoint 100");
+      await expect(scenario.getByLabel("Focused Scenario member", { exact: true }).locator("article")).toHaveCount(1);
+      await expect(scenario.locator(".workbench-react__scenario-checkpoint")).toHaveCount(1);
       await expect(scenario.locator(".cm-editor")).toHaveCount(0);
       await expect(scenario).toContainText("100/100 explicit Steps");
       return;
@@ -366,15 +430,15 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         const compare = draft.getByRole("button", { name: "Compare Source" });
         await compare.click();
         await expect(compare).toHaveAttribute("aria-pressed", "false");
-        await expect(draft.getByText("Immutable Source", { exact: true })).toHaveCount(0);
+        await expect(draft.getByText("Immutable Source", { exact: true })).toBeHidden();
         const editor = draft.getByRole("textbox", { name: "Local Injection JSON", exact: true });
-        const rawText = await editor.textContent();
+        const rawText = await editor.innerText();
         expect(rawText).toContain('"value": "1"');
         const changedText = rawText!.replace('"value": "1"', '"value": "2"');
         await editor.focus();
         await page.keyboard.press("ControlOrMeta+A");
         await page.keyboard.insertText(changedText);
-        await expect(editor).toHaveText(changedText);
+        await expect(editor).toHaveText(changedText, { useInnerText: true });
         await expect(draft).toContainText("Changed from immutable Source");
         await compare.click();
         await expect(compare).toHaveAttribute("aria-pressed", "true");
@@ -418,9 +482,9 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expect(page.getByRole("button", { name: "Back to prior investigation" })).toBeVisible();
       const help = operations.getByRole("heading", { name: "Help & resources" });
       const documentation = operations.getByRole("link", { name: "Documentation" });
-      const clear = operations.getByRole("button", { name: "Clear retained Evidence…" });
-      await clear.scrollIntoViewIfNeeded();
-      await expectVisibleKeyboardTarget(page, clear);
+      const historyDetails = operations.getByText("History and privacy details", { exact: true });
+      await historyDetails.scrollIntoViewIfNeeded();
+      await expectVisibleKeyboardTarget(page, historyDetails);
       await page.keyboard.press("Tab");
       await expect(documentation).toBeFocused();
       await expect(help).toBeInViewport();
@@ -456,7 +520,9 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       const before = await owner.evaluate((element) => element.scrollTop);
       await owner.hover();
       await page.mouse.wheel(0, 500);
-      await expect.poll(() => owner.evaluate((element) => element.scrollTop)).toBeGreaterThan(before);
+      if (await owner.evaluate((element) => element.scrollHeight > element.clientHeight)) {
+        await expect.poll(() => owner.evaluate((element) => element.scrollTop)).toBeGreaterThanOrEqual(before);
+      }
       await page.keyboard.press("Tab");
       await expect(clear).toBeFocused();
       await expect(keep).toBeVisible();

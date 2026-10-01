@@ -404,7 +404,7 @@ describe("history-impl-09 topology cutover", () => {
 
     expect(runtime.getSnapshot().historyCondition).toMatchObject({
       kind: "evidence-gap",
-      detail: expect.not.stringContaining("Topology basis was restored")
+      technicalDetail: expect.not.stringContaining("Topology basis was restored")
     });
 
     const partialCoverage: TopologyCoverage = {
@@ -417,7 +417,7 @@ describe("history-impl-09 topology cutover", () => {
     }
     await settle();
 
-    expect(runtime.getSnapshot().historyCondition?.detail).not.toContain(
+    expect(runtime.getSnapshot().historyCondition?.technicalDetail).not.toContain(
       "Topology basis was restored"
     );
 
@@ -438,17 +438,17 @@ describe("history-impl-09 topology cutover", () => {
     });
     expect(snapshot.historyCondition).toMatchObject({
       kind: "evidence-gap",
-      detail: expect.stringContaining("Topology basis was restored")
+      technicalDetail: expect.stringContaining("Topology basis was restored")
     });
     expect(snapshot.historyCondition?.detail).toContain(
-      "COMMAND-dependent Scenario conclusions remain LIMITED"
+      "COMMAND-dependent conclusions remain LIMITED"
     );
-    expect(snapshot.historyCondition?.recovery).toContain(
+    expect(snapshot.historyCondition?.technicalDetail).toContain(
       "Complete History remains incomplete"
     );
     expect(snapshot.notifications.entries).toContainEqual(expect.objectContaining({
       title: "History has an Evidence gap",
-      detail: expect.stringContaining("Topology basis was restored")
+      technicalDetail: expect.stringContaining("Topology basis was restored")
     }));
     expect(snapshot.notifications.entries.filter(
       ({ title }) => title === "History has an Evidence gap"

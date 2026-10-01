@@ -13,7 +13,7 @@ import axe from "axe-core";
 import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const artifactRoot = resolve(projectRoot, "test-results/workbench-visual-qa");
+const artifactRoot = resolve(projectRoot, process.env.LSEW_VISUAL_ARTIFACT_ROOT ?? "test-results/workbench-visual-qa");
 const scenarioHaltReferenceCommit = process.env.LSEW_SCENARIO_HALT_REFERENCE_COMMIT ?? "b750a93";
 const prototypePort = Number(process.env.LSEW_VISUAL_PROTOTYPE_PORT ?? 4191);
 const panelPort = Number(process.env.LSEW_VISUAL_PANEL_PORT ?? 4192);
@@ -46,7 +46,9 @@ if (process.argv.includes("--print-matrix")) {
   process.exit(0);
 }
 if (process.argv.includes("--print-review-scope")) {
-  console.log(JSON.stringify(publicReviewScope()));
+  const scope = JSON.stringify(publicReviewScope(scenarios));
+  if (Buffer.byteLength(scope, "utf8") + 1 > 16 * 1024) throw new Error("Visual review scope exceeds 16 KiB; use --grep to select the affected matrix.");
+  console.log(scope);
   process.exit(0);
 }
 for (const [index, argument] of process.argv.slice(2).entries()) {
@@ -137,7 +139,7 @@ try {
     baselinePlatformSuffix: process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform,
     platformBaselineCommands: [
       { platform: "darwin", update: `CI=1 npm run test:ui:update${baselineGrepArgument}`, comparison: `CI=1 npm run test:ui${baselineGrepArgument}`, result: "Run separately and record the exact Playwright result with this packet." },
-      { platform: "linux", update: `docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui:update${baselineGrepArgument}'`, comparison: `docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui${baselineGrepArgument}'`, result: "Run separately and record the exact Playwright result with this packet." }
+      { platform: "linux", update: `docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui:update${baselineGrepArgument}'`, comparison: `docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui${baselineGrepArgument}'`, result: "Run separately and record the exact Playwright result with this packet." }
     ],
     browser: await browser.version(),
     browserMode: "headless",
@@ -174,7 +176,8 @@ try {
         "The 58px Scope and 30px Evidence rows preserve complete-row geometry, one scroll owner per pane, tree virtualization, and one-viewport Page Up/Down movement.",
         "One shared SERVER/LOCAL timeline belongs above Evidence, uses elapsed time since the first retained timestamped event, and preserves exact range and captured-event routes without a separate Activity page.",
         "One collapsed Activity summary in Context retains exact SERVER/LOCAL counts, bounded SERVER busiest identities and captured facts, including 10,000-record, limited and memory-fallback states.",
-        "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
+        "Local Injection Scenario keeps bounded retained captured updates beside an explicit ordered queue and one focused member editor; search, paging, multi-selection, Add feedback and compact/shallow surface switching preserve the main investigation and never execute an Injection.",
+        "Scenario states preserve immutable Source, editable Draft, reliable Undo and member identities, exact target/Session/local-only boundaries, separate immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints and exact Evidence routes.",
         "Server Injection preserves the exact client, Session, page epoch, message body, sequence, timeout, and enqueue arguments; starts one reviewed sendMessage call; records outbound Evidence; never retries an Unknown outcome automatically; and requires an explicit separate Repeat.",
         "Notifications owns active Workbench conditions and recent Lightstreamer diagnostics, including History pressure, Capture coverage, snapshot completion, server errors and bounded keepalives without a health verdict; filters remain independent of Evidence, dismissal hides only the active footer copy, and captured inspection routes remain available.",
         "Committed snapshot, COMMAND, and lost-update anomalies preserve exact epoch attribution, bounded limitations, and one normalized lifecycle without duplicate footer ownership.",
@@ -257,6 +260,29 @@ try {
       },
       keyboardAndFocus: "Timeline, coincident-event chooser and Context disclosure controls retain visible, unobscured keyboard focus; the maintained Activity browser tests exercise range selection, Reset/Back and restoration.",
       baselineIntent: "Replace the five old Activity-page baselines with Context summaries and add four integrated Activity states; refresh other affected shell baselines separately with explicit base/current review."
+    } : results.some(({ id }) => id.startsWith("scenario-capture-")) ? {
+      classification: "Material UI",
+      changedWorkflow: "Captured-update Scenario composition keeps a bounded retained capture workspace beside an explicit ordered queue and one focused member editor.",
+      acceptanceCriteria: [
+        "Complete retained exact-target Server Item Updates remain searchable through bounded pages; the main Scope, Filter, Find and Evidence selection stay independent.",
+        "Search, page, scroll and multi-selection survive explicit Add, member editing/reorder and Park; new Capture and Refresh do not change Scenario membership.",
+        "Explicit single/batch Add revalidates selected Sources, target, retention, revision and capacity atomically; success, failure, empty results and 100-Step recovery remain visible beside selection.",
+        "All members keep explicit execution order and independent identities; one focused editor preserves immutable Source, editable Draft, reliable Undo and deliberate Duplicate Step reuse.",
+        "Exact target, Session and Local-only boundaries remain protected; composition never executes an Injection and Review still freezes a separate immutable Run with unchanged Checkpoint, drift and terminal truth.",
+        "Compact, normal, shallow, wide, Dark and forced-colors states retain native keyboard access, stable visible focus, accessible results scrolling and no serious/critical axe findings or shell/document overflow."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0),
+        shellOrDocumentOverflows: results.reduce((count, result) => count + Number(result.checks.horizontalOverflow.shell || result.checks.horizontalOverflow.document), 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} states retain visible, unobscured focus. Maintained behavior tests exercise search/checkbox/Add/queue keyboard routes, native Trace activation, editor state, exact capture scroll and Park restoration.`,
+      matrixRationale: "Thirty-two existing Scenario states preserve editing, Review, controls, drift, partial/unknown, retention, Checkpoints, discard and high-volume truth. Eight accepted-C states add 5,000 retained captures at four geometries, selected batch, empty search, query failure and visible 100-Step refusal. Dark-only remains accepted; legacy light-named states are historical identifiers.",
+      baselineIntent: "Intentionally update affected existing Scenario images and add eight accepted-C Darwin/Linux baseline pairs. Review exact pre-change, current and diff artifacts independently; normal comparisons never update images."
     } : results.some(({ id }) => id.startsWith("scenario-parked-") || id.startsWith("scenario-discard-confirmation-") || id.startsWith("scenario-parked-discard-confirmation-")) ? {
       classification: "Material UI",
       changedWorkflow: "An edited Local Injection Scenario can return to Evidence, resume with its Steps intact, or be discarded after inline confirmation.",
@@ -414,25 +440,27 @@ function contactSheetScenarioIds(matrix) {
     .map(({ id }) => id);
 }
 
-function publicReviewScope() {
-  const diagnosticIds = allScenarios
+function publicReviewScope(matrix = allScenarios) {
+  const diagnosticIds = matrix
     .filter(({ production }) => isIntegratedDiagnosticSetup(production.setup))
     .map(({ id }) => id);
-  const storageIds = allScenarios
+  const storageIds = matrix
     .filter(({ production }) => isStorageHeadroomSetup(production.setup))
     .map(({ id }) => id);
-  const footerDiagnosticIds = allScenarios
+  const footerDiagnosticIds = matrix
     .filter(({ production }) => production.setup === "diagnostics")
     .map(({ id }) => id);
-  const activityIds = allScenarios.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
-  const readabilityIds = allScenarios.filter(({ production }) => isReadabilitySetup(production.setup)).map(({ id }) => id);
-  const localInjectionIds = allScenarios.filter(({ production }) => isLocalInjectionSetup(production.setup)).map(({ id }) => id);
-  const serverInjectionIds = allScenarios.filter(({ production }) => isServerInjectionScenario(production.scenario)).map(({ id }) => id);
-  const searchIds = allScenarios.filter(({ id }) => id.startsWith("search-")).map(({ id }) => id);
+  const activityIds = matrix.filter(({ production }) => production.setup.startsWith("activity")).map(({ id }) => id);
+  const readabilityIds = matrix.filter(({ production }) => isReadabilitySetup(production.setup)).map(({ id }) => id);
+  const localInjectionIds = matrix.filter(({ production }) => isLocalInjectionSetup(production.setup)).map(({ id }) => id);
+  const serverInjectionIds = matrix.filter(({ production }) => isServerInjectionScenario(production.scenario)).map(({ id }) => id);
+  const searchIds = matrix.filter(({ id }) => id.startsWith("search-")).map(({ id }) => id);
+  const scenarioIds = matrix.filter(({ id }) => id.startsWith("scenario-")).map(({ id }) => id);
+  const captureIds = matrix.filter(({ id }) => id.startsWith("scenario-capture-")).map(({ id }) => id);
   return {
-    contactSheetScenarioIds: contactSheetScenarioIds(allScenarios),
-    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...searchIds],
-    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...searchIds]
+    contactSheetScenarioIds: contactSheetScenarioIds(matrix),
+    accessibilityScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...searchIds, ...scenarioIds],
+    focusScenarioIds: [...diagnosticIds, ...storageIds, ...activityIds, ...footerDiagnosticIds, ...readabilityIds, ...localInjectionIds, ...serverInjectionIds, ...searchIds, ...captureIds]
   };
 }
 
@@ -750,7 +778,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
         return result.violations
           .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
-          .map((violation) => ({ id: violation.id, impact: violation.impact, help: violation.help }));
+          .map((violation) => ({ id: violation.id, impact: violation.impact, help: violation.help, targets: violation.nodes.map(({ target }) => target) }));
       });
       if (seriousOrCriticalViolations.length) {
         throw new Error(`Production visual state has serious or critical axe violations: ${JSON.stringify(seriousOrCriticalViolations)}`);
@@ -1001,16 +1029,16 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
         : scenario.production.setup === "scenario-hidden-pause"
         ? "Resume"
         : scenario.production.scenario.endsWith("edit")
-        ? "Add captured update"
+        ? "Choose captured updates"
         : scenario.production.scenario.endsWith("review")
           ? "Pause"
           : "Finish Scenario";
       const action = scenarioDocument.getByRole("button", { name: actionName });
-      if (actionName === "Add captured update") {
+      if (actionName === "Choose captured updates") {
         await action.focus();
         await page.keyboard.press("Enter");
-        await page.getByRole("region", { name: "Scenario Evidence picker" }).waitFor();
-        await page.keyboard.press("Escape");
+        await page.getByRole("region", { name: "Scenario captured updates", exact: true }).waitFor();
+        await action.focus();
       } else {
         await action.focus();
       }
@@ -1020,19 +1048,17 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
         "local-injection-scenario-unretained",
         "local-injection-scenario-cleared"
       ].includes(scenario.production.scenario)) {
-        const steps = page.getByLabel("Ordered Scenario Steps");
-        if (scenario.production.scenario === "local-injection-scenario-partial") {
-          await steps.getByText("PARTIALLY DELIVERED").waitFor();
-          await steps.getByText("NOT RUN", { exact: true }).waitFor();
-        }
-        if (scenario.production.scenario === "local-injection-scenario-cleared") {
-          await steps.getByText(/UNAVAILABLE_AFTER_CLEAR/).first().waitFor();
-        }
-        await steps.evaluate((owner) => {
-          const firstOutcome = owner.querySelector("article p");
-          if (firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
-        });
+        await showScenarioSurface(page, "queue");
+        const queue = page.getByRole("navigation", { name: "Ordered Scenario Steps", exact: true });
+        if (scenario.production.scenario === "local-injection-scenario-partial") await queue.getByText("NOT RUN", { exact: true }).waitFor();
+        await focusScenarioMember(page, "Step 1");
+        const steps = page.getByLabel("Focused Scenario member", { exact: true });
+        if (scenario.production.scenario === "local-injection-scenario-partial") await steps.getByText("PARTIALLY DELIVERED").waitFor();
+        if (scenario.production.scenario === "local-injection-scenario-cleared") await steps.getByText("Local Evidence is unavailable after Clear", { exact: false }).first().waitFor();
+        await steps.locator("article p").first().scrollIntoViewIfNeeded();
       }
+      await action.scrollIntoViewIfNeeded();
+      await action.focus();
       focusEvidence = await action.evaluate((element) => {
         const style = getComputedStyle(element);
         const rect = element.getBoundingClientRect();
@@ -1073,6 +1099,18 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
       if (!focusEvidence.focused || !focusEvidence.visible || !focusEvidence.unobscured) {
         throw new Error(`Scenario Checkpoint focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
+    }
+    if (scenario.production.setup.startsWith("scenario-capture-")) {
+      const search = page.getByRole("searchbox", { name: "Search captured updates", exact: true });
+      await search.scrollIntoViewIfNeeded(); await search.focus();
+      focusEvidence = await search.evaluate(element => {
+        const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+        return { action: element.getAttribute("aria-label"), focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)) };
+      });
+      if (!focusEvidence.focused || !focusEvidence.visible || !focusEvidence.unobscured || focusEvidence.outline.startsWith("none")) throw new Error(`Capture focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
     }
     if (scenario.production.setup === "more-actions-help") {
       helpResources = await page.getByRole("navigation", { name: "Help and resources" }).evaluate((navigation) => {
@@ -1137,7 +1175,47 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
   }
 }
 
+async function showScenarioSurface(page, surface) {
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
+  await scenario.waitFor({ state: "visible" });
+  const label = surface === "capture" ? "Choose captured updates" : surface === "queue" ? "Scenario queue" : "Focused editor";
+  const control = scenario.getByRole("button", { name: label, exact: true, includeHidden: true });
+  await control.waitFor({ state: "attached" });
+  if (await control.isVisible()) await control.click();
+}
+
+async function focusScenarioMember(page, name) {
+  await showScenarioSurface(page, "queue");
+  const queue = page.getByRole("navigation", { name: "Ordered Scenario Steps", exact: true });
+  await queue.getByRole("button", { name, exact: true }).click();
+  await page.getByLabel("Focused Scenario member", { exact: true }).waitFor({ state: "visible" });
+}
+
 async function prepareProductionState(page, setup, storageMode = "scenario") {
+  if (setup.startsWith("scenario-capture-")) {
+    await showScenarioSurface(page, "capture");
+    const captures = page.getByRole("region", { name: "Scenario captured updates", exact: true });
+    await page.waitForFunction(() => document.querySelector('[aria-label="Scenario captured updates"]')?.getAttribute("aria-busy") === "false");
+    const search = captures.getByRole("searchbox", { name: "Search captured updates", exact: true });
+    if (setup === "scenario-capture-empty") {
+      await search.fill("no-retained-capture-can-match-this");
+      await captures.getByText("No captured updates match", { exact: false }).waitFor();
+    } else if (setup === "scenario-capture-read-failure") {
+      await page.evaluate(() => window.__closeWorkbenchScenarioHistory());
+      await captures.getByRole("button", { name: "Refresh captures", exact: true }).click();
+      await captures.getByRole("alert").waitFor();
+    } else {
+      if (await captures.getByRole("checkbox").count() !== 40 || !(await captures.innerText()).includes("5003 matching")) throw new Error("Capture workspace must query all 5003 target Sources and retain its 40-row bound.");
+      if (setup === "scenario-capture-selected-batch") {
+        const available = captures.locator('input[type="checkbox"]:not(:disabled)');
+        await available.nth(0).check(); await available.nth(1).check();
+        await captures.getByRole("button", { name: "Add selected updates", exact: true }).click();
+        await captures.getByText("Added 2 captured Steps", { exact: false }).waitFor();
+      }
+    }
+    await search.focus();
+    return;
+  }
   if (setup === "scenario-parked") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario", exact: true });
     await scenario.getByRole("button", { name: "Back to Evidence" }).click();
@@ -1161,6 +1239,7 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
   if (setup === "scenario-checkpoint" || setup === "scenario-checkpoint-high-volume" || setup === "scenario-diagnostic-checkpoint") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await scenario.waitFor({ state: "visible" });
+    await focusScenarioMember(page, setup === "scenario-checkpoint-high-volume" ? "Checkpoint 100" : "Checkpoint 1");
     const checkpoints = scenario.locator(".workbench-react__scenario-checkpoint");
     await checkpoints.last().waitFor();
     await checkpoints.last().scrollIntoViewIfNeeded();
@@ -1179,21 +1258,20 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     await scenario.getByText(/IN FLIGHT/).waitFor();
     await scenario.getByRole("button", { name: "Stop" }).click();
     await scenario.getByText(/^RUN STOPPED · remaining Steps/).waitFor();
-    await scenario.getByText("NOT RUN", { exact: true }).waitFor();
-    await scenario.getByLabel("Ordered Scenario Steps").evaluate((owner) => {
-      const firstOutcome = owner.querySelector("article p");
-      if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
-    });
+    await showScenarioSurface(page, "queue");
+    await scenario.getByRole("navigation", { name: "Ordered Scenario Steps", exact: true }).getByText("NOT RUN", { exact: true }).first().waitFor();
+    await focusScenarioMember(page, "Step 1");
+    await scenario.getByLabel("Focused Scenario member", { exact: true }).locator("article p").first().scrollIntoViewIfNeeded();
     return;
   }
   if (setup === "scenario-membership-preview") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-    await scenario.getByRole("button", { name: "Add captured update" }).click();
-    const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
-    const preview = picker.getByRole("button", { name: "Preview visible set" });
-    await preview.focus();
-    await preview.press("Space");
-    await picker.getByText("Will add after confirmation").waitFor();
+    await showScenarioSurface(page, "capture");
+    const captures = scenario.getByRole("region", { name: "Scenario captured updates", exact: true });
+    await captures.waitFor({ state: "visible" });
+    await captures.locator('input[type="checkbox"]:not(:disabled)').first().check();
+    await captures.getByRole("button", { name: "Add selected updates", exact: true }).focus();
+    await captures.getByText("1 selected across pages", { exact: false }).waitFor();
     return;
   }
   if (setup === "scenario-authored-undo") {
@@ -1203,6 +1281,8 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     // authored CodeMirror presentation, which is published when the editor
     // mounts.  Removing before that callback races on slower Linux runs.
     await scenario.getByLabel("Step 3 Injection Draft").locator(".workbench-react__local-code[data-selection-anchor]").waitFor({ state: "visible" });
+    await focusScenarioMember(page, "Step 2");
+    await scenario.getByLabel("Step 2 Injection Draft").locator(".workbench-react__local-code[data-selection-anchor]").waitFor({ state: "visible" });
     await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).click();
     await scenario.getByRole("button", { name: "Undo removal" }).waitFor();
     return;
@@ -1211,6 +1291,8 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await scenario.getByRole("button", { name: "Add authored update" }).click();
     await scenario.getByRole("alert").waitFor();
+    await showScenarioSurface(page, "capture");
+    await scenario.getByRole("region", { name: "Scenario captured updates", exact: true }).getByText(/100-Step capacity reached/).waitFor();
     return;
   }
   if (setup === "scenario") {
@@ -1364,9 +1446,9 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     if (setup === "captured-draft-changed") {
       await compare.click();
       await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Compare Source" && button.getAttribute("aria-pressed") === "false"));
-      await draft.getByText("Immutable Source", { exact: true }).waitFor({ state: "detached" });
+      await draft.getByText("Immutable Source", { exact: true }).waitFor({ state: "hidden" });
       const editor = draft.getByRole("textbox", { name: "Local Injection JSON", exact: true });
-      const rawText = await editor.textContent();
+      const rawText = await editor.innerText();
       if (!rawText?.includes('"value": "1"')) {
         throw new Error("Captured Local Injection visual fixture is missing the editable value field.");
       }
@@ -1374,7 +1456,10 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
       await editor.focus();
       await page.keyboard.press("ControlOrMeta+A");
       await page.keyboard.insertText(changedText);
-      await page.waitForFunction((expected) => document.querySelector('[aria-label="Local Injection JSON"]')?.textContent === expected, changedText);
+      await page.waitForFunction((expected) => {
+        const editor = document.querySelector('[aria-label="Local Injection JSON"]');
+        return editor instanceof HTMLElement && editor.innerText === expected;
+      }, changedText);
       await draft.getByText("Changed from immutable Source", { exact: true }).waitFor();
       await compare.click();
       await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Compare Source" && button.getAttribute("aria-pressed") === "true"));
@@ -1426,12 +1511,12 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     await operations.waitFor();
     await page.getByRole("button", { name: "Back to prior investigation" }).waitFor();
     const documentation = operations.getByRole("link", { name: "Documentation" });
-    const clear = operations.getByRole("button", { name: "Clear retained Evidence…" });
-    await clear.scrollIntoViewIfNeeded();
-    await clear.focus();
+    const historyDetails = operations.getByText("History and privacy details", { exact: true });
+    await historyDetails.scrollIntoViewIfNeeded();
+    await historyDetails.focus();
     await page.keyboard.press("Tab");
     if (!await documentation.evaluate((element) => element === document.activeElement)) {
-      throw new Error("Documentation was not the next keyboard target after Clear retained Evidence.");
+      throw new Error("Documentation was not the next keyboard target after History and privacy details.");
     }
     const visibility = await operations.evaluate((element) => {
       const inViewport = (target) => {
@@ -1459,6 +1544,7 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     await page.keyboard.press("Enter");
     const operations = page.getByRole("region", { name: "Session operations" });
     await operations.waitFor();
+    await operations.getByText("History and privacy details", { exact: true }).click();
     const text = await operations.innerText();
     if (!text.includes("in-memory fallback") || !text.includes("Closing attempts controlled erasure")) {
       throw new Error("Memory fallback Session operations copy is incomplete.");
@@ -1480,10 +1566,12 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
     const before = await owner.evaluate((element) => element.scrollTop);
     await owner.hover();
     await page.mouse.wheel(0, 500);
-    await page.waitForFunction((initial) => {
-      const element = document.querySelector(".workbench-react__context-body");
-      return element instanceof HTMLElement && element.scrollTop > initial;
-    }, before);
+    if (await owner.evaluate((element) => element.scrollHeight > element.clientHeight)) {
+      await page.waitForFunction((initial) => {
+        const element = document.querySelector(".workbench-react__context-body");
+        return element instanceof HTMLElement && element.scrollTop >= initial;
+      }, before);
+    }
     await page.keyboard.press("Tab");
     if (!await clear.evaluate((element) => element === document.activeElement)) {
       throw new Error("Production Clear retained events was not reached by physical Tab navigation.");

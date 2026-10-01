@@ -92,7 +92,7 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     expect(timeline!.textContent).toContain("since first retained timestamped event");
     expect(timeline!.textContent).not.toContain(String(origin));
     expect(evidence.querySelector('[aria-label="Ordered Lightstreamer Evidence"]')).not.toBeNull();
-    expect(panel.getSnapshot().activity?.open).toBe(false);
+    expect(panel.getSnapshot().activity).not.toHaveProperty("open");
     expect(Array.from(document.querySelectorAll("button")).some(button => button.textContent === "Open Activity")).toBe(false);
   });
 
@@ -102,7 +102,7 @@ describe("integrated Activity timeline in the production Workbench panel", () =>
     const disclosure = context.querySelector<HTMLDetailsElement>('details[aria-label="Activity summary"]');
     expect(disclosure).not.toBeNull();
     expect(disclosure!.open).toBe(false);
-    expect(disclosure!.querySelector('summary')!.textContent).toBe("Activity summary — Inspected page");
+    expect(disclosure!.querySelector('summary')!.textContent).toBe("Activity summary");
     expect(Array.from(context.querySelectorAll('[aria-label="Evidence metadata"] dt')).map(term => term.textContent)).not.toContain("Activity");
     expect(Array.from(document.querySelectorAll('button')).some(button => button.textContent === "Open Scope Context")).toBe(true);
     await act(async () => disclosure!.querySelector('summary')!.click());

@@ -8,10 +8,33 @@ import {
   topologySensitiveCategoryCounts,
   type TopologySnapshotSubscription
 } from "../src/extension/panel/topology-export";
+import { runtimeObjectDossier } from "../src/extension/panel/runtime-context-dossier";
 import { renderTopologyHtmlReport } from "../src/extension/panel/topology-html-report";
 import { type TopologyState, type TopologySubscription } from "../src/core/topology-state";
 
 describe("Topology structured export", () => {
+  it("qualifies retained deleted-key counts consistently in Context, JSON and HTML", () => {
+    const state = topologyFixture();
+    const client = state.clients[0];
+    const session = client.sessions[0];
+    const subscription = session.subscriptions[0];
+    const item = subscription.items[0];
+    item.deletedCommandKeyCount = 42;
+    item.deletedCommandKeysHasOlder = true;
+    const dossier = runtimeObjectDossier({ kind: "item", client, session, subscription, item }, "Item", { semantic: true, status: "USEFUL", detail: "Semantic fixture coverage" });
+    expect(dossier.groups?.find(group => group.title === "Counters")?.fields).toContainEqual(["Deleted COMMAND keys", "42 retained (older identities not retained)"]);
+    const snapshot = createTopologyStructuredSnapshot(state, projectionStatus(), { generatedAt: 1, redact: [] });
+    expect(firstSubscription(snapshot).items[0].metrics).toMatchObject({
+      deletedCommandKeyCount: 42, deletedCommandKeysHasOlder: true, deletedCommandKeyCountBasis: "retained-identities"
+    });
+    expect(serializeTopologySnapshot(snapshot)).toContain('"deletedCommandKeysHasOlder": true');
+    expect(renderTopologyHtmlReport(snapshot)).toContain("retained-identities");
+    delete item.deletedCommandKeysHasOlder;
+    const complete = createTopologyStructuredSnapshot(state, projectionStatus(), { generatedAt: 1, redact: [] });
+    expect(firstSubscription(complete).items[0].metrics).not.toHaveProperty("deletedCommandKeysHasOlder");
+    expect(firstSubscription(complete).items[0].metrics).not.toHaveProperty("deletedCommandKeyCountBasis");
+  });
+
   it("serializes a deterministic compact snapshot with explicit evidence bounds", () => {
     const state = topologyFixture();
     const snapshot = createTopologyStructuredSnapshot(state, projectionStatus(), {

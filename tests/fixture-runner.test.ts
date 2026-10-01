@@ -61,6 +61,55 @@ describe("cross-platform Lightstreamer fixture commands", () => {
     expect(result.stdout).toContain("Lightstreamer fixture started at http://localhost:18080/");
   });
 
+  it("builds and deploys the adapter and waits for HTTP readiness before reporting startup", () => {
+    const result = spawnSync(process.execPath, [runnerPath, "start", "--dry-run"], {
+      cwd: rootDir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        LIGHTSTREAMER_PORT: "18080",
+        LSEW_FIXTURE_URL: "http://localhost:18080/",
+        LSEW_FIXTURE_WAIT_SECONDS: "12"
+      }
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const stages = [
+      "[dry-run] bundle",
+      "[dry-run] mvn -q -f",
+      "[dry-run] copy",
+      "[dry-run] docker rm -f",
+      "[dry-run] docker run --detach",
+      "[dry-run] wait 12s for http://localhost:18080/",
+      "Lightstreamer fixture started at http://localhost:18080/"
+    ];
+    let previousIndex = -1;
+    for (const stage of stages) {
+      const index = result.stdout.indexOf(stage);
+      expect(index, `Missing startup stage: ${stage}`).toBeGreaterThanOrEqual(0);
+      expect(index, `Startup stage out of order: ${stage}`).toBeGreaterThan(previousIndex);
+      previousIndex = index;
+    }
+  });
+
+  it("returns a failure when HTTP readiness times out", () => {
+    const result = spawnSync(process.execPath, [runnerPath, "wait"], {
+      cwd: rootDir,
+      encoding: "utf8",
+      timeout: 5_000,
+      env: {
+        ...process.env,
+        LSEW_FIXTURE_URL: "http://127.0.0.1:1/",
+        LSEW_FIXTURE_WAIT_SECONDS: "1"
+      }
+    });
+
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain("Timed out waiting for Lightstreamer fixture");
+    expect(result.stdout).not.toContain("fixture ready");
+    expect(result.stdout).not.toContain("fixture started");
+  });
+
   it("runs the loaded-extension Playwright proof inside the managed fixture lifecycle", () => {
     const result = spawnSync(process.execPath, [runnerPath, "browser-test", "--dry-run"], {
       cwd: rootDir,
@@ -69,10 +118,15 @@ describe("cross-platform Lightstreamer fixture commands", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("docker run --detach");
+    expect(result.stdout).toContain("[dry-run] wait");
+    expect(result.stdout).not.toContain("fixture started");
     expect(result.stdout).toContain(
       "npm exec -- playwright test --config playwright.extension.config.ts"
     );
     expect(result.stdout.indexOf("docker run --detach")).toBeLessThan(
+      result.stdout.indexOf("[dry-run] wait")
+    );
+    expect(result.stdout.indexOf("[dry-run] wait")).toBeLessThan(
       result.stdout.indexOf("npm exec -- playwright test")
     );
   });

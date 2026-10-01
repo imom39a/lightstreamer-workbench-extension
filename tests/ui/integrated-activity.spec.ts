@@ -61,7 +61,7 @@ async function openActivitySummary(page: Page): Promise<Locator> {
   }).click();
   const summary = page.locator('details[aria-label="Activity summary"]');
   await expect(summary).toBeVisible();
-  await expect(summary.locator("summary")).toHaveText(/^Activity summary — /);
+  await expect(summary.locator("summary")).toHaveText(/^Activity summary$/);
   await summary.locator("summary").click();
   await expect(summary).toHaveAttribute("open", "");
   return summary;
@@ -232,7 +232,7 @@ test("Activity Escape cancels a pointer drag before pointerup can commit the Fil
   await page.mouse.up();
   await expect(timeline).toContainText("All retained time");
   await expect(evidence).toContainText(/Matching\s*1,714/);
-  await expect(evidence).toContainText(/In Scope\s*1,714/);
+  await expect(evidence).toContainText(/Matching 1,714 in Scope/);
   await expect(evidence.getByRole("button", { name: "Reset Filter" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Back investigation" })).toBeDisabled();
   await expect(range).toBeFocused();

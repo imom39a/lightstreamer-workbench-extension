@@ -17,6 +17,8 @@ import {
   stepScenarioRun,
   terminalizeScenarioRun,
   undoScenarioStepRemoval,
+  undoScenarioStepAddition,
+  updateScenarioStepPresentation,
   updateScenarioStepDraft,
   type ScenarioDraftInput
 } from "../src/core/local-injection-scenario";
@@ -416,6 +418,54 @@ describe("Local Injection Scenario", () => {
     expect(result).toMatchObject({ ok: false, capacity: "bytes" });
     expect(scenario.revision).toBe(1);
     expect(scenario.steps[0]!.draft.diagnostics).not.toEqual(refreshed[0]!.draft.diagnostics);
+  });
+
+  it("undoes added Steps without replacing surviving presentation, allocator, or prior removal Undo", () => {
+    const initial = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const earlier = addScenarioStep(initial, input("earlier-removal", "ADD", 2));
+    if (!earlier.ok) throw new Error(earlier.reason);
+    const removedId = earlier.scenario.steps[1]!.id;
+    const removed = removeScenarioStep(earlier.scenario, removedId);
+    if (!removed.ok) throw new Error(removed.reason);
+    const added = addScenarioStep(removed.scenario, input("added", "ADD", 3));
+    if (!added.ok) throw new Error(added.reason);
+    const editor = {...added.scenario.steps[0]!.draft.editor, cursor: 12, scrollTop: 44, compareOpen: false, serializedState: { document: "preserved" }};
+    const presented = updateScenarioStepPresentation(added.scenario, "step-1", editor);
+    if (!presented.ok) throw new Error(presented.reason);
+    const result = undoScenarioStepAddition(presented.scenario, [added.scenario.steps[1]!.id]);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.scenario.steps[0]).toEqual(presented.scenario.steps[0]);
+    expect(result.scenario.members[0]).toEqual(presented.scenario.members[0]);
+    expect(result.scenario.nextStepSequence).toBe(presented.scenario.nextStepSequence);
+    expect(result.scenario.removedSteps).toEqual(removed.scenario.removedSteps);
+    const removalUndo = undoScenarioStepRemoval(result.scenario);
+    if (!removalUndo.ok) throw new Error(removalUndo.reason);
+    expect(removalUndo.scenario.steps.map(step => step.id)).toEqual(["step-1", removedId]);
+    const next = addScenarioStep(result.scenario, input("later", "ADD", 4));
+    if (!next.ok) throw new Error(next.reason);
+    expect(next.scenario.steps[1]!.id).toBe("step-4");
+  });
+
+  it("reaccounts current authoring state after addition Undo and admits retained Runs against the exact byte boundary", () => {
+    const initial = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const added = addScenarioStep(initial, input("added", "ADD", 2));
+    if (!added.ok) throw new Error(added.reason);
+    const editor = {...initial.steps[0]!.draft.editor, serializedState: { document: "é".repeat(4096) }};
+    const presented = updateScenarioStepPresentation(added.scenario, "step-1", editor);
+    if (!presented.ok) throw new Error(presented.reason);
+    const ids = [added.scenario.steps[1]!.id];
+    const undone = undoScenarioStepAddition(presented.scenario, ids);
+    if (!undone.ok) throw new Error(undone.reason);
+    expect(undone.scenario.accountedBytes).toBeGreaterThan(initial.accountedBytes);
+    expect(undone.scenario.accountedBytes).toBeLessThan(presented.scenario.accountedBytes);
+    const {accountedBytes, steps: _derived, ...accountedDefinition} = undone.scenario;
+    expect(accountedBytes).toBe(new TextEncoder().encode(JSON.stringify(accountedDefinition)).byteLength);
+    const retainedRunBytes = SCENARIO_MAX_ACCOUNTED_BYTES - accountedBytes;
+    expect(undoScenarioStepAddition(presented.scenario, ids, {retainedRunBytes})).toMatchObject({ok:true});
+    expect(undoScenarioStepAddition(presented.scenario, ids, {retainedRunBytes:retainedRunBytes + 1})).toMatchObject({ok:false,capacity:"bytes"});
+    expect(presented.scenario.steps).toHaveLength(2);
+    expect(undoScenarioStepAddition(presented.scenario, ["missing"])).toMatchObject({ok:false});
+    expect(undoScenarioStepAddition(initial, ["step-1"])).toMatchObject({ok:false,reason:expect.stringContaining("at least one")});
   });
 
   it("terminalizes an abandoned paused Run with exact NOT RUN remainder", async () => {

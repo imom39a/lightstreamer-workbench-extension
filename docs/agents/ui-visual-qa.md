@@ -297,3 +297,31 @@ LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers npm run fixture:test:browser
 npm run release:package
 npm run docs:check
 ```
+
+## Captured-update Scenario Variant C batch
+
+The maintainer selected C and explicitly authorized this Material UI adoption on
+2026-10-01. Captured updates now remain searchable beside an ordered Scenario
+queue and one focused member editor. Compact and shallow layouts expose three
+workspace controls while retaining search, selection, editor state and focus.
+Explicit batch Add reports success, capacity or retention refusal beside the
+selection; composition and Refresh never execute an Injection.
+
+The maintained packet passed all 115 states, including 40 Scenario states and
+eight new capture states. All 115 passed full axe checks with no serious or
+critical violations, browser diagnostics or shell/document overflow; 95 focus
+checks were visible and unobscured. The independent reviewer inspected every
+Scenario base/current/diff trio, accepted C references and difficult individual
+Darwin/Linux platform images, and passed with no material findings.
+
+Read-only full Darwin and pinned-Linux browser comparisons each passed 410/410.
+The final Darwin follow-up passed 13 capture behaviors and 40 Scenario baselines.
+All 254 baseline hashes remained unchanged during normal comparison. Intentional
+Scenario baselines were generated through the maintained update command. New
+states cover memory/native IndexedDB 5,000-event batching, normal/wide/compact/
+shallow geometry, selected batch, empty, query failure and 100-Step refusal in
+Dark and forced colors under the accepted amendment.
+
+The acceptance record, regression diagnosis, final package and official-client
+MCP evidence are in
+[`scenario-capture-workspace-evidence.md`](scenario-capture-workspace-evidence.md).

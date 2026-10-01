@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityScopeFor, createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
+import { activityScopeFor, createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
 import { createActivityProjection } from "../src/core/activity-projection";
 import { createTypedFilterValue } from "../src/core/filter-algebra";
 import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
@@ -12,24 +12,29 @@ function update(id: string, timestamp: number): LightstreamerEventEnvelope {
   return { id, timestamp, direction: "inbound", source: "server", synthetic: false, kind: "item-update", logicalEventId: id, client: { id: "client-1", sessionId: "session-1", semanticValueStates: { id: { state: "requested" }, sessionId: { state: "requested" } } }, subscription: { id: "subscription-1", mode: "MERGE", semanticValueStates: { id: { state: "requested" } } }, item: { name: "item-1", position: 1 }, update: { isSnapshot: false } };
 }
 
-function scheduler() {
-  const frames: Array<() => void> = [];
-  const timers: Array<{ delay: number; callback: () => void }> = [];
-  const value: WorkbenchRuntimeScheduler & { flushFrame(): void; flushTimers(): void; delays: number[] } = {
-    requestFrame(callback) { frames.push(callback); return callback; },
-    cancelFrame(handle) { const index = frames.indexOf(handle as () => void); if (index >= 0) frames.splice(index, 1); },
-    setTimeout(callback, delayMs) { timers.push({ delay: delayMs, callback }); return callback; },
-    clearTimeout(handle) { const index = timers.findIndex((timer) => timer.callback === handle); if (index >= 0) timers.splice(index, 1); },
-    flushFrame() { const callbacks = frames.splice(0); callbacks.forEach((callback) => callback()); },
-    flushTimers() { const callbacks = timers.splice(0); callbacks.forEach(({ callback }) => callback()); },
-    delays: []
-  };
-  const originalSetTimeout = value.setTimeout;
-  value.setTimeout = (callback, delayMs) => { value.delays.push(delayMs); return originalSetTimeout(callback, delayMs); };
-  return value;
-}
-
 describe("Activity runtime seam", () => {
+  it("restores integrated ranking Scope, Filter and Frozen read point on Back", async () => {
+    const runtime = createWorkbenchRuntime({ history: createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] }) });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    runtime.dispatch({ type: "freeze-evidence" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    runtime.dispatch({ type: "apply-filter-mutations", expectedRevision: runtime.getSnapshot().evidence.investigation.filter.revision, operations: [{ type: "set-text", text: "event" }] });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    const before = runtime.getSnapshot();
+    runtime.dispatch({ type: "apply-activity-ranking-filter", expectedRevision: before.evidence.investigation.filter.revision, rankingId: before.activity!.projection.allRankings[0]!.identity });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    runtime.dispatch({ type: "back-investigation" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    const after = runtime.getSnapshot();
+    expect(after.evidence.investigation.filter).toEqual(before.evidence.investigation.filter);
+    expect(after.scope.selection).toEqual(before.scope.selection);
+    expect(after.evidence.mode).toBe("frozen");
+    expect(after.activity!.readPoint).toEqual(before.activity!.readPoint);
+    expect(after.activity).not.toHaveProperty("document");
+    runtime.dispose();
+  });
+
+
   it("routes item and listener selections to their owning Subscription scope", () => {
     const subscription = { id: "subscription-1" } as never;
     const client = { id: "client-1" } as never;
@@ -43,7 +48,7 @@ describe("Activity runtime seam", () => {
     expect(activityScopeFor(listenerTarget)).toEqual({ kind: "SUBSCRIPTION", clientId: "client-1", sessionId: "session-1", subscriptionId: "subscription-1" });
   });
 
-  it("publishes only committed Evidence with an explicit read point and supports promotion", async () => {
+  it("publishes only committed Evidence with an explicit read point", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
     const runtime = createWorkbenchRuntime({ history });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
@@ -53,69 +58,66 @@ describe("Activity runtime seam", () => {
     expect(activity.readPoint.retainedRange?.first.timestamp).toBe(1_000);
     expect(activity.projection.logicalUpdateTotal).toBe(2);
     expect(activity.projection.state).toBe("AVAILABLE");
-    runtime.dispatch({ type: "open-activity" });
-    expect(runtime.getSnapshot().activity?.open).toBe(true);
+    expect(runtime.getSnapshot().activity).not.toHaveProperty("document");
     runtime.dispose();
   });
 
-  it("clips Activity supporting Evidence to the retained range", async () => {
+  it("applies integrated ranking without inventing a time restriction", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
     const runtime = createWorkbenchRuntime({ history });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
-    runtime.dispatch({ type: "open-activity" });
-    runtime.dispatch({ type: "show-activity-supporting-evidence", start: -10_000, end: 10_000 });
+    const ranking = runtime.getSnapshot().activity!.projection.allRankings[0]!;
+    runtime.dispatch({ type: "apply-activity-ranking-filter", expectedRevision: runtime.getSnapshot().evidence.investigation.filter.revision, rankingId: ranking.identity });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
-    expect(runtime.getSnapshot().evidence.investigation.filter.around).toEqual({ intervalId: expect.any(String), start: 1_000, end: 2_001 });
+    expect(runtime.getSnapshot().evidence.investigation.filter.around).toBeNull();
     expect(runtime.getSnapshot().evidence.investigation.scope.kind).toBe("PAGE");
     runtime.dispose();
   });
 
-  it("drills ranking identity, item-update type, Server provenance, and plotted interval into Evidence", async () => {
+  it("drills ranking identity, item-update type, and Server provenance into Evidence", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
     const runtime = createWorkbenchRuntime({ history });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    runtime.dispatch({ type: "open-activity" });
     const ranking = runtime.getSnapshot().activity?.projection.allRankings[0];
     expect(ranking?.supportingFilterMutations).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "add-criterion", facet: "subscription", polarity: "include" }),
       expect.objectContaining({ type: "add-criterion", facet: "kind", polarity: "include" }),
       expect.objectContaining({ type: "add-criterion", facet: "provenance", polarity: "include" })
     ]));
-    runtime.dispatch({ type: "show-activity-supporting-evidence", ...(ranking?.range ? { start: ranking.range.start, end: ranking.range.end } : {}), filterMutations: ranking?.supportingFilterMutations ?? [] });
+    runtime.dispatch({ type: "apply-activity-ranking-filter", expectedRevision: runtime.getSnapshot().evidence.investigation.filter.revision, rankingId: ranking!.identity });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
     const investigation = runtime.getSnapshot().evidence.investigation;
-    expect(investigation.filter.around).toEqual({ intervalId: expect.any(String), start: 1_000, end: 2_001 });
+    expect(investigation.filter.around).toBeNull();
     expect(investigation.filter.criteria.subscription.include).toHaveLength(1);
     expect(investigation.filter.criteria.kind.include[0].value).toBe("ITEM-UPDATE");
     expect(investigation.filter.criteria.provenance.include[0].value).toBe("SERVER");
     runtime.dispose();
   });
 
-  it("keeps frozen Activity stable and reports newer committed Evidence until follow-live", async () => {
+  it("keeps integrated Activity stable at Frozen Evidence until follow-live", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
     const runtime = createWorkbenchRuntime({ history });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
-    runtime.dispatch({ type: "open-activity" });
-    runtime.dispatch({ type: "freeze-activity" });
+    runtime.dispatch({ type: "freeze-evidence" });
     history.offer(update("event-3", 3_000));
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
-    expect(runtime.getSnapshot().activity?.document?.view).toBe("FROZEN");
-    expect(runtime.getSnapshot().activity?.document?.newerMatchingEvidence).toBe(1);
+    expect(runtime.getSnapshot().evidence.mode).toBe("frozen");
+    expect(runtime.getSnapshot().activity?.readPoint.committedEvidenceBoundary?.sequence).toBe(2);
     expect(runtime.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(2);
 
-    runtime.dispatch({ type: "follow-activity" });
+    runtime.dispatch({ type: "follow-live" });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    expect(runtime.getSnapshot().activity?.document?.view).toBe("FOLLOW LIVE");
+    expect(runtime.getSnapshot().evidence.mode).toBe("live");
     expect(runtime.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(3);
     runtime.dispose();
   });
 
-  it("counts only newer Evidence matching the frozen provenance Filter", async () => {
+  it("keeps Frozen provenance counts and includes matching Evidence on follow-live", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
     const runtime = createWorkbenchRuntime({ history });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
@@ -127,33 +129,16 @@ describe("Activity runtime seam", () => {
       operations: [{ type: "add-criterion", facet: "provenance", value: createTypedFilterValue("provenance", "enum", "SERVER") }]
     });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    runtime.dispatch({ type: "open-activity" });
-    runtime.dispatch({ type: "freeze-activity" });
+    runtime.dispatch({ type: "freeze-evidence" });
     history.offer({ ...update("local-1", 3_000), source: "synthetic", synthetic: true });
     history.offer(update("server-1", 4_000));
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
-    expect(runtime.getSnapshot().activity?.document?.newerMatchingEvidence).toBe(1);
-    runtime.dispose();
-  });
-
-  it("restores the Activity origin selection, scroll, and focus on Back to Evidence", async () => {
-    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
-    const runtime = createWorkbenchRuntime({ history });
+    expect(runtime.getSnapshot().activity?.readPoint.committedEvidenceBoundary?.sequence).toBe(2);
+    runtime.dispatch({ type: "follow-live" });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
-
-    runtime.dispatch({ type: "select-evidence", eventId: "event-1" });
-    runtime.dispatch({ type: "focus-evidence", eventId: "event-1" });
-    runtime.dispatch({ type: "set-evidence-scroll", scrollTop: 84 });
-    runtime.dispatch({ type: "open-activity" });
-    runtime.dispatch({ type: "select-evidence", eventId: "event-2" });
-    runtime.dispatch({ type: "focus-evidence", eventId: "event-2" });
-    runtime.dispatch({ type: "set-evidence-scroll", scrollTop: 999 });
-    runtime.dispatch({ type: "close-activity" });
-
-    expect(runtime.getSnapshot().selectionEventId).toBe("event-1");
-    expect(runtime.getSnapshot().evidence.focusedEventId).toBe("event-1");
-    expect(runtime.getSnapshot().evidence.scrollTop).toBe(84);
+    expect(runtime.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(3);
+    expect(runtime.getSnapshot().activity?.projection.localLogicalUpdateTotal).toBe(0);
     runtime.dispose();
   });
 
@@ -205,133 +190,10 @@ describe("Activity runtime seam", () => {
     runtime.dispose();
   });
 
-  it("coalesces visible Activity graphical publication for approximately one second", async () => {
-    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
-    const runtimeScheduler = scheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler: runtimeScheduler });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    runtime.dispatch({ type: "open-activity" });
-    const before = runtime.getSnapshot().activity?.projection.logicalUpdateTotal;
-    history.offer(update("event-2", 2_000));
-    history.offer(update("event-3", 3_000));
-    runtimeScheduler.flushFrame();
-
-    expect(runtime.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(before);
-    expect(runtimeScheduler.delays).toContain(1_000);
-    runtimeScheduler.flushTimers();
-    expect(runtime.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(3);
-    runtime.dispose();
-  });
-
-  it("restores the exact Evidence Scope, Filter, position, and view on Back", async () => {
-    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
-    const runtime = createWorkbenchRuntime({ history });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    const originalFilter = runtime.getSnapshot().evidence.investigation.filter;
-    runtime.dispatch({ type: "select-evidence", eventId: "event-1" });
-    runtime.dispatch({ type: "focus-evidence", eventId: "event-1" });
-    runtime.dispatch({ type: "set-evidence-scroll", scrollTop: 84 });
-    runtime.dispatch({ type: "open-activity" });
-    runtime.dispatch({ type: "apply-filter-mutations", expectedRevision: originalFilter.revision, operations: [{ type: "set-text", text: "changed-in-activity" }] });
-    runtime.dispatch({ type: "freeze-activity" });
-    runtime.dispatch({ type: "set-evidence-scroll", scrollTop: 999 });
-    runtime.dispatch({ type: "close-activity" });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-
-    const snapshot = runtime.getSnapshot();
-    expect(snapshot.evidence.investigation.filter).toEqual(originalFilter);
-    expect(snapshot.evidence.investigation.scope.kind).toBe("PAGE");
-    expect(snapshot.evidence.mode).toBe("live");
-    expect(snapshot.selectionEventId).toBe("event-1");
-    expect(snapshot.evidence.focusedEventId).toBe("event-1");
-    expect(snapshot.evidence.scrollTop).toBe(84);
-    runtime.dispose();
-  });
-
-  it("reopens supporting Evidence in the exact Activity document state", async () => {
-    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
-    const runtime = createWorkbenchRuntime({ history });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-
-    runtime.dispatch({ type: "open-activity" });
-    const activity = runtime.getSnapshot().activity!;
-    const bucketId = activity.projection.buckets[0]!.id;
-    runtime.dispatch({ type: "select-activity", selection: { kind: "bucket", id: bucketId } });
-    runtime.dispatch({ type: "set-activity-timeline-series", series: "SERVER_LIVE" });
-    runtime.dispatch({ type: "set-activity-local-series", enabled: true });
-    runtime.dispatch({ type: "set-activity-ranking-sort", sort: "UPDATE_DELIVERIES" });
-    runtime.dispatch({ type: "set-activity-scroll", documentTop: 84, plotLeft: 19 });
-    runtime.dispatch({ type: "freeze-activity" });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-
-    const before = runtime.getSnapshot().activity!.document!;
-    runtime.dispatch({ type: "show-activity-supporting-evidence", start: 1_000, end: 2_001 });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    expect(runtime.getSnapshot().activity?.open).toBe(false);
-
-    runtime.dispatch({ type: "back-investigation" });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-
-    const restored = runtime.getSnapshot().activity!;
-    expect(restored.open).toBe(true);
-    expect(restored.readPoint).toEqual(before.readPoint);
-    expect(restored.document).toMatchObject({
-      scope: before.scope,
-      filter: before.filter,
-      readPoint: before.readPoint,
-      view: "FROZEN",
-      selection: before.selection,
-      selectionRange: before.selectionRange,
-      timelineSeries: "SERVER_LIVE",
-      localSeries: true,
-      rankingSort: "UPDATE_DELIVERIES",
-      documentScrollTop: 84,
-      plotScrollLeft: 19
-    });
-    runtime.dispose();
-  });
-
-  it("exposes the Activity navigation cause for panel focus restoration", async () => {
-    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
-    const runtime = createWorkbenchRuntime({ history });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-
-    runtime.dispatch({ type: "open-activity" });
-    expect(runtime.getSnapshot().activity?.transition.kind).toBe("opened");
-
-    runtime.dispatch({ type: "close-activity" });
-    expect(runtime.getSnapshot().activity?.transition.kind).toBe("explicit-close");
-
-    runtime.dispatch({ type: "open-activity" });
-    runtime.dispatch({ type: "show-activity-supporting-evidence", start: 1_000, end: 2_001 });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    expect(runtime.getSnapshot().activity?.transition.kind).toBe("supporting-evidence");
-
-    runtime.dispatch({ type: "back-investigation" });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    expect(runtime.getSnapshot().activity?.transition.kind).toBe("back");
-    runtime.dispose();
-  });
-
-  it("normalizes a legacy renderer bucket index to the stable Activity bucket identity", async () => {
-    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
-    const runtime = createWorkbenchRuntime({ history });
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-
-    runtime.dispatch({ type: "open-activity" });
-    const bucket = runtime.getSnapshot().activity!.projection.buckets[0]!;
-    runtime.dispatch({ type: "select-activity", selection: { kind: "bucket", id: "0" } });
-
-    expect(runtime.getSnapshot().activity?.document?.selection).toEqual({ kind: "bucket", id: bucket.id });
-    runtime.dispose();
-  });
-
   it("invalidates Activity and terminal history on successful Clear", async () => {
     const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
     const runtime = createWorkbenchRuntime({ history });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    runtime.dispatch({ type: "open-activity" });
-    runtime.dispatch({ type: "select-activity", selection: { kind: "bucket", id: "0" } });
     runtime.dispatch({ type: "request-clear-history" });
     runtime.dispatch({ type: "confirm-clear-history" });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
@@ -340,7 +202,7 @@ describe("Activity runtime seam", () => {
     expect(runtime.getSnapshot().retention.historyStatus.interval.ordinal).toBe(2);
     expect(runtime.getSnapshot().activity?.projection.state).toBe("EMPTY_INTERVAL");
     expect(runtime.getSnapshot().activity?.projection.committedEvidenceBoundary).toBeNull();
-    expect(runtime.getSnapshot().activity?.document?.selection).toBeNull();
+    expect(runtime.getSnapshot().activity).not.toHaveProperty("document");
     runtime.dispose();
   });
 
@@ -352,7 +214,6 @@ describe("Activity runtime seam", () => {
     }) as unknown as EventHistory;
     const runtime = createWorkbenchRuntime({ history });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    runtime.dispatch({ type: "open-activity" });
     runtime.dispatch({ type: "request-clear-history" });
     runtime.dispatch({ type: "confirm-clear-history" });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
@@ -388,12 +249,10 @@ describe("Activity runtime seam", () => {
     expect(runtime.getSnapshot().notifications.entries).toContainEqual(expect.objectContaining({
       code: "workbench.activity.aggregation-failed"
     }));
-    runtime.dispatch({ type: "open-activity" });
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
     expect(runtime.getSnapshot().diagnostics.some(({ category }) => category === "activity")).toBe(false);
     expect(runtime.getSnapshot().notifications.entries.filter(({ code }) => code === "workbench.activity.aggregation-failed"))
       .toHaveLength(1);
-    runtime.dispatch({ type: "close-activity" });
     failed = false;
     runtime.dispatch({ type: "refresh-evidence" });
     expect(runtime.getSnapshot().activity?.projection.state).toBe("AVAILABLE");

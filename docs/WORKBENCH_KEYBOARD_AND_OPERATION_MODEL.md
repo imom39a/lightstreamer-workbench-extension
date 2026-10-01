@@ -98,6 +98,28 @@ The Local Injection editor is a promoted document, not a special keyboard mode.
 
 Keyboard users reach the labelled **Inject locally** control directly from the authoring surface by ordinary focus navigation, then activate the focused control with Enter or Space. A captured Draft opens with its Source comparison active, and that comparison can be closed or reopened without changing the Draft. An invalid or retired target keeps the action visible with a textual blocking reason. Workbench never moves the editor cursor, discards the draft, or chooses a replacement target automatically.
 
+## Captured-update Scenario composition
+
+The accepted 2026-10-01 Variant C uses ordinary Tab navigation between captured
+search, operation filter, native selection checkboxes, Add, the ordered queue and
+the focused editor. Space toggles the focused checkbox; Enter or Space activates
+the focused Add or queue control. Capture results remain a keyboard-focusable
+scroll surface when Review makes selection read-only. No composition keystroke
+executes an Injection.
+
+Compact and shallow Captured updates, Scenario queue and Focused editor controls
+change only the working surface. Selecting a queue member deliberately opens
+its editor. Native editor cursor, scroll, selection and primitive Checkpoint
+input remain owned by that member. Search and editor arrow keys retain their
+ordinary text behavior. Park and Resume restore the active Scenario surface,
+focus, capture search/page/selection/scroll and member editor state.
+
+Feedback for Add, unavailable Source, retired target and capacity stays at the
+captured selection boundary, outside an overlay. New Capture updates only a
+qualified newer-Evidence count; Refresh is explicit and does not change Scenario
+membership. Review and Run controls retain their existing explicit authorization
+and keyboard contract.
+
 ## Find, Filter, Jump, and Scope
 
 These are distinct operations and must remain visibly distinguishable.
@@ -135,7 +157,7 @@ Escape closes only the topmost visible Workbench-owned transient and restores it
 
 - close ordinary Context;
 - act as compact Back;
-- minimize or discard a draft;
+- park or discard a Draft;
 - change Scope;
 - toggle Live, Frozen, or Capture;
 - escape from the raw editor when no Workbench transient owns it.

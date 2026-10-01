@@ -122,7 +122,7 @@ When no evidence row is selected, it presents a **runtime-object dossier** for t
 - relevant COMMAND lifecycle diagnostics where the scope supports them;
 - valid contextual actions for a live object.
 
-When an evidence row is selected, the same secondary surface becomes an **evidence inspector**. Applicable lenses include Summary, Fields, Deliveries, and Raw. The collapsed Activity summary, Filter selected Evidence, and Evidence metadata disclosures precede Selected update, keeping captured Fields in the initial viewport while the supporting context remains directly expandable. Selected provenance remains visible in the inspector header, and the Filter disclosure remains stable with an explicit unavailable state when it has no typed actions. Runtime-object dossiers remain expanded when no Evidence is selected. Evidence remains primary; the inspector explains it and exposes valid follow-up actions.
+When an evidence row is selected, the same secondary surface becomes an **evidence inspector**. Applicable lenses include Summary, Fields, Deliveries, and Raw. The collapsed Activity summary, Filter selected Evidence, and Evidence metadata disclosures precede Selected update, keeping captured Fields in the initial viewport while the supporting context remains directly expandable. Selected provenance remains visible in the inspector header, and the Filter disclosure remains stable with an explicit unavailable state when it has no typed actions. When no Evidence is selected, runtime-object dossiers show identity, mode, lifecycle and fields directly; secondary Settings, Counters and Metadata use native disclosures. Material topology limitations remain visible. Evidence remains primary; the inspector explains it and exposes valid follow-up actions.
 
 This conditional dossier is the selected contribution from Runtime Lens. Runtime objects do not replace ordered evidence as the workspace organizer.
 
@@ -145,6 +145,33 @@ The draft keeps the exact Local Injection Target visible and separates the immut
 The draft occupies the contextual detail area where space permits. In compact geometry it becomes the one primary surface and Back restores the exact evidence selection and investigation state. Target retirement preserves safe edits, disables execution, and requires explicit reselection; Workbench never silently retargets.
 
 Detailed editor composition and failure behavior will be selected by the dedicated Local Injection interaction ticket.
+
+### Temporary Local Injection Scenario
+
+The maintainer-selected captured-update Variant C (2026-10-01) keeps a searchable
+captured-Evidence workspace beside an explicit ordered Scenario queue, with one
+focused Step or Checkpoint editor. It belongs inside the existing temporary
+Local Injection document; it adds no permanent workspace destination.
+
+Captured browsing reads the complete retained Server Item Updates for the
+Scenario's exact shared target through bounded metadata pages. Search, operation
+filter, page, scroll and multi-selection remain independent of the main Scope,
+Filter, Find and Evidence selection. A committed read point holds the candidate
+set steady until explicit Refresh. New Capture does not add Scenario members.
+
+Only explicit Add changes membership. A batch resolves its selected Sources,
+revalidates retention, target, revision and capacity, then adds all members in
+retained order or refuses the whole batch visibly. Used Sources remain labelled;
+Duplicate Step provides deliberate reuse. The queue preserves every member's
+identity and execution order while one focused editor preserves immutable
+Source, editable Draft and editor state. Undo removes only the last added batch
+and preserves surviving editor state and allocated member identities.
+
+Compact and shallow geometry show one of Captured updates, Scenario queue or
+Focused editor at a time, keeping their state across switches and Park. Exact
+target, Session and the Local-only boundary remain reachable. Building never
+executes an Injection. Scenario Review still freezes a separate immutable Run
+under [ADR 0012](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md).
 
 ### Advanced tools
 

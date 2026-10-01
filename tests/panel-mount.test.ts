@@ -602,14 +602,14 @@ describe("production panel mount wiring", () => {
     await flushPanel();
 
     const footerDiagnostics = root.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
-    const storageDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Capture continues with a rolling memory Retained Range of 25,000 Evidence records or 128 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
+    const storageDetail = "PRIMARY_JOURNAL_UNAVAILABLE. Rolling memory Retained Range: 25,000 Evidence records or 128 MiB. No Evidence Gap was created by this storage change, and Observation Coverage is unchanged.";
 
     expect(root.textContent).toContain("Coverage USEFUL");
     expect(root.textContent).not.toContain("Coverage LIMITED");
     expect(footerDiagnostics?.textContent).toContain("Warning · History using memory");
     expect(footerDiagnostics?.textContent).toContain("Affected: History Interval panel-fallback-error:interval-1");
     expect(footerDiagnostics?.textContent).toContain(storageDetail);
-    expect(footerDiagnostics?.textContent).toContain("Recovery: Keep investigating; reopen DevTools later if durable session storage is required");
+    expect(footerDiagnostics?.textContent).toContain("Recovery: Keep investigating, or reopen DevTools to retry IndexedDB");
     expect(root.textContent?.split(storageDetail)).toHaveLength(2);
     await clickButton(root, "More actions");
     expect(root.textContent).toContain(
