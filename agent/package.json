@@ -1,7 +1,7 @@
 {
   "name": "lightstreamer-workbench-agent",
-  "version": "0.1.5",
-  "description": "MCP companion for Lightstreamer Workbench: one Node runtime for Windows, macOS and Linux",
+  "version": "0.1.6",
+  "description": "Connect MCP agents to Lightstreamer Workbench in Chrome DevTools",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
@@ -23,7 +23,7 @@
     "url": "git+https://github.com/imom39a/lightstreamer-workbench-extension.git",
     "directory": "agent"
   },
-  "homepage": "https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/agent",
+  "homepage": "https://imom39a.github.io/lightstreamer-workbench-extension/",
   "bugs": {
     "url": "https://github.com/imom39a/lightstreamer-workbench-extension/issues"
   },
