@@ -37,6 +37,16 @@ test("permanent absence exhausts the fixed retry budget", async () => {
   assert.equal(delays, 2);
 });
 
+test("publication pending beyond the old retry window can still become visible", async () => {
+  let calls = 0;
+  const metadata = await verifyPublishedAgent(expected, {
+    request: async () => ++calls < 12 ? { status: 404 } : visible(published),
+    delay: async () => {}
+  });
+  assert.deepEqual(metadata, published);
+  assert.equal(calls, 12);
+});
+
 test("wrong visible name, version, source, or digest fails immediately", async () => {
   for (const changed of [{ name: "other" }, { version: "0.1.4" }, { gitHead: "b".repeat(40) }, { dist: { integrity: "sha512-other-artifact" } }, { dist: undefined }]) {
     let calls = 0;
@@ -59,7 +69,7 @@ test("authentication, server, and network errors do not masquerade as propagatio
 });
 
 test("invalid retry budgets cannot create an unbounded verification loop", async () => {
-  for (const attempts of [0, 10, 1.5, Infinity]) {
+  for (const attempts of [0, 32, 1.5, Infinity]) {
     await assert.rejects(verifyPublishedAgent(expected, { attempts, request: async () => assert.fail("Invalid budgets must fail before fetching") }), /bounded attempts/);
   }
 });

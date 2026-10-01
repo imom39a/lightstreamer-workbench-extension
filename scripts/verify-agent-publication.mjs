@@ -3,16 +3,17 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-// Publication can succeed before every registry edge exposes the new version.
+// npm scans new publications before exposing them, typically for five minutes
+// and sometimes fifteen or more. Allow fifteen minutes between bounded requests.
 // Retry visibility only; a visible artifact must match the tested source/digest.
 export async function verifyPublishedAgent(expected, {
   request = fetch,
-  delay = () => new Promise(resolveDelay => setTimeout(resolveDelay, 15_000)),
-  attempts = 9,
+  delay = () => new Promise(resolveDelay => setTimeout(resolveDelay, 30_000)),
+  attempts = 31,
   onPending = () => {}
 } = {}) {
-  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 9) {
-    throw new Error("Publication verification requires 1–9 bounded attempts.");
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 31) {
+    throw new Error("Publication verification requires 1–31 bounded attempts.");
   }
   const url = `https://registry.npmjs.org/${encodeURIComponent(expected.name)}/${encodeURIComponent(expected.version)}`;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -47,7 +48,7 @@ async function main() {
   const tarball = await readFile(resolve("release", filename));
   const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
   await verifyPublishedAgent({ name: plan.name, version: plan.version, sha: plan.sha, integrity }, {
-    onPending: attempt => console.log(`npm registry visibility pending (${attempt}/9); retrying in 15 seconds.`)
+    onPending: attempt => console.log(`npm registry visibility pending (${attempt}/31); retrying in 30 seconds.`)
   });
   console.log(`Published npm artifact verified: ${plan.name}@${plan.version}, source ${plan.sha}, ${integrity}`);
 }
