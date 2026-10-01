@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below is prepared for extension 2.0.7 with matching companion 0.1.5. The npm package and matching public extension download were verified on September 30, 2026. The Store API accepted the 2.0.7 ZIP as a draft and confirmed 2.0.6 published. The maintainer resumed dashboard updates and submission on September 30 after returning to the desk. The versioned release records later in this file describe their original packages.
+The description below is saved for extension 2.0.7 with matching companion 0.1.5. The npm package and matching public extension download were verified on September 30, 2026. Version 2.0.7 was submitted for review that day with automatic publication after approval at 100% distribution. The API and refreshed dashboard confirm pending review; 2.0.6 remains published. The versioned release records later in this file describe their original packages.
 
 ```text
 New in 2.0.7: COMMAND Clear and exact key handling are more reliable, and long sessions release discarded runtime objects and bound historical bookkeeping. With companion 0.1.5, agents can read one exact COMMAND key with certainty and provenance, wait for an existing operation without repeating it, and recover from incompatible companion versions. MCP reads preserve JSON values, support cancellation, and keep replies within explicit budgets.
@@ -203,13 +203,14 @@ Copy the printed MCP configuration into the test agent app and start its stdio s
 - [x] Publish and verify companion 0.1.5 with source provenance and matching integrity.
 - [x] Publish and verify the ready-built 2.0.7 extension bundle and checksums.
 - [x] Upload the configured 516,955-byte 2.0.7 ZIP; API upload succeeded.
-- [ ] Save the detailed description and 0.1.5 reviewer instructions above in the dashboard.
-- [ ] Refresh the four changed Store screenshots; keep the unchanged Agent access image fourth.
-- [ ] Confirm existing privacy answers and permission justifications agree with this release.
-- [ ] Submit with automatic publication after approval and 100% distribution.
-- [ ] Verify actual review/publication state before announcing Store availability.
+- [x] Save the detailed description and 0.1.5 reviewer instructions above in the dashboard.
+- [x] Retain the existing five Store screenshots as requested by the maintainer; Agent access stays fourth.
+- [x] Confirm existing privacy answers and permission justifications agree with this release.
+- [x] Submit with automatic publication after approval and 100% distribution.
+- [x] Verify 2.0.7 pending review and 2.0.6 published through the API and refreshed dashboard.
+- [ ] Verify Google approval and actual public availability of 2.0.7.
 
-The maintainer resumed the remaining dashboard/submission steps on September 30, 2026. The five image filenames and their required order are listed above. The exact configured Store ZIP and API upload are recorded in [`RELEASE.md`](../RELEASE.md).
+The maintainer resumed publishing on September 30, 2026 and chose to keep the current Store screenshots. No screenshot was removed or uploaded. Prepared replacement images remain in this directory for a future update. The exact configured Store ZIP, upload, and review submission are recorded in [`RELEASE.md`](../RELEASE.md).
 
 ## Version 2.0.2 Release Checklist (historical)
 
