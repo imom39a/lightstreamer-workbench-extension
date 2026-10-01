@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below is prepared for extension 2.0.7 with matching companion 0.1.5. The npm package and matching public extension download were verified on September 30, 2026. The Store API accepted the 2.0.7 ZIP as a draft and confirmed 2.0.6 published. Dashboard updates and submission are deferred until the maintainer returns home to unlock the Mac. The versioned release records later in this file describe their original packages.
+The description below is prepared for extension 2.0.7 with matching companion 0.1.5. The npm package and matching public extension download were verified on September 30, 2026. The Store API accepted the 2.0.7 ZIP as a draft and confirmed 2.0.6 published. The maintainer resumed dashboard updates and submission on September 30 after returning to the desk. The versioned release records later in this file describe their original packages.
 
 ```text
 New in 2.0.7: COMMAND Clear and exact key handling are more reliable, and long sessions release discarded runtime objects and bound historical bookkeeping. With companion 0.1.5, agents can read one exact COMMAND key with certainty and provenance, wait for an existing operation without repeating it, and recover from incompatible companion versions. MCP reads preserve JSON values, support cancellation, and keep replies within explicit budgets.
@@ -77,7 +77,7 @@ Key features:
 - Treat Processed as a Lightstreamer message outcome, not proof of an application business effect or later Server Update. Workbench never retries an Unknown outcome automatically.
 - Use WebSocket/TLCP fallback diagnostics when the primary Web Client instrumentation is not available.
 - Keep one temporary Event History for each Panel Session. IndexedDB can keep 100,000 records or 256 MiB. The memory fallback can keep 25,000 records or 128 MiB.
-- Use the Committed Evidence Boundary to find the end of complete History. Retention removes the oldest accepted prefix while Capture continues and reports the resulting Evidence Gap explicitly.
+- Use the Committed Evidence Boundary to find the end of complete History. Retention removes the oldest accepted prefix while Capture continues and reports the Retention Advance. An Evidence Gap means captured activity could not be accepted into Event History.
 - A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty.
 - Configured production builds use usage analytics for fixed feature names, engagement time, coarse outcomes, and a random installation identifier. It is on by default and can be turned off in More actions → Help & resources → Usage analytics. Captured Evidence and typed text are excluded from analytics; separate Agent access can send requested Evidence to a local MCP client and its configured model provider.
 - No advertising, account sign-in, or maintainer-operated collection backend.
@@ -126,22 +126,23 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.6
+2.0.7
 ```
 
 What's new:
 
 ```text
-MCP context-budget maintenance release, paired with companion 0.1.3.
+COMMAND and agent reliability release, paired with companion 0.1.5.
 
-- Status reports operational metadata without cached Evidence payloads.
-- All MCP tool replies enforce an 8 KiB default serialized response budget, with explicit larger budgets capped at 64 KiB.
-- Large Scope, diagnostic, Scenario, and global discovery lists paginate within their response budget.
-- Validation verdicts and execution receipts remain explicit in bounded replies.
-- Search Scope, summarize and query retained Evidence, and wait for matching updates with bounded responses.
-- Inspect stream shape and review source-grounded Local Injection Drafts and Scenarios before execution.
-- Agent access starts on when a panel opens and can be turned off under More actions. Agent tools do not expose Server Injection, Event History clearing, or arbitrary page code.
-- The local loopback companion replaces native host access, so the extension no longer requests the nativeMessaging permission.
+- Fix COMMAND Clear/replay and exact whitespace-key handling.
+- Release discarded runtime objects and bound historical bookkeeping in long sessions.
+- Preserve encoded JSON values while redacting recognized credentials in MCP reads.
+- Propagate read cancellation and keep responses within explicit budgets.
+- Read one exact COMMAND key with certainty and provenance through query_command_state.
+- Wait for an existing operation receipt through wait_for_operation without repeating it.
+- Validate companion identity and report incompatible Chrome/MCP pairs.
+- Preserve Server Injection correlation receipts and refuse new sends when their capacity is reached.
+- Keep the existing Capture, Injection, permission, and analytics boundaries.
 ```
 
 ## Privacy Practices Draft
@@ -149,7 +150,7 @@ MCP context-budget maintenance release, paired with companion 0.1.3.
 ```text
 Lightstreamer Workbench processes inspected-page Lightstreamer event data in the browser extension context. Each Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 25,000 records or 128 MiB. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session and reports the storage change and failure reason. Workbench does not send captured Evidence to maintainers or an analytics service. Agent access separately sends requested Evidence to a local MCP client and may send it to that client's configured model provider. Client Message bodies remain redacted in agent results.
 
-Complete History ends at the current History Interval's Committed Evidence Boundary. Retention removes the oldest accepted prefix while Capture continues and reports the resulting Evidence Gap explicitly. Clear makes an exact History Interval cut. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
+Complete History ends at the current History Interval's Committed Evidence Boundary. Retention removes the oldest accepted prefix while Capture continues and reports a Retention Advance, not an Evidence Gap. An Evidence Gap means captured activity could not be accepted into any canonical Event History segment. Clear makes an exact History Interval cut. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
 
 The analytics candidate sends fixed Workbench feature names, foreground engagement time, coarse outcomes, extension version, event time, and a random installation identifier to Google Analytics 4. Analytics is enabled by default in configured builds. More actions → Help & resources → Usage analytics provides a persistent off switch. Turning it off stops collection and removes the identifier and analytics session. Captured Evidence, payloads, inspected URLs, search text, clipboard/export content, and raw errors are excluded from analytics. Agent access is separate: it sends requested Evidence to the local MCP client and may send it to that client's configured model provider. Agent access is on by default for inspection and Local Injection; authentication is off. Any local process that can reach the companion may use a connected panel's grant. Workbench does not sell data, use analytics for advertising, require sign-in, or operate a maintainer collection server.
 
@@ -208,7 +209,7 @@ Copy the printed MCP configuration into the test agent app and start its stdio s
 - [ ] Submit with automatic publication after approval and 100% distribution.
 - [ ] Verify actual review/publication state before announcing Store availability.
 
-The maintainer deferred the remaining dashboard/submission steps until returning home. The five image filenames and their required order are listed above. The exact configured Store ZIP and API upload are recorded in [`RELEASE.md`](../RELEASE.md).
+The maintainer resumed the remaining dashboard/submission steps on September 30, 2026. The five image filenames and their required order are listed above. The exact configured Store ZIP and API upload are recorded in [`RELEASE.md`](../RELEASE.md).
 
 ## Version 2.0.2 Release Checklist (historical)
 
