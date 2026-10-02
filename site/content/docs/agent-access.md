@@ -7,19 +7,19 @@ Install the Chrome extension and the npm companion to let an MCP agent inspect E
 - An agent app that supports local stdio MCP servers.
 - Chrome, Node, and the agent app on the same computer.
 
-Companion [0.1.6 is available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.6) and pairs with extension 2.0.7. Install the extension separately. See [Release notes]({{site}}releases/) for the available versions.
+Companion [0.1.7 is available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) and pairs with extension 2.0.8. Install the extension separately. See [Release notes]({{site}}releases/) for the available versions.
 
 The extension and npm package provide the Workbench runtime. A repository checkout, build tools, Docker, and a separately managed server are not part of user setup.
 
 ## Install a matching extension
 
-Follow [Getting started]({{site}}docs/getting-started/) to install from the Chrome Web Store. Check the installed version in `chrome://extensions`. Use extension 2.0.7 with companion 0.1.6.
+Follow [Getting started]({{site}}docs/getting-started/) for Store installation. Check `chrome://extensions`. The Store offers 2.0.7 while 2.0.8 awaits review; use the matching download below.
 
 If the Store offers an older version, install the ready-built extension download:
 
-1. Download the [packaged extension 2.0.7](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.5/lightstreamer-workbench-mcp-v2.0.7.zip).
+1. Download the [packaged extension 2.0.8](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.7/lightstreamer-workbench-mcp-v2.0.8.zip).
 2. Extract the downloaded bundle.
-3. Extract `extension/lightstreamer-workbench-v2.0.7.zip` into a folder you will keep.
+3. Extract `extension/lightstreamer-workbench-v2.0.8.zip` into a folder you will keep.
 4. Open `chrome://extensions`.
 5. Turn on **Developer mode**.
 6. Select **Load unpacked**.
@@ -34,13 +34,13 @@ Copy the ID Chrome assigns to this extension. Add it to the setup command below 
    macOS or Linux:
 
    ```sh
-   npx --yes lightstreamer-workbench-agent@0.1.6 setup
+   npx --yes lightstreamer-workbench-agent@0.1.7 setup
    ```
 
    Windows PowerShell:
 
    ```powershell
-   npx.cmd --yes lightstreamer-workbench-agent@0.1.6 setup
+   npx.cmd --yes lightstreamer-workbench-agent@0.1.7 setup
    ```
 
    For a downloaded extension loaded unpacked, append `--extension-id YOUR_EXTENSION_ID`. Copy its ID from `chrome://extensions`.

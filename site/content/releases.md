@@ -1,3 +1,16 @@
+## Extension 2.0.8 and MCP companion 0.1.7
+
+Companion [0.1.7 is published on npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) and pairs with extension 2.0.8. Its exact package passed Windows, macOS, and Linux checks and was published with signed provenance. The companion runtime is unchanged from 0.1.6; setup examples now pin the matching release.
+
+Extension 2.0.8 simplifies the workspace and improves captured-update Scenario composition:
+
+- Search captured updates for the exact target through bounded pages, independently of the current investigation.
+- Add selected batches explicitly to an ordered queue with one focused Source/Draft editor.
+- Preserve focus and member reading positions through switching, Park/Resume, and Undo.
+- Label MERGE and DISTINCT Steps as Item update and bound deleted COMMAND-key history in long sessions.
+
+The [ready-built 2.0.8 download](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.7) is available now with checksums. Chrome Web Store accepted 2.0.8 for review and will publish it automatically after approval; the Store currently distributes 2.0.7. Follow [matching Chrome and MCP setup]({{site}}docs/agent-access/) to use the download with companion 0.1.7.
+
 ## MCP companion — 0.1.6
 
 Companion [0.1.6 is published on npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.6). It simplifies the npm page around Chrome installation and MCP setup, with links here for user guidance and to GitHub for contributor documentation. Its runtime is unchanged from 0.1.5 and it pairs with extension 2.0.7.
@@ -19,7 +32,7 @@ Follow [MCP setup]({{site}}docs/agent-access/) for Chrome installation and versi
 
 Extension 2.0.7 fixes COMMAND Clear and exact whitespace-key handling, bounds historical bookkeeping, and releases discarded runtime objects. Selected Context preserves encoded JSON numbers and explains uncertain values and unverified JSON Patch basis. Repeated Server Injection correlations do not resend after receipt capacity is reached.
 
-The [ready-built extension 2.0.7](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.5/lightstreamer-workbench-mcp-v2.0.7.zip) is available now. The Chrome Web Store update is awaiting review and will publish automatically after approval; the Store currently distributes 2.0.6. Follow [matching Chrome and MCP setup]({{site}}docs/agent-access/#install-a-matching-extension) to use 2.0.7 with companion 0.1.6.
+The [ready-built extension 2.0.7](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.5/lightstreamer-workbench-mcp-v2.0.7.zip) remains available. Chrome Web Store published 2.0.7 on October 1, 2026, independently confirmed through the publisher API and public listing on October 2. Companion 0.1.6 pairs with this release. See [matching Chrome and MCP setup]({{site}}docs/agent-access/#install-a-matching-extension) for the current pair.
 
 ## MCP companion — 0.1.4
 

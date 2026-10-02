@@ -18,13 +18,13 @@ Capture is observational. Workbench does not create clients or subscribe for the
 
 ## Agent access
 
-The MCP companion supports macOS, Windows, and Linux. Install [lightstreamer-workbench-agent 0.1.5 from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.5). It bounds serialized MCP replies to 8 KiB by default, supports larger responses up to 64 KiB where offered, and keeps cached Evidence out of operational status. Your agent app starts the companion. No hosted service or native installer is needed.
+The MCP companion supports macOS, Windows, and Linux. Install [lightstreamer-workbench-agent 0.1.7 from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7). It bounds serialized MCP replies to 8 KiB by default, supports larger responses up to 64 KiB where offered, and keeps cached Evidence out of operational status. Your agent app starts the companion. No hosted service or native installer is needed.
 
 Follow the [shared MCP setup guide](https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/).
 Use the [read contract](agent/READS.md) for scoped queries, summaries, and selected fields.
 See the [companion reference](agent/README.md) for local builds and migration.
 
-The npm package and Chrome extension are separate releases. Use companion 0.1.5 with extension 2.0.7. The setup guide links to the ready-built extension when the Store offers an older version.
+The npm package and Chrome extension are separate releases. Use companion 0.1.7 with extension 2.0.8. The setup guide links to the ready-built extension when the Store offers an older version.
 
 ## Data and safety
 

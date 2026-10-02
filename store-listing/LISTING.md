@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below is prepared for extension 2.0.8 with matching companion 0.1.7. On October 2, 2026, the publisher API and public listing confirm that extension 2.0.7 is published at 100% distribution. The versioned release records later in this file describe their original packages.
+The description below is prepared for extension 2.0.8 with matching companion 0.1.7. On October 2, 2026, the publisher API confirms 2.0.8 pending review with automatic publication after approval at 100%; 2.0.7 remains published. Google required publisher passkey verification for dashboard edits, so the existing 2.0.7 Store listing and images were retained for submission. The refreshed copy and images below have not been saved in the dashboard. The versioned release records later in this file describe their original packages.
 
 ```text
 New in 2.0.8: the workspace presents less repeated copy and preserves editor focus. Build Local Injection Scenarios from searchable captured updates with explicit batch adds, an ordered queue, and one focused editor. Switching members and Undo preserve each editor's reading position. Long sessions bound deleted COMMAND-key history. Companion 0.1.7 provides the matching MCP tools and setup.
@@ -200,13 +200,13 @@ Copy the printed MCP configuration into the test agent app and start its stdio s
 - [x] Pass the complete local release package gate and inspect ZIP integrity, size, digest, and manifests.
 - [x] Regenerate and inspect current Store/site screenshots; keep pixel-identical brand assets.
 - [x] Prepare current description, release notes, and version-pinned 0.1.7 reviewer instructions.
-- [ ] Publish the exact companion tarball after Windows, macOS, and Linux checks; verify provenance, source, integrity, and npm `latest`.
-- [ ] Publish and verify the matching 2.0.8 download and checksums.
-- [ ] Upload the configured Store ZIP and confirm upload success.
-- [ ] Save and verify the current Store description and reviewer instructions.
-- [ ] Confirm existing privacy answers and permission justifications agree with this release.
-- [ ] Submit with automatic publication after approval at 100% distribution and verify the returned review state.
-- [ ] Restore the npm publication guard to `false` and update public setup guidance.
+- [x] Publish the exact companion tarball after Windows, macOS, and Linux checks; verify provenance, source, integrity, and npm `latest`.
+- [x] Publish and verify the matching 2.0.8 download and checksums.
+- [x] Upload the configured Store ZIP and confirm upload success.
+- [ ] Save and verify the refreshed Store description, reviewer instructions, and screenshots after publisher passkey verification.
+- [x] Verify unchanged manifest permissions and maintained public-policy boundaries; retain existing privacy answers. The private questionnaire was not re-audited.
+- [x] Submit with automatic publication after approval at 100% distribution and verify 2.0.8 `PENDING_REVIEW` through a separate API read.
+- [x] Restore the npm publication guard to `false` and update public setup guidance.
 - [ ] Verify Google approval and actual public availability of 2.0.8.
 
 ## Version 2.0.7 Release Checklist (historical)
