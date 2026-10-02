@@ -187,6 +187,22 @@ The workflow's final registry check exhausted its two-minute visibility window, 
 
 The site guide uses 0.1.6 for new setup while retaining the existing matching 2.0.7 extension download during Store review. User-facing site checks and documentation checks passed. The complete work and evidence are tracked under ignored `.scratch/npm-readme-cleanup/`.
 
+## Extension 2.0.8 and npm companion 0.1.7 Preparation Record
+
+The maintainer requested Chrome Web Store and npm publication on October 2, 2026. The publisher API and public Store listing first confirmed extension 2.0.7 published at 100%; npm confirmed companion 0.1.6 as `latest`. This release packages reviewed product revision `22943ba2eb158d2cfb6cc02d7117e0ef7800fdef`: simplified workspace copy, preserved editor focus, bounded deleted COMMAND-key history, and captured-update Scenario composition with paged discovery, explicit atomic batch adds, an ordered queue, and one focused editor. Member switching and Undo preserve reading positions; generic MERGE/DISTINCT Steps use Item update labels.
+
+Release preparation is **Non-UI** relative to that product revision: package versions, matching setup guidance, listing copy, and generated Store/site assets change; no runtime source, panel control, interaction, or visual baseline changes. The accepted product UI, independent reviews, 412-check Darwin browser gate, and official-client/MCP proofs are recorded in [`panel-simplification-evidence.md`](docs/agents/panel-simplification-evidence.md) and [`scenario-capture-workspace-evidence.md`](docs/agents/scenario-capture-workspace-evidence.md). The exact product revision also passed the Windows/macOS/Linux companion workflow [36932983156](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36932983156) and official-client/fixture workflow [36932983096](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36932983096).
+
+Fresh local preparation on Darwin arm64 with Node.js `v25.9.0` and npm `11.12.1` passed:
+
+- `npm ci`, type checking, all 188 serialized unit files with 2,025 tests passed and one existing optional workload skipped, production build, and extension audit.
+- `npm audit --omit=dev` reported zero advisories. The full audit reported nine development-tooling advisories (six high, three moderate); dependency versions were not changed.
+- Store asset regeneration and visual inspection of all five 1280×800 screenshots and the site social card. Pixel-identical icon/promo changes were discarded; current panel and site images are retained.
+- Documentation checks, four site analytics unit checks, eight site browser checks, and all 18 publication-planner/verifier/bundle checks.
+- `release/lightstreamer-workbench-v2.0.8.zip`: 523,544 bytes, SHA-256 `5224a4de515b0a1c4700adaa1bd812eb461f363c3e0b3e929d66bd1c0ae80667`. All 27 archive entries passed integrity checking; root, built, and public manifests agree on 2.0.8. Manifest V3 permissions remain `storage` and the Google Analytics host permission, with no `unlimitedStorage`.
+
+The npm source minimum and package setup examples use 0.1.7; trusted publication will verify the exact tarball on Windows, macOS, and Linux before publishing it with provenance. Store review submission, final registry verification, downloadable bundle publication, and public setup guidance updates are still pending at this preparation record. Local evidence is under ignored `.scratch/release-2.0.8/`.
+
 ## Usage analytics release contract
 
 [ADR 0015](docs/adr/0015-measure-extension-usage-with-a-closed-analytics-vocabulary.md) records the maintainer-requested replacement of the earlier no-analytics invariant. The candidate enables limited GA4 usage analytics by default with a persistent off switch. Captured Evidence, payloads, inspected URLs, search text, credentials, and raw errors remain outside analytics. This is a Material UI and data-boundary change, not a statement that an existing Store package has changed.

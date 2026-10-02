@@ -1,6 +1,6 @@
 {
   "name": "lightstreamer-workbench-agent",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Connect MCP agents to Lightstreamer Workbench in Chrome DevTools",
   "type": "module",
   "license": "Apache-2.0",

@@ -10,7 +10,7 @@ and Item Updates, and test Local Injections with your agent.
 - Install [Node.js 22.12 or later](https://nodejs.org/en/download), including npm.
 - Use an agent app that supports local stdio MCP servers on the same computer as Chrome.
 
-This release requires extension 2.0.7. See the
+Use this release with extension 2.0.8. See the
 [setup guide](https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/)
 for current availability, installation help, and troubleshooting.
 
@@ -19,13 +19,13 @@ for current availability, installation help, and troubleshooting.
 Run this command on macOS or Linux:
 
 ```sh
-npx --yes lightstreamer-workbench-agent@0.1.6 setup
+npx --yes lightstreamer-workbench-agent@0.1.7 setup
 ```
 
 In Windows PowerShell:
 
 ```powershell
-npx.cmd --yes lightstreamer-workbench-agent@0.1.6 setup
+npx.cmd --yes lightstreamer-workbench-agent@0.1.7 setup
 ```
 
 Copy the printed `mcpServers` entry into your agent app's MCP settings, then

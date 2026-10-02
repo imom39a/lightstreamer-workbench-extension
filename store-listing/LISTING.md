@@ -46,10 +46,10 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below is saved for extension 2.0.7 with matching companion 0.1.5. The npm package and matching public extension download were verified on September 30, 2026. Version 2.0.7 was submitted for review that day with automatic publication after approval at 100% distribution. The API and refreshed dashboard confirm pending review; 2.0.6 remains published. The versioned release records later in this file describe their original packages.
+The description below is prepared for extension 2.0.8 with matching companion 0.1.7. On October 2, 2026, the publisher API and public listing confirm that extension 2.0.7 is published at 100% distribution. The versioned release records later in this file describe their original packages.
 
 ```text
-New in 2.0.7: COMMAND Clear and exact key handling are more reliable, and long sessions release discarded runtime objects and bound historical bookkeeping. With companion 0.1.5, agents can read one exact COMMAND key with certainty and provenance, wait for an existing operation without repeating it, and recover from incompatible companion versions. MCP reads preserve JSON values, support cancellation, and keep replies within explicit budgets.
+New in 2.0.8: the workspace presents less repeated copy and preserves editor focus. Build Local Injection Scenarios from searchable captured updates with explicit batch adds, an ordered queue, and one focused editor. Switching members and Undo preserve each editor's reading position. Long sessions bound deleted COMMAND-key history. Companion 0.1.7 provides the matching MCP tools and setup.
 
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
 
@@ -68,7 +68,7 @@ Key features:
 - Trace COMMAND `ADD`, `UPDATE`, and `DELETE` operations. Use Fields, diagnostics, and Checkpoints for more detail.
 - Create one protected Local Injection Draft from captured Evidence or from a live COMMAND Scope.
 - Edit raw JSON and validate the Draft. Captured Drafts compare Source and Draft by default, then inject directly from that preview.
-- Use a Local Injection Scenario for ordered Steps, immutable reviewed Runs, serial controls, Checkpoints, and results for each Step.
+- Search captured updates for the exact Scenario target, select a batch, and add it explicitly. Review ordered Steps and Checkpoints in a queue with one focused editor. Scenarios retain immutable reviewed Runs, serial controls, and results for each Step.
 - Connect a local MCP companion to inspect a Panel Session's Scope, Evidence, diagnostics, and Local Injection Scenario results. Agents can profile and query streams, validate candidates, prepare Scenarios, and inspect Scenario traces. They cannot perform Server Injection, clear Event History, or evaluate arbitrary page code.
 - When a panel opens, Agent access is on by default with inspection and Local Injection available together. There is no read-only mode. The header shows On, Waiting, or Off and opens the access control under More actions → Agent access and setup. Authentication is off; any local process that can reach the companion can use the connected panel's grant. Run Chrome and the Node.js 22.12+ companion on the same computer.
 - Deliver an Item Update to the exact live Subscription in the inspected page. Workbench reports delivered, failed, partial, unknown, and stale-target results.
@@ -126,23 +126,22 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.7
+2.0.8
 ```
 
 What's new:
 
 ```text
-COMMAND and agent reliability release, paired with companion 0.1.5.
+Workspace and Scenario workflow improvements, paired with companion 0.1.7.
 
-- Fix COMMAND Clear/replay and exact whitespace-key handling.
-- Release discarded runtime objects and bound historical bookkeeping in long sessions.
-- Preserve encoded JSON values while redacting recognized credentials in MCP reads.
-- Propagate read cancellation and keep responses within explicit budgets.
-- Read one exact COMMAND key with certainty and provenance through query_command_state.
-- Wait for an existing operation receipt through wait_for_operation without repeating it.
-- Validate companion identity and report incompatible Chrome/MCP pairs.
-- Preserve Server Injection correlation receipts and refuse new sends when their capacity is reached.
-- Keep the existing Capture, Injection, permission, and analytics boundaries.
+- Reduce repeated workspace copy and preserve editor focus.
+- Search bounded pages of captured updates independently of the investigation.
+- Add selected batches explicitly and atomically within Scenario capacity limits.
+- Compose an ordered queue with one focused Source/Draft editor.
+- Preserve member reading positions through switching, Park/Resume, and Undo.
+- Label MERGE and DISTINCT Steps as Item update.
+- Bound deleted COMMAND-key history in long sessions.
+- Preserve MCP authorization, the human workspace, and existing data boundaries.
 ```
 
 ## Privacy Practices Draft
@@ -184,18 +183,33 @@ Page access is required to run packaged instrumentation at document_start before
 ## Reviewer Test Instructions
 
 ```text
-No account required. On a page using the official Lightstreamer Web Client, open DevTools > Lightstreamer Workbench. Ordered Evidence captures updates; select one for Local Injection. Server Injection reviews one Client Message before send. Agent access starts on. To test MCP, use companion 0.1.5 from https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.5 and the setup guide at https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/.
+No account required. On a page using the official Lightstreamer Web Client, open DevTools > Lightstreamer Workbench. Select captured Evidence for Local Injection, or explicitly add updates to a Scenario queue. Server Injection reviews one Client Message before send. Agent access starts on. Test MCP with companion 0.1.7: https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7. Setup: https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/.
 ```
 
-For Store MCP review, extract the configured candidate `release/lightstreamer-workbench-v2.0.7.zip` and load it unpacked; record its assigned extension ID. Generate setup from npm:
+For Store MCP review, extract the configured candidate `release/lightstreamer-workbench-v2.0.8.zip` and load it unpacked; record its assigned extension ID. Generate setup from npm:
 
 ```sh
-npx --yes lightstreamer-workbench-agent@0.1.5 setup --extension-id YOUR_UNPACKED_EXTENSION_ID
+npx --yes lightstreamer-workbench-agent@0.1.7 setup --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Copy the printed MCP configuration into the test agent app and start its stdio server. The app starts the companion; no additional terminal or hosted server is needed. On Windows, use `npx.cmd`. The [matching public release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.5) includes a ready-built unpacked extension, the same tested companion tarball, source provenance, and SHA-256 checksums. Use both components from this release. Ask the agent to call `list_panel_sessions`, choose the reviewed tab, and call `get_status` before reading Evidence or testing Local Injection.
+Copy the printed MCP configuration into the test agent app and start its stdio server. The app starts the companion; no additional terminal or hosted server is needed. On Windows, use `npx.cmd`. The [matching public release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.7) includes a ready-built unpacked extension, the same tested companion tarball, source provenance, and SHA-256 checksums. Use both components from this release. Ask the agent to call `list_panel_sessions`, choose the reviewed tab, and call `get_status` before reading Evidence or testing Local Injection.
 
-## Version 2.0.7 Release Checklist
+## Version 2.0.8 Release Checklist
+
+- [x] Confirm published Store 2.0.7 and npm `latest` 0.1.6 before allocating new versions.
+- [x] Pass the complete local release package gate and inspect ZIP integrity, size, digest, and manifests.
+- [x] Regenerate and inspect current Store/site screenshots; keep pixel-identical brand assets.
+- [x] Prepare current description, release notes, and version-pinned 0.1.7 reviewer instructions.
+- [ ] Publish the exact companion tarball after Windows, macOS, and Linux checks; verify provenance, source, integrity, and npm `latest`.
+- [ ] Publish and verify the matching 2.0.8 download and checksums.
+- [ ] Upload the configured Store ZIP and confirm upload success.
+- [ ] Save and verify the current Store description and reviewer instructions.
+- [ ] Confirm existing privacy answers and permission justifications agree with this release.
+- [ ] Submit with automatic publication after approval at 100% distribution and verify the returned review state.
+- [ ] Restore the npm publication guard to `false` and update public setup guidance.
+- [ ] Verify Google approval and actual public availability of 2.0.8.
+
+## Version 2.0.7 Release Checklist (historical)
 
 - [x] Push reviewed product source `c0f250cba93d5399553f201d9995cd284be1bd26` to `main`.
 - [x] Pass the local package, official-client/MCP, panel browser, and asset-review gates.
@@ -208,7 +222,7 @@ Copy the printed MCP configuration into the test agent app and start its stdio s
 - [x] Confirm existing privacy answers and permission justifications agree with this release.
 - [x] Submit with automatic publication after approval and 100% distribution.
 - [x] Verify 2.0.7 pending review and 2.0.6 published through the API and refreshed dashboard.
-- [ ] Verify Google approval and actual public availability of 2.0.7.
+- [x] Verify Google approval and actual public availability of 2.0.7; publisher API and public listing confirmed on October 2, 2026.
 
 The maintainer resumed publishing on September 30, 2026 and chose to keep the current Store screenshots. No screenshot was removed or uploaded. Prepared replacement images remain in this directory for a future update. The exact configured Store ZIP, upload, and review submission are recorded in [`RELEASE.md`](../RELEASE.md).
 
