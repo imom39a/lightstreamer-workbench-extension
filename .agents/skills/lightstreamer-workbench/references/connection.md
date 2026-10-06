@@ -9,7 +9,7 @@ use a connected panel's grant or impersonate the companion. Connected panels
 allow inspection and Local Injection together. The underlying
 authentication and read-only code is retained, but these controls are not exposed
 by the current panel.
-The companion and Chrome must run on the same host; WSL/containers/remote agents
+The companion and browser must run on the same host; WSL/containers/remote agents
 need a host-side process and are not implicitly the same loopback connection.
 Use the npm package `lightstreamer-workbench-agent` on every platform. Its
 `setup` command prints version-pinned npm configuration; `setup --local` prints
@@ -47,8 +47,16 @@ shared with the agent and its model provider.
 
 ## Recovery and browser identity
 
-Companion setup must name the actual extension id, including
-unpacked builds. A busy port is not authorization to kill an unrelated process. Correct the
+Chrome companion setup must name the actual Chrome extension id, including
+unpacked builds. The default setup supports the official Chrome and Firefox
+extensions together. Firefox requires companion 0.1.8 or later; its per-profile
+origin is verified against the permanent add-on ID
+`lightstreamer-workbench@imom39a` in local Firefox profile metadata. Keep the
+default setup for Firefox; do not pass its Gecko ID to `--extension-id`.
+For a custom registry, see the package guide's `LSEW_FIREFOX_PROFILES_DIR` option.
+Firefox's required installation consent covers data shared with MCP; analytics
+permission is separate and optional.
+A busy port is not authorization to kill an unrelated process. Correct the
 matching configuration through the common guide when authorized. Existing
 credential-bearing entries remain authenticated; they are never silently downgraded.
 

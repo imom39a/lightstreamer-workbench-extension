@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Workbench usage analytics</title>
+    <link rel="icon" href="/icons/icon-16.png">
+  </head>
+  <body>
+    <main>
+      <h1>Share Workbench usage analytics</h1>
+      <p>Help improve Workbench by sharing feature use, engagement time, and error categories with Google Analytics.</p>
+      <p>Captured application data, inspected URLs, and typed text are excluded. Firefox will ask for optional technical and interaction data permission.</p>
+      <p>You can turn analytics off in Workbench or remove this Firefox permission at any time.</p>
+      <div class="actions"><button id="request" type="button">Request Firefox permission</button><button id="cancel" type="button">Keep analytics off</button></div>
+      <p id="status" role="status" aria-live="polite"></p>
+    </main>
+    <script type="module" src="./index.ts"></script>
+  </body>
+</html>

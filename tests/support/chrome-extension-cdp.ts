@@ -174,7 +174,7 @@ export async function waitForCondition(
   throw new Error(`Timed out waiting for ${description}.`);
 }
 
-async function evaluateRequestByValue<T>(cdp: CdpRequestClient, expression: string): Promise<T> {
+export async function evaluateRequestByValue<T>(cdp: CdpRequestClient, expression: string): Promise<T> {
   const evaluation = (await cdp.request("Runtime.evaluate", {
     expression,
     awaitPromise: true,

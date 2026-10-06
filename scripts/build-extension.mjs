@@ -1,15 +1,23 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { extensionManifest } from "./extension-manifest.mjs";
 
 const args = parseArgs(process.argv.slice(2));
-const outDir = args.outDir ?? "dist";
+const browser = args.browser ?? "chrome";
+if (!["chrome", "firefox"].includes(browser)) fail(`Unsupported --browser ${browser}.`);
+const outDir = args.outDir ?? (browser === "firefox" ? "dist-firefox" : "dist");
 
 const environment = {
   ...process.env,
-  LSEW_EXTENSION_OUT_DIR: outDir
+  LSEW_EXTENSION_OUT_DIR: outDir,
+  LSEW_EXTENSION_BROWSER: browser
 };
 
 run("npx", ["vite", "build"], environment);
 run(process.execPath, ["scripts/build-content-scripts.mjs"], environment);
+const manifestPath = resolve(outDir, "manifest.json");
+writeFileSync(manifestPath, `${JSON.stringify(extensionManifest(JSON.parse(readFileSync(manifestPath, "utf8")), browser), null, 2)}\n`);
 run(process.execPath, ["scripts/verify-extension-build.mjs"], environment);
 
 function parseArgs(rawArgs) {

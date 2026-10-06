@@ -4,7 +4,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { startPortableBroker } from "../../src/agent/companion/portable-broker";
 import { DEFAULT_COMPANION_PORT, PAIRING_ENV } from "../../src/agent/pairing";
-import { CdpClient, evaluateByValue, waitForCondition } from "./chrome-extension-cdp";
+import { type CdpRequestClient, evaluateRequestByValue as evaluateByValue, waitForCondition } from "./chrome-extension-cdp";
+import { FIREFOX_EXTENSION_ID } from "../../src/agent/browser-identity";
 
 function assertMcpReplyBudget(name: string, args: Record<string, unknown>, reply: unknown) {
   // A continuation's chosen budget belongs to its panel-owned cursor. Every
@@ -15,14 +16,16 @@ function assertMcpReplyBudget(name: string, args: Record<string, unknown>, reply
 }
 
 /** Opt-in real Chrome proof. The same loopback runtime runs on every platform. */
-export async function proveAgentFixture(root: string, panel: CdpClient, page: CdpClient) {
+export async function proveAgentFixture(root: string, panel: CdpRequestClient, page: CdpRequestClient, options: { browser?: "chrome" | "firefox"; env?: Record<string, string>; fixtureItem?: string; serverInjection?: boolean } = {}) {
   const cli = (process.env.LSEW_AGENT_TEST_CLI ?? join(root, "agent/dist/cli.mjs"));
   const client = new Client({ name: "workbench-browser-proof", version: "1" });
   try {
     const origin = await evaluateByValue<string>(panel, "location.origin");
+    const firefox = options.browser === "firefox";
+    const extensionId = firefox ? "kfpgbhfphbhkebglopimjhfnnmbifocf" : origin.slice("chrome-extension://".length);
     await headerState(panel, "Waiting");
     // The MCP client, not a manually started broker, owns normal startup.
-    await client.connect(new StdioClientTransport({ command: process.execPath, args: [cli, "mcp", "--extension-id", origin.slice("chrome-extension://".length)], env: { [PAIRING_ENV]: "" }, stderr: "inherit" }));
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [cli, "mcp", "--extension-id", extensionId], env: { [PAIRING_ENV]: "", ...options.env }, stderr: "inherit" }));
     const call = async (name: string, args: Record<string, unknown> = {}) => {
       const reply = await client.callTool({ name, arguments: args });
       assertMcpReplyBudget(name, args, reply);
@@ -42,23 +45,30 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.equal(status.permission, "local", "A normal connection grants inspection and Local Injection without settings.");
     assert.ok(status.capabilities.includes("search_evidence") && status.capabilities.includes("search_scope"));
     assert.ok(status.capabilities.includes("query_command_state") && status.capabilities.includes("wait_for_operation"));
-    assert.equal(status.companion.extensionId, origin.slice("chrome-extension://".length));
+    assert.equal(status.companion.extensionId, extensionId);
+    if (firefox) {
+      assert.equal(status.companion.firefoxExtensionId, FIREFOX_EXTENSION_ID);
+      assert.equal(status.inspectedPage.browser, "firefox");
+      assert.equal(typeof status.inspectedPage.browserTabId, "number");
+      assert.equal(status.inspectedPage.chromeTabId, undefined);
+    }
     assert.equal(status.companion.readContractVersion, 2);
-    const scopeSearch = await call("search_scope", { panelSessionId, text: "SCENARIO.MUTATE-REINJECT", limit: 100 });
-    assert.ok(scopeSearch.scopes.some((entry: any) => entry.kind === "item" && entry.label === "scenario.mutate-reinject · #1"), `MCP Scope search finds the exact named, positional item regardless of tree expansion: ${JSON.stringify(scopeSearch)}`);
-    const evidenceSearch = await call("search_evidence", { panelSessionId, within: "page", text: "SCENARIO.MUTATE-REINJECT", limit: 1, includePayload: true, maxBytes: 65536 });
+    const fixtureItem = options.fixtureItem ?? "scenario.mutate-reinject";
+    const scopeSearch = await call("search_scope", { panelSessionId, text: fixtureItem.toUpperCase(), limit: 100 });
+    assert.ok(scopeSearch.scopes.some((entry: any) => entry.kind === "item" && entry.label === `${fixtureItem} · #1`), `MCP Scope search finds the exact named, positional item regardless of tree expansion: ${JSON.stringify(scopeSearch)}`);
+    const evidenceSearch = await call("search_evidence", { panelSessionId, within: "page", text: fixtureItem.toUpperCase(), limit: 1, includePayload: true, maxBytes: 65536 });
     assert.ok(evidenceSearch.total > 0 && evidenceSearch.evidence.length === 1, "MCP Evidence search uses case-insensitive canonical matching.");
     if (evidenceSearch.nextCursor) {
       const next = await call("search_evidence", { panelSessionId, cursor: evidenceSearch.nextCursor });
       assert.deepEqual(next.readPoint, evidenceSearch.readPoint);
       assert.notEqual(next.evidence[0].identity.eventId, evidenceSearch.evidence[0].identity.eventId);
     }
-    const liveItem = scopeSearch.scopes.find((entry: any) => entry.kind === "item" && entry.label === "scenario.mutate-reinject · #1" && !entry.retired && entry.lifecycle === "active");
+    const liveItem = scopeSearch.scopes.find((entry: any) => entry.kind === "item" && entry.label === `${fixtureItem} · #1` && !entry.retired && entry.lifecycle === "active");
     assert.ok(liveItem, "Scope discovery identifies the exact active, positional item.");
     const liveScope = await call("get_scope", { panelSessionId, scopeId: liveItem.scopeId });
     assert.equal(liveScope.node.retired, false);
     const anchor = liveScope.localInjection.anchor;
-    assert.equal(anchor.itemName, "scenario.mutate-reinject");
+    assert.equal(anchor.itemName, fixtureItem);
     assert.equal(anchor.itemPosition, 1);
     assert.equal(anchor.captureSource, "listener");
     const serverListenerFilter = { criteria: [
@@ -146,7 +156,8 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.ok(await evaluateByValue(panel, `document.querySelector('[aria-label="Focused Scenario member"]').textContent.includes(${JSON.stringify(source.identity.eventId)})`), "Focused Step retains the captured Source identity separately from its amended Draft.");
     // Human focus is presentation state, so opening the second Step must retain
     // the reviewed execution plan/token and must not alter the next Run ordinal.
-    await click(panel, "button", "Scenario queue");
+    const queueToggleVisible = await evaluateByValue<boolean>(panel, `[...document.querySelectorAll("button")].some(button => button.textContent.trim() === "Scenario queue" && button.getBoundingClientRect().width > 0)`);
+    if (queueToggleVisible) await click(panel, "button", "Scenario queue");
     const secondStepLabel = await evaluateByValue<string>(panel, `document.querySelector('[aria-label="Ordered Scenario Steps"] ol li:nth-child(2) button').textContent.trim()`);
     await click(panel, '[aria-label="Ordered Scenario Steps"] ol li:nth-child(2) button', secondStepLabel);
     await waitForCondition(panel, `document.querySelector('[aria-label="Step 2 reviewed JSON"]')?.textContent.includes('Agent Scenario second')`, "human opens the second agent-prepared reviewed Step");
@@ -181,22 +192,47 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     await call("finish_agent_document", { panelSessionId, token: scenario.token });
     const after = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, where: { provenance: ["LOCAL"] }, limit: 10, includePayload: true, maxBytes: 65536 });
     assert.ok(after.evidence.some((row: any) => row.payload?.synthetic), "Agent can read marked Local Evidence after commit.");
+    if (options.serverInjection) {
+      // This is a disposable fixture's approval UI, never a production panel.
+      const message = "Firefox reviewed MCP Client Message";
+      const requestId = "firefox-server-proof";
+      const beforeSend = await evaluateByValue<number>(page,"Number(document.querySelector('#update-count').textContent)");
+      const prepared = await call("prepare_server_injection",{panelSessionId,pageEpoch:status.pageEpoch,clientId:anchor.clientId,sessionId:anchor.sessionId,message,sequence:"firefox_release_proof",delayTimeout:null,enqueueWhileDisconnected:false,requestId});
+      assert.equal(prepared.approvalRequired,true);
+      const args = {panelSessionId,token:prepared.token,requestId};
+      const denied = await client.callTool({name:"execute_server_injection",arguments:args});
+      assert.equal((denied.structuredContent as any)?.error?.code,"HUMAN_APPROVAL_REQUIRED");
+      assert.equal(await evaluateByValue(page,"Number(document.querySelector('#update-count').textContent)"),beforeSend);
+      await click(panel,"button","Review Client Message");
+      await waitForCondition(panel,`document.querySelector('[aria-label="Reviewed Server Injection"] pre')?.textContent === ${JSON.stringify(message)}`,"exact reviewed Server message");
+      await click(panel,"button","Approve exact Client Message for agent send");
+      assert.equal(await evaluateByValue(page,"Number(document.querySelector('#update-count').textContent)"),beforeSend,"Approval itself does not send.");
+      const sent = await call("execute_server_injection",args);
+      assert.equal(sent.state,"complete"); assert.equal(sent.outcome.status,"processed");
+      assert.deepEqual(await call("execute_server_injection",args),sent);
+      await waitForCondition(page,`document.querySelector('#message-text').textContent === ${JSON.stringify(message)} && Number(document.querySelector('#update-count').textContent) === ${beforeSend+1}`,"one reviewed Client Message reaches the fixture through Lightstreamer Server");
+      const recovered = await call("recover_server_injection",{panelSessionId,requestId});
+      assert.deepEqual(recovered.outcome,sent.outcome);
+      await click(panel,"button","Finish");
+      console.log("Reviewed Firefox Server Injection passed: blocked before approval, one send, retained receipt and independently observed fixture update.");
+    }
     await setAgentAccess(panel, false);
     await settle(() => call("list_panel_sessions"), result => result.length === 0);
-    console.log(`Agent browser proof passed (npm companion, no installation): real MCP stdio → Chrome panel → official Lightstreamer listener → verified app DOM, duplicate suppression, ordered Scenario and revocation.`);
+    console.log(`Agent browser proof passed (npm companion, no installation): real MCP stdio → ${firefox ? "Firefox" : "Chrome"} panel → official Lightstreamer listener → verified app DOM, duplicate suppression, ordered Scenario and revocation.`);
   } finally {
     await client.close();
   }
 }
 
 /** Real extension proof without Docker/Lightstreamer Server; runs on Windows CI too. */
-export async function provePortableInspection(root: string, panel: CdpClient, expectedUrl: string) {
+export async function provePortableInspection(root: string, panel: CdpRequestClient, expectedUrl: string, options: { browser?: "chrome" | "firefox"; env?: Record<string, string>; firefoxOrigins?: () => Promise<ReadonlySet<string>> } = {}) {
   const origin = await evaluateByValue<string>(panel, "location.origin");
-  const extensionId = origin.slice("chrome-extension://".length);
+  const firefox = options.browser === "firefox";
+  const extensionId = firefox ? "kfpgbhfphbhkebglopimjhfnnmbifocf" : origin.slice("chrome-extension://".length);
   await headerState(panel, "Waiting");
-  let broker = await startPortableBroker({ auth: "off", port: DEFAULT_COMPANION_PORT }, extensionId);
+  let broker = await startPortableBroker({ auth: "off", port: DEFAULT_COMPANION_PORT }, extensionId, options.firefoxOrigins);
   let client = new Client({ name: "portable-chrome-proof", version: "1" });
-  const transport = () => new StdioClientTransport({ command: process.execPath, args: [(process.env.LSEW_AGENT_TEST_CLI ?? join(root, "agent/dist/cli.mjs")), "mcp", "--extension-id", extensionId], env: { [PAIRING_ENV]: "" }, stderr: "inherit" });
+  const transport = () => new StdioClientTransport({ command: process.execPath, args: [(process.env.LSEW_AGENT_TEST_CLI ?? join(root, "agent/dist/cli.mjs")), "mcp", "--extension-id", extensionId], env: { [PAIRING_ENV]: "", ...options.env }, stderr: "inherit" });
   try {
     await client.connect(transport());
     const call = async (name: string, args: Record<string, unknown> = {}) => {
@@ -249,7 +285,7 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     assert.equal(observation.status, "TIMED_OUT", JSON.stringify(observation));
     await client.close(); broker.close();
     await headerState(panel, "Waiting");
-    broker = await startPortableBroker({ auth: "off", port: DEFAULT_COMPANION_PORT }, extensionId);
+    broker = await startPortableBroker({ auth: "off", port: DEFAULT_COMPANION_PORT }, extensionId, options.firefoxOrigins);
     client = new Client({ name: "portable-chrome-proof-restarted", version: "1" });
     await client.connect(transport());
     const restored = await settle(() => call("list_panel_sessions"), sessions => sessions.length === 1);
@@ -270,15 +306,15 @@ export async function provePortableInspection(root: string, panel: CdpClient, ex
     await click(panel, "button", "Back to prior investigation");
     await setAgentAccess(panel, false);
     await headerState(panel, "Off");
-    console.log("Portable Chrome proof passed: Waiting → On → Waiting → On → Off; exact page, retained Evidence, full local grant, no settings, restart and revocation.");
+    console.log(`Portable ${firefox ? "Firefox" : "Chrome"} proof passed: Waiting → On → Waiting → On → Off; exact page, retained Evidence, full local grant, no settings, restart and revocation.`);
   } finally { await client.close(); broker.close(); }
 }
 
-async function headerState(panel: CdpClient, state: "Waiting" | "On" | "Off") {
+async function headerState(panel: CdpRequestClient, state: "Waiting" | "On" | "Off") {
   await waitForCondition(panel, `document.querySelector('.workbench-react__agent-access')?.textContent.trim() === ${JSON.stringify("Agent access " + state)}`, `Agent access ${state}`, 20000);
 }
 
-async function setAgentAccess(panel: CdpClient, enabled: boolean) {
+async function setAgentAccess(panel: CdpRequestClient, enabled: boolean) {
   const before = await evaluateByValue<string>(panel, "document.querySelector('.workbench-react__agent-access').textContent.trim()");
   await click(panel, "button", before);
   assert.equal(await evaluateByValue(panel, "document.querySelector('.workbench-react__agent-access').textContent.trim()"), before, "The header opens More without changing access.");
@@ -290,7 +326,11 @@ async function settle(read: () => Promise<any>, done: (value: any) => boolean) {
   for (let attempt = 0; attempt < 400; attempt++) { const result = await read(); if (done(result)) return result; await new Promise(resolve => setTimeout(resolve, 50)); }
   throw new Error("Agent operation did not settle.");
 }
-async function click(cdp: CdpClient, selector: string, text: string) {
+export async function click(cdp: CdpRequestClient, selector: string, text: string) {
+  await waitForCondition(cdp, `(() => {
+    const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(element => element.textContent.trim() === ${JSON.stringify(text)});
+    return Boolean(element && !element.disabled && element.getBoundingClientRect().width && element.getBoundingClientRect().height);
+  })()`, `available control: ${text}`);
   const point = await evaluateByValue<{ x: number; y: number }>(cdp, `(() => {
     const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(element => element.textContent.trim() === ${JSON.stringify(text)});
     if (!element) throw new Error('Missing control: ' + ${JSON.stringify(text)});

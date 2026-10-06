@@ -1,12 +1,12 @@
 # Release Process
 
-This is the local prerelease pipeline for packaging and uploading Lightstreamer Workbench. The Chrome Web Store upload artifact is a ZIP file with `manifest.json` at the archive root. CRX output is optional and intended for local/internal distribution, not normal Web Store submission.
+This is the local prerelease pipeline for packaging and uploading Lightstreamer Workbench. Chrome Web Store and Mozilla Add-ons receive separate ZIP files with `manifest.json` at the archive root, built from the same source and product version. CRX output is optional for Chrome local/internal distribution.
 
 ## Release Authority
 
-The GitHub repository is open source under Apache-2.0. The official Chrome Web Store item is controlled by the project maintainers.
+The GitHub repository is open source under Apache-2.0. The official Chrome Web Store and Mozilla Add-ons items are controlled by the project maintainers.
 
-- Only release managers or publisher admins listed in [MAINTAINERS.md](MAINTAINERS.md) may upload, submit, stage, publish, cancel, or roll out official Chrome Web Store packages.
+- Only release managers or publisher admins listed in [MAINTAINERS.md](MAINTAINERS.md) may upload, submit, stage, publish, cancel, or roll out official store packages.
 - Merging a pull request does not authorize a contributor to publish to the official store item.
 - Forks must publish under their own publisher account, extension ID, support channel, screenshots, and listing identity unless the maintainers explicitly approve otherwise.
 - Release credentials, service account access, publisher membership, CRX private keys, and Chrome Web Store API tokens must never be committed.
@@ -41,6 +41,48 @@ The package step fails if `package.json` and `public/manifest.json` do not use t
 
 The local packager also enforces the Workbench release budget: the stored ZIP must remain below 1 MiB. Inspect the ZIP root, run its integrity check, and record the final byte count with the release evidence.
 
+## Firefox package and first manual submission
+
+Land the reviewed changes on `main` before building either store package. Both
+manifests use the version from `package.json` and `public/manifest.json`; Firefox
+uses permanent add-on ID `lightstreamer-workbench@imom39a`, desktop Firefox 140+,
+and `incognito: not_allowed`. Run the shared gate once, then each browser build:
+
+```sh
+npm ci
+npm run typecheck
+npm run test:release
+npm run build
+npm run release:zip -- --skip-typecheck --skip-tests --skip-build
+npm run build:firefox
+npm run release:package:firefox -- --skip-typecheck --skip-tests --skip-build
+npm run release:source:firefox
+```
+
+Use configured production analytics for the store builds. Real-browser QA uses
+analytics-disabled builds or fake ingestion configuration with external traffic
+blocked; see [Firefox verification](docs/firefox-testing.md).
+
+Firefox writes `release/lightstreamer-workbench-firefox-v<version>.zip` and
+`release/lightstreamer-workbench-firefox-source-v<version>.zip`. The source ZIP
+contains locked dependencies and build instructions, plus only the analytics
+ingestion configuration already extractable from the extension. Publisher,
+account, npm, and signing credentials are excluded. Extract the source into a
+fresh directory, run `npm ci` and `npm run build:firefox` with the recorded Node
+version, and compare every generated file with the submitted Firefox ZIP.
+
+Run pinned `web-ext@10.7.0 lint --source-dir dist-firefox --output json` under
+Node 24. Errors block submission. Record desktop-only Android-version and
+generated React DOM warnings with the reviewer source and their disposition.
+
+The first Firefox release is submitted manually from the maintainer's Mozilla
+publisher account. Follow [Firefox listing and reviewer instructions](store-listing/FIREFOX.md).
+The maintainer completes any binding Distribution Agreement acceptance and
+account verification. API credentials are not a prerequisite for this manual
+route. Keep Chrome and Firefox upload/submission steps separate. Record
+submission, review, signing, and public availability separately for each store;
+an uploaded or submitted package is not yet a public release.
+
 ## MCP Candidate Bundle
 
 The companion workflow prepares one downloadable bundle after the same npm tarball passes its Windows, macOS, and Linux checks. The local command expects the matching extension ZIP, npm tarball, and `release/agent-release.json` to exist:
@@ -65,7 +107,39 @@ The source `agent/package.json` version is the minimum release version. On a pub
 
 An npm unpublish tombstone still reserves every former version; the release planner counts those versions when selecting a new patch. After a full unpublish, keep publication disabled during npm's 24-hour package-name hold. Never attempt to reuse a former version; see the [npm unpublish policy](https://docs.npmjs.com/policies/unpublish/).
 
-Before a planned npm release, review the package README, confirm that the extension compatibility guidance is current, enable the variable, and land the reviewed change on `main`. Wait for package, all three platform checks, release-bundle assembly, publish, and registry verification. Confirm the package's README and dist-tag on npm, then restore the variable to `false`. The Chrome Web Store release has its own gates and authority above. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for publisher configuration.
+Before a planned npm release, review the package README, confirm that the extension compatibility guidance is current, enable the variable, and land the reviewed change on `main`. Wait for package, all three Chrome platform checks, the Firefox platform/minimum/ESR checks, release-bundle assembly, publish, and registry verification. Confirm the package's README and dist-tag on npm, then restore the variable to `false`. Each browser store has its own gates and authority above. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for publisher configuration.
+
+## Version 2.0.9 preparation
+
+The maintainer authorized Chrome and the first public Firefox release with the
+same extension version, after all work reaches `main`. Chrome product work was
+landed at `637e20ca3e088609b0421e988d8afa854016de0d`; Firefox support and companion
+0.1.8 are being verified before landing. This record is preparation, not a claim
+that either store package has been submitted or published.
+
+Firefox keeps the shared Capture, Evidence/COMMAND, Local Injection/Scenario,
+reviewed Server Injection, exports, and MCP behavior. One companion verifies
+the approved add-on's registered UUID origins and routes simultaneous Chrome
+and Firefox panels by exact Panel Session. It reads bounded profile registry
+and preference mapping files without executing them.
+
+Firefox requires native installation consent for MCP application-data sharing.
+Arbitrary inspected fields can include all sensitive categories declared in its
+manifest; recognized credential redaction cannot guarantee their absence.
+Agent access remains On by default with a per-panel Off control. Analytics is
+optional and starts Off: native technical-and-interaction permission and the
+Workbench preference must both allow sending. A transient consent window owns
+the required direct user gesture. Cancellation, Deny, opt-out, and native
+revocation are tested; opt-out/revocation erase analytics identifiers. Private
+browsing is disabled. Chrome's permissions and analytics defaults are unchanged.
+
+The local stable-Firefox official-client proof passes Capture, IndexedDB, MCP
+discovery/read budgets, duplicate Local Injection suppression, Scenarios and
+Checkpoints, exact reviewed Server Injection with one send/receipt recovery,
+observed application effects, and revocation. Full Chrome panel verification
+passed 427 checks with no baseline changes. Final unit, platform/ESR, UI review,
+source reproducibility, package, and store outcomes will be recorded after
+their gates complete.
 
 ## Version 2.0.1 Preparation Record
 

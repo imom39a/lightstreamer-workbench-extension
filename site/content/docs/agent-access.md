@@ -1,103 +1,86 @@
-Install the Chrome extension and the npm companion to let an MCP agent inspect Evidence and test Local Injections in an open Workbench panel.
+Install your browser's Workbench extension and the npm companion to let an MCP agent inspect Evidence and test application behavior.
 
 ## Requirements
 
-- Chrome with a matching Workbench extension that supports Agent access.
-- [Node.js 22.12 or later with npm](https://nodejs.org/en/download).
-- An agent app that supports local stdio MCP servers.
-- Chrome, Node, and the agent app on the same computer.
+- Chrome or desktop Firefox 140+ with the matching Workbench extension.
+- [Node.js 22.12+ with npm](https://nodejs.org/en/download).
+- An app supporting local stdio MCP.
+- Browser, Node, and agent app on the same computer.
 
-Companion [0.1.7 is available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) and pairs with extension 2.0.8. Install the extension separately. See [Release notes]({{site}}releases/) for the available versions.
+The next release pairs extension **2.0.9** in both browsers with companion **0.1.8**. Publication is pending; check [Release notes]({{site}}releases/). Previously published [companion 0.1.7](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) is available from npm for Chrome extension 2.0.8 only.
 
-The extension and npm package provide the Workbench runtime. A repository checkout, build tools, Docker, and a separately managed server are not part of user setup.
+User setup needs no repository checkout, compilation, Docker, account, or separately managed server.
 
 ## Install a matching extension
 
-Follow [Getting started]({{site}}docs/getting-started/) for Store installation. Check `chrome://extensions`. The Store offers 2.0.7 while 2.0.8 awaits review; use the matching download below.
+Follow [Getting started]({{site}}docs/getting-started/) for Store installation. Check the installed version in `chrome://extensions` or Firefox `about:addons`.
 
-If the Store offers an older version, install the ready-built extension download:
+While Chrome Store review is pending, get the matching bundle from [GitHub Releases](https://github.com/imom39a/lightstreamer-workbench-extension/releases). Extract `extension/lightstreamer-workbench-v2.0.9.zip` and use **Developer mode → Load unpacked**. Copy Chrome's assigned ID; append `--extension-id YOUR_EXTENSION_ID` to setup.
 
-1. Download the [packaged extension 2.0.8](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.7/lightstreamer-workbench-mcp-v2.0.8.zip).
-2. Extract the downloaded bundle.
-3. Extract `extension/lightstreamer-workbench-v2.0.8.zip` into a folder you will keep.
-4. Open `chrome://extensions`.
-5. Turn on **Developer mode**.
-6. Select **Load unpacked**.
-7. Choose the extracted extension folder that contains `manifest.json`.
-
-Copy the ID Chrome assigns to this extension. Add it to the setup command below with `--extension-id YOUR_EXTENSION_ID`. The companion still comes from npm.
+Firefox uses its signed Mozilla Add-ons release once available. Keep the default setup command; its permanent ID is `lightstreamer-workbench@imom39a`. Temporary developer installs through `about:debugging` disappear at browser exit.
 
 ## Set up MCP
 
-1. Run setup with npm's `npx`. It downloads the companion and prints a version-pinned MCP configuration:
+1. Once 0.1.8 is published, run setup. It downloads the companion and prints version-pinned configuration:
 
    macOS or Linux:
 
    ```sh
-   npx --yes lightstreamer-workbench-agent@0.1.7 setup
+   npx --yes lightstreamer-workbench-agent@0.1.8 setup
    ```
 
    Windows PowerShell:
 
    ```powershell
-   npx.cmd --yes lightstreamer-workbench-agent@0.1.7 setup
+   npx.cmd --yes lightstreamer-workbench-agent@0.1.8 setup
    ```
 
-   For a downloaded extension loaded unpacked, append `--extension-id YOUR_EXTENSION_ID`. Copy its ID from `chrome://extensions`.
+2. Copy the printed `mcpServers` entry into your agent app's MCP settings. Setup does not edit them.
+3. Start that MCP server in the app.
+4. Open Workbench on the application tab.
+5. Ask `list_panel_sessions`, select its exact `panelSessionId`, then call `get_status`.
 
-2. Copy the printed `mcpServers` entry into your agent app's MCP settings. Setup prints this entry; it does not edit those settings.
-3. Start that MCP server in the agent app.
-4. Open Workbench on the application tab you want to inspect.
-5. Ask the agent to call `list_panel_sessions`.
-6. Ask it to call `get_status` with the selected `panelSessionId`.
-
-The agent app starts the pinned npm companion. Workbench connects automatically. This one-time setup is enough; no separate terminal, hosted service, or native installer is needed afterward.
+The app starts the pinned npm companion. Workbench connects automatically; no separate terminal or native installer is needed afterward.
 
 ## Check the connection
 
 <figure>
   <img src="{{site}}assets/app-agent-access.png" alt="Workbench panel showing Agent access On and the expanded Agent access and setup controls under More actions." width="960" height="600">
-  <figcaption>The header reports connection readiness. Open it to review the setup link, local access control, and data-sharing guidance.</figcaption>
+  <figcaption>Open the header status for setup, access controls, and sharing guidance.</figcaption>
 </figure>
 
-| Header status | Meaning |
+| Header | Meaning |
 | --- | --- |
-| **On** | Connected and ready. This does not mean an agent is active. |
-| **Waiting** | Access is enabled. Workbench retries the connection automatically. |
-| **Off** | Access is disabled for this Panel Session. |
+| **On** | Connected and ready; an agent may be inactive. |
+| **Waiting** | Enabled; connection retries automatically. |
+| **Off** | Disabled for this Panel Session. |
 
-Select the header status to open the access control. A new panel enables access by default. Closing the panel ends access.
+New panels enable access by default. Closing the panel ends access. The default uses `127.0.0.1:24817`, authentication off.
 
-If the status stays **Waiting**, restart the MCP server in your agent app. Check the extension ID if you use an unpacked build. The default connection uses `127.0.0.1:24817` with authentication off.
+If **Waiting** persists, restart the MCP server. Check an unpacked Chrome build's ID. Firefox needs companion 0.1.8+ and the approved add-on ID.
 
-When upgrading, close Workbench panels, stop its MCP servers, wait 30 seconds for the old broker to exit, then restart the matching pair.
+One companion handles Chrome, Firefox, and multiple Firefox profiles simultaneously. Tab numbers can collide; select the exact Panel Session. For a nonstandard profile registry, set `LSEW_FIREFOX_PROFILES_DIR` in the MCP environment to the directory containing `profiles.ini`.
 
-On Windows, use Windows Node. If the agent app cannot find `npx`, set the MCP command to `npx.cmd`. Restart the app after installing Node.
+When upgrading, close panels, stop MCP servers, wait 30 seconds for the old broker to exit, then restart. On Windows use Windows Node and `npx.cmd` if needed; restart the app after installing Node.
 
 ## Work with your agent
 
-Ask the agent to find the relevant Subscription or item, count retained records, and read a few examples. Name the application tab so it selects the intended Panel Session.
+Name the application tab. Ask for a scoped count and a few examples, then inspect Coverage. Retained counts are not active COMMAND row counts; missing Evidence does not prove absence.
 
-For example: “Find the orders Subscription. Count its retained updates, then show the last five with the key and quantity fields.” Summary counts describe retained records, not active COMMAND rows. Check Coverage before drawing conclusions from missing Evidence.
+Construct and validate Local Drafts or Scenarios before execution. Keep the panel visible. Do not repeat an Injection with an unknown result; read its existing outcome or trace first.
 
-If the agent reports an unsupported tool or incompatible version, update both components to a matching pair from [Release notes]({{site}}releases/), then restart the MCP connection.
-
-## Test a local update
-
-Use observed Evidence to construct a Draft or Scenario. Validate and prepare it before execution. Check its result, then verify the application's response separately.
-
-Keep the panel visible during a Scenario. Do not repeat an Injection with an unknown result. Read its existing outcome or Scenario trace first.
+Agents can prepare Server Injection in the 2.0.9/0.1.8 pair. A person must review and approve the exact Client Message and send arguments in the panel before one send. Approval itself does not send; duplicate requests return the receipt. Never retry Unknown automatically.
 
 ## Optional agent skill
 
-The package includes `skills/lightstreamer-workbench/SKILL.md`. The MCP connection works without this skill. You can add its folder to your agent's skill directory for guided investigation steps.
+The package includes `skills/lightstreamer-workbench/SKILL.md`. Add its folder to your agent's skill directory if desired; MCP works without it.
 
 ## Access and data
 
-Authentication is off. Any local process that can reach the companion can read Evidence or inject locally. Use a trusted development computer.
+Authentication is off. Any local process reaching the companion can use a connected panel's grant. Use a trusted development computer.
 
-Requested Evidence may reach your agent's model provider. Do not share secrets. Client Message bodies are redacted in agent results.
+Requested Evidence may reach your model provider. Do not share secrets. Client Message bodies are redacted in agent results. Local Injection calls application listeners and may cause app actions. Agents cannot clear history or run arbitrary page code.
 
-Local Injection calls application listeners and can trigger app actions. It does not contact Lightstreamer Server. Agents cannot use Server Injection, clear history, or run arbitrary page code through this MCP interface.
+Firefox requires installation consent for application-data sharing. Turn Agent access Off per panel to revoke it. Analytics starts Off with separate optional native consent.
 
-Read the [Privacy policy]({{site}}privacy/) and [Security policy]({{site}}security/) before sharing application data.
+Read [Privacy]({{site}}privacy/) and [Security]({{site}}security/) before sharing data.

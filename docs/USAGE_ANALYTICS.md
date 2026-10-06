@@ -1,6 +1,6 @@
 # Usage analytics
 
-Configured production builds enable GA4 usage analytics by default. More actions → Help & resources → Usage analytics contains the disclosure and off switch. Captured Lightstreamer data and typed text stay local.
+Configured Chrome production builds enable GA4 usage analytics by default. Firefox starts Off and requires its optional `technicalAndInteraction` permission plus the Workbench preference. More actions → Help & resources → Usage analytics contains the disclosure and control. Captured Lightstreamer data and typed text are excluded from analytics.
 
 ## Setup
 
@@ -20,7 +20,7 @@ The Lightstreamer Event Workbench account `402536926` is the main project accoun
 
 Use the [Workbench usage property](https://analytics.google.com/analytics/web/#/a402536926p547418482/reports/reportinghub) for feature and journey reports. Store visits, installs, and listing engagement are separate measurements; their user identities are not joined.
 
-Copy `.env.analytics.example` to ignored `.env.local` and supply the stream's Measurement Protocol API secret. `npm run build` embeds configuration only in the service worker. A distributed ingestion key is extractable, as in Chrome's direct Measurement Protocol example. Do not commit it, log collection URLs, or substitute a general account credential. Forks should use their own stream.
+Copy `.env.analytics.example` to ignored `.env.local` and supply the stream's Measurement Protocol API secret. `npm run build` and `npm run build:firefox` embed configuration only in the background context. A distributed ingestion key is extractable, as in Chrome's direct Measurement Protocol example. Do not commit it, log collection URLs, or substitute a general account credential. Forks should use their own stream. The AMO reviewer source archive includes only this same extractable ingestion configuration so the submitted build can be reproduced; publisher and account credentials are excluded.
 
 Missing configuration makes collection unavailable. Local development does not collect. Use `LSEW_ANALYTICS_DISABLED=1 npm run build` for an unpacked verification build. The loaded-extension smoke test, official-client fixture tests, and production-build unit test apply that override automatically. The scenario browser suite uses a fake collector. Normal release builds use the configured stream.
 
@@ -77,9 +77,11 @@ Use user counts for adoption and event counts for repeated use. Foreground durat
 
 Only fixed product labels, coarse states, foreground duration, version, event time, and random identity are sent. No Evidence, Client Message, Draft, inspected URL, server address, runtime identifier, field, key, query, raw error, stack, account detail, clipboard content, or export content is sent. Synthetic page URLs use `lightstreamer-workbench.invalid`.
 
-The worker accepts only its own panel's messages and denies advertising consent. Preference reads allocate no identifier. Opt-out blocks sending synchronously, aborts an active request, invalidates queued work, and erases the identifier and session. Re-enabling observes current/future use without a stored backlog.
+The background accepts only its own panel's messages and denies advertising consent. Preference reads allocate no identifier. Opt-out blocks sending synchronously, aborts an active request, invalidates queued work, and erases the identifier and session. Re-enabling observes current/future use without a stored backlog.
 
-There is no persistent event queue or retry. Bounds are 64 pending requests, 120 events per minute, and five seconds per network request. Engagement excludes hidden/unfocused time and stops one minute after the last foreground interaction. Passive Capture does not keep users engaged. Multiple panels share an analytics session, while Chrome focus determines foreground time.
+Firefox DevTools cannot directly request optional permissions. The checkbox opens one transient extension consent window; its direct user click requests Firefox's native permission. Cancellation and Deny leave the setting Off. Removing native permission immediately blocks/aborts sends and erases analytics identities while preserving an explicit Workbench opt-out. Native permission alone cannot enable analytics after that opt-out. Real-browser consent checks are described in [Firefox verification](firefox-testing.md).
+
+There is no persistent event queue or retry. Bounds are 64 pending requests, 120 events per minute, and five seconds per network request. Engagement excludes hidden/unfocused time and stops one minute after the last foreground interaction. Passive Capture does not keep users engaged. Multiple panels share an analytics session, while browser focus determines foreground time.
 
 The [privacy policy](../PRIVACY.md) and [ADR 0015](adr/0015-measure-extension-usage-with-a-closed-analytics-vocabulary.md) define the extension release boundary. The published website has a separate GA4 web stream for page visits. Offline exports remain free of analytics scripts.
 

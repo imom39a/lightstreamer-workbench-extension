@@ -2,6 +2,7 @@ import { AGENT_MAX_BYTES } from "./protocol";
 import { createPairingKey, derivePairingSecret, pairingCommitment, pairingTranscript, comparisonCode, pairingProof, randomNonce, verifyPairingProof, PAIRING_LIFETIME_MS } from "./pairing";
 import type { CompanionChannel } from "./portable-channel";
 import { assertCompanionIdentity } from "./companion-identity";
+import { extensionIdForOrigin, isFirefoxOrigin } from "./browser-identity";
 
 export type PairingDisplay = Readonly<{ requestId: string; code: string; expiresAt: number }>;
 export interface PanelPairing {
@@ -12,7 +13,7 @@ export interface PanelPairing {
 
 /** Fresh committed ECDH keys bind the comparison code to this exact socket attempt. */
 export function beginPanelPairing(port: number, origin: string, showCode: (value: PairingDisplay) => void): PanelPairing {
-  if (!Number.isInteger(port) || port < 1024 || port > 65535 || !/^chrome-extension:\/\/[a-p]{32}$/.test(origin)) throw new Error("Invalid standalone companion connection.");
+  if (!Number.isInteger(port) || port < 1024 || port > 65535 || (!/^chrome-extension:\/\/[a-p]{32}$/.test(origin) && !isFirefoxOrigin(origin))) throw new Error("Invalid standalone companion connection.");
   const socket = new WebSocket(`ws://127.0.0.1:${port}/workbench`);
   const readers = new Set<(message: Record<string, unknown>) => void>();
   const closed = new Set<() => void>();
@@ -67,7 +68,7 @@ export function beginPanelPairing(port: number, origin: string, showCode: (value
         if (value.type === "pairing-approved") return;
         if (value.type !== "authenticated" || !await verifyPairingProof(secret, `broker-confirmed\n${transcript}`, value.proof)) throw new Error("Pairing confirmation failed.");
         if ((phase as string) === "closed") return;
-        const identity = assertCompanionIdentity(value.identity, origin.slice("chrome-extension://".length));
+        const identity = assertCompanionIdentity(value.identity, extensionIdForOrigin(origin));
         phase = "ready"; clearTimeout(timer);
         resolve({ identity, send, onMessage: callback => { readers.add(callback); }, onClose: callback => { closed.add(callback); }, close });
       } else if (phase === "ready") readers.forEach(callback => callback(value));

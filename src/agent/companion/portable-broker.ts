@@ -11,13 +11,15 @@ import { portableConfig, type PortableConfig } from "../portable-config";
 import { connectPortable } from "../portable-channel";
 import { createBrokerRouter } from "./router";
 import type { Message } from "../protocol";
+import { FIREFOX_EXTENSION_ID, isFirefoxOrigin } from "../browser-identity";
+import { createFirefoxOriginResolver } from "./firefox-origins";
 
 /** Loopback only. No HTTP tool endpoint, remote address, filesystem credential or native host. */
-export async function startPortableBroker(config: PortableConfig, extensionId: string) {
+export async function startPortableBroker(config: PortableConfig, extensionId: string, firefoxOrigins = createFirefoxOriginResolver()) {
   const { port, secret, auth } = portableConfig(config);
   if (!/^[a-p]{32}$/.test(extensionId)) throw new Error("Expected the exact 32-character Chrome extension id.");
   const origin = `chrome-extension://${extensionId}`;
-  const identity: CompanionIdentity = Object.freeze({ identityVersion: 1, extensionId, companionVersion: metadata.version,
+  const identity: CompanionIdentity = Object.freeze({ identityVersion: 1, extensionId, firefoxExtensionId: FIREFOX_EXTENSION_ID, companionVersion: metadata.version,
     protocolVersion: AGENT_PROTOCOL_VERSION, readContractVersion: AGENT_READ_CONTRACT.version });
   type PendingPairing = { requestId: string; code: string; expiresAt: number; panelApproved: boolean; confirm(): Promise<void> };
   const pairingRequests = new Map<string, PendingPairing>();
@@ -37,7 +39,7 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
     // This public diagnostic does not join a peer or expose any inspected-page data.
     // A different extension may learn why its exact-origin WebSocket will be rejected.
     if (request.method === "GET" && request.url === "/identity" && request.headers.host === `127.0.0.1:${port}`
-      && (requestOrigin === undefined || /^chrome-extension:\/\/[a-p]{32}$/.test(requestOrigin))) {
+      && (requestOrigin === undefined || /^chrome-extension:\/\/[a-p]{32}$/.test(requestOrigin) || isFirefoxOrigin(requestOrigin))) {
       response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store", Connection: "close",
         ...(requestOrigin ? { "Access-Control-Allow-Origin": requestOrigin, Vary: "Origin" } : {}) });
       response.end(JSON.stringify(identity)); return;
@@ -57,13 +59,20 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
   }
   const armIdle = () => { clearTimeout(idle); if (!wss.clients.size && !stopping) idle = setTimeout(close, 30000); };
   server.on("upgrade", (request, socket, head) => {
-    // Exact Host prevents DNS rebinding; ordinary website origins never get a handshake.
-    if (request.url !== "/workbench" || request.headers.host !== `127.0.0.1:${port}` || (request.headers.origin !== undefined && request.headers.origin !== origin) || wss.clients.size >= 32) {
-      socket.destroy(); return;
-    }
-    wss.handleUpgrade(request, socket, head, peer => wss.emit("connection", peer, request));
+    void (async () => {
+      // Reject unrelated paths and Hosts before consulting bounded profile metadata.
+      if (stopping || socket.destroyed || request.url !== "/workbench" || request.headers.host !== `127.0.0.1:${port}` || wss.clients.size >= 32) {
+        socket.destroy(); return;
+      }
+      const requestOrigin = request.headers.origin;
+      const trusted = requestOrigin === undefined || requestOrigin === origin || (isFirefoxOrigin(requestOrigin) && (await firefoxOrigins()).has(requestOrigin));
+      // Recheck capacity after the asynchronous lookup; ordinary websites never get a handshake.
+      if (!trusted || stopping || socket.destroyed || wss.clients.size >= 32) { socket.destroy(); return; }
+      wss.handleUpgrade(request, socket, head, peer => wss.emit("connection", peer, request));
+    })().catch(() => socket.destroy());
   });
   wss.on("connection", (socket, request) => {
+    const panelOrigin = request.headers.origin;
     clearTimeout(idle);
     let phase: "challenge" | "authenticate" | "pairing-reveal" | "pairing-approve" | "hello" | "ready" | "closed" = "challenge";
     let role: "agent" | "panel";
@@ -89,7 +98,7 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
         if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("Invalid packet.");
         const value = message as Message;
         if (phase === "challenge") {
-          role = request.headers.origin === origin ? "panel" : "agent";
+          role = panelOrigin === undefined ? "agent" : "panel";
           if (auth === "off") {
             if (value.type !== "connect" || value.auth !== "off" || value.role !== role) throw new Error("Connection mode or role does not match.");
             phase = "hello"; send({ type: "connected", auth: "off", identity }); return;
@@ -109,7 +118,7 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
         } else if (phase === "pairing-reveal") {
           if (value.type !== "pairing-reveal" || typeof value.publicKey !== "string" || typeof value.nonce !== "string" || await pairingCommitment(value.publicKey, value.nonce) !== commitment || pairingRequests.size >= 8) throw new Error("Pairing commitment changed.");
           panelSecret = await derivePairingSecret(serverKey!.privateKey, value.publicKey);
-          transcript = pairingTranscript(port, origin, value.publicKey, value.nonce, serverKey!.publicKey, serverNonce);
+          transcript = pairingTranscript(port, panelOrigin!, value.publicKey, value.nonce, serverKey!.publicKey, serverNonce);
           const code = await comparisonCode(panelSecret, transcript);
           const requestId = randomUUID(), expiresAt = Date.now() + PAIRING_LIFETIME_MS;
           const proof = await pairingProof(panelSecret, `pairing-code\n${requestId}\n${expiresAt}\n${transcript}`);
@@ -136,7 +145,7 @@ export async function startPortableBroker(config: PortableConfig, extensionId: s
           phase = "hello"; send({ type: "authenticated", identity });
         } else if (phase === "hello") {
           if (value.role !== role) throw new Error("Invalid role.");
-          joined = router.join({ send, close: () => socket.terminate() }, { ...value, extensionOrigin: role === "panel" ? origin : undefined });
+          joined = router.join({ send, close: () => socket.terminate() }, { ...value, extensionOrigin: role === "panel" ? panelOrigin : undefined });
           phase = "ready"; clearTimeout(deadline);
         } else joined!.receive(value);
       }).catch(() => socket.terminate());

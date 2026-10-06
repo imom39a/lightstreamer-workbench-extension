@@ -1,5 +1,7 @@
 Server Injection sends one reviewed Client Message through the page-owned Lightstreamer client. It uses the current Session and the client's normal `sendMessage` API. It does not create an inbound Server Update.
 
+With extension 2.0.9 and companion 0.1.8, an MCP agent can prepare a Draft. A person must review and approve the exact Client Message and send arguments in the open panel before the agent can send once. Approval does not itself send. Repeated requests retrieve the existing receipt; an Unknown outcome must never be retried automatically.
+
 ## Send a message
 
 1. Select a captured Client Message or a live public-API client.

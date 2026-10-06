@@ -1,10 +1,16 @@
 node_modules
 node_modules/
+__pycache__/
 dist/
+dist-firefox/
+.cache/firefox-tools/
+.cache/firefox-versions/
+.cache/firefox-consent-dist/
 site-dist/
 release/
 .env.release
 .env.local
+.env.production
 .env.*.local
 private/
 *.crx
@@ -14,6 +20,7 @@ private/
 .codex_/
 .scratch/
 .cache/lsew-browsers/
+.cache/lsew-browsers
 test-results/
 fixtures/lightstreamer/adapter/target/
 fixtures/lightstreamer/adapters/*/lib/

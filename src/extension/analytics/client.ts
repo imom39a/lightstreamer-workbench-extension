@@ -1,6 +1,7 @@
 import { ANALYTICS_MESSAGE, ANALYTICS_PREFERENCE_KEY, isRecord, sanitizeAnalyticsEvent, type AnalyticsEvent } from "./events";
+import { firefoxDataPermissions, isFirefoxExtension, requestFirefoxAnalyticsConsent } from "../firefox-data-consent";
 
-export type AnalyticsPreference = Readonly<{ enabled: boolean; configured: boolean; ready: boolean; saving: boolean; error: boolean }>;
+export type AnalyticsPreference = Readonly<{ enabled: boolean; configured: boolean; ready: boolean; saving: boolean; error: boolean; nativeConsent?: boolean }>;
 export type AnalyticsClient = Readonly<{
   getSnapshot(): AnalyticsPreference;
   subscribe(listener: () => void): () => void;
@@ -10,7 +11,8 @@ export type AnalyticsClient = Readonly<{
 }>;
 export type AnalyticsClientOptions = Readonly<{
   send?: (message: unknown) => Promise<unknown>;
-  onPreferenceChange?: (listener: () => void) => () => void;
+  onPreferenceChange?: (listener: (reason?: "native") => void) => () => void;
+  requestNativeConsent?: () => Promise<boolean>;
 }>;
 
 export const UNAVAILABLE_ANALYTICS: AnalyticsClient = {
@@ -29,6 +31,7 @@ export function createAnalyticsClient(options: AnalyticsClientOptions = {}): Ana
   let state: AnalyticsPreference = { ...unavailable, ready: false };
   let disposed = false;
   let revision = 0;
+  let requestingNativeConsent = false;
   const publish = (next: AnalyticsPreference) => {
     if (disposed) return;
     state = Object.freeze(next);
@@ -44,15 +47,28 @@ export function createAnalyticsClient(options: AnalyticsClientOptions = {}): Ana
       if (current === revision) publish({ ...state, ready: true, configured: false, saving: false, error: true });
     }
   };
-  const unsubscribe = (options.onPreferenceChange ?? onChromePreferenceChange)(() => { void refresh(); });
+  const unsubscribe = (options.onPreferenceChange ?? onChromePreferenceChange)(reason => {
+    // The response to our own consent request will refresh this state. A native
+    // addition must not cancel the explicit preference write that follows it.
+    if (reason === "native" && requestingNativeConsent) return;
+    void refresh();
+  });
   void refresh();
   return {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async setEnabled(enabled) {
       const current = ++revision;
-      publish({ ...state, enabled, saving: true, error: false });
+      publish({ ...state, enabled: enabled && state.nativeConsent !== false, saving: true, error: false });
       try {
+        if (enabled && state.nativeConsent === false) {
+          requestingNativeConsent = true;
+          let granted: boolean;
+          try { granted = await (options.requestNativeConsent ?? requestFirefoxAnalyticsConsent)(); }
+          finally { requestingNativeConsent = false; }
+          if (current !== revision || disposed) return;
+          if (!granted) { await refresh(); return; }
+        }
         const result = await send({ type: ANALYTICS_MESSAGE, action: "preference", enabled });
         if (current === revision) publish(preferenceFrom(result));
       } catch {
@@ -70,7 +86,8 @@ export function createAnalyticsClient(options: AnalyticsClientOptions = {}): Ana
 
 function preferenceFrom(response: unknown): AnalyticsPreference {
   if (!isRecord(response) || response.ok !== true || !isRecord(response.value) || typeof response.value.enabled !== "boolean" || typeof response.value.configured !== "boolean") throw new Error("Analytics preference unavailable");
-  return { enabled: response.value.enabled, configured: response.value.configured, ready: true, saving: false, error: false };
+  return { enabled: response.value.enabled, configured: response.value.configured, ready: true, saving: false, error: false,
+    ...(typeof response.value.nativeConsent === "boolean" ? { nativeConsent: response.value.nativeConsent } : {}) };
 }
 
 function sendToWorker(message: unknown): Promise<unknown> {
@@ -83,11 +100,23 @@ function sendToWorker(message: unknown): Promise<unknown> {
   });
 }
 
-function onChromePreferenceChange(listener: () => void): () => void {
+function onChromePreferenceChange(listener: (reason?: "native") => void): () => void {
   if (typeof chrome === "undefined" || !chrome.storage?.onChanged) return () => undefined;
   const changed = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
     if (area === "local" && Object.hasOwn(changes, ANALYTICS_PREFERENCE_KEY)) listener();
   };
   chrome.storage.onChanged.addListener(changed);
-  return () => chrome.storage.onChanged.removeListener(changed);
+  const permissions = firefoxDataPermissions();
+  const nativePermissionChanged = () => listener("native");
+  permissions?.onAdded.addListener(nativePermissionChanged);
+  permissions?.onRemoved.addListener(nativePermissionChanged);
+  const nativeChanged = (message: unknown, sender: chrome.runtime.MessageSender) => {
+    if (isRecord(message) && message.type === ANALYTICS_MESSAGE && message.action === "native-changed"
+      && sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL("_generated_background_page.html")) listener("native");
+    return false;
+  };
+  if (isFirefoxExtension()) chrome.runtime.onMessage.addListener(nativeChanged);
+  return () => { chrome.storage.onChanged.removeListener(changed); permissions?.onAdded.removeListener(nativePermissionChanged); permissions?.onRemoved.removeListener(nativePermissionChanged);
+    if (isFirefoxExtension()) chrome.runtime.onMessage.removeListener(nativeChanged);
+  };
 }

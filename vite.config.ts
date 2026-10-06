@@ -15,13 +15,17 @@ export default defineConfig({
     "import.meta.env.VITE_LSEW_GA_API_SECRET": '""'
   } : {},
   build: {
+    target: process.env.LSEW_EXTENSION_BROWSER === "firefox" ? "firefox140" : undefined,
     emptyOutDir: true,
     outDir: resolve(projectRoot, extensionOutDir),
     rollupOptions: {
       input: {
         "extension/background": resolve(sourceRoot, "extension/background.ts"),
         "extension/devtools": resolve(sourceRoot, "extension/devtools.ts"),
-        "extension/panel/index": resolve(sourceRoot, "extension/panel/index.html")
+        "extension/panel/index": resolve(sourceRoot, "extension/panel/index.html"),
+        ...(process.env.LSEW_EXTENSION_BROWSER === "firefox" ? {
+          "extension/analytics-consent/index": resolve(sourceRoot, "extension/analytics-consent/index.html")
+        } : {})
       },
       output: {
         entryFileNames: "[name].js",

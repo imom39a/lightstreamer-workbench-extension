@@ -2,6 +2,7 @@ import { AGENT_MAX_BYTES } from "./protocol";
 import { pairingProof, proofText, randomNonce, verifyPairingProof } from "./pairing";
 import { portableConfig, type PortableConfig } from "./portable-config";
 import { assertCompanionIdentity, type CompanionIdentity } from "./companion-identity";
+import { isExtensionId } from "./browser-identity";
 
 export interface CompanionChannel {
   readonly identity?: CompanionIdentity;
@@ -15,7 +16,7 @@ export interface CompanionChannel {
 export async function connectPortable(config: PortableConfig, role: "agent" | "panel", expected?: { extensionId: string }): Promise<CompanionChannel> {
   const pairing = portableConfig(config);
   if (role === "panel" && pairing.auth === "required") throw new Error("Authenticated panels must use comparison-code approval.");
-  if (expected && !/^[a-p]{32}$/.test(expected.extensionId)) throw new Error("Expected the exact 32-character Chrome extension id.");
+  if (expected && !isExtensionId(expected.extensionId)) throw new Error("Expected the exact Workbench extension id.");
   if (role === "panel" && expected) {
     // Preflight keeps the strict WebSocket Origin boundary while explaining a mismatch.
     const response = await fetch(`http://127.0.0.1:${pairing.port}/identity`, { cache: "no-store", signal: AbortSignal.timeout(2500) });

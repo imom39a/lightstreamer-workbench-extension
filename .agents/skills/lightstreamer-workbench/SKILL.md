@@ -17,8 +17,8 @@ and companion builds. Installing a newer companion does not update the extension
 ## Connect and identify
 
 Call `list_panel_sessions`, then `get_status` for the intended Panel Session.
-Match the exact browser connection and inspected tab; Chrome tab ids are not
-interchangeable with another browser tool's ids. Resolve ambiguous tabs before
+Match the exact browser connection and inspected tab; browser tab ids are not
+interchangeable across browsers or browser tools. Resolve ambiguous tabs before
 injecting. Inspect `get_status` capabilities instead of assuming tools are enabled.
 If disconnected, read [connection.md](references/connection.md).
 
@@ -28,8 +28,9 @@ with `kind` and `parentScopeId` (direct parent) when known. Use
 `list_scope` to browse and `get_scope` to inspect an exact result. Queries
 preserve the human's investigation.
 Keep `panelSessionId` for subsequent calls and the current `pageEpoch` for
-preparation calls. `get_status.inspectedPage` supplies a Chrome tab id and URL
-without query/hash; correlate these with the separate browser connection.
+preparation calls. `get_status.inspectedPage` supplies `chromeTabId` for Chrome,
+or `browser:"firefox"` and `browserTabId` for Firefox, plus a URL without
+query/hash; correlate these with the separate browser connection.
 
 ## Investigate
 
@@ -107,5 +108,10 @@ Evidence references, observed app behavior and any remaining uncertainty.
 If browser observation is unavailable, report the verified delivery boundary
 and leave application behavior explicitly unverified.
 
-Server Injection, arbitrary inspected-page evaluation, history clearing, and
-cross-Subscription Scenarios are outside this skill's agent interface.
+For a user-authorized Server Injection, read
+[server-injection.md](references/server-injection.md) when the connected
+capabilities include `prepare_server_injection`. Each exact send needs the
+human's approval in Workbench.
+
+Arbitrary inspected-page evaluation, history clearing, and cross-Subscription
+Scenarios are outside this skill's agent interface.

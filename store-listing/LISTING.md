@@ -46,10 +46,10 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description below is prepared for extension 2.0.8 with matching companion 0.1.7. On October 2, 2026, the publisher API confirms 2.0.8 pending review with automatic publication after approval at 100%; 2.0.7 remains published. Google required publisher passkey verification for dashboard edits, so the existing 2.0.7 Store listing and images were retained for submission. The refreshed copy and images below have not been saved in the dashboard. The versioned release records later in this file describe their original packages.
+The description and reviewer instructions below are prepared for extension 2.0.9 with matching companion 0.1.8. The same product version is prepared separately for Firefox. Current upload, submission, and public availability must be verified in the publisher dashboard. Historical records below retain their original versions.
 
 ```text
-New in 2.0.8: the workspace presents less repeated copy and preserves editor focus. Build Local Injection Scenarios from searchable captured updates with explicit batch adds, an ordered queue, and one focused editor. Switching members and Undo preserve each editor's reading position. Long sessions bound deleted COMMAND-key history. Companion 0.1.7 provides the matching MCP tools and setup.
+New in 2.0.9: expanded MCP investigation, richer COMMAND and stream queries, and agent-prepared Server Injection with human approval of the exact Client Message before one send. Companion 0.1.8 supports Chrome and desktop Firefox through one local companion. Both extensions use the same product version.
 
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
 
@@ -69,7 +69,7 @@ Key features:
 - Create one protected Local Injection Draft from captured Evidence or from a live COMMAND Scope.
 - Edit raw JSON and validate the Draft. Captured Drafts compare Source and Draft by default, then inject directly from that preview.
 - Search captured updates for the exact Scenario target, select a batch, and add it explicitly. Review ordered Steps and Checkpoints in a queue with one focused editor. Scenarios retain immutable reviewed Runs, serial controls, and results for each Step.
-- Connect a local MCP companion to inspect a Panel Session's Scope, Evidence, diagnostics, and Local Injection Scenario results. Agents can profile and query streams, validate candidates, prepare Scenarios, and inspect Scenario traces. They cannot perform Server Injection, clear Event History, or evaluate arbitrary page code.
+- Connect a local MCP companion to inspect a Panel Session's Scope, Evidence, diagnostics, and Local Injection Scenario results. Agents can profile and query streams, validate candidates, prepare Scenarios, and inspect Scenario traces. Agents can prepare Server Injection, but a person must approve the exact Client Message and send arguments in the panel before one send. Duplicate requests return the existing receipt, and Unknown outcomes are never retried automatically. Agents cannot clear Event History or evaluate arbitrary page code.
 - When a panel opens, Agent access is on by default with inspection and Local Injection available together. There is no read-only mode. The header shows On, Waiting, or Off and opens the access control under More actions → Agent access and setup. Authentication is off; any local process that can reach the companion can use the connected panel's grant. Run Chrome and the Node.js 22.12+ companion on the same computer.
 - Deliver an Item Update to the exact live Subscription in the inspected page. Workbench reports delivered, failed, partial, unknown, and stale-target results.
 - Create a protected Server Injection Draft from captured Client Message Evidence, author one for an exact live client and Session, or start from an application-owned Message Recipe.
@@ -126,22 +126,20 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.8
+2.0.9
 ```
 
 What's new:
 
 ```text
-Workspace and Scenario workflow improvements, paired with companion 0.1.7.
+Expanded MCP investigation and reviewed Client Message sending, paired with companion 0.1.8. Adds matching desktop Firefox support as a separate Mozilla Add-ons release.
 
-- Reduce repeated workspace copy and preserve editor focus.
-- Search bounded pages of captured updates independently of the investigation.
-- Add selected batches explicitly and atomically within Scenario capacity limits.
-- Compose an ordered queue with one focused Source/Draft editor.
-- Preserve member reading positions through switching, Park/Resume, and Undo.
-- Label MERGE and DISTINCT Steps as Item update.
-- Bound deleted COMMAND-key history in long sessions.
-- Preserve MCP authorization, the human workspace, and existing data boundaries.
+- Read richer stream, COMMAND, provenance, and bounded Evidence queries.
+- Prepare exact Server Injection Client Messages through MCP; require human panel review and approval before one send.
+- Preserve duplicate receipts, explicit uncertainty, and no automatic retry.
+- Use one companion for Chrome and Firefox with exact Panel Session routing.
+- Firefox requires installation consent for captured-data sharing and starts analytics Off behind optional native consent and the Workbench preference.
+- Chrome permissions and analytics defaults are unchanged.
 ```
 
 ## Privacy Practices Draft
@@ -183,16 +181,29 @@ Page access is required to run packaged instrumentation at document_start before
 ## Reviewer Test Instructions
 
 ```text
-No account required. On a page using the official Lightstreamer Web Client, open DevTools > Lightstreamer Workbench. Select captured Evidence for Local Injection, or explicitly add updates to a Scenario queue. Server Injection reviews one Client Message before send. Agent access starts on. Test MCP with companion 0.1.7: https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7. Setup: https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/.
+No account required. On a page using the official Lightstreamer Web Client, open DevTools > Lightstreamer Workbench. Select captured Evidence for Local Injection, or explicitly add updates to a Scenario queue. Server Injection reviews one Client Message before send. Agent access starts on. Test MCP with companion 0.1.8: https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8. Setup: https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/.
 ```
 
-For Store MCP review, extract the configured candidate `release/lightstreamer-workbench-v2.0.8.zip` and load it unpacked; record its assigned extension ID. Generate setup from npm:
+For Store MCP review, extract the configured candidate `release/lightstreamer-workbench-v2.0.9.zip` and load it unpacked; record its assigned extension ID. Generate setup from npm:
 
 ```sh
-npx --yes lightstreamer-workbench-agent@0.1.7 setup --extension-id YOUR_UNPACKED_EXTENSION_ID
+npx --yes lightstreamer-workbench-agent@0.1.8 setup --extension-id YOUR_UNPACKED_EXTENSION_ID
 ```
 
-Copy the printed MCP configuration into the test agent app and start its stdio server. The app starts the companion; no additional terminal or hosted server is needed. On Windows, use `npx.cmd`. The [matching public release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.7) includes a ready-built unpacked extension, the same tested companion tarball, source provenance, and SHA-256 checksums. Use both components from this release. Ask the agent to call `list_panel_sessions`, choose the reviewed tab, and call `get_status` before reading Evidence or testing Local Injection.
+Copy the printed MCP configuration into the test agent app and start its stdio server. The app starts the companion; no additional terminal or hosted server is needed. On Windows, use `npx.cmd`. The [matching public release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.8) includes a ready-built unpacked extension, the same tested companion tarball, source provenance, and SHA-256 checksums. Use both components from this release. Ask the agent to call `list_panel_sessions`, choose the reviewed tab, and call `get_status` before reading Evidence or testing Local Injection. Agent-prepared Server Injection must be reviewed and explicitly approved in the panel; approval alone does not send. Repeat execution with the same request ID retrieves the existing receipt.
+
+## Version 2.0.9 Release Checklist
+
+- [ ] Land the reviewed Chrome and Firefox support on `main` before Store packaging/submission.
+- [ ] Pass local unit, type, panel, loaded-extension, official-client/MCP, and Firefox native-consent gates; record independent UI review.
+- [ ] Verify the same companion tarball across Windows, macOS, Linux, Firefox stable, the minimum version, and supported ESR lines.
+- [ ] Publish and independently verify companion 0.1.8 and matching ready-built Chrome bundle.
+- [ ] Build Chrome and Firefox Store ZIPs at 2.0.9 from the same source; audit manifests, sizes, integrity, and SHA-256.
+- [ ] Produce the Firefox reviewer source ZIP and reproduce its build exactly.
+- [ ] Publish matching documentation and policy; audit each Store's privacy and permission disclosures.
+- [ ] Upload and submit Chrome 2.0.9 with automatic publication after approval.
+- [ ] Complete the separate first manual AMO submission using `FIREFOX.md` and its reviewer instructions.
+- [ ] Record each Store's verified submission/review/publication status separately.
 
 ## Version 2.0.8 Release Checklist
 

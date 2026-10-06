@@ -1,7 +1,7 @@
 import { ANALYTICS_CLIENT_KEY, ANALYTICS_PREFERENCE_KEY, ANALYTICS_SESSION_KEY, isRecord, sanitizeAnalyticsEvent } from "./events";
 
 export type AnalyticsConfig = Readonly<{ measurementId: string; apiSecret: string; debug: boolean }>;
-export type AnalyticsState = Readonly<{ enabled: boolean; configured: boolean }>;
+export type AnalyticsState = Readonly<{ enabled: boolean; configured: boolean; nativeConsent?: boolean }>;
 export type AnalyticsStorage = Pick<chrome.storage.StorageArea, "get" | "set" | "remove">;
 export type AnalyticsServiceOptions = Readonly<{
   config: AnalyticsConfig | null;
@@ -11,6 +11,7 @@ export type AnalyticsServiceOptions = Readonly<{
   fetch?: typeof fetch;
   now?: () => number;
   createClientId?: () => string;
+  nativeConsent?: boolean;
 }>;
 
 const SESSION_TIMEOUT_MS = 30 * 60_000;
@@ -26,6 +27,9 @@ export function createAnalyticsService(options: AnalyticsServiceOptions) {
   let pending = 0;
   let epoch = 0;
   let blocked = false;
+  let nativeConsent = options.nativeConsent !== false;
+  const stateFor = (enabled: boolean): AnalyticsState => ({ enabled: enabled && nativeConsent, configured: options.config !== null,
+    ...(options.nativeConsent !== undefined ? { nativeConsent } : {}) });
   let activeRequest: AbortController | null = null;
   let rateWindow = 0;
   let rateCount = 0;
@@ -38,7 +42,7 @@ export function createAnalyticsService(options: AnalyticsServiceOptions) {
 
   async function getState(): Promise<AnalyticsState> {
     const stored = await options.local.get(ANALYTICS_PREFERENCE_KEY);
-    return { enabled: stored[ANALYTICS_PREFERENCE_KEY] !== false, configured: options.config !== null };
+    return stateFor(stored[ANALYTICS_PREFERENCE_KEY] !== false);
   }
 
   function setEnabled(enabled: boolean): Promise<AnalyticsState> {
@@ -53,20 +57,34 @@ export function createAnalyticsService(options: AnalyticsServiceOptions) {
         await options.session.remove(ANALYTICS_SESSION_KEY);
       }
       blocked = !enabled;
-      return { enabled, configured: options.config !== null };
+      return stateFor(enabled);
+    });
+  }
+
+  function setNativeConsent(allowed: boolean): Promise<AnalyticsState> {
+    if (allowed && nativeConsent) return enqueue(getState);
+    nativeConsent = allowed;
+    epoch += 1;
+    activeRequest?.abort();
+    return enqueue(async () => {
+      if (!allowed) {
+        await options.local.remove(ANALYTICS_CLIENT_KEY);
+        await options.session.remove(ANALYTICS_SESSION_KEY);
+      }
+      return getState();
     });
   }
 
   function track(input: unknown): Promise<boolean> {
     const event = sanitizeAnalyticsEvent(input);
     const config = options.config;
-    if (!event || !config || blocked || pending >= MAX_PENDING) return Promise.resolve(false);
+    if (!event || !config || blocked || !nativeConsent || pending >= MAX_PENDING) return Promise.resolve(false);
     const acceptedEpoch = epoch;
     const occurredAt = now();
     if (occurredAt - rateWindow >= 60_000) { rateWindow = occurredAt; rateCount = 0; }
     if (++rateCount > MAX_EVENTS_PER_MINUTE) return Promise.resolve(false);
     pending += 1;
-    const allowed = () => !blocked && acceptedEpoch === epoch;
+    const allowed = () => !blocked && nativeConsent && acceptedEpoch === epoch;
     return enqueue(async () => {
       if (!allowed()) return false;
       const stored = await options.local.get([ANALYTICS_PREFERENCE_KEY, ANALYTICS_CLIENT_KEY]);
@@ -125,5 +143,5 @@ export function createAnalyticsService(options: AnalyticsServiceOptions) {
     }).catch(() => false).finally(() => { pending -= 1; });
   }
 
-  return { getState: () => enqueue(getState), setEnabled, track };
+  return { getState: () => enqueue(getState), setEnabled, setNativeConsent, track };
 }

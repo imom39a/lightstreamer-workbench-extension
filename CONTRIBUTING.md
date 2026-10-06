@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for helping improve Lightstreamer Workbench. This project is a Chrome DevTools extension for developers who need to diagnose and deliberately reproduce Lightstreamer Web Client behavior, especially COMMAND subscription lifecycles.
+Thank you for helping improve Lightstreamer Workbench. This project is a Chrome and Firefox developer-tools extension for developers who need to diagnose and deliberately reproduce Lightstreamer Web Client behavior, especially COMMAND subscription lifecycles.
 
 ## Ground Rules
 
@@ -30,7 +30,7 @@ Before opening a new issue:
 
 Useful bug reports include:
 
-- Chrome or Chromium version.
+- Browser and version, including the Firefox release/ESR line when applicable.
 - Operating system.
 - Extension version or commit SHA.
 - Lightstreamer Web Client version, if known.
@@ -88,6 +88,14 @@ Then load the extension:
 6. Open Chrome DevTools and select the `Lightstreamer Workbench` panel.
 
 If the target page created Lightstreamer clients before the extension was loaded, refresh the page with DevTools open so instrumentation can attach early.
+
+For Firefox, run `npm run build:firefox`, open `about:debugging#/runtime/this-firefox`,
+select **Load Temporary Add-on**, and choose `dist-firefox/manifest.json`. Open
+Firefox Developer Tools on the application tab and select Workbench. Temporary
+installation ends at browser restart; normal distribution requires Mozilla signing.
+Run `npm run test:firefox` using the owned-profile procedure in
+[Firefox verification](docs/firefox-testing.md). Chrome and Firefox are built from
+shared source with separate generated manifests and the same extension version.
 
 ## Lightstreamer Fixture
 

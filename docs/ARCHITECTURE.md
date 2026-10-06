@@ -1,6 +1,17 @@
 # Architecture
 
-Lightstreamer Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity including outbound Client Messages, normalizes it into internal event envelopes, stores it for the current Panel Session, reconstructs client/session/subscription topology and COMMAND-mode state, and lets developers perform deliberate Local Injections or send one reviewed Client Message through the inspected client's public `sendMessage` path.
+Lightstreamer Workbench is a Manifest V3 developer-tools extension for Chrome and desktop Firefox that instruments the inspected page, captures Lightstreamer Web Client activity including outbound Client Messages, normalizes it into internal event envelopes, stores it for the current Panel Session, reconstructs client/session/subscription topology and COMMAND-mode state, and lets developers perform deliberate Local Injections or send one reviewed Client Message through the inspected client's public `sendMessage` path.
+
+Chrome uses an MV3 service worker; Firefox uses a module background script. The
+background router, MAIN-world and isolated content scripts, panel and core remain
+shared. `scripts/extension-manifest.mjs` generates same-version manifests;
+`dist/` and `dist-firefox/` are separate browser packages. Firefox 140+ is desktop
+and regular browsing only. Its native data consent and MCP profile-Origin rules
+are recorded in [ADR 0017](adr/0017-support-firefox-with-shared-workbench-behavior.md).
+References below to the service-worker router also apply to Firefox's background
+script. Firefox's transient analytics permission window requests the native
+permission from a direct click in an ordinary extension page, because DevTools
+cannot request it and runtime messages do not transfer that gesture.
 
 The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, Capture messages cross the isolated content-script boundary, the service worker routes them by inspected tab and Panel Session identity, and a framework-independent `WorkbenchRuntime` owns panel investigation state. React renders the Scoped Evidence Workspace from immutable runtime snapshots. Local Injection prefers a versioned MAIN-world capability and retains a compatibility relay. Server Injection uses a separate versioned MAIN-world capability invoked directly with `chrome.devtools.inspectedWindow.eval`; it has no relay fallback after a send may have started, because retrying through another path could duplicate server-side effects.
 

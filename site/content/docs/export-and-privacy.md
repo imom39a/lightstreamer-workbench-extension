@@ -22,9 +22,11 @@ See [retained history]({{site}}docs/evidence/#retained-history) for capacity, ro
 
 ## Usage analytics
 
-Configured production builds enable usage analytics by default. They send fixed feature names, foreground engagement, coarse outcomes, version, time, and a random installation identifier to Google Analytics.
+Configured Chrome production builds enable usage analytics by default. Firefox analytics starts Off and sends only when both Firefox's optional technical-and-interaction permission and Workbench's analytics preference allow it. Turning it On opens a short consent window; select **Request Firefox permission**, then choose **Allow** in Firefox's native prompt. Cancel or Deny leaves analytics Off and the panel usable.
 
-Use **More actions → Help & resources → Usage analytics** to turn this off. Turning it off removes the saved identifier and analytics session.
+Analytics sends fixed feature names, foreground engagement, coarse outcomes, version, time, and a random installation identifier to Google Analytics.
+
+Use **More actions → Help & resources → Usage analytics** to turn this off. Turning it off, or removing Firefox's optional permission, removes the saved identifier and analytics session. Granting native permission later does not override an explicit Workbench opt-out.
 
 Extension analytics excludes captured Evidence, payloads, inspected URLs, search text, Drafts, and raw errors. Agent access is separate from analytics. The published website uses a separate Google Analytics stream for page visits. It can set first-party analytics cookies. The website does not send Workbench Evidence to Analytics. Use the [website control]({{site}}privacy/#website-analytics) to turn off website analytics in this browser.
 

@@ -1,3 +1,16 @@
+## Extension 2.0.9 for Chrome and Firefox; MCP companion 0.1.8
+
+This release is in preparation. Both browser packages use **2.0.9** from the same reviewed source; store submission, approval, signing, and public availability are separate steps. Firefox is the first public Mozilla Add-ons candidate. Companion 0.1.8 publication is also pending. This page will record verified outcomes, rather than assume a Store release from a repository version.
+
+- Adds desktop Firefox 140+ support on Windows, macOS, and Linux, with regular browsing only.
+- Preserves Capture, COMMAND Evidence, Local Injection, Scenarios, reviewed Server Injection, and JSON/offline HTML exports across both browsers.
+- Shares one local companion across Chrome and Firefox panels, including multiple Firefox profiles and colliding browser tab numbers.
+- Expands MCP investigation and reviewed Client Message preparation. Each agent Server Injection needs a person's approval of its exact message and send arguments; duplicate requests retrieve the receipt.
+- Firefox declares required application-data sharing consent at installation for MCP. Agent access remains enabled by default and can be turned Off per panel.
+- Firefox analytics starts Off. Its optional native permission and Workbench preference must both allow collection. Cancellation or Deny leaves the panel usable; opt-out or native revocation stops collection and erases analytics identifiers.
+
+Follow [browser installation]({{site}}docs/getting-started/) and [matching MCP setup]({{site}}docs/agent-access/). The earlier release status below was verified on its stated date.
+
 ## Extension 2.0.8 and MCP companion 0.1.7
 
 Companion [0.1.7 is published on npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) and pairs with extension 2.0.8. Its exact package passed Windows, macOS, and Linux checks and was published with signed provenance. The companion runtime is unchanged from 0.1.6; setup examples now pin the matching release.
@@ -9,7 +22,7 @@ Extension 2.0.8 simplifies the workspace and improves captured-update Scenario c
 - Preserve focus and member reading positions through switching, Park/Resume, and Undo.
 - Label MERGE and DISTINCT Steps as Item update and bound deleted COMMAND-key history in long sessions.
 
-The [ready-built 2.0.8 download](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.7) is available now with checksums. Chrome Web Store accepted 2.0.8 for review and will publish it automatically after approval; the Store currently distributes 2.0.7. Follow [matching Chrome and MCP setup]({{site}}docs/agent-access/) to use the download with companion 0.1.7.
+The [ready-built 2.0.8 download](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.7) is available now with checksums. Chrome Web Store accepted 2.0.8 for review and will publish it automatically after approval; the October 2, 2026 verification showed Store 2.0.7. Follow [matching Chrome and MCP setup]({{site}}docs/agent-access/) to use the download with companion 0.1.7.
 
 ## MCP companion — 0.1.6
 

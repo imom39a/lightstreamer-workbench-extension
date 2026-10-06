@@ -1,12 +1,12 @@
 <div class="a-home">
   <div class="a-eyebrow">Documentation / Overview</div>
   <h1>Lightstreamer Workbench</h1>
-  <p class="a-definition">A Chrome DevTools extension for inspecting activity from the official Lightstreamer Web Client and testing how an application handles updates and messages.</p>
+  <p class="a-definition">A developer-tools extension for Chrome and desktop Firefox. Inspect the official Lightstreamer Web Client and test how an application handles updates and messages.</p>
 
   <section class="a-home-section a-start" aria-labelledby="a-start-title">
     <div class="a-section-heading"><span class="a-section-number">01</span><h2 id="a-start-title">Start with a live page</h2></div>
     <div class="a-section-body">
-      <p><a href="{{store}}" target="_blank" rel="noopener noreferrer">Install Workbench from the Chrome Web Store</a>. Open DevTools on the application page and select the Workbench panel. The <a href="{{site}}docs/getting-started/">getting started guide</a> shows how to check Capture and inspect your first Session.</p>
+      <p><a href="{{store}}" target="_blank" rel="noopener noreferrer">Install Workbench from the Chrome Web Store</a>. Check <a href="{{site}}releases/">release notes</a> for Firefox availability. Open developer tools on the application page and select Workbench. The <a href="{{site}}docs/getting-started/">getting started guide</a> shows how to check Capture and inspect your first Session.</p>
     </div>
   </section>
 

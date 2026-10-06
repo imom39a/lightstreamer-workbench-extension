@@ -36,9 +36,12 @@ if (!["zip", "crx", "both"].includes(format)) {
 }
 
 const packageJson = await readJson(resolve(projectRoot, "package.json"));
-const distDir = resolve(projectRoot, args.dist ?? "dist");
+const browser = args.browser ?? "chrome";
+if (!["chrome", "firefox"].includes(browser)) fail(`Unsupported --browser ${browser}.`);
+if (browser === "firefox" && format !== "zip") fail("Firefox uses a ZIP for Mozilla signing; CRX is Chrome-only.");
+const distDir = resolve(projectRoot, args.dist ?? (browser === "firefox" ? "dist-firefox" : "dist"));
 const releaseDir = resolve(projectRoot, args.outDir ?? "release");
-const artifactBaseName = `${packageJson.name}-v${packageJson.version}`;
+const artifactBaseName = `${packageJson.name}${browser === "firefox" ? "-firefox" : ""}-v${packageJson.version}`;
 
 if (!args.skipTypecheck) {
   run("npm", ["run", "typecheck"]);
@@ -49,7 +52,8 @@ if (!args.skipTests) {
 }
 
 if (!args.skipBuild) {
-  run("npm", ["run", "build"]);
+  if (browser === "chrome" && !args.dist) run("npm", ["run", "build"]);
+  else run(process.execPath, ["scripts/build-extension.mjs", "--browser", browser, "--outDir", distDir]);
 }
 
 const manifest = await readJson(resolve(distDir, "manifest.json"));
@@ -139,6 +143,9 @@ async function readJson(path) {
 }
 
 async function validateExtensionBuild({ distDir, manifest, packageJson }) {
+  const firefox = manifest.browser_specific_settings?.gecko;
+  if ((browser === "firefox") !== Boolean(firefox)) fail(`Package browser ${browser} does not match the built manifest.`);
+  if (browser === "firefox" && (firefox.id !== "lightstreamer-workbench@imom39a" || manifest.background?.service_worker || manifest.incognito !== "not_allowed")) fail("Firefox build has an invalid identity, background or private-browsing policy.");
   if (manifest.manifest_version !== 3) {
     fail(`Expected Manifest V3 build, got manifest_version=${manifest.manifest_version}.`);
   }
@@ -153,6 +160,7 @@ async function validateExtensionBuild({ distDir, manifest, packageJson }) {
     "manifest.json",
     manifest.devtools_page,
     manifest.background?.service_worker,
+    ...(manifest.background?.scripts ?? []),
     ...((manifest.content_scripts ?? []).flatMap((entry) => entry.js ?? []))
   ].filter(Boolean);
 
@@ -477,11 +485,12 @@ function printHelp() {
   console.log(`Usage: node scripts/package-extension.mjs [options]
 
 Options:
+  --browser chrome|firefox  Browser package to create. Defaults to chrome.
   --format zip|crx|both     Artifact format to create. Defaults to zip.
   --out-dir <path>          Output directory. Defaults to release.
-  --dist <path>             Built extension directory. Defaults to dist.
+  --dist <path>             Built directory. Defaults to dist or dist-firefox.
   --skip-typecheck          Do not run npm run typecheck before packaging.
-  --skip-tests              Do not run npm test before packaging.
+  --skip-tests              Do not run npm run test:release before packaging.
   --skip-build              Package the existing dist directory.
   --chrome-path <path>      Chrome executable for CRX packing. Env: CHROME_PATH.
   --crx-key <path>          Existing CRX private key. Env: CRX_KEY_PATH.

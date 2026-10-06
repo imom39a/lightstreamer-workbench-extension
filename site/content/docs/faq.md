@@ -2,6 +2,10 @@
 
 The official Lightstreamer Web Client. Workbench is not a generic WebSocket inspector. It observes the page's clients without connecting or subscribing for the application.
 
+## Which browsers does Workbench support?
+
+Chrome and desktop Firefox 140+ on Windows, macOS, and Linux. Firefox 2.0.9 is the first release candidate and private browsing is disabled. See [Release notes]({{site}}releases/) for actual store availability. Safari is not supported yet.
+
 ## Does Local Injection reach the server?
 
 No. It delivers an Item Update locally. Application listeners can still trigger other actions. See [Local Injection]({{site}}docs/local-injection/).
@@ -24,11 +28,11 @@ Only within the current Panel Session. Rolling limits remove the oldest Evidence
 
 ## Can an MCP agent use Workbench?
 
-Yes. The published companion supports inspection and Local Injection. Follow [MCP setup]({{site}}docs/agent-access/).
+Yes. The 2.0.9 extension and matching 0.1.8 companion support inspection, Local Injection and Scenarios, and Server Injection after a person reviews and approves the exact Client Message in the panel. Follow [MCP setup]({{site}}docs/agent-access/) and check the release availability there.
 
 ## What do I need to install?
 
-For browser inspection, install the Chrome extension. For agent access, also use the npm companion, Node.js 22.12 or later with npm, and an agent app that supports local stdio MCP. Add the setup command's printed entry to that app's MCP settings once. The app starts the companion.
+For browser inspection, install the extension for your browser. For agent access, also use the npm companion, Node.js 22.12 or later with npm, and an agent app that supports local stdio MCP. Add the setup command's printed entry to that app's MCP settings once. The app starts the companion.
 
 The extension and npm package are ready to use. A repository checkout, compilation, Docker, and a separate Workbench server are not required. The included agent skill is optional.
 

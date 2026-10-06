@@ -32,7 +32,7 @@ await Promise.all(
       bundle: true,
       format: "iife",
       platform: "browser",
-      target: "chrome114",
+      target: process.env.LSEW_EXTENSION_BROWSER === "firefox" ? "firefox140" : "chrome114",
       minify: true,
       sourcemap: false,
       logLevel: "info"

@@ -7,6 +7,8 @@ import { DEFAULT_COMPANION_PORT } from "../../agent/pairing";
 import { createAgentService } from "./agent-service";
 import type { WorkbenchRuntime } from "./workbench-runtime";
 import type { CompanionIdentity } from "../../agent/companion-identity";
+import { extensionIdForOrigin } from "../../agent/browser-identity";
+import { isFirefoxExtension } from "../firefox-data-consent";
 
 export type AgentConnectionState = Readonly<{ enabled: boolean; permission: AgentPermission; status: "off" | "waiting" | "connecting" | "pairing" | "awaiting-agent" | "connected" | "error"; detail: string; port?: number; auth?: CompanionAuth; requestedPermission?: "read" | "local"; pairing?: PairingDisplay; companion?: CompanionIdentity }>;
 export type AgentConnectionOptions = { port?: number; auth?: CompanionAuth };
@@ -139,7 +141,7 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
     };
     try {
       if (auth === "off") {
-        const extensionId = chrome.runtime.getURL("").replace(/^chrome-extension:\/\//, "").replace(/\/$/, "");
+        const extensionId = extensionIdForOrigin(chrome.runtime.getURL("").replace(/\/$/, ""));
         void connectPortable({ auth: "off", port: options.port ?? DEFAULT_COMPANION_PORT }, "panel", { extensionId }).then(attach).catch(fail);
         return;
       }
@@ -172,17 +174,18 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
   return connection;
 }
 
-type InspectedPageIdentity = { chromeTabId: number; urlWithoutQuery: string | null };
+type InspectedPageIdentity = ({ chromeTabId: number } | { browser: "firefox"; browserTabId: number }) & { urlWithoutQuery: string | null };
 export function appendInspectedPageStatus(status: object, inspectedPage: InspectedPageIdentity) {
   const full = { ...status, inspectedPage };
   if (agentToolResultBytes(full) <= AGENT_RESPONSE_CONTRACT.defaultMaxBytes) return full;
   if (inspectedPage.urlWithoutQuery === null) throw new Error("RESULT_BUDGET_EXCEEDED: Operational status exceeds the MCP response budget.");
   let origin: string | null = null;
   try { origin = new URL(inspectedPage.urlWithoutQuery).origin; } catch { /* Opaque and extension URLs may have no parseable origin. */ }
-  const omitted = "The inspected path exceeded the status response budget. Identify this tab by chromeTabId or inspect its URL in Chrome.";
-  const compact = { ...status, inspectedPage: { chromeTabId: inspectedPage.chromeTabId, origin, urlWithoutQuery: null, urlOmitted: omitted } };
+  const fields = "chromeTabId" in inspectedPage ? { chromeTabId: inspectedPage.chromeTabId } : { browser: inspectedPage.browser, browserTabId: inspectedPage.browserTabId };
+  const omitted = "chromeTabId" in inspectedPage ? "The inspected path exceeded the status response budget. Identify this tab by chromeTabId or inspect its URL in Chrome." : "The inspected path exceeded the status response budget. Identify this Firefox tab by browserTabId and Panel Session, or inspect its URL in Firefox.";
+  const compact = { ...status, inspectedPage: { ...fields, origin, urlWithoutQuery: null, urlOmitted: omitted } };
   if (agentToolResultBytes(compact) <= AGENT_RESPONSE_CONTRACT.defaultMaxBytes) return compact;
-  const minimal = { ...status, inspectedPage: { chromeTabId: inspectedPage.chromeTabId, urlWithoutQuery: null, urlOmitted: omitted } };
+  const minimal = { ...status, inspectedPage: { ...fields, urlWithoutQuery: null, urlOmitted: omitted } };
   if (agentToolResultBytes(minimal) <= AGENT_RESPONSE_CONTRACT.defaultMaxBytes) return minimal;
   throw new Error("RESULT_BUDGET_EXCEEDED: Operational status exceeds the MCP response budget even after omitting the inspected URL.");
 }
@@ -193,7 +196,7 @@ function describeInspectedPage(signal?: AbortSignal): Promise<InspectedPageIdent
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", aborted); };
-    const complete = (url: string | null) => { if (settled) return; settled = true; cleanup(); resolve({ chromeTabId: chrome.devtools.inspectedWindow.tabId, urlWithoutQuery: url }); };
+    const complete = (url: string | null) => { if (settled) return; settled = true; cleanup(); resolve({ ...(isFirefoxExtension() ? { browser: "firefox" as const, browserTabId: chrome.devtools.inspectedWindow.tabId } : { chromeTabId: chrome.devtools.inspectedWindow.tabId }), urlWithoutQuery: url }); };
     const aborted = () => { if (settled) return; settled = true; cleanup(); reject(new Error("QUERY_CANCELLED: Status identity read was cancelled.")); };
     signal?.addEventListener("abort", aborted, { once: true });
     if (signal?.aborted) { aborted(); return; }

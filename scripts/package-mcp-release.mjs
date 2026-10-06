@@ -152,7 +152,7 @@ async function main() {
   console.log(`Prepared unpublished MCP release: ${result.output} (${result.size} bytes, source ${sourceSha})`);
 }
 
-async function writeDeterministicZip(files, output) {
+export async function writeDeterministicZip(files, output) {
   const local = [], central = [];
   let offset = 0;
   const date = (1 << 5) | 1; // 1980-01-01

@@ -14,6 +14,10 @@ A random installation identifier lives in `chrome.storage.local`. An analytics s
 
 Use the dedicated Workbench usage property for engagement and the Chrome Web Store property for listing acquisition. Do not join their identities. Deny advertising consent fields; do not add account IDs or browser fingerprints.
 
+## Firefox consent amendment — October 6, 2026
+
+Firefox 140 and later uses the same closed vocabulary and background-owned transport. Its optional native `technicalAndInteraction` permission and the saved Workbench preference must both allow transmission. Missing permissions, failed permission reads and initialization fail closed. Native permission removal immediately aborts active transmission, invalidates queued work and erases analytics identifiers without changing the Workbench preference. The existing checkbox opens one transient extension window. Its direct **Request Firefox permission** click opens the native prompt; DevTools cannot request this permission and runtime messages do not transfer the gesture. Cancel or Deny keeps collection off, and closing the window restores focus to the checkbox. Granting does not cancel the explicit preference write. Declining analytics does not restrict Capture, Injection, exports or MCP. Chrome retains its accepted default.
+
 ## Considered options
 
 - Listing metrics alone cannot explain activity inside Workbench.

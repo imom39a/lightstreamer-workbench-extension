@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Lightstreamer Workbench is a Chrome DevTools extension for inspecting Lightstreamer Web Client behavior in the currently inspected browser tab. This policy also covers the public Lightstreamer Workbench website.
+Lightstreamer Workbench is a browser developer-tools extension for Chrome and desktop Firefox, for inspecting Lightstreamer Web Client behavior in the currently inspected tab. This policy also covers the public Lightstreamer Workbench website.
 
 Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
@@ -8,17 +8,23 @@ Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extensio
 
 - **Repository candidate with the Usage analytics control:** configured builds collect the limited product-usage data described below. The current repository candidate is not a statement about the version available in the Chrome Web Store.
 - **Chrome Web Store builds:** features and analytics behavior depend on the installed version. Check Chrome extension details and the release notes for its version. Do not infer Store availability from this repository candidate.
+- **Firefox builds:** version 2.0.9 and later target desktop Firefox 140 and later. Check Mozilla Add-ons and the installed version for availability. Private browsing is disabled for the first Firefox release.
 - **Public website:** static pages with one analytics script on the official GitHub Pages origin. It measures page visits with a separate Google Analytics 4 web stream. It has no advertising, account sign-in, or remote error logging.
 
 The repository candidate also captures inspected-page Client Messages and implements deliberate Server Injection. This candidate is not a statement that the Chrome Web Store package has been published.
 
 ## Usage analytics
 
-Configured production builds use Google Analytics 4 to understand feature adoption, investigation journeys, foreground engagement time, and coarse failure categories. Analytics is on by default. Open **More actions → Help & resources → Usage analytics** and turn off **Share usage analytics** to stop collection. No sign-in is required.
+Configured production builds use Google Analytics 4 to understand feature adoption, investigation journeys, foreground engagement time, and coarse failure categories. Chrome analytics is on by default. Firefox analytics starts off and sends only after you grant Firefox's optional technical-and-interaction data permission and enable Workbench's analytics setting. Open **More actions → Help & resources → Usage analytics** to change **Share usage analytics**. Turning it on in Firefox opens a short consent window when needed. Select **Request Firefox permission**, then choose **Allow** in Firefox's native prompt; cancelling or declining leaves analytics off and Workbench fully usable. No sign-in is required.
 
 Events contain fixed Workbench action and screen names, coarse Capture and Injection outcomes, extension version, event time, foreground duration, and a random installation identifier. The identifier distinguishes installations and returning use; it is pseudonymous, not a named user account. Workbench does not create a browser fingerprint or join this identifier to Chrome Web Store visitors. Analytics is not used for advertising, and requests deny advertising personalization and advertising user-data use.
 
 The preference and identifier use extension-local storage. The analytics session uses browser-session storage and expires after thirty minutes without reported activity. These records are separate from captured Event History. Opt-out stops sending, aborts an active request where possible, discards queued events, and removes the identifier and analytics session. It does not retract events already received by Google. Enabling analytics later starts fresh without uploading a backlog. No event queue is saved to disk. Missing configuration or unavailable storage pauses collection without blocking Workbench.
+
+Removing Firefox's optional analytics permission also stops active and queued
+sends and removes analytics identifiers. The Workbench setting and native
+permission are independent; granting permission does not override a saved
+Workbench opt-out. Captured application data is excluded from analytics.
 
 Google receives HTTPS analytics requests and the network IP address used to contact its service. Workbench does not include inspected-page IP addresses or geographic information in those requests. Google processes received analytics data under its [privacy policy](https://policies.google.com/privacy) and the property's retention settings. Workbench does not sell analytics data.
 
@@ -54,7 +60,8 @@ connection configuration is persisted by the panel.
 The local MCP companion lets an agent request retained Evidence,
 normalized diagnostics, runtime Scope and Draft/Scenario outcomes. Local Injection invokes the
 application's local listeners; those listeners can themselves cause application
-effects. Server Injection is not exposed to agents.
+effects. Agents can prepare Server Injection, but each exact Client Message
+requires the user's review and approval in Workbench before execution.
 
 Requested data leaves the extension for a local process and may then reach the
 agent's configured model provider under that provider's policies. The companion
@@ -86,17 +93,25 @@ It creates no native-host registration, launcher, persistent credential file or
 OS service. Removing its MCP entry disables the agent-side connection; npm's
 package cache contains code, not Evidence. Native transport has been removed.
 
+One companion supports Chrome and Firefox panels simultaneously, including
+multiple Firefox profiles. To verify Firefox extension connections, it reads
+the profile registry and the approved add-on's UUID mapping in local Firefox
+`prefs.js` files. It never executes preferences as code or transmits them.
+The approved add-on ID is `lightstreamer-workbench@imom39a`.
+Other add-on origins and ordinary website origins cannot join as Workbench
+panels. This check does not change the local-process trust boundary above.
+
 Version 2 stores current Panel Session Evidence in one temporary Event History. IndexedDB can retain 100,000 Evidence records or 256 MiB. The memory fallback can retain 25,000 records or 128 MiB. Reaching either limit removes the oldest accepted prefix while later valid Capture continues. This Retention Advance is not an Evidence Gap. A candidate that cannot enter any canonical segment creates an explicit Evidence Gap; later valid activity remains eligible. After bounded IndexedDB journal retries fail, Workbench continues in bounded memory for the rest of the Panel Session and reports the storage change and failure reason. The memory fallback reduces History Capacity. The storage change itself does not create an Evidence Gap or reduce Coverage.
 
 A controlled Close stops intake and commits accepted work. It then tries to erase retained and pending data. Workbench reports whether it confirmed erasure and cleanup. A crash, renderer stop, extension reload, or blocked cleanup can prevent erasure. Residual data can remain until a later safe cleanup. Cleanup removes only recognized unused Workbench data. It does not read, export, derive state from, or load this Evidence. A new Panel Session starts empty.
 
 Workbench creates a versioned JSON or offline HTML export only when the user requests it. Workbench excludes connection credentials. It masks client IP addresses before Capture. Structural exports do not include Client Message bodies. A bulk retained-Evidence clipboard copy always redacts Client Message bodies, processed responses, and denial text. Opening and copying one complete raw event remains a deliberate local action. An export or copy can still contain other selected application data. Review each artifact before you share it.
 
-The extension uses local runtime state to connect the DevTools panel, service worker, content script, and inspected page. It does not use captured data from an earlier Panel Session as application state.
+The extension uses local runtime state to connect the developer-tools panel, background context, content script, and inspected page. It does not use captured data from an earlier Panel Session as application state.
 
 ## Network access
 
-Configured builds with usage analytics contact `https://www.google-analytics.com/mp/collect` from the extension service worker while analytics is enabled. No remote analytics script is loaded. Earlier v2 packages without the Usage analytics control do not contact an analytics provider. The inspected page can separately communicate with Lightstreamer servers and application services. This traffic belongs to the inspected page, not to a Workbench maintainer service.
+Configured builds with usage analytics contact `https://www.google-analytics.com/mp/collect` from the extension background context while analytics is enabled and, in Firefox, optional native consent is granted. No remote analytics script is loaded. Earlier v2 packages without the Usage analytics control do not contact an analytics provider. The inspected page can separately communicate with Lightstreamer servers and application services. This traffic belongs to the inspected page, not to a Workbench maintainer service.
 
 The published website loads `https://www.googletagmanager.com/gtag/js` and sends page-visit data to Google Analytics while website analytics is on. This site behavior is separate from the extension service worker.
 
@@ -106,15 +121,21 @@ In the repository candidate, Server Injection is an explicit inspected-page netw
 
 ## Permissions
 
-Workbench requests page access to observe the official Lightstreamer Web Client before the application creates clients or Subscriptions. Workbench uses this access for developer-controlled inspection in Chrome DevTools.
+Workbench requests page access to observe the official Lightstreamer Web Client before the application creates clients or Subscriptions. Workbench uses this access for developer-controlled inspection in browser developer tools.
 
 The analytics candidate adds the `storage` permission for the usage preference and random identifier, and host access to `https://www.google-analytics.com/*` for event submission. Analytics is not added to content scripts or the inspected page. It does not require browser history or account access.
 
-Agent access uses a local loopback WebSocket and requires no additional manifest
-permission. The extension no longer requests `nativeMessaging`. The companion
-accepts the configured extension origin and local agents, not ordinary website
-origins; authentication is off. Setup names the exact extension ID and does
-not expose a remote debugging port.
+Agent access uses a local loopback WebSocket. Firefox's native data-consent
+prompt covers required sharing of website content and browsing activity, plus
+personal information, health, financial, authentication, communication and
+location information that arbitrary inspected application fields can contain.
+Recognized credential redaction cannot guarantee these categories are absent.
+Accepting installation consent enables the default MCP sharing path; use
+Workbench's Agent access control to turn it off in a Panel Session. Optional
+technical-and-interaction consent controls analytics separately.
+The extension no longer requests `nativeMessaging`. The companion accepts
+the configured Chrome origin, verified Firefox origins and local agents;
+authentication is off. Setup does not expose a remote debugging port.
 
 Document each permission change in the pull request and release notes. Chrome Web Store review includes extension permissions.
 
@@ -124,4 +145,4 @@ Use Workbench only on pages that you have permission to inspect. Do not attach p
 
 ## Changes
 
-A maintainer must review each privacy change before merge. Update this policy, the Chrome Web Store privacy fields, and the release notes before publication.
+A maintainer must review each privacy change before merge. Update this policy, both stores' privacy fields, and the release notes before publication.

@@ -42,13 +42,13 @@ Options:
   process.exit(0);
 }
 if (process.argv.includes("--print-matrix")) {
-  console.log(JSON.stringify(publicMatrix()));
+  await new Promise(resolve => process.stdout.write(JSON.stringify(publicMatrix()) + "\n", resolve));
   process.exit(0);
 }
 if (process.argv.includes("--print-review-scope")) {
   const scope = JSON.stringify(publicReviewScope(scenarios));
   if (Buffer.byteLength(scope, "utf8") + 1 > 16 * 1024) throw new Error("Visual review scope exceeds 16 KiB; use --grep to select the affected matrix.");
-  console.log(scope);
+  await new Promise(resolve => process.stdout.write(scope + "\n", resolve));
   process.exit(0);
 }
 for (const [index, argument] of process.argv.slice(2).entries()) {

@@ -1,6 +1,6 @@
 # Lightstreamer Workbench
 
-A Chrome DevTools extension for applications that use the official Lightstreamer Web Client.
+A developer-tools extension for Chrome and desktop Firefox applications that use the official Lightstreamer Web Client.
 
 Inspect clients, Sessions, Subscriptions, Item Updates, snapshots, COMMAND keys, and outbound Client Messages. Test updates with Local Injection or send reviewed Client Messages with Server Injection.
 
@@ -18,13 +18,13 @@ Capture is observational. Workbench does not create clients or subscribe for the
 
 ## Agent access
 
-The MCP companion supports macOS, Windows, and Linux. Install [lightstreamer-workbench-agent 0.1.7 from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7). It bounds serialized MCP replies to 8 KiB by default, supports larger responses up to 64 KiB where offered, and keeps cached Evidence out of operational status. Your agent app starts the companion. No hosted service or native installer is needed.
+The same MCP companion supports Chrome and Firefox on macOS, Windows, and Linux. The 2.0.9 release candidate uses [lightstreamer-workbench-agent 0.1.8](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). It bounds serialized MCP replies to 8 KiB by default, supports larger responses up to 64 KiB where offered, and keeps cached Evidence out of operational status. Your agent app starts the companion. No hosted service or native installer is needed.
 
 Follow the [shared MCP setup guide](https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/).
 Use the [read contract](agent/READS.md) for scoped queries, summaries, and selected fields.
 See the [companion reference](agent/README.md) for local builds and migration.
 
-The npm package and Chrome extension are separate releases. Use companion 0.1.7 with extension 2.0.8. The setup guide links to the ready-built extension when the Store offers an older version.
+Chrome and Firefox use the same extension version, 2.0.9, from one source revision, with separate store packages and reviews. Companion 0.1.8 has its own npm version. See [release notes](https://imom39a.github.io/lightstreamer-workbench-extension/releases/) for publication status and the matching pair. Firefox supports desktop 140+ and regular browsing; the public AMO link will be added after its first submission.
 
 ## Data and safety
 
@@ -32,8 +32,8 @@ The npm package and Chrome extension are separate releases. Use companion 0.1.7 
 - Each Panel Session owns temporary, rolling Event History. A new panel starts empty. Abnormal closure can leave residual data until cleanup.
 - Local Injection calls application listeners. It does not contact Lightstreamer Server, but listeners can trigger other actions.
 - Server Injection sends a real Client Message. Workbench does not automatically repeat an unknown result.
-- Agent access allows inspection and Local Injection without authentication. Requested Evidence can reach your model provider.
-- Configured builds enable usage analytics by default. It excludes captured data. Turn it off under **More actions → Help & resources → Usage analytics**.
+- Agent access allows inspection and Local Injection without authentication. Requested Evidence can reach your model provider. Agent-prepared Server Injection requires a separate human approval of each exact Client Message.
+- Chrome configured builds enable usage analytics by default. Firefox also requires optional native consent, requested through a small permission window. Analytics excludes captured data. Turn it off under **More actions → Help & resources → Usage analytics**.
 
 Read [Privacy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) before sharing data.
 Report vulnerabilities through [Security](https://imom39a.github.io/lightstreamer-workbench-extension/security/), not a public issue.

@@ -100,6 +100,7 @@ describe("release packaging verification gate", () => {
     expect(plan.heavyWork).toEqual([
       "tests/agent-maximum-history-work.test.ts",
       "tests/agent-mcp-efficiency.test.ts",
+      "tests/agent-search.test.ts",
       "tests/agent-status-budget.test.ts",
       "tests/activity-timeline-projection.test.ts",
       "tests/command-state-runtime-regressions.test.ts",

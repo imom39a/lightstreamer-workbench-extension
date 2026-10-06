@@ -47,6 +47,7 @@
 .workbench-react button { padding: 2px 8px; }
 .workbench-react button:hover { border-color: var(--wb-border-strong); }
 .workbench-react button:focus-visible, .workbench-react input:focus-visible, .workbench-react textarea:focus-visible, .workbench-react a:focus-visible, .workbench-react [tabindex]:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: -2px; }
+.workbench-react .workbench-react__usage-analytics input[data-firefox-consent]:focus { outline: 2px solid var(--wb-focus); outline-offset: 1px; }
 .workbench-react strong, .workbench-react b { font-weight: 650; }
 .workbench-react code, .workbench-react time { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 

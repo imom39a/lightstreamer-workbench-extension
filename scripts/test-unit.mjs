@@ -41,6 +41,7 @@ const indexedDbFiles = Object.freeze([
 const heavyWorkFiles = Object.freeze([
   "tests/agent-maximum-history-work.test.ts",
   "tests/agent-mcp-efficiency.test.ts",
+  "tests/agent-search.test.ts",
   "tests/agent-status-budget.test.ts",
   "tests/activity-timeline-projection.test.ts",
   "tests/command-state-runtime-regressions.test.ts",
@@ -114,7 +115,7 @@ try {
   const plan = validatePlan(discovered);
   const forwardedArgs = process.argv.slice(2);
   if (forwardedArgs.includes("--print-plan")) {
-    console.log(JSON.stringify(plan));
+    await new Promise(resolve => process.stdout.write(JSON.stringify(plan) + "\n", resolve));
     process.exit(0);
   }
   // Keep ordinary tests parallel without letting host-wide worker fan-out starve

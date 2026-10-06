@@ -138,9 +138,9 @@ test("Agent access gives one current cross-platform setup and a concise trust bo
   await page.goto("docs/agent-access/");
   await expect(page.getByRole("heading", { name: "Agent access" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Set up MCP" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "0.1.7 is available from npm" })).toHaveAttribute("href", "https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7");
-  await expect(page.locator("pre").nth(0)).toContainText("npx --yes lightstreamer-workbench-agent@0.1.7 setup");
-  await expect(page.locator("pre").nth(1)).toContainText("npx.cmd --yes lightstreamer-workbench-agent@0.1.7 setup");
+  await expect(page.getByRole("link", { name: "companion 0.1.7" })).toHaveAttribute("href", "https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7");
+  await expect(page.locator("pre").nth(0)).toContainText("npx --yes lightstreamer-workbench-agent@0.1.8 setup");
+  await expect(page.locator("pre").nth(1)).toContainText("npx.cmd --yes lightstreamer-workbench-agent@0.1.8 setup");
   await expect(page.getByRole("img", { name: /Workbench panel showing Agent access On/ })).toBeVisible();
   await expect(page.getByText("skills/lightstreamer-workbench/SKILL.md")).toBeVisible();
   const article = page.locator(".article-content");

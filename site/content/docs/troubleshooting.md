@@ -1,7 +1,7 @@
 ## No Lightstreamer activity appears
 
 1. Confirm that the page uses the official Lightstreamer Web Client.
-2. Open Workbench in Chrome DevTools.
+2. Open Workbench in Chrome or Firefox developer tools.
 3. Check **Capture** and **Coverage**.
 4. Select Page Scope.
 5. Clear the active Filter.
@@ -17,6 +17,8 @@ This can occur after an extension update or reload. The open page can still cont
 2. Reload the inspected page to attach a fresh bridge.
 
 For an unpacked build, keep Developer mode enabled in `chrome://extensions`.
+
+Firefox temporary developer installs use `about:debugging#/runtime/this-firefox` and disappear when Firefox exits. Regular users should use the signed Mozilla Add-ons release once available.
 
 ## Older Evidence is missing
 
@@ -44,8 +46,10 @@ Use the [connection checks]({{site}}docs/agent-access/#check-the-connection). Co
 
 If **Agent access and setup** is missing, install a [matching packaged extension]({{site}}docs/agent-access/#install-a-matching-extension). If you loaded that download unpacked, use its Chrome-assigned ID in the npm setup command.
 
+For Firefox, use companion 0.1.8 or later with the approved add-on ID. The same companion handles Chrome and Firefox panels; select the exact `panelSessionId` when several are open. A nonstandard Firefox profile registry location may need `LSEW_FIREFOX_PROFILES_DIR` in the MCP environment. See [MCP setup]({{site}}docs/agent-access/).
+
 ## The interface differs from this guide
 
-Check the installed version in `chrome://extensions`. Compare it with [Release notes]({{site}}releases/).
+Check the installed version in `chrome://extensions` or Firefox `about:addons`. Compare it with [Release notes]({{site}}releases/).
 
 If the problem continues, contact [Support]({{site}}support/). Remove private data before sharing a report.

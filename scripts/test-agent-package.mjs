@@ -7,6 +7,7 @@ import spawn from "cross-spawn";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { firefoxExtensionId } from "./extension-manifest.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const directory = join(root, "test-results", "agent-package");
@@ -102,7 +103,7 @@ try {
   const connected = await next();
   assert.equal(connected.type, "connected");
   assert.equal(connected.auth, "off");
-  assert.deepEqual(connected.identity, { identityVersion: 1, extensionId: "a".repeat(32), companionVersion: metadata.version, protocolVersion: 1, readContractVersion: 2 });
+  assert.deepEqual(connected.identity, { identityVersion: 1, extensionId: "a".repeat(32), firefoxExtensionId, companionVersion: metadata.version, protocolVersion: 1, readContractVersion: 2 });
   panel.send(JSON.stringify({ role: "panel", protocolVersion: 1, panelSessionId: "npm-package-panel", permission: "read" }));
   assert.deepEqual(await next(), { type: "ready" });
   for (const client of clients) {
