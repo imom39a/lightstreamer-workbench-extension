@@ -89,6 +89,14 @@ try {
       const permission = () => command("evaluate", {target: "background", expression: "browser.permissions.getAll()"});
       const flags = () => command("evaluate", {target: "background", expression: `(async () => { const local = await chrome.storage.local.get(${JSON.stringify([ANALYTICS_CLIENT_KEY,ANALYTICS_PREFERENCE_KEY])}); const session = await chrome.storage.session.get(${JSON.stringify(ANALYTICS_SESSION_KEY)}); return {client:Boolean(local[${JSON.stringify(ANALYTICS_CLIENT_KEY)}]), session:Boolean(session[${JSON.stringify(ANALYTICS_SESSION_KEY)}]), preference:local[${JSON.stringify(ANALYTICS_PREFERENCE_KEY)}] ?? null}; })()`});
       const settled = (enabled: boolean) => waitForCondition(panelSurface, `document.querySelector('[aria-label="Share usage analytics"]').checked === ${enabled} && !document.querySelector('[aria-label="Share usage analytics"]').getAttribute('aria-disabled')`, `settled analytics ${enabled ? "On" : "Off"}`);
+      const toggleSavedAnalytics = async () => {
+        // Reopening DevTools replaces its embedded browser. Exercise the real
+        // checkbox with trusted Space instead of reusing a pointer source from
+        // the destroyed view, whose viewport mapping differs on Windows.
+        await command("chrome", {expression:"const e=ChromeUtils.importESModule('resource://gre/modules/ExtensionParent.sys.mjs').ExtensionParent.GlobalManager.getExtension('lightstreamer-workbench@imom39a'); [...e.views].find(view=>view.viewType==='devtools_panel').xulBrowser.focus(); return true;"});
+        assert.equal(await evaluate(panelSurface,"(() => { const input=document.querySelector('[aria-label=\"Share usage analytics\"]'); input.focus(); return document.activeElement===input; })()"),true);
+        await command("key",{key:"SPACE"});
+      };
       const reopenWithSavedChoice = async (enabled: boolean) => {
         await command("close-panel"); await command("open-panel");
         await click("button.workbench-react__agent-access");
@@ -251,10 +259,10 @@ try {
       await reopenWithSavedChoice(true);
       assert.ok((await permission()).data_collection.includes("technicalAndInteraction"));
       assert.deepEqual(await flags(),{client:true,session:true,preference:true});
-      await click('[aria-label="Share usage analytics"]'); await settled(false);
+      await toggleSavedAnalytics(); await settled(false);
       assert.deepEqual(await flags(),{client:false,session:false,preference:false});
       assert.ok((await permission()).data_collection.includes("technicalAndInteraction"));
-      await click('[aria-label="Share usage analytics"]'); await settled(true);
+      await toggleSavedAnalytics(); await settled(true);
       await evaluate(panelSurface,`chrome.runtime.sendMessage({type:${JSON.stringify(ANALYTICS_MESSAGE)},action:'event',event:{name:'panel_opened',params:{}}})`);
       assert.equal(await command("evaluate",{target:"background",expression:"browser.permissions.remove({data_collection:['technicalAndInteraction']})"}),true);
       await settled(false);

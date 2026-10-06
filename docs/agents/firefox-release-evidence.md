@@ -87,9 +87,10 @@ and notices; its desktop-only Android minimum and two generated React DOM
 `innerHTML` warnings are explained in the reviewer source instructions.
 
 Final Windows verification found developer-driver defects in UTF-8 input and
-coordinates after a consent window closes. The bridge now explicitly uses
-UTF-8 and the selected Marionette window viewport. The same Windows run already
-proved saved Allow/On and Deny/Off reopen without another permission prompt.
+pointer mapping across DevTools recreation. The bridge now explicitly uses
+UTF-8 and the selected Marionette window viewport. After reopening, saved-setting
+toggles focus the real checkbox and use trusted Space input. The Windows runs
+also proved saved Allow/On and Deny/Off reopen without another permission prompt.
 
 The Windows unit gate also exposed accumulated zero-delay timer pauses in
 cooperative memory queries. The shared scan now yields to a MessageChannel task
@@ -100,6 +101,11 @@ All 27 focused performance, task-yield, cancellation, Clear and retention-lifeti
 checks passed, as did type checking. The existing latency assertions are retained.
 The [HTML task model](https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports)
 defines port delivery through queued tasks rather than a microtask-only yield.
+The full Windows/Linux unit and official-client gates passed in
+[verification run 37520657321](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/37520657321).
+Windows high-cardinality discovery p95 was **41.21 ms** at 10,000 records and
+**19.39 ms** at 5,000 records; the existing 500 ms limit is unchanged. Build setup
+hooks use the same 30-second budget as the serialized heavy test phase.
 
 Independent visual review passed after inspecting all **26 PNGs** and **eight
 browser/result records** in the evidence manifest. Compact cancellation, native
