@@ -71,6 +71,9 @@ const win = Services.wm.getMostRecentWindow("navigator:browser");
 
 
 def main():
+    # Node sends UTF-8 NDJSON even when Windows uses an ANSI console encoding.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
     parser.add_argument("--dist", required=True)
