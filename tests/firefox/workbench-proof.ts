@@ -46,7 +46,7 @@ function surface(target: string): CdpRequestClient {
 }
 async function click(selector: string, target = "devtools_panel") {
   await waitForCondition(surface(target), `Boolean(document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect().width)`, `visible Firefox control ${selector}`);
-  const point = await evaluate<{x: number; y: number}>(surface(target), `(() => {
+  const point = await evaluate<{x: number; y: number}>(surface(target), `(async () => {
     const element = document.querySelector(${JSON.stringify(selector)});
     if (!element) throw new Error(${JSON.stringify("Missing control: " + selector)});
     element.scrollIntoView({block:"center",behavior:"instant"});

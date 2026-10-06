@@ -138,7 +138,7 @@ try {
     "serialized heavy-work suite",
     plan.heavyWork,
     forwardedArgs,
-    ["--no-file-parallelism", "--maxWorkers=1", "--testTimeout=30000"]
+    ["--no-file-parallelism", "--maxWorkers=1", "--testTimeout=30000", "--hookTimeout=30000"]
   );
   process.exit(heavyWorkStatus);
 } catch (error) {
