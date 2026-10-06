@@ -148,10 +148,11 @@ observed application effects, and revocation. Full Chrome panel verification
 passed 427 checks with no baseline changes. Independent review of 26 Firefox
 images and eight browser/result records passed. The full Windows/Linux unit
 and official-client gates passed in [verification run 37520657321](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/37520657321).
-Windows verification exposed UTF-8 and stale pointer mapping across DevTools
-recreation in the developer-only driver. The bridge uses explicit UTF-8 and
-the selected window viewport; saved-setting toggles use the focused checkbox
-and trusted Space input after reopening. Evidence scans now yield through browser port tasks or
+Windows verification exposed UTF-8 handling and a preference-readiness race
+across DevTools recreation in the developer-only driver. The bridge uses
+explicit UTF-8 and the selected window viewport; saved-setting toggles wait
+for the loaded, enabled checkbox and use trusted Space input after reopening.
+Evidence scans now yield through browser port tasks or
 Node immediate tasks rather than accumulating zero-delay timer pauses between
 256-record batches. This is Non-UI and preserves cancellation, budgets, latched
 read points and retention guards; 27 focused checks passed. Final platform,

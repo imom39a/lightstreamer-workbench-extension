@@ -88,7 +88,7 @@ try {
       const panelSurface = surface("devtools_panel");
       const permission = () => command("evaluate", {target: "background", expression: "browser.permissions.getAll()"});
       const flags = () => command("evaluate", {target: "background", expression: `(async () => { const local = await chrome.storage.local.get(${JSON.stringify([ANALYTICS_CLIENT_KEY,ANALYTICS_PREFERENCE_KEY])}); const session = await chrome.storage.session.get(${JSON.stringify(ANALYTICS_SESSION_KEY)}); return {client:Boolean(local[${JSON.stringify(ANALYTICS_CLIENT_KEY)}]), session:Boolean(session[${JSON.stringify(ANALYTICS_SESSION_KEY)}]), preference:local[${JSON.stringify(ANALYTICS_PREFERENCE_KEY)}] ?? null}; })()`});
-      const settled = (enabled: boolean) => waitForCondition(panelSurface, `document.querySelector('[aria-label="Share usage analytics"]').checked === ${enabled} && !document.querySelector('[aria-label="Share usage analytics"]').getAttribute('aria-disabled')`, `settled analytics ${enabled ? "On" : "Off"}`);
+      const settled = (enabled: boolean) => waitForCondition(panelSurface, `(() => { const input=document.querySelector('[aria-label="Share usage analytics"]'); return input && !input.disabled && input.checked === ${enabled} && !input.getAttribute('aria-disabled'); })()`, `loaded and settled analytics ${enabled ? "On" : "Off"}`);
       const toggleSavedAnalytics = async () => {
         // Reopening DevTools replaces its embedded browser. Exercise the real
         // checkbox with trusted Space instead of reusing a pointer source from

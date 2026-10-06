@@ -86,11 +86,12 @@ npm package proof and release-tooling tests passed. Firefox lint has zero errors
 and notices; its desktop-only Android minimum and two generated React DOM
 `innerHTML` warnings are explained in the reviewer source instructions.
 
-Final Windows verification found developer-driver defects in UTF-8 input and
-pointer mapping across DevTools recreation. The bridge now explicitly uses
-UTF-8 and the selected Marionette window viewport. After reopening, saved-setting
-toggles focus the real checkbox and use trusted Space input. The Windows runs
-also proved saved Allow/On and Deny/Off reopen without another permission prompt.
+Final Windows verification found developer-driver UTF-8 input handling and a
+readiness race across DevTools recreation. The bridge now explicitly uses UTF-8
+and the selected Marionette window viewport. The consent check waits for the
+checkbox to be enabled after reading the saved preference, then focuses the real
+checkbox and uses trusted Space input. Saved Allow/On and Deny/Off are checked
+after loading, together with the absence of another permission prompt.
 
 The Windows unit gate also exposed accumulated zero-delay timer pauses in
 cooperative memory queries. The shared scan now yields to a MessageChannel task
