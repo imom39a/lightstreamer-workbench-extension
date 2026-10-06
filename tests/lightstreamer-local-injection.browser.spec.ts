@@ -3,8 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { chromeTestArguments } from "../scripts/chrome-test-policy.mjs";
+import { createBrowserFailureDiagnostics } from "./support/browser-failure-diagnostics.mjs";
 
 import {
   CdpClient,
@@ -49,37 +50,40 @@ const initialMessage = "Attention - real Lightstreamer client.";
 let localInjectionKeySequence = 0;
 
 async function runBrowserProof(): Promise<void> {
+  const diagnostics = createBrowserFailureDiagnostics({ rootDir, journey: "official-client-local-injection" });
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-local-injection-transport-"));
-  const chromeExecutable = await resolveChromeExecutable(rootDir);
-  const chromeLogs: string[] = [];
-  const chrome = spawn(chromeExecutable, [
-    ...chromeTestArguments({
-      profile: profileDir,
-      headless: true,
-      disableNativeOcclusion: true,
-      additional: [
-        "--auto-open-devtools-for-tabs",
-        "--remote-debugging-port=0",
-        `--disable-extensions-except=${extensionDir}`,
-        `--load-extension=${extensionDir}`,
-        "--window-size=1280,900"
-      ]
-    }),
-    "about:blank"
-  ], {
-    cwd: rootDir,
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true
-  });
-  chrome.stdout?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
-  chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
-
+  let chrome: ChildProcess | null = null;
   let pageCdp: CdpClient | null = null;
   let devtoolsCdp: CdpClient | null = null;
   let panelCdp: CdpClient | null = null;
   try {
+    const chromeExecutable = await resolveChromeExecutable(rootDir);
+    chrome = spawn(chromeExecutable, [
+      ...chromeTestArguments({
+        profile: profileDir,
+        headless: true,
+        disableNativeOcclusion: true,
+        additional: [
+          "--auto-open-devtools-for-tabs",
+          "--remote-debugging-port=0",
+          `--disable-extensions-except=${extensionDir}`,
+          `--load-extension=${extensionDir}`,
+          "--window-size=1280,900"
+        ]
+      }),
+      "about:blank"
+    ], {
+      cwd: rootDir,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    chrome.stdout?.on("data", (chunk: Buffer) => diagnostics.browserLog(String(chunk)));
+    chrome.stderr?.on("data", (chunk: Buffer) => diagnostics.browserLog(String(chunk)));
+
     const debugging = await waitForDebuggingPort(profileDir, chrome);
+    await diagnostics.connect(debugging.browserWebSocketUrl);
+    await diagnostics.step("load the official-client fixture and capture its wire snapshot");
     const extensionManifest = await readExtensionManifest(extensionDir);
     const targets = await waitForBrowserTargets(debugging.port, {
       requireExtensionDevtools: true,
@@ -93,6 +97,7 @@ async function runBrowserProof(): Promise<void> {
     );
     assert.ok(pageTarget?.webSocketDebuggerUrl, "Chrome should expose the inspected fixture page.");
     pageCdp = await CdpClient.connect(pageTarget.webSocketDebuggerUrl);
+    await diagnostics.observeCdp("inspected-page", pageCdp);
     await pageCdp.request("Page.enable");
     await pageCdp.request("Runtime.enable");
     await pageCdp.request("Page.addScriptToEvaluateOnNewDocument", {
@@ -134,9 +139,11 @@ async function runBrowserProof(): Promise<void> {
     const panelTarget = await waitForExtensionPanelTarget(debugging.port);
     assert.ok(panelTarget.webSocketDebuggerUrl, "Chrome should expose the Workbench panel target.");
     panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl);
+    await diagnostics.observeCdp("workbench-panel", panelCdp);
     await panelCdp.request("Runtime.enable");
 
     const wireEvidenceCount = await waitForPanelEvidence(panelCdp);
+    await diagnostics.step("deliver wire Local Injections through direct and acknowledged fallback transport");
     const directWireMessage = "Direct wire Local Injection through the protected page bridge.";
     await injectFromLatestServerEvidence(panelCdp, directWireMessage);
     await waitForRenderedMessage(pageCdp, directWireMessage, 2);
@@ -150,6 +157,7 @@ async function runBrowserProof(): Promise<void> {
     await waitForRenderedMessage(pageCdp, messageChannelWireMessage, 3);
 
     await pageCdp.request("Page.navigate", { url: listenerFixtureUrl });
+    await diagnostics.step("deliver listener Local Injection through acknowledged fallback transport");
     await waitForFixture(pageCdp);
     const listenerCapture = await latestFixtureCapture(pageCdp, "listener");
     assert.ok(listenerCapture.payload?.listener?.id);
@@ -164,21 +172,23 @@ async function runBrowserProof(): Promise<void> {
     await injectFromLatestServerEvidence(panelCdp, listenerFallbackMessage);
     await waitForRenderedMessage(pageCdp, listenerFallbackMessage, 2);
 
-    if (process.env.LSEW_AGENT_BROWSER_PROOF === "1") await proveAgentFixture(rootDir, panelCdp, pageCdp);
+    if (process.env.LSEW_AGENT_BROWSER_PROOF === "1") {
+      await diagnostics.step("prove MCP Local Injection and Scenario delivery to the official client");
+      await proveAgentFixture(rootDir, panelCdp, pageCdp);
+    }
 
     console.log(
       "Local Injection transport proof passed: wire direct + message-channel fallback + listener fallback."
     );
   } catch (error) {
-    const logTail = chromeLogs.join("").slice(-4_000);
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)}${logTail ? `\nChrome output:\n${logTail}` : ""}`
-    );
+    await diagnostics.captureFailure(error);
+    throw error;
   } finally {
+    await diagnostics.dispose();
     panelCdp?.close();
     devtoolsCdp?.close();
     pageCdp?.close();
-    await terminateChild(chrome);
+    if (chrome) await terminateChild(chrome);
     await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
