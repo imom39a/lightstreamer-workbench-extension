@@ -86,7 +86,7 @@ and OS socket permissions for optional authentication and a short-code compariso
 it is not an individual-agent identity or protection from a compromised host.
 Local WebSocket traffic
 is not encrypted; remote hosts and arbitrary website origins are not supported.
-Setup only prints configuration. Default setup emits command/arguments without
+Setup prints MCP configuration for the user to add to their host. Default setup emits command/arguments without
 a credential. The retained `setup --auth required` mode is for protocol compatibility/testing;
 the current panel has no authentication or approval controls. Existing credential-bearing MCP
 entries continue to require authentication. Neither side falls back across
@@ -96,7 +96,26 @@ an anonymous pipe; no installer or registry entries are involved. The accepted
 tradeoff removes connection friction on trusted development machines at the cost
 of local-process authentication, not the Panel Session or Local Injection boundary.
 
-The npm package bundles its runtime dependencies and skill. Setup defaults to a
+The npm package bundles the MCP runtime and matching skill. On 2026-10-06 the
+maintainer requested one combined MCP/skill setup and update flow. Interactive
+setup offers skill installation through the pinned upstream `skills` npm
+dependency's public executable. It owns the full supported agent registry,
+native selection/detection defaults, target directories and project/user scope;
+Workbench does not maintain a Kiro-specific picker or registry. Explicit
+`--agent` accepts several names or repeated flags and delegates their validation
+to the same dependency. Workbench copies the complete bundled skill with `--copy`
+so npx cache eviction cannot break installed references. `update` uses the same
+flow. Unattended skill installation requires an explicit agent and `--yes`;
+configuration-only output and stdio MCP startup never prompt. This does not
+change the boundary for editing host MCP settings: setup still prints that
+entry for the user to add. Runtime SDK dependencies remain bundled; the skill
+installer is a separate, pinned npm dependency supporting Node 22.12.
+The current pin is `skills` 1.5.18, the latest patch retaining the compatible
+Node floor. Its native picker cancellation currently returns an upstream error;
+setup documents configuration-only recovery rather than patching or copying
+the dependency's private picker implementation.
+
+Setup defaults to a
 version-pinned `npx` entry on all platforms; `--local` supports an installed
 artifact using absolute Node/package paths. The agent app starts this stdio MCP
 entry, which automatically starts or reuses the loopback companion. There is no

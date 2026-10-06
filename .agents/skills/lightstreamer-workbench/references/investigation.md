@@ -4,6 +4,8 @@ Use this workflow when the question depends on a sequence of Lightstreamer
 updates or when an ordered Scenario is a useful reproduction. First check
 `get_status.capabilities`; tool availability follows the connected panel's
 matching extension and companion build.
+For unfamiliar data sources and choosing queries from a user question, start
+with [query-planning.md](query-planning.md).
 
 ## Discover, inspect and validate
 
@@ -11,8 +13,8 @@ Read-contract version 2 shares Scope, typed `where` filters and stable `at` read
 points across records and summaries. `where` supports `kind`, `mode`, `key`,
 `operation`, `phase` and `provenance`: arrays are OR within one facet, AND across
 facets. For other canonical facets use advanced `filter.criteria` instead of
-`where`. Exact Item Update field names go in `fields`; this is not a JSON-path
-language or arbitrary application-field predicate engine.
+`where`. Exact Item Update field names go in `fields` and `fieldPredicates`;
+nested JSON paths and undeclared properties are unsupported.
 
 For “which keys occurred in this Subscription?”, a bounded workflow is:
 
@@ -35,6 +37,10 @@ All default compact results have an 8192-byte serialized MCP result budget,
 including compatibility text and structured data. `maxBytes` explicitly chooses
 4096–65536 bytes. A page can contain fewer records than its `limit` to fit.
 Read any omissions rather than treating omitted values as null or absent.
+For a wide exact record, `get_evidence` reports required serialized bytes and a
+bounded `maxBytes` retry when one fits. Use that measured suggestion instead of
+repeating the same failed read or assuming 16 KiB always fits. If it exceeds the
+maximum, select fewer fields or inspect the visible Workbench document.
 `fields` and `includePayload:true` are alternative requests, not combinable.
 `QUERY_OPTIONS_CHANGED` means start a new query without the cursor; a cursor
 cannot be narrowed or have its payload policy changed. Never raise budgets or
@@ -43,7 +49,8 @@ enumerate all events merely to compute counts available through a summary.
 For field-shape discovery and reproduction:
 
 1. Use `list_scope` / `get_scope` to read the exact Workbench `scopeId`,
-   Subscription's declared fields and item identities. `describe_stream` can
+   `readContext` for the Subscription's declared fields and item identities,
+   independently of injection availability. `describe_stream` can
    profile a bounded matching Evidence sample:
    it reports declared fields separately from observed fields, raw value types,
    JSON-encoded shapes, observed mode/provenance/phase values and exact Evidence
@@ -57,8 +64,9 @@ For field-shape discovery and reproduction:
    operation or event does not exist.
 2. Use `query_evidence` with the relevant typed `filter`, `at` read point and
    `order` to inspect the exact representative records. Select `fields` when
-   field values are needed. This tranche supports free text and canonical
-   Evidence-facet filters, not predicates over Item Update payload field values.
+   field values are needed. `fieldPredicates` supports exact declared field
+   comparisons; consult query-planning for operators, explicit numeric-string
+   conversion and uncertain values.
    To discover available canonical values, call `summarize_evidence` with the exact
    `panelSessionId`, exact `scopeId` (or explicit `within:"page"`), `facet:"kind"`
    or `facet:"mode"`, and a small `limit`.
@@ -219,5 +227,6 @@ executing under a new request ID.
 Use compatible extension and companion builds for this workflow; confirm the
 available names with `get_status.capabilities`. Installing the npm companion
 does not update the Chrome extension. If the loaded extension lacks a needed
-tool, use a matching extension build before proceeding. The npm setup,
-companion process and authentication configuration are unchanged.
+tool, use a matching extension build before proceeding. The combined npm setup
+offers the skill bundled with that companion release. Refresh the skill in the
+same setup/update flow and restart MCP to load new tool descriptions.

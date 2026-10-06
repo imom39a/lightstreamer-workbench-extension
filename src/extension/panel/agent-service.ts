@@ -16,7 +16,7 @@ import type { HistoryStatus } from "../../core/event-history-authoritative";
 import { reanchorEvidenceQueryCursor } from "../../core/evidence-filter-cursor";
 import { reanchorFacetDiscoveryCursor } from "../../core/evidence-filter-discovery";
 import { waitForAgentScenario } from "./agent-scenario-wait";
-import { agentNativeChangePreview } from "./agent-injection-capabilities";
+import { agentNativeChangePreview, describeAgentDocument } from "./agent-injection-capabilities";
 
 const SEARCH_CURSOR_LIFETIME_MS = 5 * 60 * 1000;
 const DEFAULT_QUERY_WORK = Object.freeze({ maxProjectionReads: 250000, maxPayloadHydrations: 1000, deadlineMs: 15000 });
@@ -79,7 +79,11 @@ function compactOversizedAgentResult(name: string, args: AgentArguments, result:
   if (["prepare_local_injection", "prepare_scenario", "update_agent_document", "recover_agent_document"].includes(name) && typeof value.token === "string") {
     // Preparation and editing can rotate an execution token. Never lose it
     // solely because the optional preview is large.
-    return { token: value.token, ...(value.requestId ? { requestId: value.requestId } : {}), ...(value.kind ? { kind: value.kind } : {}), ...(value.consumed !== undefined ? { consumed: value.consumed } : {}), previewOmitted: omitted };
+    const recovery = { tool: "recover_agent_document", arguments: { ...(value.requestId ? { requestId: value.requestId } : {}), maxBytes: AGENT_READ_CONTRACT.maxBytes },
+      fallback: "If the full preview still exceeds the maximum, inspect the existing document in Workbench." };
+    const compact = { token: value.token, ...(value.requestId ? { requestId: value.requestId } : {}), ...(value.kind ? { kind: value.kind } : {}), ...(value.consumed !== undefined ? { consumed: value.consumed } : {}), previewOmitted: omitted, recovery };
+    const contract = (value.local as { draft?: { documentContract?: unknown } } | undefined)?.draft?.documentContract;
+    return contract && agentToolResultBytes({ ...compact, documentContract: contract }) <= budget ? { ...compact, documentContract: contract } : compact;
   }
   if (["prepare_server_injection", "recover_server_injection"].includes(name) && typeof value.token === "string") {
     return { ...(value.requestId ? { requestId: value.requestId } : {}), token: value.token,
@@ -111,12 +115,26 @@ function compactOversizedAgentResult(name: string, args: AgentArguments, result:
     const node = value.node as Record<string, unknown> | undefined;
     const local = value.localInjection as Record<string, unknown> | undefined;
     const base = { node: node && { id: node.id, kind: node.kind, label: node.label, lifecycle: node.lifecycle, retired: node.retired }, pageEpoch: value.pageEpoch,
+      ...(value.readContext !== undefined ? { readContext: value.readContext } : {}),
       localInjection: { ...(local?.anchor ? { anchor: local.anchor } : {}), ...(local?.unavailable ? { unavailable: local.unavailable } : {}),
+        ...(local?.recovery ? { recovery: local.recovery } : {}),
         ...(local?.capabilities ? { capabilities: local.capabilities } : {}), ...(local?.diagnostics ? { diagnostics: local.diagnostics } : {}), documentOmitted: omitted } };
     if (agentToolResultBytes(base) <= budget) return base;
-    return { ...base, localInjection: { ...(local?.anchor ? { anchor: local.anchor } : {}), ...(local?.capabilities ? { capabilities: local.capabilities } : {}),
+    const diagnosticsOmitted = local?.diagnostics ? { diagnosticsOmitted: "Target diagnostics exceeded the response budget; inspect the Scope in Workbench." } : {};
+    const withoutDiagnostics = { ...base, localInjection: { ...(local?.anchor ? { anchor: local.anchor } : {}), ...(local?.capabilities ? { capabilities: local.capabilities } : {}),
       ...(local?.unavailable ? { unavailable: local.unavailable } : {}), documentOmitted: omitted,
-      diagnosticsOmitted: "Target diagnostics exceeded the response budget; inspect the Scope in Workbench." } };
+      ...(local?.recovery ? { recovery: local.recovery } : {}),
+      ...diagnosticsOmitted } };
+    if (agentToolResultBytes(withoutDiagnostics) <= budget || value.readContext === undefined) return withoutDiagnostics;
+    // Keep investigation schema usable even when a wide injection capability
+    // list cannot fit. Omission never changes whether authoring is available.
+    const anchor = local?.anchor as Record<string, unknown> | undefined;
+    const compactAnchor = anchor && Object.fromEntries(["pageEpoch", "clientId", "sessionId", "subscriptionId", "subscriptionMode", "itemName", "itemPosition", "listenerId", "captureSource", "sourceKind", "executionTarget"].filter(key => anchor[key] !== undefined).map(key => [key, anchor[key]]));
+    return { ...base, localInjection: { ...(compactAnchor ? { anchor: compactAnchor } : {}),
+      ...(local?.unavailable ? { unavailable: local.unavailable } : {}),
+      ...(local?.recovery ? { recovery: local.recovery } : {}),
+      ...(local?.capabilities ? { capabilitiesOmitted: "Injection capabilities exceed maxBytes; raise the bounded budget or inspect Workbench before authoring." } : {}),
+      documentOmitted: omitted, ...diagnosticsOmitted } };
   }
   return null;
 }
@@ -382,7 +400,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         }
         return { ...response(), nextCursor };
       }
-      case "get_scope": return cloneCredentialSafe(runtime.scope(String(args.scopeId)));
+      case "get_scope": return cloneCredentialSafe(runtime.scope(String(args.scopeId), { fieldOffset: Number(args.fieldOffset ?? 0), fieldLimit: Number(args.fieldLimit ?? 32) }));
       case "read_bundle": {
         const budget = Number(args.maxBytes ?? AGENT_RESPONSE_CONTRACT.defaultMaxBytes);
         const operations = args.operations as { id: string; kind: string; args: AgentArguments }[];
@@ -499,9 +517,9 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         if (result.evaluation !== "COMPLETE") throw new Error("UNSUPPORTED_FILTER: Evidence search cannot evaluate this investigation. Remove the unsupported Filter criterion or explicitly search within: page.");
         if (!result.find) throw new Error("Evidence search is unavailable at this read point.");
         const records = result.find.results ?? [];
-        const evidence = records.map(record => { const projected = projectReadRecord(record, includePayload, fields); return { ...projected, match: safeMatchExplanation(projected, text) }; });
+        const evidence = records.map(record => { const projected = projectReadRecord(record, includePayload, fields); return { ...projected, match: safeMatchExplanation(projected, text, fields?.length ? "NO_MATCH_IN_REQUESTED_FIELDS" : includePayload ? "NO_MATCH_IN_SHAREABLE_REPRESENTATION" : "PAYLOAD_NOT_REQUESTED") }; });
         const hasMore = (count: number) => result.find!.hasMore || count < records.length;
-        const response = (count: number) => ({ search: { text, within, ...((saved?.scopeId ?? args.scopeId) ? { scopeId: saved?.scopeId ?? args.scopeId } : {}), match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" }, readPoint: result.readPoint, total: result.find!.total, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor: hasMore(count) && count > 0 ? "00000000-0000-0000-0000-000000000000" : null, evidence: evidence.slice(0, count) });
+        const response = (count: number) => ({ search: { text, within, ...((saved?.scopeId ?? args.scopeId) ? { scopeId: saved?.scopeId ?? args.scopeId } : {}), match: "CASE_INSENSITIVE_SUBSTRING", order: "OLDEST_FIRST" }, matchExplanation: "Excerpts inspect returned fields only. No excerpt does not establish redaction or identity. Use get_evidence with selected fields, or prepare_local_injection from the exact identity to inspect its editable Draft.", readPoint: result.readPoint, total: result.find!.total, totals: result.totals, coverage: result.coverage, evaluation: result.evaluation, storage: result.storage, nextCursor: hasMore(count) && count > 0 ? "00000000-0000-0000-0000-000000000000" : null, evidence: evidence.slice(0, count) });
         // Storage already latched the complete count/read point and one bounded
         // match page. Fit its longest permitted prefix in memory; shrinking the
         // response must never rescan history or advance past unreturned matches.
@@ -602,6 +620,13 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
             history: { phase: current.history.phase, retained: current.history.retained, retention: current.history.retention, continuity: current.history.continuity },
             omissions: [...omissions(true), ...(completeSample ? [] : ["The sample or its payload budget is incomplete. Use query_evidence with nextCursor when present, or narrow the query to inspect omitted payloads."])] };
         };
+        const minimumBytes = agentToolResultBytes(response(Math.min(1, allRecords.length)));
+        if (minimumBytes > budget) {
+          const recovery = minimumBytes <= AGENT_READ_CONTRACT.maxBytes
+            ? `Retry describe_stream with maxBytes:${Math.ceil(minimumBytes / 1024) * 1024}, or read selected fields with query_evidence.`
+            : "Profile exceeds 65536 bytes. Narrow to one item or read selected fields with query_evidence.";
+          throw new Error(`RESULT_BUDGET_EXCEEDED: Minimum profile requires ${minimumBytes} bytes; budget ${budget}. ${recovery}`);
+        }
         const count = fitAgentPrefix(allRecords.length, budget, response, "One stream description exceeds maxBytes. Inspect selected fields with query_evidence.");
         return { ...response(count), nextCursor: saveNextCursor({ ...query, includePayload: false }, result.readPoint, shortenedEvidenceCursor(result, count)) };
       }
@@ -654,7 +679,14 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         const fields = args.fields as string[] | undefined;
         const result = await guardedQuery({ at: "LATEST_COMMITTED", size: 1, includePayload: includePayload || Boolean(fields?.length), lookup: args.evidence as EvidenceIdentity, signal });
         const response = { readPoint: result.readPoint, coverage: result.coverage, lookup: result.lookup?.state === "RETAINED" ? { state: "RETAINED", evidence: projectReadRecord(result.lookup.evidence, includePayload, fields) } : result.lookup };
-        if (agentToolResultBytes(response) > Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes)) throw new Error("RESULT_BUDGET_EXCEEDED: Exact Evidence exceeds maxBytes. Request fewer fields or omit payload.");
+        const requiredBytes = agentToolResultBytes(response);
+        const budget = Number(args.maxBytes ?? AGENT_READ_CONTRACT.defaultMaxBytes);
+        if (requiredBytes > budget) {
+          const recovery = requiredBytes <= AGENT_READ_CONTRACT.maxBytes
+            ? `Retry get_evidence with maxBytes:${Math.ceil(requiredBytes / 1024) * 1024}, or select fewer fields.`
+            : "Select fewer fields or omit payload; this exceeds the maximum 65536-byte response. Inspect the exact Evidence in Workbench.";
+          throw new Error(`RESULT_BUDGET_EXCEEDED: Exact Evidence requires ${requiredBytes} bytes; budget ${budget}. ${recovery}`);
+        }
         return response;
       }
       case "query_diagnostics": {
@@ -945,6 +977,7 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
       if (agentToolResultBytes(result) <= budget) return result;
       const compact = compactOversizedAgentResult(name, input, result, budget);
       if (compact && agentToolResultBytes(compact) <= budget) return compact;
+      if (name === "get_scope") throw new Error("RESULT_BUDGET_EXCEEDED: Scope exceeds maxBytes. Retry get_scope with fieldLimit:1 or maxBytes up to 65536. Page names with schema.nextOffset/fieldOffset; inspect oversized details in Workbench.");
       if (name === "validate_agent_candidate") throw new Error("RESULT_BUDGET_EXCEEDED: Whole-plan validation reason, target or limitations exceed the response budget. Use maxBytes up to 65536 or inspect the candidate in Workbench.");
       throw new Error(name === "execute_local_injection" || name === "control_scenario"
         ? "DELIVERY_UNKNOWN: The operation may have executed, but its response exceeded the agent budget. Inspect its existing requestId; do not retry with a new id."
@@ -1030,16 +1063,19 @@ function safeRecord(record: DeterministicEvidenceRecord, payloadBudget = 256 * 1
   return { identity: record.identity, timestamp: record.timestamp, facets: cloneCredentialSafe(record.facets), ...(sanitized ? { payload: sanitized } : {}) };
 }
 /** Explain only the exported representation: canonical searchText/summary may contain secrets. */
-function safeMatchExplanation(evidence: object, query: string) {
+function safeMatchExplanation(evidence: object, query: string, reason: "PAYLOAD_NOT_REQUESTED" | "NO_MATCH_IN_REQUESTED_FIELDS" | "NO_MATCH_IN_SHAREABLE_REPRESENTATION") {
   const needle = query.toLowerCase();
   const fields: Array<{ field: string; excerpt: string }> = [];
   let remaining = 4096;
+  let scanLimited = false;
   function visit(value: unknown, path: string, depth = 0): void {
-    if (fields.length >= 3 || depth > 16 || remaining-- <= 0) return;
+    if (fields.length >= 3) return;
+    if (depth > 16 || remaining-- <= 0) { scanLimited = true; return; }
     if (value !== null && typeof value === "object") {
       for (const [key, entry] of Object.entries(value)) {
         visit(entry, path ? `${path}.${key}` : key, depth + 1);
-        if (fields.length >= 3 || remaining <= 0) break;
+        if (remaining <= 0) { scanLimited = true; break; }
+        if (fields.length >= 3) break;
       }
     } else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
       const text = String(value);
@@ -1050,7 +1086,7 @@ function safeMatchExplanation(evidence: object, query: string) {
     }
   }
   visit(evidence, "");
-  return { state: fields.length > 0 ? "EXPLAINED" : "NO_SHAREABLE_EXCERPT", fields };
+  return { state: fields.length > 0 ? "EXPLAINED" : "NO_SHAREABLE_EXCERPT", ...(fields.length ? {} : { reason: scanLimited ? "EXCERPT_SCAN_LIMIT" : reason }), fields };
 }
 
 function boundedRecords(records: readonly DeterministicEvidenceRecord[]) {
@@ -1116,7 +1152,9 @@ function safeDraft(local: ReturnType<AgentRuntime["local"]>) {
   if (!local.draft) return local;
   const { rawText: _raw, source: _source, preflightFingerprint: _fingerprint, nativeChanges, ...draft } = local.draft;
   const documentBytes = new TextEncoder().encode(JSON.stringify(draft.document)).byteLength;
-  return { ...local, draft: cloneCredentialSafe({ ...draft, nativeChanges: agentNativeChangePreview(nativeChanges), ...(documentBytes > 64 * 1024 ? { document: null, documentOmitted: "Preview exceeds 64 KiB; inspect the visible Workbench Draft.", documentBytes } : {}) }), privacy: "Recognized credential fields are omitted; this is not a general secret detector. Captured redactions are not executable values." };
+  const template = local.draft.source?.rawText ? JSON.parse(local.draft.source.rawText) as { fields: Record<string, unknown> } : draft.document;
+  const jsonFields = template ? Object.entries(template.fields).filter(([, value]) => value !== null && typeof value === "object").map(([name]) => name) : null;
+  return { ...local, draft: cloneCredentialSafe({ ...draft, documentContract: describeAgentDocument(draft.anchor.fieldSchema, jsonFields, draft.anchor.subscriptionMode), nativeChanges: agentNativeChangePreview(nativeChanges), ...(documentBytes > 64 * 1024 ? { document: null, documentOmitted: "Preview exceeds 64 KiB; inspect the visible Workbench Draft.", documentBytes } : {}) }), privacy: "Recognized credential fields are omitted; this is not a general secret detector. Captured redactions are not executable values." };
 }
 function safeScenario(state: ReturnType<AgentRuntime["scenario"]>, offset = 0, limit = 25) {
   if (!state) return null;

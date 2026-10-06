@@ -37,6 +37,56 @@ Open **Lightstreamer Workbench** in your application's developer tools. When
 **Agent access** shows **On**, ask your agent to find the open Panel Session
 and inspect the Subscription or updates you want to investigate.
 
+## Upcoming combined skill setup
+
+The combined skill flow is implemented in source and awaits the next companion
+release after 0.1.8. Published 0.1.8 prints MCP configuration and requires
+copying the optional bundled skill manually. Once the new release is published:
+
+```sh
+npx --yes lightstreamer-workbench-agent@latest setup
+```
+
+Use `npx.cmd` on Windows. npx first downloads or reuses the companion package
+and its `skills` dependency. In a terminal, setup prints the pinned MCP
+configuration and offers to install or update the matching Workbench skill.
+Accept the offer to use the upstream `skills` installer's native agent
+selection and project or user scope prompts. It supports Codex (OpenAI),
+Claude Code, Kiro, Cursor, and the other targets in the dependency's agent
+registry. You can select several apps; its normal detection and selection
+defaults apply. The complete skill folder is copied from the companion,
+including its reference guides, and survives npx cache cleanup.
+
+The `--yes` before the package name approves npx downloading and running the
+package; it leaves the skill prompts available. Bare interactive
+`npx lightstreamer-workbench-agent@latest` also opens setup. Run
+`npx --yes lightstreamer-workbench-agent@latest update` to refresh the printed
+MCP configuration and matching skill together.
+
+For unattended project installation, choose one or several targets:
+
+```sh
+npx --yes lightstreamer-workbench-agent@latest setup --skill --agent codex claude-code kiro-cli --yes
+```
+
+| App | Target argument | Project skill directory |
+| --- | --- | --- |
+| Codex (OpenAI) | `codex` | `.agents/skills` |
+| Claude Code | `claude-code` | `.claude/skills` |
+| Kiro IDE or CLI | `kiro-cli` | `.kiro/skills` |
+
+Add `--global` for user scope. Repeated `--agent` flags also work. The upstream
+installer owns the [supported agent names and directories](https://github.com/vercel-labs/skills#available-agents);
+Workbench does not maintain its own registry or picker. Setup's final `--yes`
+skips skill prompts and requires an explicit target. `setup --json` or
+`--skip-skill` prints configuration only; MCP startup never prompts. Setup
+prints the MCP entry for you to copy into your app's settings.
+
+The pinned installer currently reports an upstream error if you cancel inside
+its agent picker before skill installation starts. The printed MCP
+configuration remains usable. Decline the initial skill offer or use
+`--skip-skill` for configuration only; rerun setup when ready to select targets.
+
 One companion supports Chrome and Firefox panels together. Keep the default
 setup for the official Store extensions. Firefox's permanent add-on ID is
 `lightstreamer-workbench@imom39a`; it is not a value for the Chrome

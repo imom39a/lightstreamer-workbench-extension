@@ -73,7 +73,17 @@ Agents can prepare Server Injection in the 2.0.9/0.1.8 pair. A person must revie
 
 ## Optional agent skill
 
-The package includes `skills/lightstreamer-workbench/SKILL.md`. Add its folder to your agent's skill directory if desired; MCP works without it.
+The package bundles `skills/lightstreamer-workbench/SKILL.md` and its references. Published 0.1.8 requires copying the optional skill folder to your agent's skill directory; MCP works without it.
+
+Combined skill installation is implemented in source and awaits the next release after 0.1.8. Once published:
+
+```powershell
+npx.cmd --yes lightstreamer-workbench-agent@latest setup
+```
+
+Use `npx` on macOS/Linux. npx first retrieves the companion and its installer dependency. Accept the skill offer to use the upstream `skills` installer's native agent selector and project/user scope prompts. Supported targets include Codex (OpenAI), Claude Code, Kiro, Cursor, and the rest of its agent registry; you can select several. It copies the complete skill; `update` refreshes it alongside printed MCP configuration. The outer `npx.cmd --yes` leaves the skill prompts available.
+
+For unattended installation, append `--skill --agent codex claude-code kiro-cli --yes`, keeping only the targets you need, and optionally `--global`. Kiro IDE/CLI share `.kiro/skills`. Repeated `--agent` flags also work. `--json` skips installation; MCP startup never prompts.
 
 ## Access and data
 

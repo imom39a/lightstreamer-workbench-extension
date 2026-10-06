@@ -7,7 +7,9 @@ afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 async function fixture() {
   const listeners = new Set<() => void>();
-  const draft: any = { id: "draft", rawText: "{}", anchor: { pageEpoch: "epoch" }, document: {}, ready: true, phase: "edit", outcome: null };
+  const draft: any = { id: "draft", rawText: "{}", anchor: { pageEpoch: "epoch", fieldSchema: ["command", "key"] },
+    document: { command: "ADD", key: "wait-key", isSnapshot: false, fields: { command: "ADD", key: "wait-key" } },
+    source: { kind: "authored", rawText: null }, ready: true, phase: "edit", outcome: null };
   let permission: "read" | "local" | "off" = "local";
   const execute = vi.fn(() => { draft.phase = "pending"; });
   const runtime = {

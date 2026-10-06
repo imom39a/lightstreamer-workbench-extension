@@ -282,6 +282,14 @@ describe("installer-free companion", () => {
     expect(() => invoke(["mcp", "--porrt", "24817"])).toThrow();
     expect(() => invoke(["setup", "--auth", "optional"])).toThrow();
     expect(() => invoke(["setup", "--port", "65536"])).toThrow();
+    for (const invalid of [
+      ["setup", "--skill", "--agent"],
+      ["setup", "--agent", "codex", "--agent", "--yes"],
+      ["setup", "--agent", "codex", "claude-code"],
+      ["setup", "--agent", "codex", "claude-code", "--yes", "--json"],
+      ["setup", "--yes"],
+      ["setup", "--port", String(port), "--port", String(port)]
+    ]) expect(() => invoke(invalid)).toThrow();
     expect(() => invoke(["mcp", "--auth", "required"])).toThrow();
     expect(() => invoke(["mcp", "--auth", "off"], `wb1:${port}:${randomNonce()}`)).toThrow();
     expect(() => invoke(["mcp", "--port", String(port === 24817 ? 24818 : 24817)], `wb1:${port}:${randomNonce()}`)).toThrow();

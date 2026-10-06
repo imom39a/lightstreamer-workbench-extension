@@ -11,6 +11,8 @@ Installing a new companion alone does not update Chrome.
 | Question | Tool | Result |
 | --- | --- | --- |
 | Which Subscription or item? | `search_scope` | Exact `scopeId`, kind, label and ancestor path |
+| Which source, mode and declared fields? | `get_scope` | `readContext` with configured schema and field-name pages, independently of injection availability |
+| What types and JSON shapes have been observed? | `describe_stream` | Bounded profile with sample omissions and exact example identities |
 | How many records / which keys? | `summarize_evidence` | Counts and optional distinct facet values; no events |
 | Show a few matching examples | `query_evidence` | Compact matching records and exact Evidence identities |
 | Find this text in that Scope | `search_evidence` | Matching records with shareable match explanations |
@@ -29,6 +31,26 @@ applies a final response-size cap. It does not maintain another Evidence store,
 replicate the Lightstreamer model, or download events to compute counts.
 
 ## One short investigation
+
+For an unfamiliar source, first inspect `get_scope.readContext` after finding a
+Scope. It reports client/session/Subscription identities, adapter names, mode,
+and an exact item when selected. `schema.basis` distinguishes a declared field
+list, a named server schema and unavailable configuration. Field names page in
+declaration order: use `schema.nextOffset` as `fieldOffset` in another `get_scope`
+with the same Scope; `fieldLimit` is 1–32. A named schema does not resolve names,
+and observed field names do not become declarations. This context is current
+Topology, separate from a historical `at` read point. Older panels can omit it;
+profile retained Evidence and inspect an exact example's permitted Subscription
+metadata as a fallback.
+Configured second-level COMMAND fields have a separate `secondLevelSchema`
+with the same field-name paging options; exact declared-field predicates can
+address those names too.
+
+Use the installed skill's `references/query-planning.md` when turning a user
+question into queries. Select count units and historical versus derived state
+deliberately. Application code or a guide supplies business field/key/model
+meaning; a focused user question resolves material ambiguity that discovery
+cannot answer. Workbench does not infer those meanings from a previous app.
 
 After `list_panel_sessions` and `get_status`, locate a Subscription:
 
@@ -109,6 +131,10 @@ check its live `get_status.readContract` and `capabilities`.
   by default. `fields` and `includePayload:true` are mutually exclusive. Full
   permitted envelopes are opt-in; raw transport text and Client Message bodies
   remain omitted/redacted.
+- Search excerpts inspect returned fields only. `NO_SHAREABLE_EXCERPT.reason`
+  distinguishes unrequested payload, no excerpt in selected/shareable fields,
+  and a bounded excerpt scan. It establishes neither PII redaction nor a
+  person's identity. Request the relevant declared `fields` to inspect a match.
 - Every tool defaults to **8192 bytes** for the serialized MCP `CallToolResult`
   (compatibility text plus structured data, including escaping). Tools that
   advertise `maxBytes` allow 4096–65536 bytes. `get_status.responseContract`
@@ -130,6 +156,9 @@ check its live `get_status.readContract` and `capabilities`.
 - `limit` is a maximum of 100, not a promised page size. Pages shrink to fit the
   budget. A record that cannot fit yields `RESULT_BUDGET_EXCEEDED`; select fewer
   fields or deliberately choose a larger budget. Do not silently truncate values.
+  For an exact `get_evidence` read, the error reports the measured required
+  bytes and a bounded `maxBytes` retry when possible. Above 65536 bytes, select
+  fewer fields or inspect Workbench. A fixed 16 KiB retry is not guaranteed to fit.
 - Continue with **only** `panelSessionId` and `cursor`. Scope, filters, field
   selection, budget, order and read point remain bound. New Capture does not
   move that read point. To change options, start fresh without the cursor,
@@ -155,6 +184,10 @@ is not a zero-key result.
 
 `describe_stream` remains a field-shape profiler, not a counting query. Its
 sample may shrink to fit the byte budget; read its completeness and omissions.
+If even a minimum profile exceeds the budget, its error reports measured bytes
+and a bounded `maxBytes` retry when possible. Otherwise narrow the item Scope or
+inspect selected fields. `get_scope` budget errors can be recovered with a
+smaller `fieldLimit`; follow its field-name pages to inspect a wide declaration.
 `wait_for_evidence` remains an observation primitive. A match whose payload
 cannot fit returns its identity with an explicit omission; use `get_evidence`
 to inspect it. Neither tool inherits the `where` or `fields` options.
@@ -244,6 +277,23 @@ identity instead. Preparation publishes a visible document only. Inspect its
 target capability and diagnostics in Workbench, then execute only after
 validation. The capability report is authoritative for that target and
 delivery path.
+
+If source-free authoring is unavailable, `get_scope.localInjection.recovery`
+supplies bounded queries for captured Item Updates or exact current items.
+Copy the `evidence.identity` of an appropriate update into
+`prepare_local_injection` with the current `pageEpoch`. Target diagnostics still
+determine readiness; recovery does not guarantee a retired target is injectable.
+
+For captured Evidence, omit `document` on the first preparation call. It copies
+the complete editable template and returns `draft.documentContract` with the
+required fields, mirrored command/key fields and encoded JSON field names.
+Edit only the intended values and submit the complete document through
+`update_agent_document`. All declared fields remain present. Encoded JSON fields
+are objects or arrays in this expanded document and are serialized to strings
+for delivery; ordinary fields remain strings or null. Read readiness and
+diagnostics before execution. Application key/payload meaning belongs in the
+application's own code or guide; see the installed skill's application-context
+reference for a guide template.
 
 `generate_agent_candidates` deterministically expands one exact base Scope or
 retained Source, explicit keys, command sequence, field assignment values and

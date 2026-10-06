@@ -112,6 +112,7 @@ export function describeAgentStreams(input: AgentStreamDescriptionInput): AgentS
     collectOrientation(group.provenances, record.facets.provenance, "provenance", omissions);
     collectOrientation(group.phases, record.facets.phase, "phase", omissions);
     addDeclaredFields(group.declaredFields, envelope.subscription?.fields, omissions);
+    addDeclaredFields(group.declaredFields, envelope.subscription?.commandSecondLevelFields, omissions);
 
     const update = envelope.update;
     const fieldValues = boundedEntries(update?.fields, omissions);

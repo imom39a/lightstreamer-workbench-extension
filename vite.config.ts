@@ -38,6 +38,9 @@ export default defineConfig({
           if (id.includes("/src/core/evidence-filter-selection.")) return "evidence-filter-selection";
           if (id.includes("/src/core/evidence-filter-discovery.") || id.includes("/src/core/evidence-facets.") || id.includes("/src/core/evidence-filter-actions.")) return "filter-discovery";
           if (id.includes("/src/extension/panel/workbench-runtime.")) return "panel-runtime";
+          // Keep declarative MCP result schemas in their own local chunk as
+          // the tool contract grows, outside the guarded React panel chunk.
+          if (id.includes("/src/agent/result-schemas.")) return "agent-result-contracts";
           // Keep optional browser-storage telemetry out of the guarded initial
           // panel chunk; the panel still loads this local static dependency
           // before Capture connects.

@@ -20,7 +20,7 @@ function event(id: number, kind: LightstreamerEventEnvelope["kind"], qty: string
     ...(kind === "item-update" ? { update: { command: "ADD", key: "row", isSnapshot: false, fields: { command: "ADD", key: "row", qty }, changedFields: { command: "ADD", key: "row", qty } } } : {}) };
 }
 const document = (qty: string | number) => ({ command: "UPDATE", key: "row", isSnapshot: false, fields: { command: "UPDATE", key: "row", qty } });
-async function fixture(qty: string | number = 1, held = false, serverStatus?: "processed" | "unknown") {
+async function fixture(qty: string | number = 1, held = false, serverStatus?: "processed" | "unknown", legacyCapabilities = false) {
   const history = createInMemoryEventHistory({ panelSessionId: crypto.randomUUID() });
   let release = () => {};
   const gate = held ? new Promise<void>(resolve => { release = resolve; }) : Promise.resolve();
@@ -39,7 +39,13 @@ async function fixture(qty: string | number = 1, held = false, serverStatus?: "p
   let receive: (message: Record<string, unknown>) => void = () => {};
   const actual = new Map<string, unknown>();
   const channel: CompanionChannel = {
-    send(message) { if (message.id && typeof message.name === "string") void service.call(message.name, message.args).then(result => { actual.set(message.name as string, result); receive({ id: message.id, result }); }, error => receive({ id: message.id, error: error instanceof Error ? error.message : String(error) })); },
+    send(message) { if (message.id && typeof message.name === "string") void service.call(message.name, message.args).then(result => {
+      if (legacyCapabilities && message.name === "get_scope") {
+        delete (result as any).localInjection.capabilities.documentContract;
+        delete (result as any).readContext;
+      }
+      actual.set(message.name as string, result); receive({ id: message.id, result });
+    }, error => receive({ id: message.id, error: error instanceof Error ? error.message : String(error) })); },
     onMessage(callback) { receive = callback; }, onClose() {}, close() {}
   };
   const server = createMcpServer(channel), client = new Client({ name: "runtime-output-contracts", version: "1" });
@@ -63,6 +69,13 @@ async function fixture(qty: string | number = 1, held = false, serverStatus?: "p
 }
 
 describe("actual Workbench runtime outputs through MCP SDK contracts", () => {
+  it("accepts older target replies without the additive read context or editing contract", async () => {
+    const { call, scopeId } = await fixture(1, false, undefined, true);
+    const scope = await call("get_scope", { scopeId });
+    expect(scope.localInjection.capabilities.supportedModes).toEqual(["COMMAND"]);
+    expect(scope.localInjection.capabilities.documentContract).toBeUndefined();
+    expect(scope.readContext).toBeUndefined();
+  });
   it("preserves pending and execute-once receipts through committed Evidence lookup, recovery and finish", async () => {
     const { call, envelope, evidence, scopeId, execute, release } = await fixture(1, true);
     const scope = await call("get_scope", { scopeId, maxBytes: 65536 });
@@ -118,6 +131,11 @@ describe("actual Workbench runtime outputs through MCP SDK contracts", () => {
     expect(fullInvalid.valid).toBe(false);
     expect(compactInvalid).toMatchObject({ valid: false, reason: fullInvalid.reason, memberCount: 2, stepCount: 1, checkpointCount: 1, invalidStepCount: 0, invalidCheckpointCount: 1, detailsOmitted: expect.any(String) });
     const local = await call("prepare_local_injection", { pageEpoch: "epoch", evidence, document: document(wide), requestId: "wide-local", maxBytes: 4096 });
+    expect(local.documentContract.requiredFields).toEqual(["command", "key", "qty"]);
+    expect(local.recovery.tool).toBe("recover_agent_document");
+    const recoveredPreview = await call(local.recovery.tool, local.recovery.arguments);
+    expect(recoveredPreview.token).toBe(local.token);
+    expect(recoveredPreview.local.draft.document.fields.qty).toBe(wide);
     expect(local.token).toEqual(expect.any(String)); expect(local.previewOmitted).toEqual(expect.any(String));
     expect((await call("recover_agent_document", { requestId: "wide-local", maxBytes: 4096 })).token).toBe(local.token);
     expect(await call("abort_agent_document", { token: local.token })).toEqual({ aborted: true });

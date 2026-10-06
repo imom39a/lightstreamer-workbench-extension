@@ -7,11 +7,19 @@
    using `{pageEpoch, draft: {evidence}}` (or an explicit `scopeId`/document).
    Resolve target or value diagnostics before preparing it.
 3. Call `prepare_local_injection` with the current `pageEpoch` and exactly one
-   `evidence` identity or `scopeId`. An optional `document` is JSON text containing
-   `command`, `key`, `isSnapshot` and `fields`; use the actual target schema.
-4. Inspect the returned anchor, source relationship and validation. Correct an
-   unexecuted agent Draft through `update_agent_document` using its current token.
-   Use the replacement token. Human edits invalidate the agent's prepared version.
+   `evidence` identity or `scopeId`. For captured Evidence, omit `document` first:
+   preparation copies the complete editable template. `get_scope.localInjection`
+   being unavailable does not rule out Evidence-based preparation; follow its
+   `recovery` route to a retained update or exact current item and check diagnostics.
+4. Inspect the returned anchor, `draft.document`, `draft.documentContract` and
+   validation. Preserve every `requiredFields` entry, including unchanged values.
+   In COMMAND mode, the listed `mirroredFields` mirror top-level command/key.
+   `jsonStringFields` identifies wire-encoded JSON: edit those fields as objects
+   or arrays in the expanded document; Workbench serializes them for delivery.
+   Change only values needed by the experiment. Send the complete edited object
+   or JSON text through `update_agent_document` with the current token, and use
+   its replacement token. Continue only when `ready:true` and diagnostics allow
+   the intended delivery. Human edits invalidate the agent's prepared version.
 5. Call `execute_local_injection` with that token and a fresh stable `requestId`.
 6. Use `wait_for_operation` with the existing request id when advertised, or read
    its receipt with `get_operation`. Inspect the settled outcome; a bounded wait
@@ -23,6 +31,28 @@
    `DELIVERED LOCALLY` with unretained Evidence is not an Evidence-backed success.
 8. `finish_agent_document` closes only an unchanged, completed agent-owned document.
    Existing human Drafts are protected; conflicts require resolution in Workbench.
+
+For example, a captured four-field schema might produce this expanded document:
+
+```json
+{
+  "command": "UPDATE",
+  "key": "<exact-observed-key>",
+  "isSnapshot": false,
+  "fields": {
+    "key": "<exact-observed-key>",
+    "command": "UPDATE",
+    "modelId": "<observed-model-id>",
+    "modelValues": { "seat": null, "status": "confirmed" }
+  }
+}
+```
+
+This illustrates the editing format, not an application contract. Use the
+prepared template's actual key, declared fields and complete `modelValues`;
+replace placeholders and preserve unrelated properties. The application's
+code determines whether nulling a seat represents removal. Ordinary Lightstreamer
+fields remain strings or null; only fields marked as encoded JSON use containers.
 
 ## Ordered reproduction
 

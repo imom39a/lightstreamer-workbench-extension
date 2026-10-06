@@ -4,6 +4,7 @@ import { runtimeObjectDossier } from "./runtime-context-dossier";
 import { readAgentCommandState } from "./agent-command-state";
 import { readAgentCommandRows } from "./agent-command-rows";
 import { agentNativeChangePreview, describeAgentInjectionTarget } from "./agent-injection-capabilities";
+import { describeAgentSourceContext } from "./agent-source-context";
 import { expandLocalInjectionCandidateMatrix } from "../../core/local-injection-candidate-matrix";
 import { type CaptureMessage, type CaptureStatus, type TopologySyncFrame } from "../../bridge/messages";
 import { createCommandStateProjections, findCommandItem, type CommandStateProjections } from "../../core/command-state";
@@ -1152,15 +1153,23 @@ class Runtime implements WorkbenchRuntime {
       const scope = this.scopeSnapshot();
       return { total: scope.structure.length, offset, nodes: scope.structure.slice(offset, offset + limit).map(node => scope.resolveNode(node.id)) };
     },
-    scope: (id) => {
+    scope: (id, options) => {
       const scope = this.scopeSnapshot();
       const node = scope.resolveNode(id);
       if (!node) throw new Error("TARGET_RETIRED: Scope is unavailable in this Panel Session. Locate a current Scope before reading it.");
-      const candidate = authoredDraftFromScope(findTopologySelection(this.topologyProjection.snapshot(), id), this.currentPageEpoch);
-      return { node, pageEpoch: this.currentPageEpoch, localInjection: candidate ? { anchor: candidate.anchor,
+      const target = findTopologySelection(this.topologyProjection.snapshot(), id);
+      const candidate = authoredDraftFromScope(target, this.currentPageEpoch);
+      return { node, pageEpoch: this.currentPageEpoch, readContext: describeAgentSourceContext(id, target, options), localInjection: candidate ? { anchor: candidate.anchor,
         capabilities: describeAgentInjectionTarget(candidate.anchor, candidate.draft),
         document: createLocalInjectionDocumentFromDraft(candidate.draft), diagnostics: this.validateLocalInjectionTarget(candidate.anchor) }
-        : { unavailable: "Source-free authoring requires one live COMMAND, MERGE or DISTINCT item with a declared field list and current delivery context. RAW is unsupported; captured Evidence can describe other supported targets." } };
+        : { unavailable: "Source-free authoring requires one live COMMAND, MERGE or DISTINCT item with a declared field list and current delivery context. RAW is unsupported; captured Evidence can describe other supported targets.",
+          recovery: {
+            evidence: { tool: "query_evidence", arguments: { scopeId: id, where: { kind: ["ITEM-UPDATE"] }, limit: 1, order: "NEWEST_FIRST" } },
+            target: node.kind === "subscription"
+              ? { tool: "search_scope", arguments: { kind: "item", parentScopeId: id, text: node.label } }
+              : { tool: "list_scope", arguments: { offset: 0, limit: 25 } },
+            preparation: "Use a matching retained evidence.identity with prepare_local_injection and the current pageEpoch. Preparation copies the exact editable field schema; inspect target diagnostics before execution."
+          } } };
     },
     scopeSearchSnapshot: () => {
       const topology = this.topologyProjection.snapshot();

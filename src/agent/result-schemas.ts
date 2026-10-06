@@ -27,15 +27,18 @@ const replayability = obj({ replayable: bool }, ["replayable"], true);
 const stepVerdict = obj({ id: str, kind: choice("step"), valid: bool, diagnostics, replayability, nativeChanges }, ["id", "valid", "diagnostics", "nativeChanges"], true);
 const checkpointVerdict = { oneOf: [obj({ id: str, kind: choice("checkpoint"), valid: choice(true) }, ["id", "valid"], true), obj({ id: str, kind: choice("checkpoint"), valid: choice(false), reason: str }, ["id", "valid", "reason"], true)] };
 const node = obj({ id: str, kind: str, label: str, parentId: nullable(str), lifecycle: str, retired: bool, detail: str }, ["id", "kind", "label"], true);
+const documentContract = obj({ format: choice("expanded-json"), requiredProperties: strings, requiredFields: strings, jsonStringFields: nullable(strings), mirroredFields: strings, editing: str });
+const searchMatch = obj({ state: choice("EXPLAINED", "NO_SHAREABLE_EXCERPT"), reason: choice("PAYLOAD_NOT_REQUESTED", "NO_MATCH_IN_REQUESTED_FIELDS", "NO_MATCH_IN_SHAREABLE_REPRESENTATION", "EXCERPT_SCAN_LIMIT"), fields: array(obj({ field: str, excerpt: str }), 3) }, ["state", "fields"]);
 const capability = obj({ version: choice(1), target: obj({ ...target.properties, item, listenerId: nullable(str) }), supportedModes: array(choice("COMMAND", "MERGE", "DISTINCT"), 3), sourceFree: bool,
+  documentContract,
   schema: obj({ basis: choice("declared-field-list"), fields: strings, jsonStringFields: strings }), fields: array(obj({ name: str, valueState })),
   changePolicy: obj({ replay: str, generated: str, unavailableBaseline: str, delete: str }),
   limits: obj({ maxScenarioSteps: count, maxScenarioBytes: count, maxCheckpointAssertions: count, maxFieldAssignments: count, maxDelayMs: count, maxAssertionActiveMs: count }), assertions: strings,
-  delivery: obj({ contactsServer: choice(false), localEvidence: choice(true), appOutcome: choice("not-observed"), rawSupported: choice(false), limitations: strings }) });
+  delivery: obj({ contactsServer: choice(false), localEvidence: choice(true), appOutcome: choice("not-observed"), rawSupported: choice(false), limitations: strings }) }, ["version", "target", "supportedModes", "sourceFree", "schema", "fields", "changePolicy", "limits", "assertions", "delivery"]);
 const localOutcome = obj({ disposition: choice("delivered", "blocked", "failed", "partial", "acknowledgement-unknown"), status: choice("success", "stale-target", "listener-error", "wire-error", "bridge-error", "acknowledgement-unknown", "review-blocked"), executionId: str, requestId: nullable(str), timestamp: num, headline: str, detail: str, attemptedCount: count, deliveredCount: count, failedCount: count, limitations: array(opaque) }, ["disposition", "status", "executionId", "requestId", "timestamp"]);
 const serverOutcome = obj({ requestId: str, ok: bool, status: choice("processed", "denied", "discarded", "aborted", "unknown", "stale-target", "bridge-error"), timestamp: num, error: str, code: nullable(num), response: nullable(str), sentOnNetwork: nullable(bool) }, ["requestId", "ok", "status", "timestamp"]);
 const controlReceipt = obj({ requestId: str, accepted: choice(true), detailsOmitted: str }, ["requestId", "accepted"]);
-const localDraft = obj({ draft: nullable(obj({ id: str, phase: str, ready: bool, document: nullable(opaque), diagnostics, nativeChanges }, ["id", "phase", "ready", "nativeChanges"], true)) }, ["draft"], true);
+const localDraft = obj({ draft: nullable(obj({ id: str, phase: str, ready: bool, document: nullable(opaque), documentContract, diagnostics, nativeChanges }, ["id", "phase", "ready", "nativeChanges"], true)) }, ["draft"], true);
 
 export function preciseAgentSuccess(name: string, identity: S, readPoint: S, assertion: S): S | undefined {
   if (name === "execute_server_injection") return { oneOf: [obj({ requestId: str, state: choice("pending") }), obj({ requestId: str, state: choice("complete"), outcome: serverOutcome, detailsOmitted: str }, ["requestId", "state", "outcome"])] };
@@ -85,7 +88,18 @@ export function preciseAgentSuccess(name: string, identity: S, readPoint: S, ass
     const compact = obj({ ...common, memberCount: count, stepCount: count, checkpointCount: count, invalidStepCount: count, invalidCheckpointCount: count, detailsOmitted: str }, ["valid", "pageEpoch", "target", "limitations", "memberCount", "stepCount", "checkpointCount", "invalidStepCount", "invalidCheckpointCount", "detailsOmitted"]);
     return { allOf: [{ oneOf: [full, compact] }, { if: { properties: { valid: choice(false) } }, then: { required: ["reason"] } }] };
   }
-  if (name === "get_scope") return obj({ node, pageEpoch: nullable(str), localInjection: { oneOf: [obj({ unavailable: str, documentOmitted: str, diagnosticsOmitted: str }, ["unavailable"]), obj({ anchor: obj({ pageEpoch: str, clientId: str, sessionId: str, subscriptionId: str, itemName: nullable(str), itemPosition: nullable(count) }, ["pageEpoch", "clientId", "sessionId", "subscriptionId", "itemName", "itemPosition"], true), capabilities: capability, document: opaque, diagnostics, documentOmitted: str, diagnosticsOmitted: str }, ["anchor", "capabilities"])] } });
+  if (name === "get_scope") {
+    const anchor = obj({ pageEpoch: str, clientId: str, sessionId: str, subscriptionId: str, itemName: nullable(str), itemPosition: nullable(count) }, undefined, true);
+    const sourceSchema = obj({ basis: choice("declared-field-list", "named-field-schema", "unavailable"), name: nullable(str), fields: array(str, 32), totalFields: nullable(count), offset: count, nextOffset: nullable(count) });
+    const readContext = nullable(obj({ version: choice(1), scopeId: str,
+      source: obj({ clientId: nullable(str), sessionId: nullable(str), subscriptionId: str, mode: nullable(str), adapterSet: nullable(str), dataAdapter: nullable(str), secondLevelDataAdapter: nullable(str) }), item: nullable(item),
+      schema: sourceSchema, secondLevelSchema: nullable(sourceSchema), limitations: strings }));
+    return obj({ node, pageEpoch: nullable(str), readContext, localInjection: { oneOf: [
+      obj({ unavailable: str, recovery: opaque, documentOmitted: str, diagnosticsOmitted: str }, ["unavailable"]),
+      obj({ anchor, capabilities: capability, document: opaque, diagnostics, documentOmitted: str, diagnosticsOmitted: str }, ["anchor", "capabilities"]),
+      obj({ anchor, capabilitiesOmitted: str, documentOmitted: str, diagnosticsOmitted: str }, ["anchor", "capabilitiesOmitted", "documentOmitted"])
+    ] } }, ["node", "pageEpoch", "localInjection"]); // Older panels do not return readContext.
+  }
   const record = obj({ identity, timestamp: num, fields: { type: "object", additionalProperties: { oneOf: [obj({ state: choice("concrete"), value: {} }), obj({ state: choice("redacted"), redactedValue: {} }, ["state"]), obj({ state: choice("ambiguous-null", "unavailable", "unresolved-wire-difference") })] } }, payload: opaque, payloadOmitted: str, payloadBytes: count }, ["identity", "timestamp"], true);
   if (name === "get_evidence") return obj({ readPoint, coverage: choice("COMPLETE", "LIMITED"), lookup: { oneOf: [obj({ state: choice("RETAINED"), evidence: record }), obj({ state: choice("NOT_RETAINED", "OTHER_INTERVAL"), identity })] } });
   if (name === "get_scenario_trace") {
@@ -101,6 +115,6 @@ export function preciseAgentSuccess(name: string, identity: S, readPoint: S, ass
   }
   if (name === "list_scope") return obj({ total: count, offset: count, nodes: array(node, 100), nextOffset: nullable(count) }, undefined, true);
   if (name === "search_scope") return obj({ snapshot: obj({ pageEpoch: nullable(str), structureRevision: count, history: obj({ intervalId: str, committedSequence: nullable(count), retainedFirstSequence: nullable(count) }) }), boundary: choice("ALL_STRUCTURAL_TOPOLOGY"), match: choice("CASE_INSENSITIVE_SUBSTRING"), text: str, total: count, offset: count, nextCursor: nullable(str), scopes: array(obj({ scopeId: str, kind: str, label: str, path: str, ancestorIds: strings, matchedFields: strings }, undefined, true), 100) }, undefined, true);
-  if (name === "search_evidence") return obj({ readPoint, coverage: choice("COMPLETE", "LIMITED"), evaluation: choice("COMPLETE", "UNSUPPORTED_FILTER"), storage: choice("MEMORY_FALLBACK", "INDEXED_DB"), totals: obj({ matching: count, inScope: count }, undefined, true), evidence: array(record, 100), nextCursor: nullable(str) }, undefined, true);
+  if (name === "search_evidence") return obj({ readPoint, coverage: choice("COMPLETE", "LIMITED"), evaluation: choice("COMPLETE", "UNSUPPORTED_FILTER"), storage: choice("MEMORY_FALLBACK", "INDEXED_DB"), totals: obj({ matching: count, inScope: count }, undefined, true), evidence: array({ ...record, properties: { ...record.properties, match: searchMatch } }, 100), matchExplanation: str, nextCursor: nullable(str) }, ["readPoint", "coverage", "evaluation", "storage", "totals", "evidence", "nextCursor"], true);
   return undefined;
 }
