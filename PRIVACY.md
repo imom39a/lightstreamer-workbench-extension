@@ -76,6 +76,13 @@ general secret detector: other Item Update values, identifiers, diagnostics,
 and the inspected URL's origin/path can remain private application data. URL
 query strings and fragments are not included in the page descriptor.
 
+Captured application fields can contain personal information, health data,
+financial or payment data, authentication information, personal communications,
+and location information. Workbench handles these fields as developer-selected
+application Evidence; it does not determine their business meaning. This applies
+to both Chrome and Firefox, including data processed locally and requested
+through MCP.
+
 The grant does not identify an individual agent. Authentication is
 off: any local process can use a connected panel's grant or impersonate
 the companion. Loopback/Origin checks do not isolate local processes or OS users.

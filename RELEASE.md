@@ -133,11 +133,25 @@ the required direct user gesture. Cancellation, Deny, opt-out, and native
 revocation are tested; opt-out/revocation erase analytics identifiers. Private
 browsing is disabled. Chrome's permissions and analytics defaults are unchanged.
 
+The store privacy audit also corrects Chrome's data-category declarations to
+cover all nine categories that captured application Evidence can contain.
+The previous saved form declared only user activity and website content. This
+updates the disclosure of existing local/MCP handling; it adds no collection
+path, recipient, or Chrome permission. The public policy and listing describe
+the same boundary. Google's [data-handling FAQ](https://developer.chrome.com/docs/webstore/program-policies/user-data-faq)
+requires disclosure even when processing is local.
+
 The local stable-Firefox official-client proof passes Capture, IndexedDB, MCP
 discovery/read budgets, duplicate Local Injection suppression, Scenarios and
 Checkpoints, exact reviewed Server Injection with one send/receipt recovery,
 observed application effects, and revocation. Full Chrome panel verification
-passed 427 checks with no baseline changes. Final unit, platform/ESR, UI review,
+passed 427 checks with no baseline changes. Independent review of 26 Firefox
+images and eight browser/result records passed. Windows verification exposed
+UTF-8 and selected-window coordinate defects in the developer-only driver;
+both are corrected. Evidence scans now yield through browser port tasks or
+Node immediate tasks rather than accumulating zero-delay timer pauses between
+256-record batches. This is Non-UI and preserves cancellation, budgets, latched
+read points and retention guards; 27 focused checks passed. Final platform,
 source reproducibility, package, and store outcomes will be recorded after
 their gates complete.
 

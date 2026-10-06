@@ -139,6 +139,7 @@ Expanded MCP investigation and reviewed Client Message sending, paired with comp
 - Preserve duplicate receipts, explicit uncertainty, and no automatic retry.
 - Use one companion for Chrome and Firefox with exact Panel Session routing.
 - Firefox requires installation consent for captured-data sharing and starts analytics Off behind optional native consent and the Workbench preference.
+- Store privacy disclosures cover sensitive information that arbitrary captured application fields can contain, including through MCP.
 - Chrome permissions and analytics defaults are unchanged.
 ```
 
@@ -157,7 +158,7 @@ Workbench uses host and page access to observe the official Lightstreamer Web Cl
 Privacy questionnaire note:
 
 ```text
-For the analytics candidate, declare collection of user activity and the pseudonymous installation identifier in the dashboard's applicable categories. Describe the fixed product events, Google Analytics recipient, default-on behavior, and off switch. Do not claim that all data stays on the device. Captured website content, message bodies, credentials, browsing history, search text, and raw errors are excluded from analytics. Disclose separately that Agent access can send requested Evidence to the local MCP client and its configured model provider. State that Agent access is on by default for inspection and Local Injection, authentication is off, and any local process with access to the loopback companion can use a connected panel grant. Explain storage permission for preferences/identity and https://www.google-analytics.com/* host access for Measurement Protocol. Keep dashboard answers, listing, and policy consistent before publishing. Earlier no-analytics releases retain their original disclosures.
+Declare all nine Chrome data categories: personally identifiable information, health information, financial and payment information, authentication information, personal communications, location, web history, user activity, and website content. Arbitrary inspected application fields can contain sensitive categories; recognized credential redaction does not guarantee their absence. These disclosures cover local processing and requested MCP data, as well as usage analytics. Describe the fixed product events, Google Analytics recipient, default-on behavior, and off switch. Captured Evidence, inspected URLs, and typed text are excluded from analytics. Agent access separately sends requested Evidence to the local MCP client and may reach its configured model provider; it is on by default with authentication off. Any local process able to reach the companion can use a connected panel's grant. Explain storage permission for analytics preferences/identity and Google's host access for Measurement Protocol. Keep the dashboard, listing, and policy consistent before publishing.
 ```
 
 Single purpose description:

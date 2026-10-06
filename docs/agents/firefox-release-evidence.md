@@ -86,6 +86,21 @@ npm package proof and release-tooling tests passed. Firefox lint has zero errors
 and notices; its desktop-only Android minimum and two generated React DOM
 `innerHTML` warnings are explained in the reviewer source instructions.
 
+Final Windows verification found developer-driver defects in UTF-8 input and
+coordinates after a consent window closes. The bridge now explicitly uses
+UTF-8 and the selected Marionette window viewport. The same Windows run already
+proved saved Allow/On and Deny/Off reopen without another permission prompt.
+
+The Windows unit gate also exposed accumulated zero-delay timer pauses in
+cooperative memory queries. The shared scan now yields to a MessageChannel task
+in browsers and an immediate task in Node; the timer fallback remains available.
+Ports are closed after delivery, and cancellation is checked after yielding.
+This is **Non-UI**, with unchanged query results, budgets and retention semantics.
+All 27 focused performance, task-yield, cancellation, Clear and retention-lifetime
+checks passed, as did type checking. The existing latency assertions are retained.
+The [HTML task model](https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports)
+defines port delivery through queued tasks rather than a microtask-only yield.
+
 Independent visual review passed after inspecting all **26 PNGs** and **eight
 browser/result records** in the evidence manifest. Compact cancellation, native
 choices and restored focus, forced colors, empty history, failure recovery and
