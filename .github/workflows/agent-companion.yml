@@ -414,8 +414,8 @@ jobs:
 
   publish-chrome:
     name: Submit Chrome Web Store
-    needs: [package, verification]
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.chrome == 'true' && needs.verification.result == 'success'
+    needs: [package, verification, release-bundle]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.chrome == 'true' && needs.verification.result == 'success' && needs.release-bundle.result == 'success'
     runs-on: ubuntu-latest
     environment: chrome-store
     permissions:
@@ -467,8 +467,8 @@ jobs:
 
   publish-firefox:
     name: Submit Firefox AMO
-    needs: [package, verification]
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.firefox == 'true' && needs.verification.result == 'success'
+    needs: [package, verification, release-bundle]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.firefox == 'true' && needs.verification.result == 'success' && needs.release-bundle.result == 'success'
     runs-on: ubuntu-latest
     environment: firefox-store
     permissions:
@@ -517,8 +517,8 @@ jobs:
 
   publish:
     name: Publish the verified npm artifact
-    needs: [package, verification]
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.npm == 'true' && needs.verification.result == 'success'
+    needs: [package, verification, release-bundle]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.npm == 'true' && needs.verification.result == 'success' && needs.release-bundle.result == 'success'
     runs-on: ubuntu-latest
     environment: npm
     permissions:

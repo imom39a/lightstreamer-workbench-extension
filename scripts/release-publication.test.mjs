@@ -50,7 +50,7 @@ async function prepared(t) {
   const verification = {
     format: "lightstreamer-workbench-release-verification-v1", sourceCommit: source, manifestSha256: release.manifestSha256,
     scope: "release", runId: context.runId, passed: true,
-    jobs: Object.fromEntries(["plan", "package", "checks", "portable", "firefox", "fixture", "panel", "site"].map(key => [key, "success"]))
+    jobs: Object.fromEntries(["plan", "package", "checks", "portable", "firefox", "fixture", "panel", "site", "release-bundle"].map(key => [key, "success"]))
   };
   const env = { CWS_RESOURCE: resource, CWS_ACCESS_TOKEN: "test-chrome-secret", AMO_API_KEY: "test-amo-key", AMO_API_SECRET: "test-amo-secret", GITHUB_SHA: source };
   return { release, context, verification, env, receiptPath: resolve(dir, "receipt.json") };
@@ -59,6 +59,24 @@ async function prepared(t) {
 test("verify-only intent refuses publication before any external request", async t => {
   const fixture = await prepared(t);
   await assert.rejects(submitReleaseChannel({ ...fixture, channel: "chrome", request: async () => assert.fail("Verify-only must not contact a publisher") }), /intent/);
+});
+
+test("every publisher rejects failed, skipped, cancelled or missing bundle evidence before contacting external services", async t => {
+  for (const channel of ["chrome","firefox","npm"]) {
+    for (const state of ["failure","skipped","cancelled",undefined]) {
+      const f=await prepared(t);
+      f.release.manifest.publicationIntent[channel]=true;
+      if (state===undefined) delete f.verification.jobs["release-bundle"];
+      else f.verification.jobs["release-bundle"]=state;
+      let requests=0,publications=0;
+      await assert.rejects(submitReleaseChannel({...f,channel,
+        request:async()=>{requests+=1;throw new Error("Unexpected external request");},
+        runNpm:async()=>{publications+=1;return {code:0};}
+      }),/all full release verification gates/);
+      assert.equal(requests,0);
+      assert.equal(publications,0);
+    }
+  }
 });
 
 test("publication refuses unapproved source, incomplete release gates, and altered frozen bytes", async t => {

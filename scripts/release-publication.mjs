@@ -5,7 +5,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 
 const channels = ["chrome", "firefox", "npm"];
-const gates = ["plan", "package", "checks", "portable", "firefox", "fixture", "panel", "site"];
+const gates = ["plan", "package", "checks", "portable", "firefox", "fixture", "panel", "site", "release-bundle"];
 const artifactFields = { chrome: "extension", firefox: "firefox", firefoxSource: "firefoxSource", npm: "mcp" };
 const chromeId = "kfpgbhfphbhkebglopimjhfnnmbifocf";
 const firefoxId = "lightstreamer-workbench@imom39a";

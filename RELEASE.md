@@ -134,7 +134,8 @@ The full manual gate includes source/unit/docs, Chrome Windows/macOS/Linux,
 Firefox latest on all three OSes plus the existing Linux minimum/ESR entries,
 reusable full fixture/panel verification, and `npm run test:site`. Pages deployment
 stays in its own workflow. Verification produces a manifest-bound JSON receipt
-requiring every gate to succeed; failure, cancellation or unexpected skip blocks
+requiring every gate, including preservation of the original downloadable frozen
+bundle, to succeed; failure, cancellation or unexpected skip blocks
 all selected channels. Existing change-aware aggregate checks remain required.
 
 `workbench-frozen-release-<run-id>` preserves `release-bundle.zip` for 90 days,

@@ -10,7 +10,7 @@ const shaPattern=/^[a-f0-9]{40}$/;
 
 export function makeReleaseVerification({release,sourceSha,runId,results}) {
   if (!shaPattern.test(sourceSha??"") || release.manifest.source?.commit!==sourceSha || !/^[a-f0-9]{64}$/.test(release.manifestSha256??"") || !/^\d+$/.test(String(runId??""))) throw new Error("Verification source/manifest/run identity mismatch.");
-  const jobs=Object.fromEntries(["plan","package","checks","portable","firefox","fixture","panel","site"].map(name=>[name,results?.[name]?.result??results?.[name]??"missing"]));
+  const jobs=Object.fromEntries(["plan","package","checks","portable","firefox","fixture","panel","site","release-bundle"].map(name=>[name,results?.[name]?.result??results?.[name]??"missing"]));
   return {format:"lightstreamer-workbench-release-verification-v1",sourceCommit:sourceSha,manifestSha256:release.manifestSha256,scope:"release",runId:String(runId),passed:Object.values(jobs).every(result=>result==="success"),jobs};
 }
 

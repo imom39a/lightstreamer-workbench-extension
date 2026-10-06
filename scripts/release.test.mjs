@@ -44,7 +44,7 @@ test("synthetic analytics configuration cannot be relabeled as a publishable sto
 });
 
 test("publication evidence binds full gates to the frozen manifest and cannot turn skipped or failed work into success", () => {
-  const required={plan:"success",package:"success",checks:"success",portable:"success",firefox:"success",fixture:"success",panel:"success",site:"success"};
+  const required={plan:"success",package:"success",checks:"success",portable:"success",firefox:"success",fixture:"success",panel:"success",site:"success","release-bundle":"success"};
   const release={manifest:{source:{commit:sourceSha}},manifestSha256:"f".repeat(64)};
   const verified=makeReleaseVerification({release,sourceSha,runId:"42",results:required});
   assert.equal(verified.passed,true);
@@ -54,6 +54,19 @@ test("publication evidence binds full gates to the frozen manifest and cannot tu
     assert.equal(makeReleaseVerification({release,sourceSha,runId:"42",results:{...required,site:state}}).passed,false);
   }
   assert.throws(()=>makeReleaseVerification({release,sourceSha:"d".repeat(40),runId:"42",results:required}),/source/);
+});
+
+test("full release verification fails when downloadable bundle retention fails, skips, cancels or is missing", () => {
+  const required={plan:"success",package:"success",checks:"success",portable:"success",firefox:"success",fixture:"success",panel:"success",site:"success"};
+  const release={manifest:{source:{commit:sourceSha}},manifestSha256:"f".repeat(64)};
+  for (const state of ["failure","skipped","cancelled",undefined]) {
+    const results=Object.fromEntries(Object.entries(required).map(([job,result])=>[job,{result}]));
+    if (state!==undefined) results["release-bundle"]={result:state};
+    const verification=makeReleaseVerification({release,sourceSha,runId:"42",results});
+    assert.equal(verification.passed,false,`Bundle ${state??"missing"} must block publication`);
+    assert.equal(verification.jobs["release-bundle"],state??"missing");
+  }
+  assert.equal(makeReleaseVerification({release,sourceSha,runId:"42",results:{...required,"release-bundle":{result:"success"}}}).passed,true);
 });
 
 test("the release CLI refuses a different approved source before building anything", () => {
