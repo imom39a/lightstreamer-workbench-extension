@@ -49,7 +49,9 @@ async function click(selector: string, target = "devtools_panel") {
   const point = await evaluate<{x: number; y: number}>(surface(target), `(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
     if (!element) throw new Error(${JSON.stringify("Missing control: " + selector)});
-    element.scrollIntoView({block:"center"}); const rect = element.getBoundingClientRect();
+    element.scrollIntoView({block:"center",behavior:"instant"});
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const rect = element.getBoundingClientRect();
     if (!rect.width || !rect.height) throw new Error("Hidden control");
     return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
   })()`);
