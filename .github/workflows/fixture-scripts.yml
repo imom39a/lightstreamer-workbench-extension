@@ -5,12 +5,46 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      full:
+        description: Run every verification gate for a pinned release
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Select required checks
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.selection.outputs.plan }}
+      docs: ${{ steps.selection.outputs.docs }}
+      site: ${{ steps.selection.outputs.site }}
+      runtime: ${{ steps.selection.outputs.runtime }}
+      companion: ${{ steps.selection.outputs.companion }}
+      panel: ${{ steps.selection.outputs.panel }}
+      fixture: ${{ steps.selection.outputs.fixture }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Verify check selection and aggregate contracts
+        run: node --test scripts/preflight.test.mjs
+      - name: Select changed-input or full-release checks
+        id: selection
+        env:
+          PREFLIGHT_RELEASE: ${{ inputs.full || false }}
+        run: node scripts/preflight.mjs --ci --dry-run --github-output "$GITHUB_OUTPUT"
+
   fixture-runner:
+    needs: plan
+    if: needs.plan.outputs.fixture == 'true'
     name: Fixture runner (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -38,6 +72,8 @@ jobs:
         run: npm run fixture:test:dry-run
 
   local-injection-browser:
+    needs: plan
+    if: needs.plan.outputs.fixture == 'true'
     name: Official-client + MCP Local Injection proof
     runs-on: ubuntu-latest
 
@@ -72,3 +108,19 @@ jobs:
 
       - name: Prove capture, MCP tooling and Local Injection through the production panel
         run: npm run agent:test:browser
+
+  result:
+    name: Fixture verification result
+    if: always()
+    needs: [plan, fixture-runner, local-injection-browser]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Require success from every selected job
+        env:
+          PREFLIGHT_PLAN: ${{ needs.plan.outputs.plan }}
+          PREFLIGHT_RESULTS: ${{ toJSON(needs) }}
+        run: node scripts/preflight.mjs --gate fixture

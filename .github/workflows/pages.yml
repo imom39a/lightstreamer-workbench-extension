@@ -2,32 +2,8 @@ name: Build and deploy public site
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/pages.yml"
-      - "package.json"
-      - "package-lock.json"
-      - "PRIVACY.md"
-      - "SECURITY.md"
-      - "site/**"
-      - "scripts/build-site.mjs"
-      - "scripts/check-site.mjs"
-      - "scripts/site-server.mjs"
-      - "playwright.site.config.ts"
-      - "tests/site/**"
   push:
     branches: [main]
-    paths:
-      - ".github/workflows/pages.yml"
-      - "package.json"
-      - "package-lock.json"
-      - "PRIVACY.md"
-      - "SECURITY.md"
-      - "site/**"
-      - "scripts/build-site.mjs"
-      - "scripts/check-site.mjs"
-      - "scripts/site-server.mjs"
-      - "playwright.site.config.ts"
-      - "tests/site/**"
   workflow_dispatch:
 
 permissions:
@@ -38,7 +14,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    name: Select required checks
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.selection.outputs.plan }}
+      docs: ${{ steps.selection.outputs.docs }}
+      site: ${{ steps.selection.outputs.site }}
+      runtime: ${{ steps.selection.outputs.runtime }}
+      companion: ${{ steps.selection.outputs.companion }}
+      panel: ${{ steps.selection.outputs.panel }}
+      fixture: ${{ steps.selection.outputs.fixture }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Verify check selection and aggregate contracts
+        run: node --test scripts/preflight.test.mjs
+      - name: Select changed-input or full-release checks
+        id: selection
+        env:
+          PREFLIGHT_RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: node scripts/preflight.mjs --ci --dry-run --github-output "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
+    if: needs.plan.outputs.site == 'true'
     name: Validate public site
     runs-on: ubuntu-24.04
     steps:
@@ -63,8 +67,8 @@ jobs:
 
   deploy:
     name: Deploy GitHub Pages
-    if: github.event_name != 'pull_request'
-    needs: build
+    if: github.event_name != 'pull_request' && needs.plan.outputs.site == 'true'
+    needs: [plan, build]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -77,3 +81,19 @@ jobs:
       - name: Deploy Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+  result:
+    name: Public site verification result
+    if: always()
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Require success from every selected job
+        env:
+          PREFLIGHT_PLAN: ${{ needs.plan.outputs.plan }}
+          PREFLIGHT_RESULTS: ${{ toJSON(needs) }}
+        run: node scripts/preflight.mjs --gate site
