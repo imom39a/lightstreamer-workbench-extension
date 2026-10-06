@@ -1,96 +1,34 @@
-## Project
+# Lightstreamer Workbench
 
-**Lightstreamer Workbench**
+Lightstreamer Workbench is a Chrome and desktop Firefox DevTools extension for debugging applications that use the official Lightstreamer Web Client. It captures clients, Sessions, Subscriptions, Item Updates, snapshots, COMMAND key lifecycles, and outbound Client Messages. Developers inspect Evidence, reproduce Item Updates through backend-free Local Injection, and send reviewed Client Messages through Server Injection.
 
-Lightstreamer Workbench is a Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures Lightstreamer clients, Sessions, Subscriptions, Item Updates, snapshots, COMMAND-mode key lifecycles, and outbound Client Messages. Developers can inspect and search that Evidence, create deliberate Local Injections, and send reviewed Client Messages through Server Injection.
+## Product boundaries
 
-The tool is generic developer infrastructure, not an application-specific debugger. Application teams can later add optional interpretation rules, but the core product models Lightstreamer primitives: client, session, subscription, mode, item, field, key, command, update, snapshot, client message, injection, and delivery.
+- **Runtime:** debugging lives beside the inspected page in its DevTools panel. Chrome and Firefox share Workbench behavior and the same extension version, with separate generated manifests and store packages. Firefox supports regular desktop browsing; follow [ADR 0017](docs/adr/0017-support-firefox-with-shared-workbench-behavior.md) when changing browser integration, native data consent, or shared MCP access.
+- **Official client:** v2 targets only the official Lightstreamer Web Client and instruments its API. Listener-level Capture is the semantic basis; wire Capture supports diagnostics and fallback rather than replacing the client model.
+- **Domain:** keep the generic core Lightstreamer-native: client, session, subscription, mode, item, field, key, command, update, snapshot, client message, injection, and delivery. Application-specific interpretation may be optional; it must not constrain the core.
+- **Capture:** observation never alters or suppresses the application's original Item Update or Client Message. Captured Evidence is immutable; mutation applies to a separate Injection Draft.
+- **Injection:** Local Injection delivers Item Updates locally without a backend change. Reviewed Server Injection sends a Client Message through the inspected client's normal `sendMessage` path in its current Session; it does not create an inbound server-stream update.
+- **COMMAND:** Observed Server COMMAND State uses captured Server Updates only. Local Effective COMMAND State additionally applies successful Local Injected Updates for the Subscription.
+- **History:** one Panel Session owns one temporary rolling Event History; each new Panel Session starts fresh. Normal retention is 100,000 records or 256 MiB of canonical accounted bytes; memory-backed retention is 25,000 records or 128 MiB. Retention advances remove the oldest accepted prefix without stopping Capture. Bounded commit recovery and explicit Evidence Gaps keep storage failure separate from Observation Coverage. Controlled Close attempts erasure and reports the outcome; abnormal cleanup may leave residual data until an ownership-safe guarded sweep. Versioned Topology exports are deliberate, privacy-reviewed user downloads, not persistent application state.
+- **Security:** the developer controls the inspected-page tool. Mark Local Injected Updates; v2 needs no explicit injection-mode safety toggle. Attribute Server Updates to Workbench only when the application supports attribution metadata.
 
-**Core Value:** Developers can understand and reproduce Lightstreamer COMMAND Subscription behavior without waiting for production event sequences, using backend-free Local Injection and the application's normal client-to-server message flow for Server Injection.
+## Context to read for the task
 
-### Constraints
+- **Architecture:** before changing execution contexts, module boundaries, message routing, Capture, storage, or delivery, read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Domain:** before exploring or naming domain behavior, read [CONTEXT.md](CONTEXT.md), relevant [ADRs](docs/adr/), and the [domain documentation procedure](docs/agents/domain.md).
+- **Development:** for setup and verification, use [CONTRIBUTING.md](CONTRIBUTING.md) and the current scripts in [package.json](package.json). For installed Firefox verification, read [docs/firefox-testing.md](docs/firefox-testing.md).
+- **Release:** before preparing artifacts or changing publication tooling, read [RELEASE.md](RELEASE.md). It owns matching browser versions, source provenance, store-specific packages, review states, and credential handling.
+- **Connected Workbench:** when investigating a Panel Session, reproducing Item Updates through the agent interface, or verifying the inspected application's response, use the [lightstreamer-workbench skill](.agents/skills/lightstreamer-workbench/SKILL.md).
 
-- **Runtime target**: Chrome extension with a DevTools panel - debugging should live next to the inspected page's runtime state.
-- **Lightstreamer target**: Official Lightstreamer Web Client only for v2 - client API instrumentation is more reliable than generic WebSocket inference.
-- **Injection boundary**: v2 supports backend-free Local Injection and reviewed Server Injection. Server Injection sends a Client Message through the inspected Lightstreamer client's normal `sendMessage` path in the context of its current Session; it does not directly introduce an inbound update into the server stream.
-- **Capture semantics**: Capture is observational - Workbench never alters or suppresses the application's original Item Update or Client Message. Mutation applies to a separate Injection Draft.
-- **COMMAND state projections**: Observed Server COMMAND State uses captured Server Updates only. Local Effective COMMAND State additionally applies successful Local Injected Updates for the Subscription.
-- **Storage**: One Panel Session owns one temporary rolling Event History. Normal retention is 100,000 records or 256 MiB of canonical accounted bytes; memory-backed retention is 25,000 records or 128 MiB. Retention advances remove the oldest accepted prefix without stopping Capture. Bounded commit recovery and explicit Evidence Gaps keep storage failure separate from Observation Coverage. Controlled Close attempts erasure and reports the outcome; abnormal cleanup may leave residual data until an ownership-safe guarded sweep. Versioned Topology exports are deliberate user downloads, not persistent application state.
-- **Domain model**: Lightstreamer-native primitives first - app-specific adapters must not constrain the generic core.
-- **Security posture**: Developer-controlled tool for inspected pages - Local Injected Updates must be marked, but v2 does not require an explicit injection-mode safety toggle. Server Updates can be attributed to Workbench only when the application supports attribution metadata.
+## UI work
 
-## Technology Stack
+Classify every change as Non-UI, Bounded UI, or Material UI before implementation. All panel UI work follows [docs/WORKBENCH_UI_STANDARD.md](docs/WORKBENCH_UI_STANDARD.md), including its linked accepted design contracts and proportional browser and visual-QA evidence. Permanent surfaces, shared components, semantic exceptions, and visual-baseline changes must satisfy their explicit gates.
 
-## Recommended Stack
-### Core Technologies
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| Chrome Extension Manifest V3 | Current Chrome platform | Extension runtime, permissions, DevTools integration | Required platform for modern Chrome extensions and DevTools panel registration |
-| Chrome DevTools Panel API | Current Chrome platform | Primary UI surface inside inspected tab DevTools | The workflow is page-runtime debugging, so DevTools is the natural surface |
-| Chrome content scripts with MAIN-world injection | Current Chrome platform | Patch page-owned Lightstreamer constructors/listeners before app code uses them | Official content script isolated worlds cannot directly patch page globals unless a MAIN-world script is injected |
-| TypeScript | Current stable at implementation | Strongly typed event envelope, Lightstreamer adapters, state reconstruction | The product depends on precise protocol and object-shape handling |
-| Official Lightstreamer Web Client API instrumentation | Lightstreamer Web Client 9.x docs verified | Capture clients, subscriptions, item updates, client messages, listener callbacks, snapshot status, and COMMAND values | Higher signal than raw WebSocket capture because it exposes subscription semantics directly |
-| Session-scoped Event History | v2 internal module | One Panel Session-owned rolling history with normal and memory retention tiers | Keeps recent high-volume Evidence local and bounded while Capture continues |
-### Supporting Libraries
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| Vite or equivalent extension build tooling | Resolve during implementation | Bundle TypeScript for extension contexts | Use if the repo starts from source modules rather than hand-authored JS |
-| A small virtual list implementation | Resolve during implementation | Render high-volume event logs | Add when timeline performance needs it; avoid early UI framework lock-in |
-| JSON path / object editor utility | Resolve during implementation | Mutate captured event payload fields | Useful for reinjection editing once the envelope format is stable |
-### Development Tools
-| Tool | Purpose | Notes |
-|------|---------|-------|
-| Chrome extension unpacked loading | Manual verification | Required for DevTools panel and content script behavior |
-| Browser/Playwright verification | UI smoke checks | Can verify extension pages, but manual Chrome DevTools checks may still be needed |
-| Lightstreamer demo or fixture page | Capture/reinjection test target | Needed to validate against the official Web Client without app-specific dependencies |
-## Alternatives Considered
-| Recommended | Alternative | When to Use Alternative |
-|-------------|-------------|-------------------------|
-| Web Client API instrumentation | Raw WebSocket/TLCP parsing first | Use raw capture as fallback diagnostics after listener-level capture is proven |
-| DevTools panel first | Popup/sidebar first | Use popup only for status/session shortcuts after the primary workflow exists |
-| In-memory store | IndexedDB | Use IndexedDB after current-tab capture, search, and reinjection workflows are validated |
-| Subscription-scoped Local Injection for Item Updates; normal client-message path for future Server Injection | Direct Data Adapter or inbound server-stream injection | Use direct server-stream injection only in a separate backend-coordinated product; Workbench's Server Injection remains a normal Client Message |
-## What NOT to Use
-| Avoid | Why | Use Instead |
-|-------|-----|-------------|
-| App-specific domain models in the core | Would make the tool a single-app debugger rather than Lightstreamer developer tooling | Generic Lightstreamer event envelope and optional adapters |
-| Raw frame capture as the only source of truth | Loses high-level concepts such as subscription mode, snapshot status, changed fields, key, and command | Capture through Lightstreamer Web Client APIs and listener callbacks |
-| Cross-session persistent capture | Adds privacy, pruning, retention, and schema-migration concerns beyond the current Panel Session | Panel Session-scoped IndexedDB with in-memory fallback; explicit privacy-reviewed exports |
-| Implying that Server Injection directly creates inbound updates | A browser extension can send a real Client Message, but it cannot inject an arbitrary Item Update into the server stream | Local Injection for Item Updates; normal client `sendMessage` flow for Server Injection |
-## Sources
-- https://lightstreamer.com/ls-server/latest/docs/General%20Concepts.pdf - subscription modes, COMMAND-mode semantics, snapshot behavior
-- https://sdk.lightstreamer.com/ls-web-client/9.0.0/api/index.html - Web Client, Subscription, SubscriptionListener, and ItemUpdate surfaces
-- https://developer.chrome.com/docs/extensions/reference/api/devtools/panels - DevTools panel integration
-- https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts - content script execution worlds and page injection constraints
+For browser verification, read [docs/agents/ui-verification.md](docs/agents/ui-verification.md). For independent visual review, read [docs/agents/ui-visual-qa.md](docs/agents/ui-visual-qa.md).
 
-## Conventions
+## Work tracking
 
-### Workbench UI
+Internal tickets, PRDs, and agent findings live as draft items in [Lightstreamer Workbench Project #2](https://github.com/users/imom39a/projects/2). Before reading the frontier or updating work, follow [docs/agents/ticket-tracker.md](docs/agents/ticket-tracker.md). Create repository Issues or convert internal drafts only when the user explicitly requests that for the ticket.
 
-All panel UI work follows [`docs/WORKBENCH_UI_STANDARD.md`](docs/WORKBENCH_UI_STANDARD.md). Classify the change as Non-UI, Bounded UI, or Material UI before implementation, preserve the linked accepted design contracts, and collect the proportional browser and visual-QA evidence defined there. Do not introduce a permanent surface, shared component, semantic exception, or visual-baseline change without satisfying its explicit gate.
-
-Use [`docs/agents/ui-verification.md`](docs/agents/ui-verification.md) for the browser procedure and [`docs/agents/ui-visual-qa.md`](docs/agents/ui-visual-qa.md) for independent review.
-
-## Architecture
-
-Architecture not yet mapped. Follow existing patterns found in the codebase.
-
-## Project Skills
-
-Use [lightstreamer-workbench](.agents/skills/lightstreamer-workbench/SKILL.md) when investigating a connected Workbench Panel Session, reproducing Item Updates through the agent interface, or verifying the inspected app's response.
-
-## Agent skills
-
-### Work tracking
-
-Internal tickets, PRDs, and agent findings live as draft items in [Lightstreamer Workbench Project #2](https://github.com/users/imom39a/projects/2); do not create repository issues for them. See `docs/agents/ticket-tracker.md`.
-
-GitHub Issues and pull requests remain the intake and triage surface for repository-facing reports. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-For repository issues and pull requests, use the default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. These labels do not apply to draft Project items. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-This is a single-context repo using root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+GitHub Issues and pull requests are the intake and triage surface for repository-facing reports. For those operations, read [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) and [docs/agents/triage-labels.md](docs/agents/triage-labels.md). Triage labels apply to repository Issues and pull requests, not draft Project items.
