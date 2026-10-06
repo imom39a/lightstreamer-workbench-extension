@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { chromeTestArguments } from "../../scripts/chrome-test-policy.mjs";
 import { resolveChromeExecutable } from "../support/chrome-extension-cdp";
+import { createBrowserFailureDiagnostics } from "../support/browser-failure-diagnostics.mjs";
 
 // A real extension reload invalidates the old isolated-world Chrome bindings,
 // while the already-loaded page and its application updates remain alive.
 test("extension reload retires the old content bridge without interrupting page updates", async () => {
   const root = resolve(import.meta.dirname, "../..");
+  const diagnostics = createBrowserFailureDiagnostics({ rootDir: root, journey: "extension-content-context-lifecycle", attempt: test.info().retry + 1 });
   const extensionDir = resolve(root, process.env.LSEW_EXTENSION_DIR ?? "dist");
   const server = createServer((_request, response) => {
     response.setHeader("Content-Type", "text/html");
@@ -26,6 +28,8 @@ test("extension reload retires the old content bridge without interrupting page 
       ignoreDefaultArgs: ["--disable-extensions"],
       args: [...chromeTestArguments({ additional: [`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`] })]
     });
+    await diagnostics.observeContext(context);
+    await diagnostics.step("reload the extension without interrupting original application updates");
     const workerUrl = /\/extension\/background\.js$/;
     const worker = context.serviceWorkers().find(candidate => workerUrl.test(candidate.url())) ??
       await context.waitForEvent("serviceworker", { predicate: candidate => workerUrl.test(candidate.url()) });
@@ -80,7 +84,11 @@ test("extension reload retires the old content bridge without interrupting page 
     await emitUpdates();
     await expect(page.locator("body")).toHaveAttribute("data-app-updates", "20");
     expect(errors).toEqual([]);
+  } catch (error) {
+    await diagnostics.captureFailure(error);
+    throw error;
   } finally {
+    await diagnostics.dispose();
     await context?.close();
     await new Promise<void>(done => server.close(() => done()));
     await rm(profile, { recursive: true });
