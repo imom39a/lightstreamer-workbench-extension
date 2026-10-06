@@ -164,12 +164,7 @@ export async function extractReleaseBundle({ bundlePath, directory, expectedSour
   const allowed = new Set(["release-manifest.json","SHA256SUMS","README.txt","agent-release.json",... ["extension","firefox","firefoxSource","mcp","firefoxMetadata"].map(key => manifest[key]?.file)]);
   if (manifest.format !== "lightstreamer-workbench-mcp-release-v2" || manifest.source?.commit !== expectedSource || entries.size !== allowed.size || [...entries.keys()].some(name => !allowed.has(name))) throw new Error("Frozen bundle source, manifest or entry inventory is invalid.");
   const destination = resolve(directory);
-  await emptyOwnedDirectory(destination);
-  for (const [name,bytes] of entries) {
-    const path = safePath(destination,name);
-    await mkdir(dirname(path),{ recursive: true });
-    await writeFile(path,bytes,{ flag: "wx" });
-  }
+  await writeOwnedEntries(destination,entries);
   return readFrozenRelease({ manifestPath: join(destination,"release-manifest.json"),expectedSource });
 }
 
@@ -178,13 +173,17 @@ export async function extractFrozenBrowser({ manifestPath, expectedSource, brows
   const release = await readFrozenRelease({ manifestPath,expectedSource });
   const entries = readZipEntries(release.artifacts[browser].bytes);
   const destination = resolve(directory);
+  await writeOwnedEntries(destination,entries);
+  return destination;
+}
+
+async function writeOwnedEntries(destination,entries) {
   await emptyOwnedDirectory(destination);
   for (const [name,bytes] of entries) {
     const path = safePath(destination,name);
     await mkdir(dirname(path),{ recursive: true });
-    await writeFile(path,bytes,{ flag:"wx" });
+    await writeFile(path,bytes,{ flag: "wx" });
   }
-  return destination;
 }
 
 function inside(directory,path) { const part=relative(directory,path); return !part.startsWith("..") && !isAbsolute(part); }

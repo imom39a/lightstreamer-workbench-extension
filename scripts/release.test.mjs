@@ -81,7 +81,7 @@ test("the release CLI requires Firefox metadata to be a committed file in the ap
   const directory=await realpath(await mkdtemp(join(tmpdir(),"workbench-release-metadata-"))),checkout=join(directory,"checkout");
   try {
     await mkdir(join(checkout,"scripts"),{recursive:true});
-    for(const filename of ["release.mjs","package-mcp-release.mjs"]) await copyFile(new URL(filename,import.meta.url),join(checkout,"scripts",filename));
+    for(const filename of ["release.mjs","release-gates.mjs","package-mcp-release.mjs"]) await copyFile(new URL(filename,import.meta.url),join(checkout,"scripts",filename));
     const git=(...args)=>execFileSync("git",args,{cwd:checkout,encoding:"utf8",stdio:["ignore","pipe","pipe"]}).trim();
     git("init");git("add","scripts");git("-c","user.name=Release test","-c","user.email=release-test@example.invalid","commit","-m","Isolated release CLI fixture");
     const head=git("rev-parse","HEAD"),notes=JSON.stringify({version:{release_notes:{"en-US":"Synthetic release"},approval_notes:"Synthetic review"}});
