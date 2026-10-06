@@ -129,6 +129,14 @@ jobs:
         env:
           LSEW_AGENT_PACKAGE_TARBALL: release/${{ needs.package.outputs.filename }}
         run: npm run agent:test:extension
+      - name: Retain failed Chrome and MCP proof attempts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: companion-chrome-failure-${{ matrix.os }}-${{ github.run_attempt }}
+          path: test-results/browser-diagnostics*/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Guard context budgets with IndexedDB and the installed artifact
         env:
           LSEW_AGENT_TEST_CLI: test-results/agent-package/node_modules/lightstreamer-workbench-agent/dist/cli.mjs

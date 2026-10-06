@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromeTestArguments } from "../../scripts/chrome-test-policy.mjs";
 import { resolveChromeExecutable } from "../support/chrome-extension-cdp";
+import { createBrowserFailureDiagnostics } from "../support/browser-failure-diagnostics.mjs";
 import type { HistoryThroughputOptions } from "../../benchmarks/history-throughput-harness";
 
 for (const scenario of [
@@ -26,6 +27,7 @@ test("IndexedDB retains 100k records and continues rolling capture", async ({}, 
 
 async function verifyThroughput(options: HistoryThroughputOptions, attach: (name: string, options: { body: string; contentType: string }) => Promise<void>) {
   const root = resolve(import.meta.dirname, "../..");
+  const diagnostics = createBrowserFailureDiagnostics({ rootDir: root, journey: `history-throughput-${test.info().title}`, attempt: test.info().retry + 1 });
   const temporary = await mkdtemp(join(tmpdir(), "lsew-history-throughput-"));
   const harnessPath = join(temporary, "harness.js");
   let browser: Browser | undefined;
@@ -43,6 +45,8 @@ async function verifyThroughput(options: HistoryThroughputOptions, attach: (name
     await new Promise<void>(ready => server.listen(0, "127.0.0.1", ready));
     browser = await chromium.launch({ executablePath: await resolveChromeExecutable(root), headless: true, args: [...chromeTestArguments()] });
     const page = await browser.newPage();
+    await diagnostics.observeContext(page.context());
+    await diagnostics.step("commit and query the synthetic IndexedDB throughput fixture");
     page.on("console", message => {
       if (message.text().startsWith('{"type":"history-throughput-progress"')) console.log(message.text());
     });
@@ -63,7 +67,11 @@ async function verifyThroughput(options: HistoryThroughputOptions, attach: (name
     expect(result.latestId).toBe(result.expectedLatestId);
     expect(result.findTotal).toBe(1);
     expect(result.findIds).toEqual([result.expectedLatestId]);
+  } catch (error) {
+    await diagnostics.captureFailure(error);
+    throw error;
   } finally {
+    await diagnostics.dispose();
     await browser?.close();
     await new Promise<void>(done => server.close(() => done()));
     await rm(temporary, { recursive: true });

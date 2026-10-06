@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromeTestArguments } from "../../scripts/chrome-test-policy.mjs";
+import { createBrowserFailureDiagnostics } from "../support/browser-failure-diagnostics.mjs";
 
 import {
   CdpClient,
@@ -20,7 +21,6 @@ import {
   waitForExtensionPanelTarget
 } from "../support/chrome-extension-cdp";
 import {
-  formatTargets,
   type BrowserTarget,
   waitForWorkbenchPanel
 } from "../support/devtools-panel";
@@ -65,9 +65,12 @@ async function runOfficialClientPanelJourney(
   viewport: Readonly<{ width: number; height: number }>,
   scenario: OfficialClientScenario = "authored"
 ): Promise<void> {
+  const diagnostics = createBrowserFailureDiagnostics({
+    rootDir,
+    journey: `official-client-${scenario}-${viewport.width}x${viewport.height}`,
+    attempt: test.info().retry + 1
+  });
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-playwright-extension-"));
-  const chromeExecutable = await resolveChromeExecutable(rootDir);
-  const chromeLogs: string[] = [];
   let latestTargets: BrowserTarget[] = [];
   let chrome: ChildProcess | null = null;
   let pageCdp: CdpClient | null = null;
@@ -76,6 +79,7 @@ async function runOfficialClientPanelJourney(
   const panelScriptUrls: string[] = [];
 
   try {
+    const chromeExecutable = await resolveChromeExecutable(rootDir);
     await access(extensionDir, constants.R_OK);
     const extensionManifest = await readExtensionManifest(extensionDir);
     const chromeArguments = [
@@ -99,10 +103,12 @@ async function runOfficialClientPanelJourney(
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
-    chrome.stdout?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
-    chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
+    chrome.stdout?.on("data", (chunk: Buffer) => diagnostics.browserLog(String(chunk)));
+    chrome.stderr?.on("data", (chunk: Buffer) => diagnostics.browserLog(String(chunk)));
 
     const debugging = await waitForDebuggingPort(profileDir, chrome);
+    await diagnostics.connect(debugging.browserWebSocketUrl);
+    await diagnostics.step(`load the official-client ${scenario} fixture`);
     latestTargets = await waitForBrowserTargets(debugging.port, {
       workbenchManifest: extensionManifest
     });
@@ -114,6 +120,7 @@ async function runOfficialClientPanelJourney(
     );
     expect(inspectedTarget?.webSocketDebuggerUrl).toBeTruthy();
     pageCdp = await CdpClient.connect(inspectedTarget?.webSocketDebuggerUrl ?? "");
+    await diagnostics.observeCdp("inspected-page", pageCdp);
     await pageCdp.request("Page.enable");
     await pageCdp.request("Runtime.enable");
     const navigation = await pageCdp.request("Page.navigate", {
@@ -186,6 +193,7 @@ async function runOfficialClientPanelJourney(
       connect: (target) => CdpClient.connect(target.webSocketDebuggerUrl ?? ""),
       evaluateByValue
     });
+    await diagnostics.step(`register the real Workbench panel at ${viewport.width}x${viewport.height}`);
     latestTargets = panelSelection.targets;
     devtoolsCdp = panelSelection.cdp;
     expect(panelSelection.selection.panelId).toBeTruthy();
@@ -194,6 +202,7 @@ async function runOfficialClientPanelJourney(
     const panelTarget = await waitForExtensionPanelTarget(debugging.port);
     latestTargets = await listBrowserTargets(debugging.port);
     panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl ?? "");
+    await diagnostics.observeCdp("workbench-panel", panelCdp);
     panelCdp.on("Debugger.scriptParsed", (params) => {
       const url = (params as { url?: unknown } | undefined)?.url;
       if (typeof url === "string" && url) panelScriptUrls.push(url);
@@ -207,6 +216,7 @@ async function runOfficialClientPanelJourney(
       viewport,
       `${viewport.width}×${viewport.height}`
     );
+    await diagnostics.step(`exercise ${scenario} through visible production panel controls`);
 
     if (scenario === "diagnostics") {
       await pageCdp.request("Runtime.evaluate", {
@@ -520,6 +530,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       expect(reactProof.projectionButtonPresent).toBe(false);
 
       const editedMessage = "Edited by Workbench Local Injection.";
+      await diagnostics.step("edit captured COMMAND Evidence and deliver a Local Injected Update");
       const localInjectionDocument = {
         command: "UPDATE",
         key: "fixture-message.TICKER",
@@ -713,6 +724,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         )`,
         "the live COMMAND Item Scope to offer authored Local Injection"
       );
+      await diagnostics.step("author a COMMAND Item Update and load its lazy JSON editor");
       await pressVisiblePanelButton(panelCdp, "Author COMMAND Item Update");
       await waitForCondition(
         panelCdp,
@@ -767,30 +779,11 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       );
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
   } catch (error) {
-    const logTail = chromeLogs.join("").slice(-4_000);
-    const pageState = pageCdp
-      ? await evaluateByValue(pageCdp, `({
-          url: location.href,
-          readyState: document.readyState,
-          connection: document.querySelector("#connection-state")?.textContent ?? null,
-          count: document.querySelector("#update-count")?.textContent ?? null,
-          message: document.querySelector("#message-text")?.textContent ?? null,
-          recipeAdapter: Boolean(globalThis.__LSEW_CLIENT_MESSAGE_RECIPE_ADAPTER__)
-        })`).catch(() => null)
-      : null;
-    const panelState = panelCdp
-      ? await evaluateByValue(panelCdp, `({
-          diagnostics: document.querySelector('[aria-label="Workbench diagnostic entries"]')?.textContent ?? null,
-          evidence: document.querySelector('[aria-label="Ordered Lightstreamer Evidence"]')?.textContent ?? null,
-          body: document.body?.textContent?.slice(-4000) ?? null
-        })`).catch(() => null)
-      : null;
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)}\nPage state: ${pageState ? JSON.stringify(pageState) : "unavailable"}\nObserved targets: ${formatTargets(
-        latestTargets
-      )}${panelState ? `\nPanel state:\n${JSON.stringify(panelState)}` : ""}${logTail ? `\nChrome log tail:\n${logTail}` : ""}`
-    );
+    const directory = await diagnostics.captureFailure(error, { targets: latestTargets, panelScriptUrls });
+    if (directory) await test.info().attach("browser-failure", { path: join(directory, "failure.json"), contentType: "application/json" }).catch(() => {});
+    throw error;
   } finally {
+    await diagnostics.dispose();
     panelCdp?.close();
     devtoolsCdp?.close();
     pageCdp?.close();

@@ -70,5 +70,19 @@ jobs:
       - name: Install Chrome for Testing
         run: npm run fixture:browser:install
 
+      - name: Prove failure evidence survives real Chrome teardown
+        run: npm run test:browser-diagnostics
+
       - name: Prove capture, MCP tooling and Local Injection through the production panel
         run: npm run agent:test:browser
+
+      - name: Retain failed browser attempts and fixture reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fixture-browser-failure-${{ github.run_attempt }}
+          path: |
+            test-results/browser-diagnostics*/
+            test-results/extension-ui*/
+          if-no-files-found: ignore
+          retention-days: 14

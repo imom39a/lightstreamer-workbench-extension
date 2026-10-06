@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromeTestArguments } from "../scripts/chrome-test-policy.mjs";
+import { createBrowserFailureDiagnostics } from "./support/browser-failure-diagnostics.mjs";
 
 import {
   CdpClient,
@@ -35,9 +36,8 @@ const extensionDir = resolve(rootDir, process.env.LSEW_EXTENSION_DIR ?? "dist");
 const SMOKE_TIMEOUT_MS = readTimeout(process.env.LSEW_SMOKE_TIMEOUT_MS ?? "300000");
 
 async function runExtensionPanelSmoke(): Promise<void> {
+  const diagnostics = createBrowserFailureDiagnostics({ rootDir, journey: "extension-panel-smoke" });
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-extension-panel-smoke-"));
-  const chromeExecutable = await resolveChromeExecutable(rootDir);
-  const chromeLogs: string[] = [];
   let latestTargets: BrowserTarget[] = [];
   let chrome: ChildProcess | null = null;
   let inspectedPage: { server: Server; url: string } | null = null;
@@ -48,6 +48,7 @@ async function runExtensionPanelSmoke(): Promise<void> {
   const panelCdps: CdpClient[] = [];
 
   try {
+    const chromeExecutable = await resolveChromeExecutable(rootDir);
     await access(extensionDir, constants.R_OK);
     const extensionManifest = await readExtensionManifest(extensionDir);
     inspectedPage = await startInspectedPage();
@@ -73,10 +74,12 @@ async function runExtensionPanelSmoke(): Promise<void> {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
-    chrome.stdout?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
-    chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
+    chrome.stdout?.on("data", (chunk: Buffer) => diagnostics.browserLog(String(chunk)));
+    chrome.stderr?.on("data", (chunk: Buffer) => diagnostics.browserLog(String(chunk)));
 
     const debugging = await waitForDebuggingPort(profileDir, chrome);
+    await diagnostics.connect(debugging.browserWebSocketUrl);
+    await diagnostics.step("register the production Workbench DevTools panel");
     await waitForBrowserTargets(debugging.port, { workbenchManifest: extensionManifest });
     const panelSelection = await waitForWorkbenchPanel({
       listTargets: () => listBrowserTargets(debugging.port),
@@ -106,6 +109,8 @@ async function runExtensionPanelSmoke(): Promise<void> {
       fixtureUrl,
       new Set()
     );
+    panelCdps.push(primaryPanelTarget.cdp);
+    await diagnostics.observeCdp("primary-panel", primaryPanelTarget.cdp);
     await waitForDatabaseCount(
       primaryPanelTarget.cdp,
       1,
@@ -139,12 +144,13 @@ async function runExtensionPanelSmoke(): Promise<void> {
       fixtureUrl,
       new Set([primaryPanelTarget.id])
     );
+    panelCdps.push(secondaryPanelTarget.cdp);
+    await diagnostics.observeCdp("secondary-panel", secondaryPanelTarget.cdp);
     assert.notEqual(
       primaryPanelTarget.id,
       secondaryPanelTarget.id,
       "The same inspected tab should expose two distinct real Workbench panel targets."
     );
-    panelCdps.push(primaryPanelTarget.cdp, secondaryPanelTarget.cdp);
     panelCdp = panelCdps[0] ?? null;
     assert.equal(
       panelCdps.length,
@@ -207,6 +213,8 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       "Chrome should expose the inspected page CDP target."
     );
     pageCdp = await CdpClient.connect(pageTarget.webSocketDebuggerUrl);
+    await diagnostics.observeCdp("inspected-page", pageCdp);
+    await diagnostics.step("retain ordered Capture independently in two real panels");
     await pageCdp.request("Runtime.enable");
     await pageCdp.request("Page.addScriptToEvaluateOnNewDocument", {
       source: `window.addEventListener("message", (event) => {
@@ -316,6 +324,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     );
 
     const panelToClose = panelById.get(secondPanelId);
+    await diagnostics.step("close the sibling panel and continue Capture in the surviving Panel Session");
     let survivingPanel = panelById.get(selection.panelId);
     assert.ok(panelToClose, "The secondary real panel should have a retained CDP connection.");
     assert.ok(survivingPanel, "The primary real panel should have a retained CDP connection.");
@@ -334,6 +343,8 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       new Set([secondaryPanelTarget.id])
     );
     survivingPanel = survivingPanelTarget.cdp;
+    panelCdps.push(survivingPanel);
+    await diagnostics.observeCdp("surviving-panel", survivingPanel);
     await waitForCondition(
       survivingPanel,
       `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
@@ -378,8 +389,12 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     console.log(
       "Authentic panel disposal proof passed: the secondary real panel closed and its journal was cleaned up while the primary panel retained its session and accepted later Capture."
     );
-    if (process.env.LSEW_AGENT_BROWSER_PROOF === "1") await provePortableInspection(rootDir, survivingPanel, fixtureUrl);
+    if (process.env.LSEW_AGENT_BROWSER_PROOF === "1") {
+      await diagnostics.step("prove installed companion MCP routing through the surviving panel");
+      await provePortableInspection(rootDir, survivingPanel, fixtureUrl);
+    }
 
+    await diagnostics.step("verify the shipped Scope, Evidence and Context workspace");
     const proof = await evaluateByValue<{
       scope: string;
       evidence: string;
@@ -431,13 +446,10 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
         "Production extension panel smoke passed: DevTools selected the semantic Scope, Evidence, and Context workspace."
       );
   } catch (error) {
-    const logTail = chromeLogs.join("").slice(-4_000);
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)}\nAvailable DevTools targets: ${formatTargets(
-        latestTargets
-      )}${logTail ? `\nChrome log tail:\n${logTail}` : ""}`
-    );
+    await diagnostics.captureFailure(error, { targets: latestTargets });
+    throw error;
   } finally {
+    await diagnostics.dispose();
     pageCdp?.close();
     for (const connectedPanel of panelCdps) connectedPanel.close();
     extensionDevtoolsCdp?.close();
