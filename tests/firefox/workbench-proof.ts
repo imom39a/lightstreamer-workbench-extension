@@ -59,6 +59,7 @@ async function click(selector: string, target = "devtools_panel") {
   await command("mouse", {type: "mouseReleased", target, ...point});
 }
 let fixtureServer: ReturnType<typeof createServer> | undefined;
+let frozenAnalytics: {configured:boolean;enabled:boolean;nativeConsent:boolean;externalProxyBlocked:boolean} | undefined;
 try {
   const started = await command("start");
   console.log(`Testing Firefox ${started.version} in an owned temporary profile.`);
@@ -73,10 +74,24 @@ try {
     fixtureUrl = `http://127.0.0.1:${address.port}/fixture.html`;
   }
   await command("navigate", { url: fixtureUrl });
+  if (process.env.LSEW_FROZEN_RELEASE_MANIFEST) {
+    await command("evaluate", {target:"background",expression:`chrome.storage.local.set({[${JSON.stringify(ANALYTICS_PREFERENCE_KEY)}]:false}).then(() => true)`});
+    assert.equal(await command("evaluate", {target:"background",expression:`chrome.storage.local.get(${JSON.stringify(ANALYTICS_PREFERENCE_KEY)}).then(value => value[${JSON.stringify(ANALYTICS_PREFERENCE_KEY)}] === false)`}),true,"Frozen Firefox verification disables analytics before opening the panel.");
+  }
   const panel = await command("open-panel");
   await command("chrome", { expression: "Services.prefs.savePrefFile(null); return JSON.parse(Services.prefs.getStringPref('extensions.webextensions.uuids'))['lightstreamer-workbench@imom39a'];" }).then(uuid => console.log("Registered Firefox UUID:", uuid));
   assert.match(panel.origin, /^moz-extension:\/\/[a-f0-9-]{36}$/);
   console.log(`Shipped Firefox Workbench ${panel.version}: ${panel.origin}`);
+  if (process.env.LSEW_FROZEN_RELEASE_MANIFEST) {
+    const state=await command("evaluate",{target:"devtools_panel",expression:`chrome.runtime.sendMessage({type:${JSON.stringify(ANALYTICS_MESSAGE)},action:"state"}).then(response => response.value)`});
+    assert.equal(state.configured,true,"The frozen Firefox bytes retain their configured analytics service.");
+    assert.equal(state.enabled,false,"The actual Workbench preference disables collection.");
+    assert.equal(state.nativeConsent,false,"Firefox's optional analytics permission is absent in the owned profile.");
+    const externalProxyBlocked=await command("chrome",{expression:"return Services.prefs.getIntPref('network.proxy.type') === 1 && Services.prefs.getStringPref('network.proxy.ssl') === '127.0.0.1' && Services.prefs.getIntPref('network.proxy.ssl_port') === 9;"});
+    assert.equal(externalProxyBlocked,true,"External analytics traffic is blocked at the owned Firefox network boundary.");
+    frozenAnalytics={configured:state.configured,enabled:state.enabled,nativeConsent:state.nativeConsent,externalProxyBlocked};
+    console.log("Frozen Firefox analytics: configured, saved Off, native permission absent, external proxy blocked.");
+  }
   try {
     if (extensionOnly) {
       // A registered DevTools view can precede the panel's background-port
@@ -350,7 +365,7 @@ try {
     result: "PASS",
     mode: process.env.LSEW_FIREFOX_CONSENT_PROOF === "1" ? "analytics-consent" : extensionOnly ? "portable-mcp" : "official-client-mcp",
     capture: extensionOnly ? "deterministic content bridge fixture" : "official Lightstreamer listener", storage: "IndexedDB",
-    ...(process.env.LSEW_FIREFOX_CONSENT_PROOF !== "1" ? {mcp: "stdio"} : {}), origin: panel.origin }, null, 2) + "\n");
+    ...(process.env.LSEW_FIREFOX_CONSENT_PROOF !== "1" ? {mcp: "stdio"} : {}), ...(frozenAnalytics?{frozenAnalytics}:{}), origin: panel.origin }, null, 2) + "\n");
 } finally {
   await command("quit").catch(() => undefined);
   driver.stdin.end();

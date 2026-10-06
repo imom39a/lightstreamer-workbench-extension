@@ -11,6 +11,10 @@ on:
         description: Run every verification gate for a pinned release
         type: boolean
         default: true
+      frozen_artifact:
+        description: Same-run frozen candidate artifact for release verification
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -71,6 +75,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Download the pinned release inputs
+        if: inputs.frozen_artifact != ''
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ inputs.frozen_artifact }}
+          path: release/frozen-input
+      - name: Validate and restore the pinned release manifest
+        if: inputs.frozen_artifact != ''
+        id: frozen
+        run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA" --github-output "$GITHUB_OUTPUT"
+
       - name: Cache Chrome for Testing
         uses: actions/cache@v5
         with:
@@ -105,13 +120,15 @@ jobs:
         run: npm run test:ui:visual
 
       - name: Run unpacked production extension smoke
+        env:
+          LSEW_FROZEN_RELEASE_MANIFEST: ${{ inputs.frozen_artifact != '' && 'release/frozen/release-manifest.json' || '' }}
         run: node scripts/test-ui-extension.mjs
 
       - name: Upload panel UI diagnostics
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: panel-ui-browser-diagnostics
+          name: panel-ui-browser-diagnostics-${{ github.run_attempt }}
           path: |
             test-results/ui/
             test-results/ui-report/

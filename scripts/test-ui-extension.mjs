@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { build } from "esbuild";
+import { prepareChromeTestInput } from "./browser-test-input.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(scriptDir, "..");
@@ -13,10 +14,16 @@ const temporaryRoot = await mkdtemp(
   join(rootDir, "tests", ".lsew-extension-panel-browser-test-")
 );
 const outputPath = join(temporaryRoot, "extension-panel.browser.spec.mjs");
+let browserInput;
 
 try {
-  // A maintainer's configured production stream must never receive smoke-test usage.
-  await runProcess(process.execPath, [join(rootDir, "scripts", "build-extension.mjs")]);
+  browserInput = await prepareChromeTestInput({ rootDir });
+  if (browserInput.needsBuild) {
+    // A maintainer's configured production stream must never receive smoke-test usage.
+    await runProcess(process.execPath, [join(rootDir, "scripts", "build-extension.mjs")], browserInput.environment);
+  } else {
+    console.log(`Testing frozen Chrome input from ${browserInput.environment.LSEW_FROZEN_RELEASE_MANIFEST}.`);
+  }
   await build({
     entryPoints: [browserTest],
     outfile: outputPath,
@@ -27,21 +34,17 @@ try {
     target: "node20",
     logLevel: "silent"
   });
-  await runProcess(process.execPath, [outputPath]);
+  await runProcess(process.execPath, [outputPath], browserInput.environment);
 } finally {
-  await rm(temporaryRoot, { recursive: true, force: true });
+  try { await browserInput?.dispose(); }
+  finally { await rm(temporaryRoot, { recursive: true, force: true }); }
 }
 
-function runProcess(executable, args) {
+function runProcess(executable, args, environment) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(executable, args, {
       cwd: rootDir,
-      env: {
-        ...process.env,
-        LSEW_ANALYTICS_DISABLED: "1",
-        LSEW_PROJECT_ROOT: rootDir,
-        LSEW_EXTENSION_DIR: "dist"
-      },
+      env: environment,
       shell: false,
       stdio: "inherit",
       windowsHide: true
