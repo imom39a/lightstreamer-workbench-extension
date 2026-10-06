@@ -2,39 +2,49 @@ name: Panel UI browser gate
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/panel-ui.yml"
-      - "playwright.config.ts"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/test-ui.mjs"
-      - "scripts/test-ui-update.mjs"
-      - "scripts/generate-workbench-visual-evidence.mjs"
-      - "scripts/check-docs.mjs"
-      - "scripts/check-docs-links.mjs"
-      - "scripts/check-docs-links.d.mts"
-      - "scripts/ui-panel-server.mjs"
-      - "scripts/verify-extension-build.mjs"
-      - "scripts/package-extension.mjs"
-      - "src/bridge/**"
-      - "src/core/**"
-      - "src/extension/panel/**"
-      - "tests/panel-*.test.ts"
-      - "tests/check-docs.test.ts"
-      - "tests/extension-panel.browser.spec.ts"
-      - "tests/support/panel-scenarios.ts"
-      - "tests/support/workbench-scenarios.ts"
-      - "tests/ui/**"
-      - "docs/agents/ui-verification.md"
-      - "docs/agents/ui-visual-qa.md"
-      - "CONTRIBUTING.md"
+  push:
+    branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      full:
+        description: Run every verification gate for a pinned release
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Select required checks
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.selection.outputs.plan }}
+      docs: ${{ steps.selection.outputs.docs }}
+      site: ${{ steps.selection.outputs.site }}
+      runtime: ${{ steps.selection.outputs.runtime }}
+      companion: ${{ steps.selection.outputs.companion }}
+      panel: ${{ steps.selection.outputs.panel }}
+      fixture: ${{ steps.selection.outputs.fixture }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Verify check selection and aggregate contracts
+        run: node --test scripts/preflight.test.mjs
+      - name: Select changed-input or full-release checks
+        id: selection
+        env:
+          PREFLIGHT_RELEASE: ${{ inputs.full || false }}
+        run: node scripts/preflight.mjs --ci --dry-run --github-output "$GITHUB_OUTPUT"
+
   panel-ui:
+    needs: plan
+    if: needs.plan.outputs.panel == 'true'
     name: Panel UI browser gate
     runs-on: ubuntu-24.04
     container: mcr.microsoft.com/playwright:v1.62.1-noble
@@ -108,3 +118,19 @@ jobs:
             test-results/workbench-visual-qa/
             test-results/release/
           if-no-files-found: warn
+
+  result:
+    name: Panel verification result
+    if: always()
+    needs: [plan, panel-ui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Require success from every selected job
+        env:
+          PREFLIGHT_PLAN: ${{ needs.plan.outputs.plan }}
+          PREFLIGHT_RESULTS: ${{ toJSON(needs) }}
+        run: node scripts/preflight.mjs --gate panel

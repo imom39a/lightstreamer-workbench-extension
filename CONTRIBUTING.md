@@ -72,6 +72,46 @@ npm test
 npm run build
 ```
 
+Before pushing, select the existing checks from an explicit comparison:
+
+```bash
+npm run preflight -- --base origin/main --head HEAD --dry-run
+npm run preflight -- --base origin/main --head HEAD
+npm run preflight -- --base origin/main --head HEAD --json
+npm run preflight -- --release --dry-run
+```
+
+The comparison includes both sides of renames and deleted paths. Site content,
+policies, and `docs/assets/` run the complete `test:site` check, including browser
+wording assertions. Other Markdown guidance runs `docs:check`; packaged companion
+guides and skills also require companion checks. Shared dependencies, configuration,
+and unknown executable inputs select every group. `--json` and `--dry-run` only
+describe selection. Commit the candidate changes first: `--head HEAD` checks the
+committed revision, while the selected commands execute in the current checkout.
+
+`--release` selects all host checks, including loaded Chrome, Firefox, official-client
+fixtures, UI, build and package audits. Install the browser and fixture prerequisites
+below; Firefox uses the [owned-profile procedure](docs/firefox-testing.md).
+Preflight uses analytics-disabled browser QA builds and never uploads or publishes.
+One host run does not replace the release CI matrix: Chrome and Firefox latest on
+Windows/macOS/Linux, with Firefox minimum and supported ESR entries on Linux.
+`npm run test:scripts` maintains the Node release/preflight contract suites alongside
+the TypeScript suites in `npm test`.
+
+CI plans checks inside each verification workflow, so an irrelevant heavy job can
+skip without leaving the whole workflow pending. Required-check configuration should
+use these always-running results: **Companion verification result**, **Fixture
+verification result**, **Panel verification result**, and **Public site verification
+result**. They reject selected jobs that fail, cancel, skip unexpectedly, or have no
+result. Existing heavy job names remain for diagnostics; migrate branch-protection
+requirements to the aggregate names when enabling the new workflow configuration.
+This code change does not modify remote branch protection.
+
+The fixture and panel workflows expose `workflow_call` with `full: true` for pinned
+release verification. Reuse `npm run test:site` in a release job for the public site;
+the Pages workflow also owns deployment permissions and is kept separate from that
+verification call. Manual verification always selects the full scope.
+
 Package for local Chrome loading:
 
 ```bash

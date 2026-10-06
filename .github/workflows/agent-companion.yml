@@ -3,32 +3,7 @@ name: Unified npm MCP companion
 on:
   pull_request:
   push:
-    paths:
-      - ".github/workflows/agent-companion.yml"
-      - "package*.json"
-      - "public/manifest.json"
-      - "RELEASE.md"
-      - "agent/**"
-      - ".agents/skills/lightstreamer-workbench/**"
-      - "src/agent/**"
-      - "src/extension/panel/agent-*.ts"
-      - "src/extension/panel/react/agent-access.tsx"
-      - "src/extension/panel/react/workbench-panel.tsx"
-      - "src/extension/panel/react/workbench-panel.css"
-      - "scripts/*agent*.mjs"
-      - "scripts/*firefox*"
-      - "scripts/extension-manifest.*"
-      - "src/extension/analytics/**"
-      - "src/extension/analytics-consent/**"
-      - "src/extension/firefox-*.ts"
-      - "vite.config.ts"
-      - "tests/firefox*/**"
-      - "tests/firefox*.test.ts"
-      - "scripts/package-mcp-release.mjs"
-      - "scripts/package-mcp-release.test.mjs"
-      - "tests/agent-*.test.ts"
-      - "tests/support/workbench-agent-proof.ts"
-      - "tests/extension-panel.browser.spec.ts"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -39,7 +14,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    name: Select required checks
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.selection.outputs.plan }}
+      docs: ${{ steps.selection.outputs.docs }}
+      site: ${{ steps.selection.outputs.site }}
+      runtime: ${{ steps.selection.outputs.runtime }}
+      companion: ${{ steps.selection.outputs.companion }}
+      panel: ${{ steps.selection.outputs.panel }}
+      fixture: ${{ steps.selection.outputs.fixture }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Verify check selection and aggregate contracts
+        run: node --test scripts/preflight.test.mjs
+      - name: Select changed-input or full-release checks
+        id: selection
+        env:
+          PREFLIGHT_RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: node scripts/preflight.mjs --ci --dry-run --github-output "$GITHUB_OUTPUT"
+
+  checks:
+    name: Source and documentation checks
+    needs: plan
+    if: needs.plan.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:check
+      - run: npm run test:scripts
+      - run: npm run typecheck
+        if: needs.plan.outputs.runtime == 'true'
+      - run: npm run test:release
+        if: needs.plan.outputs.runtime == 'true'
+
   package:
+    needs: plan
+    if: needs.plan.outputs.companion == 'true'
     name: Build one npm artifact
     runs-on: ubuntu-latest
     outputs:
@@ -74,7 +96,8 @@ jobs:
           if-no-files-found: error
 
   portable:
-    needs: package
+    if: needs.plan.outputs.companion == 'true'
+    needs: [plan, package]
     name: Same npm artifact (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -143,7 +166,8 @@ jobs:
         run: npx vitest run tests/agent-mcp-budget.test.ts tests/agent-response-pagination.test.ts tests/agent-candidate-budget.test.ts tests/agent-global-pagination.test.ts tests/agent-status-budget.test.ts --maxWorkers=1 --no-file-parallelism
 
   firefox:
-    needs: package
+    if: needs.plan.outputs.companion == 'true'
+    needs: [plan, package]
     name: Firefox ${{ matrix.firefox }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -228,6 +252,9 @@ jobs:
       - name: Validate the Firefox manifest and packaged code
         if: runner.os == 'Linux' && matrix.firefox == 'latest'
         run: npx --yes web-ext@10.7.0 lint --source-dir dist-firefox --output json > test-results/firefox/web-ext.json
+      - name: Audit the Firefox ZIP structure, version and release budget
+        if: runner.os == 'Linux' && matrix.firefox == 'latest'
+        run: npm run release:package:firefox -- --skip-typecheck --skip-tests --skip-build --out-dir test-results/firefox-release
       - name: Stop the owned fixture
         if: always() && runner.os == 'Linux' && (steps.firefox_fixture.outcome == 'success' || steps.firefox_fixture.outcome == 'failure')
         run: npm run fixture:stop
@@ -238,7 +265,8 @@ jobs:
           path: test-results/firefox*/
 
   release-bundle:
-    needs: [package, portable, firefox]
+    if: needs.plan.outputs.companion == 'true'
+    needs: [plan, package, portable, firefox]
     name: Assemble downloadable MCP release bundle
     runs-on: ubuntu-latest
     steps:
@@ -265,7 +293,7 @@ jobs:
 
   publish:
     name: Publish the verified npm artifact
-    needs: [package, portable, firefox, release-bundle]
+    needs: [plan, checks, package, portable, firefox, release-bundle]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.package.outputs.publish == 'true'
     runs-on: ubuntu-latest
     environment: npm
@@ -289,3 +317,19 @@ jobs:
         run: npm publish "$AGENT_TARBALL" --access public --provenance --ignore-scripts
       - name: Verify registry version
         run: node scripts/verify-agent-publication.mjs
+
+  result:
+    name: Companion verification result
+    if: always()
+    needs: [plan, checks, package, portable, firefox, release-bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Require success from every selected job
+        env:
+          PREFLIGHT_PLAN: ${{ needs.plan.outputs.plan }}
+          PREFLIGHT_RESULTS: ${{ toJSON(needs) }}
+        run: node scripts/preflight.mjs --gate companion

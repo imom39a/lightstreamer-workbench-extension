@@ -56,6 +56,8 @@
     "test:ui:extension": "node scripts/test-ui-extension.mjs",
     "test:browser-diagnostics": "node scripts/test-browser-diagnostics.mjs",
     "docs:check": "node scripts/check-docs.mjs",
+    "preflight": "node scripts/preflight.mjs",
+    "test:scripts": "node scripts/test-scripts.mjs",
     "build:firefox": "node scripts/build-extension.mjs --browser firefox",
     "test:firefox": "node scripts/test-firefox.mjs",
     "release:package:firefox": "node scripts/package-extension.mjs --browser firefox",
