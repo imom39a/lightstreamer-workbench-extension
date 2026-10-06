@@ -107,6 +107,8 @@ test("PR recovery binds GitHub's head inventory while keeping the checked merge 
   const context={repository:"owner/repository",runId:"42",runAttempt:2,sourceSha,eventName:"pull_request",runHeadSha:headSha};
   const request=async url=>Response.json(String(url).includes("/artifacts?") ? {artifacts:[{id:9,name:"workbench-frozen-release-42",expired:false,workflow_run:{id:42,head_sha:headSha}}]} : {id:42,event:"pull_request",head_sha:headSha});
   assert.deepEqual(await findRunRecovery({...context,request}),{mode:"recover",artifactId:9});
+  const mergeInventory=async url=>Response.json(String(url).includes("/artifacts?") ? {artifacts:[{id:10,name:"workbench-frozen-release-42",expired:false,workflow_run:{id:42,head_sha:sourceSha}}]} : {id:42,event:"pull_request",head_sha:sourceSha});
+  assert.deepEqual(await findRunRecovery({...context,request:mergeInventory}),{mode:"recover",artifactId:10});
   await assert.rejects(findRunRecovery({...context,runHeadSha:"f".repeat(40),request}),/source|head/i);
   await assert.rejects(findRunRecovery({...context,eventName:"workflow_dispatch",request}),/source|head|dispatch/i);
 });

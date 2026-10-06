@@ -20,7 +20,8 @@ export async function findRunRecovery({repository,runId,runAttempt,sourceSha,eve
   if (runHeadSha!==sourceSha && eventName!=="pull_request") throw new Error("Release dispatch head must match the checked source.");
   const get=url=>githubJson(url,{request,token});
   const run=await get(api);
-  if (String(run.id)!==String(runId) || run.head_sha!==runHeadSha || (runHeadSha!==sourceSha && run.event!=="pull_request")) throw new Error("Release recovery run head does not match the source/event provenance.");
+  const pullRequest=eventName==="pull_request" && run.event==="pull_request";
+  if (String(run.id)!==String(runId) || !shaPattern.test(run.head_sha??"") || (run.head_sha!==sourceSha && !(pullRequest && run.head_sha===runHeadSha))) throw new Error("Release recovery run head does not match the source/event provenance.");
   const artifacts=await pages(`${api}/artifacts`,"artifacts",get);
   const found=artifacts.filter(artifact=>artifact.name===`workbench-frozen-release-${runId}`);
   if (found.length!==1) {
@@ -28,7 +29,7 @@ export async function findRunRecovery({repository,runId,runAttempt,sourceSha,eve
     throw new Error("Retry cannot recover one original frozen candidate. Do not rebuild or allocate a new version; investigate the missing/duplicate artifact.");
   }
   const artifact=found[0];
-  if (artifact.expired || String(artifact.workflow_run?.id)!==String(runId) || artifact.workflow_run?.head_sha!==runHeadSha || !Number.isSafeInteger(artifact.id)) throw new Error("Frozen artifact is expired or has mismatched run/source provenance.");
+  if (artifact.expired || String(artifact.workflow_run?.id)!==String(runId) || artifact.workflow_run?.head_sha!==run.head_sha || !Number.isSafeInteger(artifact.id)) throw new Error("Frozen artifact is expired or has mismatched run/source provenance.");
   if (runAttempt===1) throw new Error("First attempt already has a frozen candidate; refusing to overwrite it.");
   return {mode:"recover",artifactId:artifact.id};
 }
