@@ -57,6 +57,12 @@ own native button because headless popup widgets cannot be hit-tested by
 WebDriver. The test never injects a permission grant or bypasses product gates.
 Native permission reads and storage assertions verify the result.
 
+Add `LSEW_FIREFOX_NATIVE_KEY_PROOF=1` to exercise native Deny and Allow with
+trusted Enter after focusing the actual notification button. This verifies
+activation and restored checkbox focus; it does not prove the complete browser
+toolbar Tab order. Both consent choices are also checked after reopening
+Workbench, without a new request window or native prompt.
+
 Every run owns a fresh disposable Firefox profile and registered UUID mapping.
 The privileged developer driver only observes/operates that test browser. Never
 point it at a personal profile, publisher account or production page. It does

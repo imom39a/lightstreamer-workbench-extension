@@ -21,6 +21,10 @@ Events contain fixed Workbench action and screen names, coarse Capture and Injec
 
 The preference and identifier use extension-local storage. The analytics session uses browser-session storage and expires after thirty minutes without reported activity. These records are separate from captured Event History. Opt-out stops sending, aborts an active request where possible, discards queued events, and removes the identifier and analytics session. It does not retract events already received by Google. Enabling analytics later starts fresh without uploading a backlog. No event queue is saved to disk. Missing configuration or unavailable storage pauses collection without blocking Workbench.
 
+Firefox remembers your analytics choice in that browser profile. Reopening
+Workbench does not ask again. Cancel or Deny saves Off; another request occurs
+only when you explicitly turn analytics on while native permission is missing.
+
 Removing Firefox's optional analytics permission also stops active and queued
 sends and removes analytics identifiers. The Workbench setting and native
 permission are independent; granting permission does not override a saved

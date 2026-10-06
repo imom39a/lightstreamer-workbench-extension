@@ -17,6 +17,10 @@ permission notification. Cancel and Deny keep analytics Off; both Firefox's
 optional grant and the Workbench preference are required to send. Off and native
 revocation erase analytics identifiers and preserve Capture.
 
+Cancel and Deny save an explicit Off preference. Reopening Workbench preserves
+both Allow/On and Deny/Off without another consent window or native prompt. A
+new permission request requires explicitly enabling analytics again.
+
 Manifest, background, companion identity, profile-origin validation and packaging
 are Non-UI changes. Firefox declares the inspected application data categories
 used by MCP as required installation consent; analytics is optional. Arbitrary
@@ -66,9 +70,12 @@ no regenerated image set is claimed as new acceptance evidence.
 
 See [Firefox verification](../firefox-testing.md) for the owned-profile harness,
 offline configuration, installed-tarball selection and artifact directories.
-The visual run adds `LSEW_FIREFOX_VISUAL_PROOF=1`; the headed native keyboard
-run adds `LSEW_FIREFOX_HEADED=1` and `LSEW_FIREFOX_NATIVE_UI_PROOF=1` and records
-real browser keyboard choices before verifying permission and storage effects.
+The visual run adds `LSEW_FIREFOX_VISUAL_PROOF=1`. The native keyboard proof
+adds `LSEW_FIREFOX_NATIVE_KEY_PROOF=1`: it focuses the actual Firefox notification
+button and activates Deny and Allow with trusted Marionette Enter events, then
+verifies permission, preference and restored checkbox focus. Full native-toolbar
+Tab traversal is not evidenced or claimed. An owned headed ESR 153.4.0 capture
+also shows the native disclosure and focused Deny button.
 Artifacts are kept under `test-results/firefox*/`; the CI workflow uploads its
 platform evidence. Source ZIP reproducibility, exact-source CI and store
 submission outcomes are independent final gates in [RELEASE.md](../../RELEASE.md).
@@ -79,6 +86,9 @@ npm package proof and release-tooling tests passed. Firefox lint has zero errors
 and notices; its desktop-only Android minimum and two generated React DOM
 `innerHTML` warnings are explained in the reviewer source instructions.
 
-Independent visual review and the native keyboard completion record will be
-added before this change is merged. Submission and public availability remain
-separate outcomes and are not inferred from these tests.
+Independent visual review passed after inspecting all **26 PNGs** and **eight
+browser/result records** in the evidence manifest. Compact cancellation, native
+choices and restored focus, forced colors, empty history, failure recovery and
+saved consent all satisfy the supplied acceptance criteria. The review found
+no remaining material finding or required evidence gap. Submission and public
+availability remain separate outcomes and are not inferred from these tests.
