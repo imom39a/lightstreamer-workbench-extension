@@ -32,7 +32,14 @@ test("a frozen companion installs from a cold npm cache and runs its packaged MC
     for (const name of ["skills", "yaml"]) {
       const path = join(root, "node_modules", name);
       const metadata = JSON.parse(await readFile(join(path, "package.json"), "utf8"));
-      packages.set(name, { metadata, bytes: await readFile(pack(path)) });
+      const fixturePath = join(directory, `dependency-${name}`);
+      await cp(path, fixturePath, { recursive: true });
+      // npm 10 still runs prepare under --ignore-scripts when packing a directory.
+      // These installed runtime copies must not run upstream build hooks.
+      const fixtureMetadata = { ...metadata };
+      delete fixtureMetadata.scripts;
+      await writeFile(join(fixturePath, "package.json"), JSON.stringify(fixtureMetadata));
+      packages.set(name, { metadata: fixtureMetadata, bytes: await readFile(pack(fixturePath)) });
     }
     assert.equal(packages.get("skills").metadata.version, "1.5.18");
     const requests = [];
