@@ -3,9 +3,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
+import { releaseGates } from "./release-gates.mjs";
 
 const channels = ["chrome", "firefox", "npm"];
-const gates = ["plan", "package", "checks", "portable", "firefox", "fixture", "panel", "site", "release-bundle"];
 const artifactFields = { chrome: "extension", firefox: "firefox", firefoxSource: "firefoxSource", npm: "mcp" };
 const chromeId = "kfpgbhfphbhkebglopimjhfnnmbifocf";
 const firefoxId = "lightstreamer-workbench@imom39a";
@@ -30,7 +30,7 @@ export async function submitReleaseChannel({ channel, release, context, verifica
     || verification.scope !== "release" || verification.passed !== true
     || verification.sourceCommit !== release.manifest.source.commit
     || verification.manifestSha256 !== release.manifestSha256 || verification.runId !== context.runId
-    || gates.some(gate => verification.jobs?.[gate] !== "success")) {
+    || releaseGates.some(gate => verification.jobs?.[gate] !== "success")) {
     throw new Error("Publication requires all full release verification gates for this source, manifest, and run.");
   }
   const receipt = await loadReceipt(channel, release, context, receiptPath);

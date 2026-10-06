@@ -4,13 +4,14 @@ import { execFileSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertStoreAnalyticsConfiguration, createReleaseBundle, extractReleaseBundle, extractFrozenBrowser, readFrozenRelease } from "./package-mcp-release.mjs";
+import { releaseGates } from "./release-gates.mjs";
 
 const root=resolve(import.meta.dirname,"..");
 const shaPattern=/^[a-f0-9]{40}$/;
 
 export function makeReleaseVerification({release,sourceSha,runId,results}) {
   if (!shaPattern.test(sourceSha??"") || release.manifest.source?.commit!==sourceSha || !/^[a-f0-9]{64}$/.test(release.manifestSha256??"") || !/^\d+$/.test(String(runId??""))) throw new Error("Verification source/manifest/run identity mismatch.");
-  const jobs=Object.fromEntries(["plan","package","checks","portable","firefox","fixture","panel","site","release-bundle"].map(name=>[name,results?.[name]?.result??results?.[name]??"missing"]));
+  const jobs=Object.fromEntries(releaseGates.map(name=>[name,results?.[name]?.result??results?.[name]??"missing"]));
   return {format:"lightstreamer-workbench-release-verification-v1",sourceCommit:sourceSha,manifestSha256:release.manifestSha256,scope:"release",runId:String(runId),passed:Object.values(jobs).every(result=>result==="success"),jobs};
 }
 

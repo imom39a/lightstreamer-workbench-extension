@@ -167,8 +167,10 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Restore the frozen manifest and exact artifact bytes
+        shell: bash
         run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
       - name: Use the artifact version for all platform checks
+        shell: bash
         run: node scripts/release.mjs use-agent --manifest release/frozen/release-manifest.json --expected-source "$GITHUB_SHA"
       - run: npm run typecheck
       - name: Prove cross-agent skill setup, Evidence recovery, automatic connection and MCP routing
@@ -252,14 +254,17 @@ jobs:
       - run: npm ci
       - run: python -m pip install -r scripts/firefox-requirements.txt
       - name: Restore the frozen manifest and exact artifact bytes
+        shell: bash
         run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
       - name: Use the verified npm artifact version
+        shell: bash
         run: node scripts/release.mjs use-agent --manifest release/frozen/release-manifest.json --expected-source "$GITHUB_SHA"
       - name: Install and prove the same npm tarball
         env:
           LSEW_AGENT_PACKAGE_TARBALL: release/frozen/${{ needs.package.outputs.filename }}
         run: npm run agent:test:package
       - name: Load the exact frozen Firefox ZIP
+        shell: bash
         run: node scripts/release.mjs browser-input --manifest release/frozen/release-manifest.json --expected-source "$GITHUB_SHA" --browser firefox --out-dir .cache/frozen-firefox-dist
       - name: Prove Firefox Capture, IndexedDB, exact-origin MCP, restart and revocation
         env:
