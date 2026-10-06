@@ -6,6 +6,8 @@ import { resolve, join } from "node:path";
 import { chromeTestArguments } from "../../scripts/chrome-test-policy.mjs";
 import { resolveChromeExecutable } from "../support/chrome-extension-cdp";
 import { createBrowserFailureDiagnostics } from "../support/browser-failure-diagnostics.mjs";
+import { CHROME_ANALYTICS_TEST_ARGUMENTS } from "../support/browser-analytics-guard";
+import { ANALYTICS_PREFERENCE_KEY } from "../../src/extension/analytics/events";
 
 // A real extension reload invalidates the old isolated-world Chrome bindings,
 // while the already-loaded page and its application updates remain alive.
@@ -26,13 +28,17 @@ test("extension reload retires the old content bridge without interrupting page 
       executablePath: await resolveChromeExecutable(root),
       headless: true,
       ignoreDefaultArgs: ["--disable-extensions"],
-      args: [...chromeTestArguments({ additional: [`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`] })]
+      args: [...chromeTestArguments({ additional: [...CHROME_ANALYTICS_TEST_ARGUMENTS, `--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`] })]
     });
     await diagnostics.observeContext(context);
     await diagnostics.step("reload the extension without interrupting original application updates");
     const workerUrl = /\/extension\/background\.js$/;
     const worker = context.serviceWorkers().find(candidate => workerUrl.test(candidate.url())) ??
       await context.waitForEvent("serviceworker", { predicate: candidate => workerUrl.test(candidate.url()) });
+    expect(await worker.evaluate(async key => {
+      await chrome.storage.local.set({ [key]: false });
+      return (await chrome.storage.local.get(key))[key];
+    }, ANALYTICS_PREFERENCE_KEY)).toBe(false);
     // Chrome can initially load a command-line extension with developer mode
     // off, then disable that unpacked extension on reload. Enable it only in
     // this disposable test profile, as required for normal unpacked loading.

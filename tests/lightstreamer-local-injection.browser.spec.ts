@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromeTestArguments } from "../scripts/chrome-test-policy.mjs";
 import { createBrowserFailureDiagnostics } from "./support/browser-failure-diagnostics.mjs";
+import { CHROME_ANALYTICS_TEST_ARGUMENTS, assertPanelAnalyticsOff, protectWorkbenchAnalytics } from "./support/browser-analytics-guard";
 
 import {
   CdpClient,
@@ -33,8 +34,8 @@ type CaptureMessage = {
   };
 };
 
-const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const extensionDir = join(rootDir, "dist");
+const rootDir = process.env.LSEW_PROJECT_ROOT ? resolve(process.env.LSEW_PROJECT_ROOT) : resolve(fileURLToPath(new URL("..", import.meta.url)));
+const extensionDir = resolve(rootDir, process.env.LSEW_EXTENSION_DIR ?? "dist");
 const baseFixtureUrl = new URL(
   "/mutate-reinject.html",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
@@ -56,6 +57,7 @@ async function runBrowserProof(): Promise<void> {
   let pageCdp: CdpClient | null = null;
   let devtoolsCdp: CdpClient | null = null;
   let panelCdp: CdpClient | null = null;
+  let analyticsGuard: Awaited<ReturnType<typeof protectWorkbenchAnalytics>> | undefined;
   try {
     const chromeExecutable = await resolveChromeExecutable(rootDir);
     chrome = spawn(chromeExecutable, [
@@ -64,6 +66,7 @@ async function runBrowserProof(): Promise<void> {
         headless: true,
         disableNativeOcclusion: true,
         additional: [
+          ...CHROME_ANALYTICS_TEST_ARGUMENTS,
           "--auto-open-devtools-for-tabs",
           "--remote-debugging-port=0",
           `--disable-extensions-except=${extensionDir}`,
@@ -89,6 +92,7 @@ async function runBrowserProof(): Promise<void> {
       requireExtensionDevtools: true,
       workbenchManifest: extensionManifest
     });
+    analyticsGuard = await protectWorkbenchAnalytics({ port: debugging.port, manifest: extensionManifest });
     const pageTarget = targets.find(
       (target) =>
         target.type === "page" &&
@@ -176,6 +180,8 @@ async function runBrowserProof(): Promise<void> {
       await diagnostics.step("prove MCP Local Injection and Scenario delivery to the official client");
       await proveAgentFixture(rootDir, panelCdp, pageCdp);
     }
+    await assertPanelAnalyticsOff(panelCdp, Boolean(process.env.LSEW_FROZEN_RELEASE_MANIFEST));
+    analyticsGuard.assertQuiet();
 
     console.log(
       "Local Injection transport proof passed: wire direct + message-channel fallback + listener fallback."
@@ -185,6 +191,7 @@ async function runBrowserProof(): Promise<void> {
     throw error;
   } finally {
     await diagnostics.dispose();
+    analyticsGuard?.dispose();
     panelCdp?.close();
     devtoolsCdp?.close();
     pageCdp?.close();
