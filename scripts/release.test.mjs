@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { createReleaseBundle, extractReleaseBundle, readFrozenRelease, writeDeterministicZip } from "./package-mcp-release.mjs";
-import { findReceiptRecovery, findRunRecovery } from "./release.mjs";
+import { findReceiptRecovery, findRunRecovery, makeReleaseVerification } from "./release.mjs";
 
 const sourceSha = "c".repeat(40);
 const source = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -33,6 +33,27 @@ test("one candidate bundle freezes matching Chrome, Firefox, reviewer source and
     }
     assert.deepEqual(JSON.parse(await readFile(join(directory,"release-manifest.json"),"utf8")), result.manifest);
   } finally { await rm(directory,{recursive:true,force:true}); }
+});
+
+test("synthetic analytics configuration cannot be relabeled as a publishable store candidate", async () => {
+  const directory=await mkdtemp(join(tmpdir(),"workbench-synthetic-release-"));
+  try {
+    await inputs(directory);
+    await assert.rejects(createReleaseBundle({releaseDir:directory,sourceSha,analytics:"production",publicationIntent:{chrome:true,firefox:true,npm:false}}),/synthetic|analytics configuration/i);
+  } finally { await rm(directory,{recursive:true,force:true}); }
+});
+
+test("publication evidence binds full gates to the frozen manifest and cannot turn skipped or failed work into success", () => {
+  const required={plan:"success",package:"success",checks:"success",portable:"success",firefox:"success",fixture:"success",panel:"success",site:"success"};
+  const release={manifest:{source:{commit:sourceSha}},manifestSha256:"f".repeat(64)};
+  const verified=makeReleaseVerification({release,sourceSha,runId:"42",results:required});
+  assert.equal(verified.passed,true);
+  assert.equal(verified.manifestSha256,"f".repeat(64));
+  assert.equal(verified.sourceCommit,sourceSha);
+  for (const state of ["failure","cancelled","skipped",undefined]) {
+    assert.equal(makeReleaseVerification({release,sourceSha,runId:"42",results:{...required,site:state}}).passed,false);
+  }
+  assert.throws(()=>makeReleaseVerification({release,sourceSha:"d".repeat(40),runId:"42",results:required}),/source/);
 });
 
 test("the release CLI refuses a different approved source before building anything", () => {
@@ -94,6 +115,7 @@ async function inputs(directory) {
   await writeDeterministicZip([{name:"manifest.json",bytes:Buffer.from(JSON.stringify({manifest_version:3,version:source.version,browser_specific_settings:{gecko:{id:"lightstreamer-workbench@imom39a"}},incognito:"not_allowed",background:{scripts:["extension/background.js"]}}))}],join(directory,names.firefox));
   await writeDeterministicZip([
     {name:"README.md",bytes:Buffer.from(`Source commit: ${sourceSha}\n`)},
+    {name:".env.production",bytes:Buffer.from('VITE_LSEW_GA_MEASUREMENT_ID="G-VERIFY0000"\nVITE_LSEW_GA_API_SECRET="verification-only-not-a-secret"\nVITE_LSEW_GA_DEBUG="false"\n')},
     {name:"package.json",bytes:Buffer.from(JSON.stringify(source))},
     {name:"public/manifest.json",bytes:Buffer.from(JSON.stringify({manifest_version:3,version:source.version}))}
   ],join(directory,names.firefoxSource));

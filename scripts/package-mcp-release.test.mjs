@@ -112,6 +112,7 @@ async function writeInputs(directory, extensionZip, agentTgz, sourceSha, publish
     {name:"package.json",bytes:Buffer.from(JSON.stringify(sourceExtension))},
     {name:"public/manifest.json",bytes:Buffer.from(JSON.stringify({version:extensionVersion}))},
     {name:"README.md",bytes:Buffer.from(`Source commit: ${sourceSha}\n`)}
+    ,{name:".env.production",bytes:Buffer.from('VITE_LSEW_GA_MEASUREMENT_ID="G-PRODUCTION123"\nVITE_LSEW_GA_API_SECRET="public-ingestion-example"\nVITE_LSEW_GA_DEBUG="false"\n')}
   ],join(directory,`${sourceExtension.name}-firefox-source-v${extensionVersion}.zip`));
   await writeFile(join(directory,"firefox-submission.json"),JSON.stringify({version:{release_notes:{"en-US":"Synthetic release"},approval_notes:"Synthetic reviewer notes"}}));
 }

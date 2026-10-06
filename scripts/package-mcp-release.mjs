@@ -89,6 +89,7 @@ export async function createReleaseBundle({ releaseDir: directory, sourceSha, di
   const reviewerManifest = readZipJson(entries[3].bytes, "public/manifest.json");
   const reviewerReadme = readZipFile(entries[3].bytes, "README.md").toString("utf8");
   if (reviewerPackage.version !== packageMetadata.version || reviewerManifest.version !== packageMetadata.version || !reviewerReadme.includes(`Source commit: ${sourceSha}\n`)) throw new Error("Firefox reviewer source version or provenance does not match the candidate.");
+  if (analytics === "production") assertStoreAnalyticsConfiguration(sourceAnalytics(entries[3].bytes));
   const firefoxNotes = JSON.parse(entries[4].bytes.toString("utf8"));
   if (!firefoxNotes.version?.release_notes?.["en-US"]?.trim() || !firefoxNotes.version?.approval_notes?.trim()) throw new Error("Firefox submission metadata requires release_notes.en-US and approval_notes.");
   const details = (entry, version = packageMetadata.version) => ({ version, file: entry.name, size: entry.bytes.length, sha256: sha256(entry.bytes) });
@@ -147,6 +148,7 @@ export async function readFrozenRelease({ manifestPath, expectedSource }) {
   const npm = readTgzJson(artifacts.npm.bytes,"package/package.json");
   if (chrome.manifest_version !== 3 || firefox.manifest_version !== 3 || chrome.version !== manifest.extension.version || firefox.version !== manifest.extension.version || firefox.browser_specific_settings?.gecko?.id !== manifest.firefox.id || firefox.incognito !== "not_allowed" || !firefox.background?.scripts || firefox.background.service_worker) throw new Error("Frozen extension archive identity/version does not match the manifest.");
   if (sourcePackage.version !== manifest.extension.version || sourceManifest.version !== manifest.extension.version || !sourceReadme.includes(`Source commit: ${expectedSource}\n`)) throw new Error("Frozen Firefox reviewer source does not match the candidate source/version.");
+  if (manifest.build.analytics === "production") assertStoreAnalyticsConfiguration(sourceAnalytics(artifacts.firefoxSource.bytes));
   if (npm.name !== manifest.mcp.name || npm.version !== manifest.mcp.version || npm.gitHead !== expectedSource) throw new Error("Frozen npm archive name/version/provenance mismatch.");
   const firefoxMetadata = JSON.parse(artifacts.metadata.bytes.toString("utf8"));
   if (!firefoxMetadata.version?.release_notes?.["en-US"]?.trim() || !firefoxMetadata.version?.approval_notes?.trim()) throw new Error("Frozen Firefox metadata requires release and reviewer notes.");
@@ -185,6 +187,20 @@ export async function extractFrozenBrowser({ manifestPath, expectedSource, brows
 }
 
 function inside(directory,path) { const part=relative(directory,path); return !part.startsWith("..") && !isAbsolute(part); }
+export function assertStoreAnalyticsConfiguration(configuration) {
+  const measurementId=configuration.VITE_LSEW_GA_MEASUREMENT_ID,apiSecret=configuration.VITE_LSEW_GA_API_SECRET,debug=configuration.VITE_LSEW_GA_DEBUG;
+  if (typeof measurementId!=="string" || !/^G-[A-Z0-9]+$/.test(measurementId) || typeof apiSecret!=="string" || !apiSecret.trim() || ![undefined,"","false","0"].includes(debug)) throw new Error("Production analytics configuration must be present with debug collection disabled.");
+  if (/^G-(VERIFY|TEST|FAKE|EXAMPLE|LSEWTEST)/.test(measurementId) || /verification-only|synthetic|fake-secret|test-secret/i.test(apiSecret)) throw new Error("Synthetic analytics configuration cannot be used for publication.");
+}
+function sourceAnalytics(archive) {
+  const text=readZipFile(archive,".env.production").toString("utf8"),configuration={};
+  for (const key of ["VITE_LSEW_GA_MEASUREMENT_ID","VITE_LSEW_GA_API_SECRET","VITE_LSEW_GA_DEBUG"]) {
+    const line=text.split("\n").find(line=>line.startsWith(`${key}=`));
+    if (!line) throw new Error("Paired reviewer source is missing its analytics configuration.");
+    configuration[key]=JSON.parse(line.slice(key.length+1));
+  }
+  return configuration;
+}
 function safePath(directory,name) {
   if (typeof name !== "string" || !name || name.includes("\\") || name.includes("\0") || name.startsWith("/") || name.split("/").some(part => !part || part === "." || part === "..") || /^[a-z]:/i.test(name)) throw new Error(`Unsafe archive path: ${name}`);
   const path=resolve(directory,name);
