@@ -166,7 +166,9 @@ def main():
                   ? [...Services.wm.getEnumerator("navigator:browser")].flatMap(win => [...win.gBrowser.browsers]).find(browser => browser.currentURI.spec.includes("/extension/analytics-consent/index.html"))
                   : [...e.views].find(v => v.viewType === "devtools_panel").xulBrowser;
                 const r = browser.getBoundingClientRect();
-                const root = Services.wm.getMostRecentWindow("navigator:browser");
+                // Actions use Marionette's selected window viewport, which can
+                // differ from the last focused window after a consent closes.
+                const root = window;
                 const owner = browser.ownerDocument.defaultView;
                 return {x: r.x + owner.mozInnerScreenX - root.mozInnerScreenX,
                         y: r.y + owner.mozInnerScreenY - root.mozInnerScreenY};
