@@ -29,7 +29,8 @@ for (const file of ["dist/cli.mjs", "dist/THIRD_PARTY_NOTICES.txt", "skills/ligh
   assert(artifact.files.some(entry => entry.path === file), `Missing package file ${file}`);
 }
 assert(artifact.files.every(entry => /^(dist\/|skills\/|README\.md$|READS\.md$|WINDOWS\.md$|LICENSE$|package\.json$)/.test(entry.path)), "Unexpected file in npm artifact");
-npm(["install", "--prefix", directory, "--ignore-scripts", "--offline", "--no-audit", "--no-fund", suppliedTarball ?? join(directory, artifact.filename)]);
+// Resolve pinned dependencies even when the runner's npm cache is cold.
+npm(["install", "--prefix", directory, "--ignore-scripts", "--no-audit", "--no-fund", suppliedTarball ?? join(directory, artifact.filename)]);
 const cli = join(directory, "node_modules", ...metadata.name.split("/"), "dist/cli.mjs");
 const installed = JSON.parse(await readFile(join(directory, "node_modules", ...metadata.name.split("/"), "package.json"), "utf8"));
 assert.equal(installed.version, metadata.version);
