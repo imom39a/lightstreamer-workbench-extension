@@ -1,0 +1,8 @@
+{
+  "version": {
+    "release_notes": {
+      "en-US": "Lightstreamer Workbench shares the same product version and debugging features with its Chrome release. Capture official Lightstreamer Web Client activity, inspect Evidence and COMMAND state, reproduce Item Updates with Local Injection, send reviewed Client Messages, and connect an MCP companion. See the project changelog for this candidate's changes."
+    },
+    "approval_notes": "Desktop Firefox 140+; regular browsing only. Open Developer Tools on an application using the official Lightstreamer Web Client and choose the Lightstreamer Workbench panel. The extension observes clients, subscriptions, Item Updates and outbound Client Messages without suppressing application behavior. Local Injection is local; Server Injection uses the application's normal sendMessage path after review. The optional local MCP companion uses loopback WebSocket connections and shares captured application data under the installation data permissions; instructions are bundled and documented at https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/. Technical and interaction analytics require both Firefox's optional native consent and the Workbench preference. Application data is excluded from analytics. The paired source ZIP contains exact committed source, locked dependencies and reviewer build instructions, with only the publicly extractable analytics ingestion configuration. Publisher, account, signing and npm credentials are excluded. Generated React DOM innerHTML code is framework code; application-controlled values are rendered as text."
+  }
+}

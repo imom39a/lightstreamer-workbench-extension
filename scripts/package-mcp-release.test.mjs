@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync, inflateRawSync } from "node:zlib";
-import { createReleaseBundle, makeReleaseManifest } from "./package-mcp-release.mjs";
+import { createReleaseBundle, makeReleaseManifest, writeDeterministicZip } from "./package-mcp-release.mjs";
 
 const sha = "c".repeat(40);
 const agentVersion = "7.4.2";
@@ -47,8 +47,11 @@ test("bundle validates archive metadata and contains checksummed artifacts and i
     const { output, manifest } = await createReleaseBundle({ releaseDir: directory, sourceSha: sha });
     const entries = readZipEntries(await readFile(output));
     assert.deepEqual([...entries.keys()].sort(), [
-      "README.txt", "SHA256SUMS", companionFile, extensionFile, "release-manifest.json"
-    ]);
+      "README.txt", "SHA256SUMS", "agent-release.json", companionFile, extensionFile,
+      `extension/${sourceExtension.name}-firefox-v${extensionVersion}.zip`,
+      `extension/${sourceExtension.name}-firefox-source-v${extensionVersion}.zip`,
+      "metadata/firefox-submission.json", "release-manifest.json"
+    ].sort());
     assert.deepEqual(entries.get(extensionFile), extensionZip);
     assert.deepEqual(entries.get(companionFile), agentTgz);
     const emittedManifest = JSON.parse(entries.get("release-manifest.json"));
@@ -91,9 +94,9 @@ test("bundle records guarded publication intent without publishing", async () =>
     const extensionZip = makeZip({ "manifest.json": { manifest_version: 3, version: extensionVersion } });
     const agentTgz = makeTgz({ name: sourceAgent.name, version: companionVersion, gitHead: sha });
     await writeInputs(directory, extensionZip, agentTgz, sha, true);
-    const { manifest } = await createReleaseBundle({ releaseDir: directory, sourceSha: sha });
+    const { manifest } = await createReleaseBundle({ releaseDir: directory, sourceSha: sha, publicationIntent:{chrome:true,firefox:true,npm:true},analytics:"production" });
     assert.equal(manifest.state, "prepared-unpublished");
-    assert.equal(manifest.publicationIntent, "guarded-publish-after-verification");
+    assert.deepEqual(manifest.publicationIntent, {chrome:true,firefox:true,npm:true});
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -104,6 +107,13 @@ async function writeInputs(directory, extensionZip, agentTgz, sourceSha, publish
   await writeFile(join(directory, extensionFile.split("/").at(-1)), extensionZip);
   await writeFile(join(directory, plan.filename), agentTgz);
   await writeFile(join(directory, "agent-release.json"), JSON.stringify(plan));
+  await writeDeterministicZip([{name:"manifest.json",bytes:Buffer.from(JSON.stringify({manifest_version:3,version:extensionVersion,incognito:"not_allowed",background:{scripts:["extension/background.js"]},browser_specific_settings:{gecko:{id:"lightstreamer-workbench@imom39a"}}}))}],join(directory,`${sourceExtension.name}-firefox-v${extensionVersion}.zip`));
+  await writeDeterministicZip([
+    {name:"package.json",bytes:Buffer.from(JSON.stringify(sourceExtension))},
+    {name:"public/manifest.json",bytes:Buffer.from(JSON.stringify({version:extensionVersion}))},
+    {name:"README.md",bytes:Buffer.from(`Source commit: ${sourceSha}\n`)}
+  ],join(directory,`${sourceExtension.name}-firefox-source-v${extensionVersion}.zip`));
+  await writeFile(join(directory,"firefox-submission.json"),JSON.stringify({version:{release_notes:{"en-US":"Synthetic release"},approval_notes:"Synthetic reviewer notes"}}));
 }
 
 function makeZip(entries) {
