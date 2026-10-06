@@ -1,4 +1,4 @@
-Install the Chrome extension and the npm companion to let an MCP agent inspect Evidence and test Local Injections in an open Workbench panel.
+Connect an MCP agent to inspect Evidence and test Local Injections in an open Workbench panel.
 
 ## Requirements
 
@@ -9,13 +9,13 @@ Install the Chrome extension and the npm companion to let an MCP agent inspect E
 
 Companion [0.1.7 is available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) and pairs with extension 2.0.8. Install the extension separately. See [Release notes]({{site}}releases/) for the available versions.
 
-The extension and npm package provide the Workbench runtime. A repository checkout, build tools, Docker, and a separately managed server are not part of user setup.
+Use the ready-built extension and npm package; no repository checkout or build tools are required.
 
 ## Install a matching extension
 
 Follow [Getting started]({{site}}docs/getting-started/) for Store installation. Check `chrome://extensions`. The Store offers 2.0.7 while 2.0.8 awaits review; use the matching download below.
 
-If the Store offers an older version, install the ready-built extension download:
+If Store availability differs, install the matching download:
 
 1. Download the [packaged extension 2.0.8](https://github.com/imom39a/lightstreamer-workbench-extension/releases/download/agent-v0.1.7/lightstreamer-workbench-mcp-v2.0.8.zip).
 2. Extract the downloaded bundle.
@@ -29,7 +29,7 @@ Copy the ID Chrome assigns to this extension. Add it to the setup command below 
 
 ## Set up MCP
 
-1. Run setup with npm's `npx`. It downloads the companion and prints a version-pinned MCP configuration:
+1. Run setup to download the companion and print its pinned MCP configuration:
 
    macOS or Linux:
 
@@ -45,13 +45,13 @@ Copy the ID Chrome assigns to this extension. Add it to the setup command below 
 
    For a downloaded extension loaded unpacked, append `--extension-id YOUR_EXTENSION_ID`. Copy its ID from `chrome://extensions`.
 
-2. Copy the printed `mcpServers` entry into your agent app's MCP settings. Setup prints this entry; it does not edit those settings.
+2. Copy the printed `mcpServers` entry into your agent app's MCP settings.
 3. Start that MCP server in the agent app.
 4. Open Workbench on the application tab you want to inspect.
 5. Ask the agent to call `list_panel_sessions`.
 6. Ask it to call `get_status` with the selected `panelSessionId`.
 
-The agent app starts the pinned npm companion. Workbench connects automatically. This one-time setup is enough; no separate terminal, hosted service, or native installer is needed afterward.
+The agent app starts the pinned npm companion. Workbench connects automatically.
 
 ## Check the connection
 
@@ -76,7 +76,7 @@ On Windows, use Windows Node. If the agent app cannot find `npx`, set the MCP co
 
 ## Work with your agent
 
-Ask the agent to find the relevant Subscription or item, count retained records, and read a few examples. Name the application tab so it selects the intended Panel Session.
+Name the application tab and ask the agent to find relevant Subscriptions, count retained records, and inspect examples.
 
 For example: “Find the orders Subscription. Count its retained updates, then show the last five with the key and quantity fields.” Summary counts describe retained records, not active COMMAND rows. Check Coverage before drawing conclusions from missing Evidence.
 
@@ -90,7 +90,19 @@ Keep the panel visible during a Scenario. Do not repeat an Injection with an unk
 
 ## Optional agent skill
 
-The package includes `skills/lightstreamer-workbench/SKILL.md`. The MCP connection works without this skill. You can add its folder to your agent's skill directory for guided investigation steps.
+The package bundles `skills/lightstreamer-workbench/SKILL.md` and its references.
+
+The next release after 0.1.7 offers the skill during setup. Once published:
+
+```powershell
+npx.cmd --yes lightstreamer-workbench-agent@latest setup
+```
+
+Use `npx` on macOS/Linux. npx first retrieves the companion and its installer dependency. Accept the skill offer to use the upstream `skills` installer's native agent selector and project/user scope prompts. Supported targets include Codex (OpenAI), Claude Code, Kiro, Cursor, and the rest of its agent registry; you can select several. It copies the complete skill; `update` refreshes it alongside printed MCP configuration. The outer `npx.cmd --yes` leaves the skill prompts available.
+
+For unattended installation, append `--skill --agent codex claude-code kiro-cli --yes`, keeping only the targets you need, and optionally `--global`. Kiro IDE/CLI share `.kiro/skills`. Repeated `--agent` flags also work. `--json` skips installation; MCP startup never prompts.
+
+Published 0.1.7 requires copying the optional bundled skill manually.
 
 ## Access and data
 

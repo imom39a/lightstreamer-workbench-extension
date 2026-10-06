@@ -36,6 +36,9 @@
     "access": "public",
     "registry": "https://registry.npmjs.org"
   },
+  "dependencies": {
+    "skills": "1.5.18"
+  },
   "scripts": {
     "prepack": "node ../scripts/build-agent.mjs"
   }

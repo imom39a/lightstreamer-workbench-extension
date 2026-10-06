@@ -18,8 +18,10 @@ function event(id: number, kind: LightstreamerEventEnvelope["kind"]): Lightstrea
     ...(kind === "item-update" ? { update: { isSnapshot: false, command: "ADD", key: "row-1", fields: { command: "ADD", key: "row-1", qty: 1 }, changedFields: { command: "ADD", key: "row-1", qty: 1 } } } : {})
   };
 }
-async function fixture() {
-  const history = createAuthoritativeHistory({ precommitted: [event(1, "client-created"), event(2, "client-status"), event(3, "subscription-created"), event(4, "subscription-started"), event(5, "listener-added"), event(6, "item-update")] });
+async function fixture(capturedUpdate = event(6, "item-update")) {
+  const startup = [event(1, "client-created"), event(2, "client-status"), event(3, "subscription-created"), event(4, "subscription-started"), event(5, "listener-added")];
+  for (const candidate of startup) if (candidate.subscription && capturedUpdate.subscription) candidate.subscription = { ...candidate.subscription, ...capturedUpdate.subscription };
+  const history = createAuthoritativeHistory({ precommitted: [...startup, capturedUpdate] });
   const execute = vi.fn(async () => ({ requestId: "delivery-1", ok: true, status: "success" as const, timestamp: 10, attemptedCount: 1, deliveredCount: 1, failedCount: 0 }));
   const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: { execute } });
   runtimes.push(runtime);
@@ -33,6 +35,65 @@ async function fixture() {
   return { history, runtime, execute, call, evidence, pageEpoch, service, grant(value: AgentPermission) { permission = value; } };
 }
 describe("Workbench agent domain API", () => {
+  it("returns an executable Evidence discovery route for a scope that cannot author directly", async () => {
+    const { call } = await fixture();
+    const scope = await call("get_scope", { scopeId: "page" });
+    expect(scope.localInjection.recovery.evidence.tool).toBe("query_evidence");
+    const found = await call(scope.localInjection.recovery.evidence.tool, scope.localInjection.recovery.evidence.arguments);
+    expect(found.evidence[0].identity.eventId).toBe("event-6");
+  });
+
+  it("recovers an ambiguous Subscription through its actual item search and retained update", async () => {
+    const captured = event(6, "item-update");
+    captured.subscription!.items = ["rows", "other-rows"];
+    const { history, call, pageEpoch } = await fixture(captured);
+    const other = event(7, "item-update");
+    other.subscription!.items = ["rows", "other-rows"];
+    other.item = { name: "other-rows", position: 2 };
+    await history.offer(other).settled;
+    const subscriptions = await call("search_scope", { kind: "subscription", text: "sub-1" });
+    const scope = await call("get_scope", { scopeId: subscriptions.scopes[0].scopeId });
+    expect(scope.localInjection.unavailable).toEqual(expect.any(String));
+    const recovery = scope.localInjection.recovery;
+    const items = await call(recovery.target.tool, recovery.target.arguments);
+    expect(items.scopes.map((item: any) => item.kind)).toEqual(["item", "item"]);
+    const examples = await call(recovery.evidence.tool, recovery.evidence.arguments);
+    const prepared = await call("prepare_local_injection", { evidence: examples.evidence[0].identity, pageEpoch });
+    expect(prepared.local.draft.ready).toBe(true);
+  });
+
+  it("provides a complete editable JSON template and preserves unrelated fields during a seat change", async () => {
+    const captured = event(6, "item-update");
+    captured.subscription!.fields = ["command", "key", "modelId", "modelValues"];
+    captured.update!.fields = { command: "ADD", key: "row-1", modelId: "seat", modelValues: JSON.stringify({ seat: "14C", status: "confirmed" }) };
+    const { call, evidence, pageEpoch, execute } = await fixture(captured);
+    const prepared = await call("prepare_local_injection", { evidence, pageEpoch });
+    expect(prepared.local.draft.documentContract).toMatchObject({ format: "expanded-json", requiredFields: ["command", "key", "modelId", "modelValues"], jsonStringFields: ["modelValues"] });
+    const edited = structuredClone(prepared.local.draft.document);
+    expect(edited.fields.modelValues).toEqual({ seat: "14C", status: "confirmed" });
+    edited.command = edited.fields.command = "UPDATE";
+    edited.fields.modelValues.seat = null;
+    const changed = await call("update_agent_document", { token: prepared.token, document: edited });
+    expect(changed.local.draft.ready).toBe(true);
+    const request = { token: changed.token, requestId: "clear-seat" };
+    await call("execute_local_injection", request);
+    await call("wait_for_operation", { requestId: request.requestId, timeoutMs: 2000 });
+    await call("execute_local_injection", request);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(changed.local.draft.document.fields).toMatchObject({ key: "row-1", modelId: "seat", modelValues: { seat: null, status: "confirmed" } });
+  });
+
+  it("preserves ordinary command/key field values in a non-COMMAND editing template", async () => {
+    const captured = event(6, "item-update");
+    captured.subscription!.mode = "MERGE";
+    captured.update = { isSnapshot: false, fields: { command: "application-action", key: "application-id", qty: "1" }, changedFields: { command: "application-action", key: "application-id", qty: "1" } };
+    const { call, evidence, pageEpoch } = await fixture(captured);
+    const prepared = await call("prepare_local_injection", { evidence, pageEpoch });
+    expect(prepared.local.draft.ready, JSON.stringify(prepared.local.draft.diagnostics)).toBe(true);
+    expect(prepared.local.draft.documentContract.mirroredFields).toEqual([]);
+    expect(prepared.local.draft.document).toMatchObject({ command: null, key: null, fields: { command: "application-action", key: "application-id" } });
+  });
+
   it("queries the retained history without moving the user's investigation and preserves a stable cursor", async () => {
     const { runtime, call } = await fixture();
     const before = runtime.getSnapshot();

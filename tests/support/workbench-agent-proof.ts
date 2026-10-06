@@ -57,6 +57,9 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     assert.ok(liveItem, "Scope discovery identifies the exact active, positional item.");
     const liveScope = await call("get_scope", { panelSessionId, scopeId: liveItem.scopeId });
     assert.equal(liveScope.node.retired, false);
+    assert.equal(liveScope.readContext.source.mode, "COMMAND");
+    assert.deepEqual([...liveScope.readContext.schema.fields].sort(), ["command", "key", "modelId", "modelValues"]);
+    assert.deepEqual(liveScope.readContext.item, { name: "scenario.mutate-reinject", position: 1 });
     const anchor = liveScope.localInjection.anchor;
     assert.equal(anchor.itemName, "scenario.mutate-reinject");
     assert.equal(anchor.itemPosition, 1);
@@ -73,9 +76,10 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
     let profile: any;
     if (profileReply.isError) {
       assert.equal((profileReply.structuredContent as any)?.error?.code, "RESULT_BUDGET_EXCEEDED");
-      // A single wide profile can exceed the default. Deliberately request a
-      // larger bounded result at the same read point; do not raise every read.
-      profile = await call("describe_stream", { ...profileArgs, maxBytes: 65536 });
+      const recovery = /Retry describe_stream with maxBytes:(\d+)/.exec((profileReply.structuredContent as any).error.message);
+      assert.ok(recovery, "Profile budget failures give a measured retry budget.");
+      // Follow the measured budget at the same boundary, leaving other reads small.
+      profile = await call("describe_stream", { ...profileArgs, maxBytes: Number(recovery[1]) });
     } else profile = profileReply.structuredContent;
     assert.ok(profile.streams.length > 0, "Stream description profiles the exact live item at a stable read point.");
     let source: any = null;
@@ -94,11 +98,30 @@ export async function proveAgentFixture(root: string, panel: CdpClient, page: Cd
       }
     }
     assert.ok(source, "A profiled example hydrates to the current listener-based server update for the exact item and position.");
+    const modelField = liveScope.readContext.schema.fields.find((name: string) => name === "modelId");
+    assert.ok(modelField, "The actual source declares the model field before a predicate is formed.");
+    const modelQuery = { panelSessionId, scopeId: liveItem.scopeId, at: boundary.readPoint,
+      filter: serverListenerFilter, fieldPredicates: [{ field: modelField, op: "eq", value: source.payload.update.fields[modelField] }] };
+    const matchingModels = await call("query_evidence", { ...modelQuery, fields: [modelField], limit: 1 });
+    assert.ok(matchingModels.totals.matching > 0, "A typed predicate based on discovered fields matches real official-client Evidence.");
+    const modelCount = await call("aggregate_evidence", { ...modelQuery, aggregate: { unit: "evidence-records" } });
+    assert.equal(modelCount.aggregate.count, matchingModels.totals.matching);
+    assert.deepEqual(modelCount.readPoint, matchingModels.readPoint, "Model counts and examples use the same retained boundary.");
     const document = (command: string, messageText: string) => JSON.stringify({ command, key: "agent-browser.TICKER", isSnapshot: false, fields: { command, key: "agent-browser.TICKER", modelId: "MESSENGER", modelValues: { messageId: "agent-browser", messageText, messageType: "TICKER" } } });
     const baselineCount = await evaluateByValue<number>(page, "Number(document.querySelector('#update-count').textContent)");
     const validation = await call("validate_agent_candidate", { panelSessionId, pageEpoch: status.pageEpoch, draft: { evidence: source.identity, document: document("ADD", "Agent MCP Local Injection") } });
     assert.equal(validation.valid, true, JSON.stringify(validation));
-    const draft = await call("prepare_local_injection", { panelSessionId, evidence: source.identity, pageEpoch: status.pageEpoch, document: document("ADD", "Agent MCP Local Injection") });
+    const template = await call("prepare_local_injection", { panelSessionId, evidence: source.identity, pageEpoch: status.pageEpoch });
+    assert.deepEqual([...template.local.draft.documentContract.requiredFields].sort(), ["command", "key", "modelId", "modelValues"]);
+    assert.deepEqual(template.local.draft.documentContract.jsonStringFields, ["modelValues"]);
+    assert.equal(typeof template.local.draft.document.fields.modelValues, "object", "Captured encoded JSON is expanded for editing");
+    const edited = structuredClone(template.local.draft.document);
+    edited.command = edited.fields.command = "ADD";
+    edited.key = edited.fields.key = "agent-browser.TICKER";
+    edited.isSnapshot = false;
+    edited.fields.modelId = "MESSENGER";
+    edited.fields.modelValues = { ...edited.fields.modelValues, messageId: "agent-browser", messageText: "Agent MCP Local Injection", messageType: "TICKER" };
+    const draft = await call("update_agent_document", { panelSessionId, token: template.token, document: edited });
     assert.ok(draft.local.draft.ready, JSON.stringify(draft));
     const request = { panelSessionId, token: draft.token, requestId: "browser-local-1" };
     const before = await call("query_evidence", { panelSessionId, scopeId: liveItem.scopeId, limit: 1 });

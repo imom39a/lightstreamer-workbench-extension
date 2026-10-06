@@ -44,6 +44,34 @@ function investigation(runtime: WorkbenchRuntime) {
 }
 
 describe("MCP companion search", () => {
+  it("explains missing name excerpts without claiming PII redaction", async () => {
+    const { call } = await fixture([event(1, { update: { ...event(1).update!, fields: { command: "ADD", key: "row-1", qty: "Clifford" } } })]);
+    const compact = await call("search_evidence", { within: "page", text: "Clifford" });
+    expect(compact.total).toBe(1);
+    expect(compact.evidence[0].match).toMatchObject({ state: "NO_SHAREABLE_EXCERPT", reason: "PAYLOAD_NOT_REQUESTED" });
+    expect(compact.matchExplanation).toContain("does not establish redaction");
+    const selected = await call("search_evidence", { within: "page", text: "Clifford", fields: ["qty"] });
+    expect(selected.evidence[0].match).toMatchObject({ state: "EXPLAINED", fields: [expect.objectContaining({ excerpt: "Clifford" })] });
+  });
+
+  it("gives a sufficient bounded budget for an oversized exact read", async () => {
+    const { call } = await fixture([event(1, { update: { ...event(1).update!, fields: { command: "ADD", key: "row-1", qty: "wide-value-".repeat(900) } } })]);
+    const found = await call("query_evidence", { within: "page", limit: 1 });
+    const evidence = found.evidence[0].identity;
+    let message = "";
+    try { await call("get_evidence", { evidence, includePayload: true }); }
+    catch (error) { message = (error as Error).message; }
+    expect(message).toContain("RESULT_BUDGET_EXCEEDED");
+    const suggested = /maxBytes:(\d+)/.exec(message);
+    expect(suggested).not.toBeNull();
+    const maxBytes = Number(suggested![1]);
+    expect(maxBytes).toBeGreaterThan(8192);
+    expect(maxBytes).toBeLessThanOrEqual(65536);
+    const result = await call("get_evidence", { evidence, includePayload: true, maxBytes });
+    expect(result.lookup.state).toBe("RETAINED");
+    expect(agentToolResultBytes(result)).toBeLessThanOrEqual(maxBytes);
+  });
+
   it("advertises bounded read-only search tools and rejects ambiguous continuation arguments", () => {
     for (const name of ["search_scope", "search_evidence"]) {
       expect(AGENT_TOOLS.find(tool => tool.name === name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });

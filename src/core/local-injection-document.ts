@@ -58,9 +58,10 @@ const TOP_LEVEL_KEY_SET = new Set<string>(TOP_LEVEL_KEYS);
 export function createLocalInjectionDocumentFromDraft(
   draft: ReinjectionDraft
 ): LocalInjectionDocument {
+  const nonCommand = draft.subscriptionMode === "MERGE" || draft.subscriptionMode === "DISTINCT";
   return {
-    command: draft.command,
-    key: draft.key,
+    command: nonCommand ? null : draft.command,
+    key: nonCommand ? null : draft.key,
     isSnapshot: draft.isSnapshot,
     fields: { ...expandJsonStringFields(draft.fields).fields }
   };
@@ -165,6 +166,7 @@ export function validateLocalInjectionDocument(
   }
 
   if (
+    context.mode === "COMMAND" &&
     schema.has("command") &&
     Object.hasOwn(document.fields, "command") &&
     !Object.is(document.fields.command, document.command)
@@ -179,6 +181,7 @@ export function validateLocalInjectionDocument(
     );
   }
   if (
+    context.mode === "COMMAND" &&
     schema.has("key") &&
     Object.hasOwn(document.fields, "key") &&
     !Object.is(document.fields.key, document.key)

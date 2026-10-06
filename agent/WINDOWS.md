@@ -14,6 +14,24 @@ Follow the [common setup guide](README.md#set-up). PowerShell can block the
 npx.cmd --yes lightstreamer-workbench-agent@latest setup
 ```
 
+npx first downloads or reuses the companion and its installer dependency. This
+setup also offers the matching Workbench skill in releases after 0.1.7. Accept
+the offer to use the native upstream agent selector and project or user scope
+prompts. Choose Codex (OpenAI), Claude Code, Kiro, or another supported app; you
+can select several. The outer `npx.cmd --yes` leaves those skill prompts available.
+To install or update it without prompts in your application directory:
+
+```powershell
+npx.cmd --yes lightstreamer-workbench-agent@latest setup --skill --agent codex claude-code kiro-cli --yes
+```
+
+Use `update` in place of `setup` for the same combined flow after an upgrade.
+The upstream `skills` dependency copies all bundled references into the selected
+targets: `.agents\skills` for Codex, `.claude\skills` for Claude Code, and
+`.kiro\skills` for Kiro IDE/CLI, each under `lightstreamer-workbench`.
+Keep just the targets you need; add `--global` for user scope.
+Restart or refresh the agent's skill discovery if it does not see the new skill.
+
 If you loaded Workbench as an unpacked extension, include its ID from
 `chrome://extensions`:
 
@@ -32,7 +50,7 @@ If the application cannot find `npx`, use the full path returned by
 a separate JSON array entry. Restart the application after installing Node so
 it receives the updated PATH.
 
-## Offline tarball
+## Release tarball
 
 If you received a matching release bundle, extract it and load its extension
 ZIP as unpacked. From the extracted bundle root, install its companion tarball
@@ -47,7 +65,9 @@ $workbenchCli = (Resolve-Path '.\workbench-companion\node_modules\lightstreamer-
 ```
 
 Keep the installed directory in place; `--local` prints its absolute Node and
-CLI paths. This is the same npm runtime as the registry package.
+CLI paths. This is the same npm runtime as the registry package. Installation
+also resolves the pinned `skills` dependency from npm; a fully offline install
+requires that dependency to be available in the npm cache.
 
 ## Chrome and Node must share the computer
 

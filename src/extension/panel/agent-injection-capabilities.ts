@@ -22,6 +22,12 @@ export function agentNativeChangePreview(facts?: NativeReviewedChangeFacts): Age
     fieldValueStates: facts.fieldValueStates, ...facts.semantics, baseline: facts.context.baseline?.basis ?? null }) : null;
 }
 
+export function describeAgentDocument(fields: readonly string[], jsonStringFields: readonly string[] | null, mode: string | null) {
+  return { format: "expanded-json", requiredProperties: ["command", "key", "isSnapshot", "fields"],
+    requiredFields: [...fields], jsonStringFields, mirroredFields: mode === "COMMAND" ? fields.filter(name => name === "command" || name === "key") : [],
+    editing: "Preserve every required field. Mirror only declared COMMAND command/key fields; in other modes those names are ordinary fields. Edit encoded JSON fields as objects or arrays; delivery serializes them back to strings." };
+}
+
 /** Describe the same exact target and value certainty used by ordinary Draft
  * validation. This is an inspection contract, not a second capability registry. */
 export function describeAgentInjectionTarget(anchor: WorkbenchLocalInjectionAnchor, draft: ReinjectionDraft) {
@@ -34,6 +40,7 @@ export function describeAgentInjectionTarget(anchor: WorkbenchLocalInjectionAnch
       listenerId: anchor.listenerId, deliveryPath: anchor.captureSource, mode },
     supportedModes: supported ? [mode] : [], sourceFree: anchor.sourceKind === "authored" && supported,
     schema: { basis: "declared-field-list", fields: anchor.fieldSchema, jsonStringFields: expandJsonStringFields(draft.fields).encodedFieldNames },
+    documentContract: describeAgentDocument(anchor.fieldSchema, expandJsonStringFields(draft.fields).encodedFieldNames, mode),
     fields: anchor.fieldSchema.map(name => ({ name, valueState: draft.fieldValueStates[name] ?? "unavailable" })),
     changePolicy: { replay: "Preserve an unchanged captured bitmap.", generated: "Derive native mode changes from the exact item/key baseline or preceding reviewed Step.",
       unavailableBaseline: "Refuse generated deltas when concrete baseline values are unavailable.",

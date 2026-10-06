@@ -16,6 +16,7 @@ export type AgentLocalSettlement = Omit<LocalInjectionTerminalRecord, "evidence"
 }>;
 
 export type AgentDraftInput = { scopeId?: string; evidence?: EvidenceIdentity; document?: string; delayMs?: number };
+export type AgentScopeOptions = Readonly<{ fieldOffset?: number; fieldLimit?: number }>;
 export type AgentQueryBoundary = Readonly<{ scope: StructuralEvidenceScope; filter: Filter }>;
 export type AgentScopeSearchSnapshot = Readonly<{
   pageEpoch: string | null;
@@ -58,7 +59,7 @@ export interface AgentRuntime {
   commandRows?(input: AgentCommandRowsInput): AgentCommandRowsResult;
   scopes(offset: number, limit: number): unknown;
   scopeSearchSnapshot(): AgentScopeSearchSnapshot;
-  scope(id: string): unknown;
+  scope(id: string, options?: AgentScopeOptions): unknown;
   queryBoundary(scopeId?: string, useCurrentInvestigation?: boolean): AgentQueryBoundary;
   query(input: AgentQueryInput): Promise<EvidenceSnapshot>;
   validateCandidate(input: AgentCandidateInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<unknown>;

@@ -24,7 +24,7 @@ const packed = JSON.parse(npm(suppliedTarball
   : ["pack", "./agent", "--json", "--pack-destination", directory]));
 assert.equal(packed.length, 1);
 const artifact = packed[0];
-for (const file of ["dist/cli.mjs", "dist/THIRD_PARTY_NOTICES.txt", "skills/lightstreamer-workbench/SKILL.md", "skills/lightstreamer-workbench/references/connection.md", "README.md", "READS.md", "WINDOWS.md", "LICENSE"]) {
+for (const file of ["dist/cli.mjs", "dist/THIRD_PARTY_NOTICES.txt", "skills/lightstreamer-workbench/SKILL.md", "skills/lightstreamer-workbench/references/connection.md", "skills/lightstreamer-workbench/references/investigation.md", "skills/lightstreamer-workbench/references/local-injection.md", "skills/lightstreamer-workbench/references/application-context.md", "skills/lightstreamer-workbench/references/query-planning.md", "README.md", "READS.md", "WINDOWS.md", "LICENSE"]) {
   assert(artifact.files.some(entry => entry.path === file), `Missing package file ${file}`);
 }
 assert(artifact.files.every(entry => /^(dist\/|skills\/|README\.md$|READS\.md$|WINDOWS\.md$|LICENSE$|package\.json$)/.test(entry.path)), "Unexpected file in npm artifact");
@@ -32,13 +32,31 @@ npm(["install", "--prefix", directory, "--ignore-scripts", "--offline", "--no-au
 const cli = join(directory, "node_modules", ...metadata.name.split("/"), "dist/cli.mjs");
 const installed = JSON.parse(await readFile(join(directory, "node_modules", ...metadata.name.split("/"), "package.json"), "utf8"));
 assert.equal(installed.version, metadata.version);
-assert.equal(installed.dependencies, undefined, "The published runtime must be self-contained");
+assert.deepEqual(installed.dependencies, { skills: "1.5.18" }, "Use the upstream installer as a pinned dependency, without copying its implementation");
+assert.equal(JSON.parse(await readFile(join(directory, "node_modules/skills/package.json"), "utf8")).version, "1.5.18");
 const execute = ["exec", "--offline", "--prefix", directory, "--", "lightstreamer-workbench-agent"];
 assert.equal(npm([...execute, "--version"], directory).trim(), metadata.version);
 const setup = JSON.parse(npm([...execute, "setup"], directory));
 assert.equal(setup.mcpServers["lightstreamer-workbench"].command, "npx");
 assert.deepEqual(setup.mcpServers["lightstreamer-workbench"].args.slice(0, 3), ["--yes", `${metadata.name}@${metadata.version}`, "mcp"]);
 assert.equal(setup.mcpServers["lightstreamer-workbench"].env, undefined);
+assert.equal(setup.skill.version, metadata.version);
+const project = join(directory, "application project with spaces");
+await mkdir(project);
+const installedSkills = [".agents/skills", ".claude/skills", ".kiro/skills"].map(path => join(project, path, "lightstreamer-workbench"));
+const sourceSkill = join(directory, "node_modules", ...metadata.name.split("/"), "skills/lightstreamer-workbench");
+npm([...execute, "setup", "--skill", "--agent", "codex", "claude-code", "kiro-cli", "--yes"], project);
+for (const installedSkill of installedSkills) {
+  for (const file of ["SKILL.md", "references/connection.md", "references/investigation.md", "references/local-injection.md", "references/application-context.md", "references/query-planning.md"]) {
+    assert.equal(await readFile(join(installedSkill, file), "utf8"), await readFile(join(sourceSkill, file), "utf8"), `Installed skill matches this companion release: ${installedSkill}/${file}`);
+  }
+  await rm(join(installedSkill, "references/local-injection.md"));
+}
+npm([...execute, "update", "--skill", "--agent", "codex", "--agent", "claude-code", "kiro-cli", "--yes"], project);
+for (const installedSkill of installedSkills) {
+  assert.equal(await readFile(join(installedSkill, "references/local-injection.md"), "utf8"), await readFile(join(sourceSkill, "references/local-injection.md"), "utf8"), `Combined update restores the matching reference files: ${installedSkill}`);
+}
+console.log("Combined setup/update installed the complete skill for Codex, Claude Code and Kiro through the upstream installer.");
 
 const listener = createServer(); listener.listen(0, "127.0.0.1"); await once(listener, "listening");
 const port = listener.address().port;
@@ -188,5 +206,5 @@ try {
   await Promise.all(clients.map(client => client.close()));
   clearTimeout(timeout);
 }
-console.log(`Packaged MCP proof passed on ${process.platform}: ${artifact.filename}, ${artifact.size} bytes. npm bin, version-pinned setup, shared broker, two MCP clients and exact panel routing.`);
+console.log(`Packaged MCP proof passed on ${process.platform}: ${artifact.filename}, ${artifact.size} bytes. npm bin, combined MCP/skill setup and update, shared broker, two MCP clients and exact panel routing.`);
 console.log(`Installed test CLI: ${cli}`);

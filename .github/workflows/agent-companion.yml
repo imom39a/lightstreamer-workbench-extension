@@ -89,8 +89,8 @@ jobs:
         run: |
           node --input-type=module -e 'import fs from "node:fs"; const plan = JSON.parse(fs.readFileSync("release/agent-release.json")); const file = "agent/package.json"; const metadata = JSON.parse(fs.readFileSync(file)); if (metadata.name !== plan.name || plan.sha !== process.env.GITHUB_SHA) throw new Error("Artifact source mismatch"); fs.writeFileSync(file, JSON.stringify({...metadata, version: plan.version, gitHead: plan.sha}, null, 2) + "\n");'
       - run: npm run typecheck
-      - name: Prove automatic connection, optional authentication, process startup and MCP routing
-        run: npx vitest run tests/agent-portable.test.ts tests/agent-connection.test.ts tests/agent-runtime.test.ts --maxWorkers=1
+      - name: Prove cross-agent skill setup, Evidence recovery, automatic connection and MCP routing
+        run: npx vitest run tests/agent-setup.test.ts tests/agent-source-discovery.test.ts tests/agent-search.test.ts tests/agent-portable.test.ts tests/agent-connection.test.ts tests/agent-runtime.test.ts --maxWorkers=1 --no-file-parallelism
       - name: Check documented Windows setup and packaged guide
         if: runner.os == 'Windows'
         shell: pwsh
