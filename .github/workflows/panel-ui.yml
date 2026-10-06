@@ -128,7 +128,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: panel-ui-browser-diagnostics
+          name: panel-ui-browser-diagnostics-${{ github.run_attempt }}
           path: |
             test-results/ui/
             test-results/ui-report/

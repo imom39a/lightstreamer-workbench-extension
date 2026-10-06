@@ -1,5 +1,6 @@
 {
   "version": {
+    "license": "apache-2.0",
     "release_notes": {
       "en-US": "Lightstreamer Workbench shares the same product version and debugging features with its Chrome release. Capture official Lightstreamer Web Client activity, inspect Evidence and COMMAND state, reproduce Item Updates with Local Injection, send reviewed Client Messages, and connect an MCP companion."
     },

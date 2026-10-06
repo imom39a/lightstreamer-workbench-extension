@@ -103,6 +103,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_EXPECTED_SOURCE: ${{ inputs.expected_source || github.sha }}
+          RELEASE_RUN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/release.mjs recovery --expected-source "$RELEASE_EXPECTED_SOURCE" --github-output "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v6
         if: steps.recovery.outputs.mode == 'recover'
@@ -315,7 +316,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: firefox-proof-${{ matrix.os }}-${{ matrix.firefox }}
+          name: firefox-proof-${{ matrix.os }}-${{ matrix.firefox }}-${{ github.run_attempt }}
           path: test-results/firefox*/
 
   fixture:

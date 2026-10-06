@@ -99,7 +99,10 @@ new store release; a matching remote version alone cannot prove which bytes were
 submitted. The companion keeps its independent version sequence. Review
 [the Firefox submission metadata](store-listing/firefox-submission.json), update
 its release/reviewer notes for the candidate, and commit it before dispatch. An
-alternative committed JSON path can be supplied through `firefox_metadata`.
+alternative committed JSON path inside the checkout can be supplied through
+`firefox_metadata`. The default metadata explicitly selects the existing
+Apache-2.0 license; submission verifies the returned license slug as well as the
+release and reviewer notes.
 
 The first package job freezes the Chrome ZIP, Firefox ZIP, paired Firefox reviewer
 source, npm tarball, selected companion version plan and exact submission notes
@@ -169,7 +172,8 @@ Chrome uses the v2 exact media upload, fetchStatus and default public-review
 publish requests. Firefox uses the v5 existing-add-on **listed** upload and
 validation flow, creates one version with its exact paired reviewer source, and
 PATCHes translated release notes separately. npm verifies exact registry
-name/version/`gitHead` and SHA-512 integrity. Each stage persists a JSON receipt
+name/version and SHA-512 integrity, and rejects a differing `gitHead` when the
+registry provides it. Each stage persists a JSON receipt
 before and after a mutation, and `always()` uploads preserve partial outcomes.
 Receipt states distinguish prepared, uploaded, submitted, under review,
 approved/signed and publicly available. Submission success is not public release.

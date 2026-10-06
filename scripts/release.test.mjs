@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -64,6 +64,23 @@ test("the release CLI refuses a different approved source before building anythi
   assert.match(result.stderr,/expected.*source|source.*match/i);
 });
 
+test("the release CLI requires Firefox metadata to be a committed file in the approved checkout", async () => {
+  const directory=await realpath(await mkdtemp(join(tmpdir(),"workbench-release-metadata-"))),checkout=join(directory,"checkout");
+  try {
+    await mkdir(join(checkout,"scripts"),{recursive:true});
+    for(const filename of ["release.mjs","package-mcp-release.mjs"]) await copyFile(new URL(filename,import.meta.url),join(checkout,"scripts",filename));
+    const git=(...args)=>execFileSync("git",args,{cwd:checkout,encoding:"utf8",stdio:["ignore","pipe","pipe"]}).trim();
+    git("init");git("add","scripts");git("-c","user.name=Release test","-c","user.email=release-test@example.invalid","commit","-m","Isolated release CLI fixture");
+    const head=git("rev-parse","HEAD"),notes=JSON.stringify({version:{release_notes:{"en-US":"Synthetic release"},approval_notes:"Synthetic review"}});
+    for(const metadataPath of [join(checkout,"untracked.json"),join(directory,"outside.json")]) {
+      await writeFile(metadataPath,notes);
+      const result=spawnSync(process.execPath,[join(checkout,"scripts/release.mjs"),"prepare","--expected-source",head,"--metadata",metadataPath],{cwd:checkout,encoding:"utf8",env:{PATH:process.env.PATH,GITHUB_SHA:head}});
+      assert.notEqual(result.status,0);
+      assert.match(result.stderr,/metadata.*committed.*checkout/i);
+    }
+  } finally { await rm(directory,{recursive:true,force:true}); }
+});
+
 test("a channel retry recovers the latest saved receipt and stops after an unrecorded publishing attempt", async () => {
   const context={repository:"owner/repository",runId:"42",runAttempt:3,sourceSha,channel:"chrome"};
   const inventory=[1,2].map(attempt=>({id:10+attempt,name:`workbench-release-receipt-chrome-${attempt}`,expired:false,workflow_run:{id:42,head_sha:sourceSha}}));
@@ -83,6 +100,15 @@ test("a whole-run retry restores the original candidate or stops when it cannot 
   assert(calls.every(url=>url.startsWith("https://api.github.com/repos/owner/repository/actions/runs/42")));
   await assert.rejects(findRunRecovery({...context,request:async url=>Response.json(String(url).includes("/artifacts?")?{artifacts:[]}:{id:42,head_sha:sourceSha})}),/cannot recover|missing/i);
   await assert.rejects(findRunRecovery({...context,request:async()=>Response.json({id:42,head_sha:"d".repeat(40)})}),/source/);
+});
+
+test("PR recovery binds GitHub's head inventory while keeping the checked merge source frozen", async () => {
+  const headSha="e".repeat(40);
+  const context={repository:"owner/repository",runId:"42",runAttempt:2,sourceSha,eventName:"pull_request",runHeadSha:headSha};
+  const request=async url=>Response.json(String(url).includes("/artifacts?") ? {artifacts:[{id:9,name:"workbench-frozen-release-42",expired:false,workflow_run:{id:42,head_sha:headSha}}]} : {id:42,event:"pull_request",head_sha:headSha});
+  assert.deepEqual(await findRunRecovery({...context,request}),{mode:"recover",artifactId:9});
+  await assert.rejects(findRunRecovery({...context,runHeadSha:"f".repeat(40),request}),/source|head/i);
+  await assert.rejects(findRunRecovery({...context,eventName:"workflow_dispatch",request}),/source|head|dispatch/i);
 });
 
 test("restoring a frozen candidate retains exact inputs and refuses modified bytes or a different source", async () => {

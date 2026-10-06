@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { appendFile, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertStoreAnalyticsConfiguration, createReleaseBundle, extractReleaseBundle, extractFrozenBrowser, readFrozenRelease } from "./package-mcp-release.mjs";
 
@@ -14,12 +14,13 @@ export function makeReleaseVerification({release,sourceSha,runId,results}) {
   return {format:"lightstreamer-workbench-release-verification-v1",sourceCommit:sourceSha,manifestSha256:release.manifestSha256,scope:"release",runId:String(runId),passed:Object.values(jobs).every(result=>result==="success"),jobs};
 }
 
-export async function findRunRecovery({repository,runId,runAttempt,sourceSha,request=fetch,token}) {
+export async function findRunRecovery({repository,runId,runAttempt,sourceSha,eventName,runHeadSha=sourceSha,request=fetch,token}) {
   const api=runApi(repository,runId);
-  if (!shaPattern.test(sourceSha) || !Number.isSafeInteger(runAttempt) || runAttempt<1) throw new Error("Invalid source/run attempt for release recovery.");
+  if (!shaPattern.test(sourceSha) || !shaPattern.test(runHeadSha) || !Number.isSafeInteger(runAttempt) || runAttempt<1) throw new Error("Invalid source/run attempt for release recovery.");
+  if (runHeadSha!==sourceSha && eventName!=="pull_request") throw new Error("Release dispatch head must match the checked source.");
   const get=url=>githubJson(url,{request,token});
   const run=await get(api);
-  if (String(run.id)!==String(runId) || run.head_sha!==sourceSha) throw new Error("Release recovery run source does not match GITHUB_SHA.");
+  if (String(run.id)!==String(runId) || run.head_sha!==runHeadSha || (runHeadSha!==sourceSha && run.event!=="pull_request")) throw new Error("Release recovery run head does not match the source/event provenance.");
   const artifacts=await pages(`${api}/artifacts`,"artifacts",get);
   const found=artifacts.filter(artifact=>artifact.name===`workbench-frozen-release-${runId}`);
   if (found.length!==1) {
@@ -27,7 +28,7 @@ export async function findRunRecovery({repository,runId,runAttempt,sourceSha,req
     throw new Error("Retry cannot recover one original frozen candidate. Do not rebuild or allocate a new version; investigate the missing/duplicate artifact.");
   }
   const artifact=found[0];
-  if (artifact.expired || String(artifact.workflow_run?.id)!==String(runId) || artifact.workflow_run?.head_sha!==sourceSha || !Number.isSafeInteger(artifact.id)) throw new Error("Frozen artifact is expired or has mismatched run/source provenance.");
+  if (artifact.expired || String(artifact.workflow_run?.id)!==String(runId) || artifact.workflow_run?.head_sha!==runHeadSha || !Number.isSafeInteger(artifact.id)) throw new Error("Frozen artifact is expired or has mismatched run/source provenance.");
   if (runAttempt===1) throw new Error("First attempt already has a frozen candidate; refusing to overwrite it.");
   return {mode:"recover",artifactId:artifact.id};
 }
@@ -109,7 +110,14 @@ async function prepare(options) {
   const dirty=execFileSync("git",["status","--porcelain=v1","--untracked-files=no"],{cwd:root,encoding:"utf8"}).trim();
   if (dirty) throw new Error("Commit the reviewed source before preparing a frozen release.");
   const metadataPath=resolve(root,options.metadata??"store-listing/firefox-submission.json");
-  const metadataBytes=await readFile(metadataPath);
+  const metadataRelative=relative(root,metadataPath);
+  let metadataBytes;
+  try {
+    if (!metadataRelative || isAbsolute(metadataRelative) || metadataRelative.split(/[\\/]/).includes("..") || !(await lstat(metadataPath)).isFile()) throw new Error("Invalid metadata path");
+    const committed=execFileSync("git",["show",`HEAD:${metadataRelative.replaceAll("\\","/")}`],{cwd:root,stdio:["ignore","pipe","pipe"]});
+    metadataBytes=await readFile(metadataPath);
+    if (!metadataBytes.equals(committed)) throw new Error("Changed metadata");
+  } catch { throw new Error("Firefox metadata must be a committed regular file in the approved checkout."); }
   const notes=JSON.parse(metadataBytes.toString("utf8"));
   if (!notes.version?.release_notes?.["en-US"]?.trim() || !notes.version?.approval_notes?.trim()) throw new Error("Provide explicit Firefox release/reviewer metadata before preparing the candidate.");
   const directory=join(root,"release");
@@ -166,7 +174,7 @@ async function main() {
   if (["recovery","receipt-recovery"].includes(command)) {
     checkedSource(expectedSource);
     const context={repository:process.env.GITHUB_REPOSITORY,runId:process.env.GITHUB_RUN_ID,runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),sourceSha:expectedSource,token:process.env.GH_TOKEN??process.env.GITHUB_TOKEN};
-    const result=command==="recovery"?await findRunRecovery(context):await findReceiptRecovery({...context,channel:options.channel});
+    const result=command==="recovery"?await findRunRecovery({...context,eventName:process.env.GITHUB_EVENT_NAME,runHeadSha:process.env.GITHUB_EVENT_NAME==="pull_request"?process.env.RELEASE_RUN_HEAD_SHA:expectedSource}):await findReceiptRecovery({...context,channel:options.channel});
     await output({mode:result.mode,artifact_id:result.artifactId??""},options);
     console.log(`Release recovery: ${result.mode}.`);
     return;
