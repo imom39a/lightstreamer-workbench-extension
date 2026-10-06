@@ -57,9 +57,12 @@ import { createIndexedDbEventHistory } from ${source("src/core/event-history-ind
 import { createMemoryDiagnosticObservationJournal, createUnavailableDiagnosticObservationJournal } from ${source("src/core/diagnostic-observation.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
+import { createAgentService } from ${source("src/extension/panel/agent-service.ts")};
 import { createAnalyticsClient } from ${source("src/extension/analytics/client.ts")};
 import { observeWorkbenchAnalytics } from ${source("src/extension/analytics/observer.ts")};
-import { getWorkbenchScenario, isWorkbenchScenarioId } from ${source("tests/support/workbench-scenarios.ts")};
+import { getWorkbenchScenario, isWorkbenchScenarioId, withAgentNativeMode } from ${source("tests/support/workbench-scenarios.ts")};
+import { getPanelScenario } from ${source("tests/support/panel-scenarios.ts")};
+import { TOPOLOGY_OBSERVATION_VERSION, TOPOLOGY_SYNC_COMPLETE } from ${source("src/bridge/messages.ts")};
 import { agentConnectionFixture } from ${source("tests/support/agent-connection-fixture.ts")};
 
 const params = new URLSearchParams(window.location.search);
@@ -73,7 +76,8 @@ const storageMode = params.get("storage") ?? "scenario";
 const root = document.querySelector("#app");
 if (!(root instanceof HTMLElement)) throw new Error("Workbench scenario requires #app.");
 
-const scenario = getWorkbenchScenario(scenarioId);
+const baseScenario = getWorkbenchScenario(scenarioId, { highVolumeFieldCount: params.get("reviewPressure") === "1" ? 200 : 500 });
+const scenario = ["MERGE", "DISTINCT"].includes(params.get("nativeMode")) ? withAgentNativeMode(baseScenario, params.get("nativeMode")) : baseScenario;
 const diagnosticObservations = scenario.diagnosticJournal === "unsupported"
   ? createUnavailableDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostics-" + scenario.id, status: "unsupported" })
   : createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostics-" + scenario.id });
@@ -106,10 +110,10 @@ const historyOptions = {
         }
       }
     : {}),
-  ...(scenario.storage?.mode === "memory"
+  ...(scenario.storage?.mode === "memory" || params.get("nativeLimited") === "1"
     ? {
         capacityTier: "LOWER",
-        fallback: scenario.storage.reason.includes("newer")
+        fallback: scenario.storage?.reason.includes("newer")
           ? "UNKNOWN_NEWER_SCHEMA"
           : "PRIMARY_JOURNAL_UNAVAILABLE"
       }
@@ -131,9 +135,31 @@ await Promise.all(scenario.initialEvents.map((event) => {
 let localInjectionExecutionCount = 0;
 let serverInjectionExecutionCount = 0;
 let scenarioClockNow = 0;
+let pendingNativeServerUpdateDelayMs = null;
+const offerNativeServerUpdate = async () => {
+  const capturedSource = getPanelScenario("topology-small").capturedEvents.find(event => event.kind === "item-update" && !event.synthetic);
+  if (!capturedSource) throw new Error("Native absence fixture requires a captured Server Item Update source.");
+  const mode = params.get("nativeMode") === "DISTINCT" ? "DISTINCT" : "MERGE";
+  const source = withAgentNativeMode({ ...scenario, initialEvents: [capturedSource] }, mode).initialEvents[0];
+  if (!source) throw new Error("Native absence fixture could not transform its Server Item Update to the target mode.");
+  const completedSync = scenario.topologySyncFrames?.find(frame => frame.type === TOPOLOGY_SYNC_COMPLETE);
+  if (!completedSync) throw new Error("Native absence fixture requires a completed target topology sync.");
+  const event = { ...source, id: "native-absence-server-update", logicalEventId: "native-absence-server-update",
+    timestamp: Date.now(), topology: { version: TOPOLOGY_OBSERVATION_VERSION, kind: "item-update",
+      pageEpoch: completedSync.pageEpoch, captureSequence: completedSync.cutoffCaptureSequence + 1,
+      provenance: { instrumentationSource: "official-public-api" }, coverage: { status: "complete", getters: {} },
+      client: { id: source.client.id, sessionId: source.client.sessionId },
+      subscription: { id: source.subscription.id, mode } } };
+  await history.offer(event).settled;
+};
 const scenarioClock = {
   now: () => scenarioClockNow,
   setTimer(callback, delayMs) {
+    if (pendingNativeServerUpdateDelayMs !== null) {
+      const updateDelayMs = pendingNativeServerUpdateDelayMs;
+      pendingNativeServerUpdateDelayMs = null;
+      setTimeout(() => { void offerNativeServerUpdate(); }, updateDelayMs);
+    }
     return setTimeout(() => {
       scenarioClockNow += Math.max(0, delayMs);
       callback();
@@ -141,10 +167,10 @@ const scenarioClock = {
   },
   clearTimer(handle) { clearTimeout(handle); }
 };
-const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
+const localInjectionExecutor = scenario.localInjection?.executorOutcome || params.has("nativeMode") ? {
   execute(request) {
     localInjectionExecutionCount += 1;
-    const outcome = scenario.localInjection.executorOutcome;
+    const outcome = scenario.localInjection?.executorOutcome ?? "delivered";
     if (outcome === "pending") return new Promise(() => undefined);
     if (outcome === "delayed") return new Promise((resolve) => setTimeout(() => resolve({ requestId: request.executionId, ok: true, status: "success", timestamp: 1_780_872_100_001, attemptedCount: 1, deliveredCount: 1, failedCount: 0 }), 1_200));
     if (outcome === "delivered") return Promise.resolve({ requestId: request.executionId, ok: true, status: "success", timestamp: 1_780_872_100_001, attemptedCount: 1, deliveredCount: 1, failedCount: 0 });
@@ -153,11 +179,11 @@ const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
     return Promise.resolve({ requestId: request.executionId, ok: false, status: "listener-error", timestamp: 1_780_872_100_004, error: "The protected local listener rejected the update.", attemptedCount: 1, deliveredCount: 0, failedCount: 1 });
   }
 } : undefined;
-const serverInjectionExecutor = scenario.serverInjection?.executorOutcome ? {
+const serverInjectionExecutor = scenario.serverInjection?.executorOutcome || params.get("agentServer") === "1" ? {
   execute() {
     serverInjectionExecutionCount += 1;
     const requestId = "server-injection-browser-" + serverInjectionExecutionCount;
-    const outcome = scenario.serverInjection.executorOutcome;
+    const outcome = scenario.serverInjection?.executorOutcome ?? "processed";
     if (outcome === "pending") return new Promise(() => undefined);
     if (outcome === "processed") return Promise.resolve({ requestId, ok: true, status: "processed", timestamp: 1_780_872_100_101, response: "fixture accepted" });
     if (outcome === "denied") return Promise.resolve({ requestId, ok: false, status: "denied", timestamp: 1_780_872_100_102, code: 41, error: "The deterministic Metadata Adapter denied the message." });
@@ -205,7 +231,9 @@ const runtime = createWorkbenchRuntime({
   } : {}),
   captureStatus: scenario.captureStatus,
   diagnosticObservations,
-  capture: scenario.capture,
+  capture: params.get("nativeUseful") === "1"
+    ? { operation: "RUNNING", coverage: "USEFUL", firstMissingEventId: null, committedEvidenceBoundary: null }
+    : scenario.capture,
   ...(scenario.activityProjectionFailure ? {
     activityProjectionFactory: () => { throw new Error(scenario.activityProjectionFailure); }
   } : {}),
@@ -355,7 +383,18 @@ if (scenario.localInjection) {
     }
   }
 }
-if (scenario.serverInjection) {
+let fixtureAgentPermission = "local";
+const fixtureAgentService = createAgentService(runtime.agent, "fixture-agent-panel", () => fixtureAgentPermission);
+let fixtureAgentServerToken = null;
+if (scenario.serverInjection && params.get("agentServer") === "1") {
+  const source = [...scenario.initialEvents].reverse().find(event => event.clientMessage?.pageEpoch && event.client?.sessionId);
+  if (!source) throw new Error("Agent Server fixture requires an exact Client Message source.");
+  const prepared = await fixtureAgentService.call("prepare_server_injection", { panelSessionId: "fixture-agent-panel", requestId: "browser-server-request",
+    pageEpoch: source.clientMessage.pageEpoch, clientId: source.client.id, sessionId: source.client.sessionId,
+    message: scenario.serverInjection.message, sequence: "orders", delayTimeout: null, enqueueWhileDisconnected: false });
+  fixtureAgentServerToken = prepared.token;
+  if (scenario.serverInjection.review) runtime.dispatch({ type: "review-server-injection" });
+} else if (scenario.serverInjection) {
   runtime.dispatch({
     type: scenario.serverInjection.entry === "author"
       ? "begin-server-injection-from-selected-client"
@@ -372,9 +411,30 @@ document.documentElement.dataset.reactScenario = scenarioId;
 document.documentElement.dataset.reactSceneReady = "true";
 window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
 window.__serverInjectionExecutionCount = () => serverInjectionExecutionCount;
+window.__agentServerCall = (name, args = {}) => fixtureAgentService.call(name, { panelSessionId: "fixture-agent-panel", requestId: "browser-server-request", ...(name === "execute_server_injection" ? { token: fixtureAgentServerToken } : {}), ...args });
+window.__revokeAgentServerFixture = () => { fixtureAgentPermission = "off"; fixtureAgentService.revoke(); };
 window.__setWorkbenchVisible = (visible) => { runtime.dispatch({ type: "set-visible", visible }); analyticsObserver.setVisible(visible); };
-// Harness-only seam: proves Review fails closed while authoring has an invalid
-// primitive value, even when the command does not originate at the UI button.
+// Harness-only seam: exercises real native authoring, immutable Review, and
+// limited-history inconclusive evaluation without changing production state.
+window.__prepareAgentNativeAssertions = async (durationMs = 100) => {
+  const scope = runtime.getSnapshot().scope.nodes.find(node => node.kind === "item" && !node.retired);
+  if (!scope) throw new Error("Native fixture Item unavailable");
+  await runtime.agent.validateCandidate({kind:"draft", draft:{scopeId:scope.id}}, "topology-small-page", () => true);
+  runtime.dispatch({type:"set-scope", scopeId:scope.id});
+  runtime.dispatch({type:"begin-local-injection-from-scope"});
+  const document = runtime.getSnapshot().localInjection.draft.document;
+  runtime.agent.abortDocument();
+  const originalUuid = crypto.randomUUID;
+  crypto.randomUUID = () => "00000000-0000-4000-8000-000000000016";
+  try {
+  await runtime.agent.prepareScenarioPlan({members:[{kind:"step",id:"native-step",scopeId:scope.id,document:JSON.stringify(document)}, {kind:"checkpoint",id:"native-checkpoint",name:"Exact committed field and observed absence",assertions:[{id:"native-field",kind:"local-evidence-field-equals",stepId:"native-step",field:"value",expected:null},{id:"native-absence",kind:"server-item-update-absent",item:{name:"topology-small-item",position:1},duringActiveMs:durationMs}]}]}, "topology-small-page", () => true);
+  } finally { crypto.randomUUID = originalUuid; }
+};
+window.__scheduleNativeServerItemUpdate = (delayMs = 20) => {
+  pendingNativeServerUpdateDelayMs = delayMs;
+  return true;
+};
+window.__stepAgentNativeAssertions = () => runtime.dispatch({type:"step-next-scenario"});
 window.__reviewWorkbenchScenario = () => runtime.dispatch({ type: "review-scenario" });
 window.__getWorkbenchScenarioSnapshot = () => runtime.getSnapshot().scenario;
 window.__clearWorkbenchScenarioHistory = () => history.clear();

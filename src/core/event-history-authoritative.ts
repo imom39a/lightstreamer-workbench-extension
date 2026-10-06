@@ -1,3 +1,7 @@
+import { createEvidenceFieldQuery } from "./evidence-field-analytics";
+import { EvidenceSequenceWindowUnavailable, resolveEvidenceSequenceWindow } from "./evidence-sequence-window";
+import { EvidenceQueryWorkLimit, guardEvidenceQueryTelemetry, validateEvidenceQueryWorkBudget, cooperateEvidenceQuery } from "./evidence-query-work";
+import { canUseEvidenceFacetPosting } from "./evidence-query-postings";
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import {
   type DeterministicEvidenceRecord,
@@ -13,7 +17,7 @@ import {
   type EvidenceQueryTelemetry
 } from "./evidence-filter-contract";
 import { findEvidence, withEvidenceFindPage, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
-import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
+import { withEvidenceResumeCursor, decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { discoverFacet, type DiscoveryInstrumentation } from "./evidence-filter-discovery";
 import { canonicalEvidenceSearchText, canonicalEvidenceSearchTextWithExtraction, extractEvidenceFacets, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
@@ -345,6 +349,8 @@ export interface EventHistory {
   read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>>;
   /** Available on the in-memory semantic query implementation; durable adapters adopt it later. */
   query?: EvidenceFilterQueryAdapter["query"];
+  /** Resolve an exact retained reference without searching or hydrating payloads. */
+  resolveIdentity?(reference: EvidenceRef): Promise<EvidenceIdentity | null>;
   clear(): Promise<Outcome<ClearResult>>;
   follow(
     options: HistoryFollowOptions,
@@ -666,8 +672,9 @@ function memoryIndexedFilterCandidates(index: MemoryQueryIndex, filter: Evidence
     const includes = bucket?.include ?? [];
     if (includes.length === 0) continue;
     const union = new Set<number>();
+    // A mixed include union must be evaluated residually in its entirety.
+    if (includes.some(value => !canUseEvidenceFacetPosting(facet, value))) continue;
     for (const value of includes) {
-      if (value.type.startsWith("structural-")) return { sequences: null, reads, candidates: 0, driver: null };
       const posting = index.facetPostings.get(memoryFacetPostingKey(facet, value.identity));
       reads += 1;
       if (posting) for (const sequence of posting) union.add(sequence);
@@ -678,10 +685,11 @@ function memoryIndexedFilterCandidates(index: MemoryQueryIndex, filter: Evidence
   const text = normalizeEvidenceSearchText(filter.text);
   if (text.length >= 3) {
     const candidates = memorySearchCandidatePostings(index, text);
-    if (candidates === null) return { sequences: null, reads, candidates: 0, driver: null };
-    reads += candidates.reads;
-    facetGroups.push(candidates.sequences);
-    driver ??= "search";
+    if (candidates !== null) {
+      reads += candidates.reads;
+      facetGroups.push(candidates.sequences);
+      driver ??= "search";
+    }
   }
   if (facetGroups.length === 0) return { sequences: null, reads, candidates: 0, driver };
   const sequences = intersectMemoryPostings(facetGroups);
@@ -1648,7 +1656,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     });
   }
 
-  function query(request: EvidenceQueryRequest): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
+  async function evaluateQuery(request: EvidenceQueryRequest): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
     if (phase === "CLOSED") {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("HISTORY_TERMINAL", "Event History is closed.") });
     }
@@ -1661,8 +1669,11 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     if (request.signal?.aborted) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was read.") });
     }
+    validateEvidenceQueryWorkBudget(request.workBudget);
+    const fieldQuery = createEvidenceFieldQuery(request.fieldPredicates, request.aggregate);
+    if (fieldQuery.active && (request.find || request.discover?.length)) throw new Error("Field predicates/aggregates cannot be combined with Find or facet discovery; use separate reads at the same read point.");
     const queryStartedAt = Date.now();
-    const telemetry = memoryQueryTelemetry();
+    const telemetry = guardEvidenceQueryTelemetry(memoryQueryTelemetry(), request.workBudget, queryStartedAt);
     telemetry.pageBound = request.page.size;
 
     // This is the sole read point. Everything below reads this immutable slice,
@@ -1688,36 +1699,36 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     }
     const unsupported = filter.unsupported.length > 0;
     const filterText = normalizeEvidenceSearchText(filter.text);
-    const indexedFilterTextSupported = filterText.length === 0 || memoryIndexedSingleTokenSearchQuery(memoryQueryIndex, filterText) !== null;
     const indexedFindTextSupported = request.find === undefined
       || memoryIndexedSingleTokenSearchQuery(memoryQueryIndex, normalizeEvidenceSearchText(request.find.text)) !== null;
-    const hasStructuralInclude = Object.values(filter.criteria).some((bucket) => bucket?.include.some((value) => value.type.startsWith("structural-")) === true);
     const canUseIndexedFind = request.find !== undefined
       && request.find.current === undefined
       && request.find.scopeToFilter !== true
       && filterText.length === 0
       && around === null;
     const useMaterializedFallback = unsupported
-      || cursor !== null
       || (request.discover?.length ?? 0) > 0
       || (request.find !== undefined && !canUseIndexedFind)
-      || !indexedFilterTextSupported
       || !indexedFindTextSupported
-      || hasStructuralInclude;
-    const firstSequence = readPoint.retainedRange?.first.sequence ?? 1;
-    const lastSequence = readPoint.committedEvidenceBoundary?.sequence ?? 0;
+      ;
+    const { first: firstSequence, last: lastSequence } = resolveEvidenceSequenceWindow(readPoint, request.sequenceWindow);
     const sequenceBounds = memorySequenceBounds(memoryQueryIndex, firstSequence, lastSequence);
-    const entriesAtRead = useMaterializedFallback ? entriesAtReadPoint(currentEntriesAtRead, readPoint) : [];
+    const entriesAtRead = useMaterializedFallback ? entriesAtReadPoint(currentEntriesAtRead, readPoint).filter(entry => entry.sequence >= firstSequence && entry.sequence <= lastSequence) : [];
     const evidenceEntriesAtRead = useMaterializedFallback ? entriesAtRead.filter((entry) => entry.candidate.kind !== "topology-checkpoint") : [];
     const entriesBySequence = new Map(evidenceEntriesAtRead.map((entry) => [entry.sequence, entry]));
-    const records: SelectionRecord[] = useMaterializedFallback
-      ? evidenceEntriesAtRead.map((entry) => {
-          const record = deterministicRecordCache.get(entry) ?? toDeterministicEvidenceRecord(entry, intervalAtRead, false, memoryQueryIndex.bySequence.get(entry.sequence));
-          deterministicRecordCache.set(entry, record);
-          if (!memoryQueryIndex.bySequence.has(entry.sequence)) addMemoryQueryRecord(memoryQueryIndex, record);
-          return record;
-        })
-      : [];
+    const records: SelectionRecord[] = [];
+    if (useMaterializedFallback) {
+      telemetry.projectionReads = evidenceEntriesAtRead.length;
+      for (const [index, entry] of evidenceEntriesAtRead.entries()) {
+        if (index > 0 && index % 256 === 0) await cooperateEvidenceQuery(index, request.signal);
+        const record = deterministicRecordCache.get(entry) ?? toDeterministicEvidenceRecord(entry, intervalAtRead, false, memoryQueryIndex.bySequence.get(entry.sequence));
+        deterministicRecordCache.set(entry, record);
+        // Materialization belongs to this latched read. Only commitment may
+        // append to the shared index: Clear or retention can remove this entry
+        // while the query yields, and re-adding it would corrupt index order.
+        records.push(record);
+      }
+    }
     const materializeIndexedRecord = (record: DeterministicEvidenceRecord, includePayload = false): DeterministicEvidenceRecord => {
       const entry = committedBySequence.get(record.identity.sequence);
       if (entry === undefined) return record;
@@ -1780,27 +1791,48 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const page: DeterministicEvidenceRecord[] = [];
       let hasMore = false;
       const retainedRecordCount = telemetry.retainedCount;
-      const matchesFilter = (record: SelectionRecord): boolean => evaluateFilter({ ...filter, around: null } as unknown as Filter, {
-        timestamp: record.timestamp,
-        intervalId: record.identity.intervalId,
-        searchText: record.searchText,
-        facets: record.facets as unknown as FilterRecord["facets"]
-      }).matches;
+      const evaluatedFields = new Set<number>();
+      const matchesFilter = (record: SelectionRecord): boolean => {
+        // Posting drivers narrow candidates, but compact search text omits
+        // long fields. Residual text checks must use the canonical projection.
+        const searchable = filterText.length > 0 ? materializeIndexedRecord(record) : record;
+        const base = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+          timestamp: record.timestamp, intervalId: record.identity.intervalId, searchText: searchable.searchText,
+          facets: record.facets as unknown as FilterRecord["facets"]
+        }).matches;
+        if (!base || !fieldQuery.active) return base;
+        const entry = committedBySequence.get(record.identity.sequence);
+        if (!entry || entry.candidate.kind === "topology-checkpoint") return false;
+        if (!evaluatedFields.has(record.identity.sequence)) { telemetry.payloadHydrations++; evaluatedFields.add(record.identity.sequence); }
+        return fieldQuery.matches(record.identity.sequence, entry.candidate, isInAround(record, around));
+      };
       const ordered = (values: readonly SelectionRecord[]): SelectionRecord[] => [...values].sort((left, right) => request.page.order === "NEWEST_FIRST"
         ? right.identity.sequence - left.identity.sequence
         : left.identity.sequence - right.identity.sequence);
-      const canUseIndexedSelection = cursor === null && (request.discover?.length ?? 0) === 0;
+      const canUseIndexedSelection = (request.discover?.length ?? 0) === 0;
       const indexedFilter = canUseIndexedSelection ? memoryIndexedFilterCandidates(memoryQueryIndex, filter) : null;
-      if (indexedFilter !== null && indexedFilter.sequences === null && filterText.length === 0 && Object.values(filter.criteria).every((bucket) => !bucket || (bucket.include.length === 0 && bucket.exclude.length === 0))) {
+      const afterAnchor = (record: SelectionRecord) => cursor === null || (request.page.order === "NEWEST_FIRST"
+        ? record.identity.sequence < cursor.anchor.sequence : record.identity.sequence > cursor.anchor.sequence);
+      if (cursor !== null && !useMaterializedFallback) {
+        const anchor = memoryQueryIndex.bySequence.get(cursor.anchor.sequence);
+        if (!anchor || anchor.identity.sequence < firstSequence || anchor.identity.sequence > lastSequence
+          || !sameEvidenceIdentity(anchor.identity, cursor.anchor) || !matchesFilter(anchor) || !isInAround(anchor, around)) {
+          throw new Error("The page cursor anchor is stale or is not part of the filtered Evidence result.");
+        }
+        telemetry.projectionReads = 1;
+      }
+      if (indexedFilter !== null && indexedFilter.sequences === null && filterText.length === 0 && Object.values(filter.criteria).every((bucket) => !bucket || (bucket.include.length === 0 && bucket.exclude.length === 0)) && !fieldQuery.active) {
         if (around === null) {
           matching = retainedRecordCount;
           inScope = matching;
           if (request.page.order === "NEWEST_FIRST") {
-            for (let index = sequenceBounds.end - 1; index >= sequenceBounds.start && page.length < request.page.size; index -= 1) page.push(memoryQueryIndex.records[index]!);
+            for (let index = cursor === null ? sequenceBounds.end - 1 : memorySequenceBounds(memoryQueryIndex, cursor.anchor.sequence, cursor.anchor.sequence).start - 1; index >= sequenceBounds.start && page.length < request.page.size; index -= 1) page.push(memoryQueryIndex.records[index]!);
           } else {
-            for (let index = sequenceBounds.start; index < sequenceBounds.end && page.length < request.page.size; index += 1) page.push(memoryQueryIndex.records[index]!);
+            for (let index = cursor === null ? sequenceBounds.start : memorySequenceBounds(memoryQueryIndex, cursor.anchor.sequence, cursor.anchor.sequence).end; index < sequenceBounds.end && page.length < request.page.size; index += 1) page.push(memoryQueryIndex.records[index]!);
           }
-          hasMore = retainedRecordCount > page.length;
+          hasMore = cursor === null ? retainedRecordCount > page.length : (request.page.order === "NEWEST_FIRST"
+            ? (page.at(-1)?.identity.sequence ?? cursor.anchor.sequence) > (memoryQueryIndex.records[sequenceBounds.start]?.identity.sequence ?? 0)
+            : (page.at(-1)?.identity.sequence ?? cursor.anchor.sequence) < (memoryQueryIndex.records[sequenceBounds.end - 1]?.identity.sequence ?? 0));
           telemetry.candidateBound = page.length;
           telemetry.evidenceCursorReads = page.length;
           telemetry.projectionReads = page.length;
@@ -1812,8 +1844,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
           });
           matching = retainedRecordCount;
           inScope = rangeRecords.length;
-          page.push(...ordered(rangeRecords).slice(0, request.page.size));
-          hasMore = rangeRecords.length > page.length;
+          const remaining = ordered(rangeRecords).filter(afterAnchor);
+          page.push(...remaining.slice(0, request.page.size));
+          hasMore = remaining.length > page.length;
           telemetry.candidateBound = rangeRecords.length;
           telemetry.evidenceCursorReads = rangeRecords.length;
           telemetry.projectionReads = rangeRecords.length;
@@ -1827,12 +1860,18 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
           const record = memoryQueryIndex.bySequence.get(sequence);
           return record && record.identity.intervalId === readPoint.interval.id ? [record] : [];
         });
-        const matchingRecords = candidateRecords.filter(matchesFilter);
+        telemetry.projectionReads = candidateRecords.length;
+        const matchingRecords: SelectionRecord[] = [];
+        for (const [index, record] of candidateRecords.entries()) {
+          if (index > 0 && index % 256 === 0) await cooperateEvidenceQuery(index, request.signal);
+          if (matchesFilter(record)) matchingRecords.push(record);
+        }
         const inScopeRecords = matchingRecords.filter((record) => isInAround(record, around));
         matching = matchingRecords.length;
         inScope = inScopeRecords.length;
-        page.push(...ordered(inScopeRecords).slice(0, request.page.size));
-        hasMore = inScopeRecords.length > page.length;
+        const remaining = ordered(inScopeRecords).filter(afterAnchor);
+        page.push(...remaining.slice(0, request.page.size));
+        hasMore = remaining.length > page.length;
         telemetry.postingReads = indexedFilter.reads;
         telemetry.postingCandidates = indexedFilter.candidates;
         telemetry.postingDriver = indexedFilter.driver?.startsWith("facet:") ? indexedFilter.driver.slice("facet:".length) : null;
@@ -1847,11 +1886,13 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         telemetry.fullRetainedScan = true;
         telemetry.residualScan = true;
         let cursorFound = cursor === null;
-        const orderedStart = request.page.order === "NEWEST_FIRST" ? records.length - 1 : 0;
-        const orderedEnd = request.page.order === "NEWEST_FIRST" ? -1 : records.length;
+        const residualRecords = useMaterializedFallback ? records : memoryQueryIndex.records.slice(sequenceBounds.start, sequenceBounds.end);
+        const orderedStart = request.page.order === "NEWEST_FIRST" ? residualRecords.length - 1 : 0;
+        const orderedEnd = request.page.order === "NEWEST_FIRST" ? -1 : residualRecords.length;
         const orderedStep = request.page.order === "NEWEST_FIRST" ? -1 : 1;
         for (let index = orderedStart; index !== orderedEnd; index += orderedStep) {
-          const record = records[index]!;
+          const record = residualRecords[index]!;
+          if (index > 0 && index % 256 === 0) await cooperateEvidenceQuery(index, request.signal);
           if (request.signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
           if (!matchesFilter(record)) continue;
           matching += 1;
@@ -1869,14 +1910,16 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       for (const discoveryRequest of request.discover ?? []) {
         if (request.signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
         try {
+          telemetry.discoveryProjectionReads = (telemetry.discoveryProjectionReads ?? 0) + records.length;
           discoveries.set(discoveryRequest.facet, discoverFacet(records, request.filter, readPoint, discoveryRequest, options.discovery));
         } catch (error) {
-          if (request.signal?.aborted || (error instanceof Error && error.message === "EVIDENCE_QUERY_CANCELLED")) throw error;
+          if (error instanceof EvidenceQueryWorkLimit || request.signal?.aborted || (error instanceof Error && error.message === "EVIDENCE_QUERY_CANCELLED")) throw error;
           discoveries.set(discoveryRequest.facet, {
             state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "DISCOVERY_FAILED", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
           });
         }
       }
+      if (request.includePayload === true) telemetry.payloadHydrations += page.length;
       const hydratedPage = request.includePayload === true
         ? page.map((record) => {
             const materialized = materializeIndexedRecord(record);
@@ -1945,13 +1988,28 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       telemetry.elapsedMs = Math.max(0, Date.now() - queryStartedAt);
       return Promise.resolve({
         ok: true,
-        value: makeEvidenceSnapshot(readPoint, hydratedPage, matching, inScope, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find, telemetry)
+        value: { ...makeEvidenceSnapshot(readPoint, hydratedPage, matching, inScope, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find, telemetry), ...(fieldQuery.active ? fieldQuery.result() : {}) }
       });
     } catch (error) {
       if (request.signal?.aborted || (error instanceof Error && error.message === "EVIDENCE_QUERY_CANCELLED")) {
         return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.") });
       }
-      return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", error instanceof Error ? error.message : "Evidence query failed.") });
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem(error instanceof EvidenceQueryWorkLimit ? "QUERY_WORK_BUDGET_EXCEEDED" : error instanceof EvidenceSequenceWindowUnavailable ? "SEQUENCE_WINDOW_UNAVAILABLE" : "QUERY_FAILED", error instanceof Error ? error.message : "Evidence query failed.") });
+    }
+  }
+
+  async function query(request: EvidenceQueryRequest): ReturnType<EvidenceFilterQueryAdapter["query"]> {
+    try {
+      const result = await evaluateQuery(request);
+      if (!result.ok) return result;
+      if (result.value.readPoint.interval.id !== interval.id) return { ok: false, problem: evidenceReadProblem("HISTORY_INTERVAL_UNAVAILABLE", "The History Interval changed during query evaluation.") };
+      const current = evidenceReadPoint(interval, committed, committedEvidenceBoundary);
+      if (!readPointFitsCurrentInterval(result.value.readPoint, current)) return { ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "Retention advanced during query evaluation.") };
+      return { ok: true, value: withEvidenceResumeCursor(result.value, request) };
+    }
+    catch (error) {
+      const cancelled = request.signal?.aborted || (error instanceof Error && error.message === "EVIDENCE_QUERY_CANCELLED");
+      return { ok: false, problem: evidenceReadProblem(cancelled ? "QUERY_CANCELLED" : error instanceof EvidenceQueryWorkLimit ? "QUERY_WORK_BUDGET_EXCEEDED" : error instanceof EvidenceSequenceWindowUnavailable ? "SEQUENCE_WINDOW_UNAVAILABLE" : "QUERY_FAILED", error instanceof Error ? error.message : "Evidence query failed.") };
     }
   }
 
@@ -2401,7 +2459,13 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     }
   }
 
-  return { storage, status, offer, read, query, clear, follow, close };
+  const resolveIdentity = async (reference: EvidenceRef): Promise<EvidenceIdentity | null> => {
+    if (phase === "CLOSED" || reference.intervalId !== interval.id) return null;
+    const record = memoryQueryIndex.bySequence.get(reference.sequence);
+    return record && record.identity.eventId === reference.eventId && record.identity.intervalId === reference.intervalId
+      ? record.identity : null;
+  };
+  return { storage, status, offer, read, query, resolveIdentity, clear, follow, close };
 }
 
 function createInterval(sessionId: string, ordinal: number): HistoryInterval {

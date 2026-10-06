@@ -234,7 +234,19 @@ export type CommandStateProjections = {
   inspect(projection: CommandStateProjection, input: CommandStateInspectionInput): CommandStateInspection;
   /** Direct exact-item/key read; never materializes unrelated rows or subscriptions. */
   readKey(projection: CommandStateProjection, input: CommandStateInspectionInput): CommandKeyStateRead;
+  readRows(projection: CommandStateProjection, input: CommandRowsInput): CommandRowsRead;
 };
+
+export type CommandRowsInput = Readonly<{
+  subscriptionId: string;
+  item: Readonly<{ name: string | null; position: number | null }>;
+  limit: number;
+  afterKey?: string;
+  revision?: number;
+}>;
+export type CommandRowsRead = Readonly<{ status: "error"; code: "INVALID_ARGUMENT" | "PROJECTION_CHANGED" | "CURSOR_UNAVAILABLE"; revision: number }> | Readonly<{
+  status: "ok"; revision: number; itemFound: boolean; total: number; keys: readonly string[]; nextKey: string | null;
+}>;
 
 export type CommandStateInspectionInput = Readonly<{
   subscriptionId: string;
@@ -276,21 +288,24 @@ export function createCommandStateIndex(): CommandStateIndex {
   return createCommandStateIndexController().index;
 }
 
-type CommandStateIndexController = Readonly<{ index: CommandStateIndex; readKey(input: CommandStateInspectionInput): CommandKeyStateRead }>;
+type CommandStateIndexController = Readonly<{ index: CommandStateIndex; readKey(input: CommandStateInspectionInput): CommandKeyStateRead; readRows(input: CommandRowsInput): CommandRowsRead }>;
 
 function createCommandStateIndexController(
   initial: CommandStateAccumulator = createCommandStateAccumulator()
 ): CommandStateIndexController {
   let accumulator = initial;
   let cachedSnapshot: CommandState | null = null;
+  let revision = 0;
   const index: CommandStateIndex = {
     apply(event, evidence) {
       applyCommandEvent(accumulator, event, evidence);
+      revision++;
       cachedSnapshot = null;
     },
 
     clear() {
       accumulator = createCommandStateAccumulator();
+      revision++;
       cachedSnapshot = null;
     },
 
@@ -299,7 +314,7 @@ function createCommandStateIndexController(
       return cachedSnapshot;
     }
   };
-  return { index, readKey: (input) => readAccumulatorKey(accumulator, input) };
+  return { index, readKey: (input) => readAccumulatorKey(accumulator, input), readRows: input => readAccumulatorRows(accumulator, input, revision) };
 }
 
 export function createCommandStateProjections(): CommandStateProjections {
@@ -338,6 +353,10 @@ export function createCommandStateProjections(): CommandStateProjections {
 
     readKey(projection, input) {
       return (projection === "observed-server" ? observedServer : localEffective).readKey(input);
+    },
+
+    readRows(projection, input) {
+      return (projection === "observed-server" ? observedServer : localEffective).readRows(input);
     },
 
     inspect(projection, input) {
@@ -603,6 +622,33 @@ function readAccumulatorKey(accumulator: CommandStateAccumulator, input: Command
     lifecycleHasOlder: hasOlderLifecycle(item?.lifecycle),
     diagnosticsHasOlder: Boolean(item && item.diagnosticsTotal > item.diagnostics.length)
   });
+}
+
+/** Enumerate only keys of the exact item's existing active-row map. */
+function readAccumulatorRows(accumulator: CommandStateAccumulator, input: CommandRowsInput, revision: number): CommandRowsRead {
+  const fail = (code: Extract<CommandRowsRead, { status: "error" }>["code"]): CommandRowsRead => ({ status: "error", code, revision });
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100 || !input.subscriptionId
+    || !input.item || (input.item.name === null && input.item.position === null)
+    || (input.item.name !== null && (typeof input.item.name !== "string" || input.item.name.length === 0))
+    || (input.item.position !== null && (!Number.isSafeInteger(input.item.position) || input.item.position < 1))
+    || (input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision < 0))
+    || (input.afterKey !== undefined && (typeof input.afterKey !== "string" || input.revision === undefined))) return fail("INVALID_ARGUMENT");
+  if (input.revision !== undefined && input.revision !== revision) return fail("PROJECTION_CHANGED");
+  const subscription = accumulator.subscriptions.get(input.subscriptionId);
+  const identity = resolveCommandItemIdentity(subscription?.subscription, input.item);
+  const candidate = subscription?.items.get(identity.itemId);
+  const item = candidate && (input.item.position === null || candidate.itemPosition === input.item.position)
+    && (input.item.name === null || candidate.itemName === input.item.name) ? candidate : undefined;
+  if (input.afterKey !== undefined && !item?.activeRows.has(input.afterKey)) return fail("CURSOR_UNAVAILABLE");
+  const keys: string[] = [];
+  let after = input.afterKey === undefined, hasMore = false;
+  for (const key of item?.activeRows.keys() ?? []) {
+    if (!after) { if (key === input.afterKey) after = true; continue; }
+    if (keys.length === input.limit) { hasMore = true; break; }
+    keys.push(key);
+  }
+  return Object.freeze({ status: "ok", revision, itemFound: Boolean(item), total: item?.activeRows.size ?? 0,
+    keys: Object.freeze(keys), nextKey: hasMore ? keys.at(-1)! : null });
 }
 
 function commandFieldStates(event: LightstreamerEventEnvelope): Record<string, ItemUpdateFieldValueState> {

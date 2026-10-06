@@ -142,17 +142,17 @@ export function mountWorkbenchPanel(
       }
     };
     const serverInjectionExecutor: ServerInjectionExecutor = {
-      execute(draft) {
+      execute(draft, requestId) {
         if (!bridge?.sendServerInjection) {
           return Promise.resolve({
-            requestId: `server-injection-unavailable-${Date.now()}`,
+            requestId: requestId ?? `server-injection-unavailable-${Date.now()}`,
             ok: false,
             status: "bridge-error",
             timestamp: Date.now(),
             error: "The Server Injection bridge is not connected."
           });
         }
-        return bridge.sendServerInjection(draft);
+        return bridge.sendServerInjection(draft, requestId);
       }
     };
     const clientMessageRecipeProvider: ClientMessageRecipeProvider = {

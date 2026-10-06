@@ -108,25 +108,29 @@ describe("bounded cancellation ownership across panel requests", () => {
     } finally { f.connection.dispose(); f.router.dispose(); for (const release of releases) release({ observations: [] }); }
   });
 
-  it("bounds pending status identity lookups and cancels them without late publication", async () => {
+  it("bounds reserved status identity lookups per peer and globally, then frees cancelled lookups without late publication", async () => {
     const agent = { status: () => ({ pageEpoch: "page", visible: true }), local: () => ({ draft: null }) } as unknown as AgentRuntime;
     const f = await connected({ agent, subscribe: () => () => {} } as unknown as WorkbenchRuntime);
     const callbacks: Array<(value: string) => void> = [];
     chrome.devtools.inspectedWindow.eval = vi.fn((_expression, callback: any) => callbacks.push(callback));
-    const first = f.peer(), second = f.peer();
+    const owners = Array.from({ length: 5 }, () => f.peer());
     try {
-      for (let index = 0; index < 16; index++) first.route.receive({ id: `status-${index}`, name: "get_status", args: { panelSessionId: "panel" } });
-      await vi.waitFor(() => expect(callbacks).toHaveLength(16));
-      second.route.receive({ id: "over-cap", name: "get_status", args: { panelSessionId: "panel" } });
-      expect(second.replies.at(-1)).toMatchObject({ id: "over-cap", error: expect.stringMatching(/^REQUEST_CAPACITY:/) });
-      for (let index = 0; index < 16; index++) first.route.receive({ type: "cancel", id: `status-${index}` });
+      for (let owner = 0; owner < 4; owner++) for (let index = 0; index < 2; index++) {
+        owners[owner]!.route.receive({ id: `status-${owner}-${index}`, name: "get_status", args: { panelSessionId: "panel" } });
+      }
+      await vi.waitFor(() => expect(callbacks).toHaveLength(8));
+      owners[4]!.route.receive({ id: "over-global-cap", name: "get_status", args: { panelSessionId: "panel" } });
+      expect(owners[4]!.replies.at(-1)).toMatchObject({ id: "over-global-cap", error: expect.stringMatching(/^REQUEST_CAPACITY:/) });
+      for (let index = 0; index < 2; index++) owners[0]!.route.receive({ type: "cancel", id: `status-0-${index}` });
       await new Promise(resolve => setTimeout(resolve, 0));
-      second.route.receive({ id: "after-cancel", name: "get_status", args: { panelSessionId: "panel" } });
-      await vi.waitFor(() => expect(callbacks).toHaveLength(17));
+      owners[0]!.route.receive({ id: "after-cancel", name: "get_status", args: { panelSessionId: "panel" } });
+      await vi.waitFor(() => expect(callbacks).toHaveLength(9));
+      callbacks[0]! ("https://fixture.test/late-cancelled");
+      callbacks[1]! ("https://fixture.test/late-cancelled");
       callbacks.forEach(callback => callback("https://fixture.test/after-cancel"));
-      await vi.waitFor(() => expect(second.replies.some(value => value.id === "after-cancel" && value.result)).toBe(true));
-      expect(first.replies.filter(value => value.id?.startsWith("status-") && value.result)).toHaveLength(0);
-      expect(f.send.mock.calls.filter(([value]) => value.result)).toHaveLength(1);
+      await vi.waitFor(() => expect(owners[0]!.replies.some(value => value.id === "after-cancel" && value.result)).toBe(true));
+      expect(owners[0]!.replies.filter(value => value.id?.startsWith("status-0-") && value.result)).toHaveLength(0);
+      expect(f.send.mock.calls.filter(([value]) => value.result)).toHaveLength(7);
     } finally { f.connection.dispose(); f.router.dispose(); }
   });
 });

@@ -50,15 +50,21 @@ Scenario Assertions observe Workbench-owned facts only:
 
 - the preceding Injection Outcome and listener delivery counts when the delivery path exposes them;
 - existence of committed Local Evidence correlated to the Run and Step;
+- equality of a JSON primitive field in the exact committed Local Evidence correlated to an earlier Step, including non-COMMAND targets;
 - Local Effective COMMAND key existence or absence;
 - primitive field equality in Local Effective COMMAND State at an exact committed Evidence boundary;
+- absence of a captured Server Item Update for one item during a bounded active-time window;
 - normalized diagnostic presence after the diagnostic contract from Build 5 exists.
 
 The normalized contract now exists in ADR 0013. The implemented assertion captures its lower cursor at initial Review and every drift re-review, queries `(authorization, current]`, and subscribes before the bounded read so a racing occurrence or active-condition transition cannot be lost.
 
-Primitive field equality distinguishes an absent own field from a present field and compares concrete JSON primitives by type and value without coercion. A server-derived public-API `null` is ambiguous and makes equality not evaluable rather than positively equal; a `null` from correlated committed Local Evidence is concrete because Workbench owns the delivered Draft. The result records the observed value state and provenance. Assertions never execute inspected-page JavaScript or inspect arbitrary DOM, callback internals, application state, or Authoritative COMMAND State. Wire delivery cannot offer listener-count assertions. A positive assertion may carry an explicit `within` duration measured by the Scenario Clock; later Steps wait, Pause freezes the window, and the result records the exact committed Evidence boundary used. A failed, expired, unavailable, or not-evaluable assertion stops the Run.
+Primitive field equality distinguishes an absent own field from a present field and compares concrete JSON primitives by type and value without coercion. A server-derived public-API `null` is ambiguous and makes equality not evaluable rather than positively equal; a `null` from the exact correlated committed Local Evidence is concrete because Workbench owns the delivered Draft. Local Evidence field equality resolves only the retained Evidence identity recorded for that Step, requires a present concrete primitive field, and records that Evidence reference and its provenance. Missing, evicted, unavailable, or uncertain Local Evidence cannot satisfy the assertion.
 
-The first Scenario release omits diagnostic-presence assertions. It does not expose a disabled choice or persist a placeholder assertion kind. That assertion family is an additive follow-up after a stable diagnostic code, affected identity, occurrence lifecycle, and committed observation boundary exist.
+The bounded Server Item Update absence assertion examines captured Server Item Updates for the exact Scenario Subscription target and selected item over `(lower, upper]`: the lower and upper references are committed Evidence boundaries in the same History Interval, and the upper boundary is the committed boundary observed when the requested active-time window ends. Its absence means only that no matching captured Server Item Update was found in a complete query over that window. An Evidence Gap, insufficient Observation Coverage, failed or unavailable query, target drift, missing boundary, changed interval, or loss of either required boundary makes the result inconclusive. The assertion does not establish that the server emitted no update or guarantee application behavior.
+
+Positive `within` durations and Server Item Update absence windows use the monotonic Scenario Clock. Later Steps wait for their assertions to settle, and Pause freezes active-time progress. Temporal absence subscribes to committed-boundary changes before querying and evaluates only the bounded window. Pause suspends its progress; Stop, unavailable history, or a continuity limitation cannot turn an incomplete window into a pass. A failed, expired, unavailable, inconclusive, or not-evaluable assertion stops the Run. Assertions never execute inspected-page JavaScript or inspect arbitrary DOM, callback internals, application state, or Authoritative COMMAND State. Wire delivery cannot offer listener-count assertions.
+
+Diagnostic-presence assertions use the normalized rule code, affected identity, occurrence lifecycle, and committed observation boundary defined in ADR 0013. Their result is scoped to Workbench's Diagnostic Observation contract.
 
 ## Interaction model
 

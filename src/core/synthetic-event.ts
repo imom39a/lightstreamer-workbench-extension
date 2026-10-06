@@ -14,7 +14,7 @@ export function createSyntheticEventFromDraft(
 ): LightstreamerEventEnvelope {
   const timestamp = result.timestamp || Date.now();
   const editedFields = deriveChangedFields(draft.sourceFields, draft.fields);
-  const changedFields = draft.manualChangedFieldsOverride
+  const changedFields = draft.changeSemantics || draft.manualChangedFieldsOverride
     ? { ...draft.changedFields }
     : draftFieldsMatchSource(draft)
       ? { ...draft.originalChangedFields }
@@ -70,6 +70,7 @@ export function createSyntheticEventFromDraft(
           : "captured-listener",
       serverContacted: false,
       manualChangedFieldsOverride: draft.manualChangedFieldsOverride,
+      ...(draft.changeSemantics ? { changeSemantics: { ...draft.changeSemantics, limitations: [...draft.changeSemantics.limitations] } } : {}),
       provenance: { ...draft.provenance }
     }
   };

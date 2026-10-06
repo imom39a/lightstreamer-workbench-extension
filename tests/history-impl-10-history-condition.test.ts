@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
@@ -285,7 +285,7 @@ describe("history-impl-10 continuity-first History condition", () => {
 
     await history.offer(candidate("too-large")).settled;
     await history.offer(candidate("later")).settled;
-    await flushRuntime();
+    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(1));
 
     const snapshot = runtime.getSnapshot();
     expect(snapshot.capture).toMatchObject({

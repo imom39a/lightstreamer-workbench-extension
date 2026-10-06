@@ -54,14 +54,45 @@ try {
     cwd: directory, env: { LSEW_AGENT_CONNECTION: "" }, stderr: "inherit"
   }));
   assert.equal(clients[0].getServerVersion().version, metadata.version);
-  const advertised = (await clients[0].listTools()).tools;
+  assert.match(clients[0].getInstructions() ?? "", /list_panel_sessions/);
+  assert.match(clients[0].getInstructions() ?? "", /exact inspected tab/);
+  const catalog = await clients[0].listTools();
+  const advertised = catalog.tools;
+  const expectedTools = [
+    "list_panel_sessions", "get_pairing_requests", "confirm_pairing", "get_status",
+    "list_scope", "search_scope", "get_scope", "aggregate_evidence", "generate_agent_candidates",
+    "read_bundle", "query_evidence", "search_evidence", "summarize_evidence", "describe_stream",
+    "wait_for_evidence", "get_evidence", "query_diagnostics", "query_command_state",
+    "query_command_rows", "query_command_keys", "update_agent_document", "prepare_local_injection",
+    "prepare_server_injection", "execute_server_injection", "recover_server_injection",
+    "abort_server_injection", "recover_agent_document", "abort_agent_document",
+    "execute_local_injection", "get_operation", "wait_for_operation", "wait_for_scenario",
+    "validate_agent_candidate", "prepare_scenario", "control_scenario", "get_scenario_trace",
+    "finish_agent_document"
+  ];
+  assert.equal(advertised.length, 37, "The approved catalog retains all 37 tools");
+  assert.deepEqual(advertised.map(tool => tool.name).sort(), expectedTools.sort(), "Installed tool names match the approved interface");
+  const discoveryBytes = new TextEncoder().encode(JSON.stringify(catalog)).byteLength;
+  assert(discoveryBytes <= 160 * 1024, `installed tool discovery is ${discoveryBytes} bytes against the user-approved 163,840-byte full-catalog ceiling`);
+  console.log(`Installed discovery: ${advertised.length} tools, ${discoveryBytes} bytes; approved ceiling 163840 bytes, headroom ${163840 - discoveryBytes} bytes.`);
   assert(advertised.some(tool => tool.name === "prepare_scenario"));
+  assert(advertised.some(tool => tool.name === "wait_for_scenario"));
+  assert(advertised.find(tool => tool.name === "query_evidence")?.inputSchema.properties.workBudget, "query work budgets are discoverable");
   for (const name of ["search_evidence", "search_scope", "summarize_evidence"]) {
     assert.equal(advertised.find(tool => tool.name === name)?.annotations?.readOnlyHint, true, `${name} is discoverable and read-only in the installed artifact`);
   }
   for (const name of ["query_evidence", "summarize_evidence", "describe_stream", "validate_agent_candidate", "wait_for_evidence"]) {
     assert(advertised.some(tool => tool.name === name && tool.outputSchema?.type === "object"), `Missing structured tool contract: ${name}`);
   }
+  const resources = await clients[0].listResources();
+  assert.equal(resources.resources.length, 1);
+  const readContract = await clients[0].readResource({ uri: resources.resources[0].uri });
+  assert.match(readContract.contents[0].text ?? "", /Counts are retained Evidence records/);
+  assert(new TextEncoder().encode(JSON.stringify(readContract)).byteLength <= 16 * 1024);
+  const prompts = await clients[0].listPrompts();
+  assert.deepEqual(prompts.prompts.map(prompt => prompt.name), ["investigate-lightstreamer"]);
+  const prompt = await clients[0].getPrompt({ name: "investigate-lightstreamer", arguments: { question: "why did a COMMAND key disappear?" } });
+  assert.match(prompt.messages[0].content.text, /why did a COMMAND key disappear\?/);
   panel = new WebSocket(`ws://127.0.0.1:${port}/workbench`, { headers: { Origin: `chrome-extension://${id}` } });
   const queue = [], readers = [];
   panel.on("message", data => { const message = JSON.parse(data.toString()); const read = readers.shift(); if (read) read(message); else queue.push(message); });
@@ -82,14 +113,36 @@ try {
   const request = await next();
   panel.send(JSON.stringify({ id: request.id, result: { pageEpoch: "installed-package-runtime" } }));
   assert.match(JSON.stringify(await call), /installed-package-runtime/);
+  const searchIdentity = sequence => ({ intervalId: "package-search-interval", pageId: "package-page", ownerId: "package-owner", sequence, eventId: `package-event-${sequence}` });
+  const searchReadPoint = {
+    interval: { id: "package-search-interval", ordinal: 1 }, committedEvidenceBoundary: searchIdentity(1002),
+    retainedRange: { first: searchIdentity(1), last: searchIdentity(1002) }
+  };
+  const searchResults = {
+    search_evidence: {
+      readPoint: searchReadPoint, coverage: "COMPLETE", evaluation: "COMPLETE", storage: "MEMORY_FALLBACK",
+      totals: { matching: 1002, inScope: 1002 },
+      evidence: [{ identity: searchIdentity(1), timestamp: 1, fields: { message: { state: "concrete", value: "needle" } } }],
+      nextCursor: "frozen-search-cursor"
+    },
+    search_scope: {
+      snapshot: { pageEpoch: "installed-package-runtime", structureRevision: 1, history: { intervalId: "package-search-interval", committedSequence: 1002, retainedFirstSequence: 1 } },
+      boundary: "ALL_STRUCTURAL_TOPOLOGY", match: "CASE_INSENSITIVE_SUBSTRING", text: "needle", total: 1002, offset: 0,
+      scopes: [{ scopeId: "package-scope", kind: "subscription", label: "needle", path: "package-page/needle", ancestorIds: ["package-page"], matchedFields: ["label"] }],
+      nextCursor: "frozen-search-cursor"
+    }
+  };
   for (const name of ["search_evidence", "search_scope"]) {
     const args = { panelSessionId: "npm-package-panel", text: "needle", limit: 1, ...(name === "search_evidence" ? { within: "page" } : {}) };
     const search = clients[0].callTool({ name, arguments: args });
     const request = await next();
     assert.equal(request.name, name);
     assert.deepEqual(request.args, args);
-    panel.send(JSON.stringify({ id: request.id, result: { total: 1002, nextCursor: "frozen-search-cursor" } }));
-    assert.match(JSON.stringify(await search), /frozen-search-cursor/);
+    panel.send(JSON.stringify({ id: request.id, result: searchResults[name] }));
+    const searchReply = await search;
+    assert.equal(searchReply.isError, undefined);
+    assert.deepEqual(searchReply.structuredContent, searchResults[name], `${name} preserves its canonical structured search result through cached SDK validation`);
+    assert.match(JSON.stringify(searchReply), /frozen-search-cursor/);
     const invalid = await clients[0].callTool({ name, arguments: { panelSessionId: "npm-package-panel", text: "needle", limit: 101 } });
     assert.equal(invalid.isError, true, `${name} validates its bound before panel routing`);
   }
@@ -105,6 +158,14 @@ try {
   const queryReply = await query;
   assert.equal(queryReply.isError, undefined);
   assert.deepEqual(queryReply.structuredContent, queryResult, "The real SDK accepts and preserves the declared structured query result");
+  const scenarioWait = clients[0].callTool({ name: "wait_for_scenario", arguments: { panelSessionId: "npm-package-panel", runId: "run-1", pageEpoch: "installed-package-runtime", afterRevision: 1, timeoutMs: 1000 } });
+  const scenarioWaitRequest = await next();
+  assert.equal(scenarioWaitRequest.name, "wait_for_scenario");
+  assert.deepEqual(scenarioWaitRequest.args, { panelSessionId: "npm-package-panel", runId: "run-1", pageEpoch: "installed-package-runtime", afterRevision: 1, timeoutMs: 1000 });
+  panel.send(JSON.stringify({ id: scenarioWaitRequest.id, result: { status: "TERMINAL", runId: "run-1", pageEpoch: "installed-package-runtime", revision: 2, scenario: {}, reason: "Run completed." } }));
+  const scenarioWaitReply = await scenarioWait;
+  assert.equal(scenarioWaitReply.isError, undefined);
+  assert.equal(scenarioWaitReply.structuredContent.status, "TERMINAL");
   const invalid = await clients[0].callTool({ name: "query_evidence", arguments: { panelSessionId: "npm-package-panel", filter: { unknown: true } } });
   assert.equal(invalid.isError, true);
   assert.equal(invalid.structuredContent.error.code, "INVALID_ARGUMENT");

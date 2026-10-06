@@ -31,8 +31,14 @@ export type ServerInjectionExecutionResult = Readonly<{
 }>;
 
 export type ServerInjectionExecutor = Readonly<{
-  execute(draft: ServerInjectionDraft): Promise<ServerInjectionExecutionResult>;
+  execute(draft: ServerInjectionDraft, requestId?: string): Promise<ServerInjectionExecutionResult>;
 }>;
+
+/** Fingerprint used by the separate agent-send approval latch. It intentionally
+ * contains only the exact reviewed target and public sendMessage arguments. */
+export function serverInjectionApprovalFingerprint(draft: ServerInjectionDraft): string {
+  return serverInjectionFingerprint(draft);
+}
 
 export function createServerInjectionDraftFromEvent(
   event: LightstreamerEventEnvelope

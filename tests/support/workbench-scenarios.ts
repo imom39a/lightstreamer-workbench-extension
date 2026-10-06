@@ -193,7 +193,7 @@ export function highVolumeEventId(sequence: number): string {
  * data, then expands it into a stable high-volume sequence without importing
  * legacy DOM actions or selectors.
  */
-export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario {
+export function getWorkbenchScenario(id: WorkbenchScenarioId, options: { highVolumeFieldCount?: 200 | 500 } = {}): WorkbenchScenario {
   const canonical = getPanelScenario("command-state").capturedEvents;
   const serverOnlyCanonical = canonical.filter((event) => !event.synthetic);
   const topology = getPanelScenario("topology-small");
@@ -838,7 +838,7 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
     case "local-injection-scenario-partial":
       return localInjectionScenario(id, true, 1, "partial");
     case "local-injection-scenario-high-volume":
-      return localInjectionHighVolumeScenario(id);
+      return localInjectionHighVolumeScenario(id, options.highVolumeFieldCount);
     case "local-injection-scenario-capture-volume":
       return localInjectionCaptureVolumeScenario(id);
     case "local-injection-scenario-stop-in-flight":
@@ -1196,9 +1196,9 @@ function localInjectionCaptureVolumeScenario(id: WorkbenchScenarioId): Workbench
     deferredEvents: [capture(5_001), capture(5_002)] };
 }
 
-function localInjectionHighVolumeScenario(id: WorkbenchScenarioId): WorkbenchScenario {
+function localInjectionHighVolumeScenario(id: WorkbenchScenarioId, fieldCount = 500): WorkbenchScenario {
   const base = localInjectionCapturedScenario(id);
-  const representativeFields = Object.fromEntries(Array.from({ length: 500 }, (_, index) => [`field_${String(index + 1).padStart(3, "0")}`, `value-${index + 1}`]));
+  const representativeFields = Object.fromEntries(Array.from({ length: fieldCount }, (_, index) => [`field_${String(index + 1).padStart(3, "0")}`, `value-${index + 1}`]));
   const fields = { command: "ADD", key: "high-volume", value: "representative", ...representativeFields };
   const schemaFields = Object.keys(fields);
   return {
@@ -2158,4 +2158,17 @@ function highScopeEvents(first: number, count: number): readonly LightstreamerEv
       }
     };
   });
+}
+
+/** Test-only alternate native mode on the deterministic authored target. */
+export function withAgentNativeMode(scenario: WorkbenchScenario, mode: "MERGE" | "DISTINCT"): WorkbenchScenario {
+  const copy = JSON.parse(JSON.stringify(scenario));
+  const visit = (value: any): void => {
+    if (!value || typeof value !== "object") return;
+    if (value.mode === "COMMAND") value.mode = mode;
+    if (value.update) { value.update.command = null; value.update.key = null; }
+    Object.values(value).forEach(visit);
+  };
+  visit(copy);
+  return copy;
 }

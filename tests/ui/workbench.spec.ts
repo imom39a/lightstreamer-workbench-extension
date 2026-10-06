@@ -37,11 +37,12 @@ async function openScenario(
   page: Page,
   scenario: WorkbenchScenarioId,
   viewport: { width: number; height: number },
-  theme: "dark" | "light" | "auto"
+  theme: "dark" | "light" | "auto",
+  query = ""
 ): Promise<void> {
   await page.setViewportSize(viewport);
   await page.emulateMedia({ colorScheme: theme === "auto" ? "light" : theme });
-  await page.goto(`/?scenario=${scenario}&theme=${theme}`);
+  await page.goto(`/?scenario=${scenario}&theme=${theme}${query}`);
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
   await expect(page.locator(".workbench-react")).toBeVisible();
 }
@@ -3196,7 +3197,7 @@ test("Scenario high-volume document mounts one of 100 representative large edito
   await openScenario(page, "live-selected", { width: 563, height: 700 }, "light");
   expect(await page.locator('[data-editor-engine="codemirror-6"]').count()).toBe(0);
   expect(await page.evaluate(() => performance.getEntriesByType("resource").some(({ name }) => name.includes("local-injection-document.js")))).toBe(false);
-  await openScenario(page, "local-injection-scenario-high-volume", { width: 563, height: 700 }, "light");
+  await openScenario(page, "local-injection-scenario-high-volume", { width: 563, height: 700 }, "light", "&reviewPressure=1");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
   await expect(scenario.getByLabel("Ordered Scenario Steps").locator("ol > li")).toHaveCount(100);
   await expect(scenario.getByRole("article")).toHaveCount(1);

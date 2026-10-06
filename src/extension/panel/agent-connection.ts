@@ -1,4 +1,4 @@
-import { AGENT_PROTOCOL_VERSION, AGENT_RESPONSE_CONTRACT, type AgentPermission } from "../../agent/protocol";
+import { AGENT_PROTOCOL_VERSION, AGENT_RESPONSE_CONTRACT, isReservedAgentCall, type AgentPermission } from "../../agent/protocol";
 import { agentToolResultBytes } from "../../agent/tool-result";
 import { connectPortable, type CompanionChannel } from "../../agent/portable-channel";
 import type { CompanionAuth } from "../../agent/portable-config";
@@ -22,11 +22,13 @@ const unavailable: AgentConnectionState = { enabled: false, permission: "off", s
 export const UNAVAILABLE_AGENT_CONNECTION: AgentConnection = { getSnapshot: () => unavailable, subscribe: () => () => {}, connect() {}, approvePairing() {}, disconnect() {}, dispose() {} };
 
 // Slow or uncooperative providers retain their admission until actual settlement,
-// even after cancellation/reconnection. Reserve bounded capacity for immediate
-// projection/receipt inspection and status's cancellable tab-identity lookup.
+// even after cancellation/reconnection. Ordinary reads keep their normal limits;
+// a separate bounded lane remains for status, receipts, recovery, pause and stop.
 const PROVIDER_CAPACITY = 48;
 const IMMEDIATE_CAPACITY = 16;
 const AGENT_PROVIDER_CAPACITY = 16;
+const RESERVED_CAPACITY = 8;
+const AGENT_RESERVED_CAPACITY = 2;
 const immediateReads = new Set(["get_status", "query_command_state", "get_operation"]);
 
 export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId: string): AgentConnection {
@@ -41,7 +43,7 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
   let generation = 0;
   let disposed = false;
   const pendingReads = new Map<string, AbortController>();
-  const outstanding = new Set<{ owner: string; immediate: boolean }>();
+  const outstanding = new Set<{ owner: string; immediate: boolean; reserved: boolean }>();
   const listeners = new Set<() => void>();
   const service = runtime.agent ? createAgentService(runtime.agent, panelSessionId, () => state.permission) : null;
   const unsubscribe = runtime.subscribe(() => service?.refreshOperations());
@@ -101,19 +103,25 @@ export function createAgentConnection(runtime: WorkbenchRuntime, panelSessionId:
         }
         if (state.status !== "connected" || typeof value.id !== "string" || typeof value.name !== "string") return;
         const requestId = value.id;
-        const immediate = immediateReads.has(value.name);
+        const reserved = isReservedAgentCall(value.name, value.args);
+        const immediate = !reserved && immediateReads.has(value.name);
         // The broker supplies this identity; caller tool arguments cannot set it.
         // Direct/legacy adapters share one bounded owner for this connection.
         const owner = typeof value.agentConnectionId === "string" && value.agentConnectionId.length <= 128 ? value.agentConnectionId : `connection-${epoch}`;
-        const providers = [...outstanding].filter(entry => !entry.immediate);
-        const immediateCount = outstanding.size - providers.length;
-        if (pendingReads.has(requestId) || pendingReads.size >= 64
-          || (immediate ? immediateCount >= IMMEDIATE_CAPACITY : providers.length >= PROVIDER_CAPACITY || providers.filter(entry => entry.owner === owner).length >= AGENT_PROVIDER_CAPACITY)) {
+        const admittedCalls = [...outstanding];
+        const reservedCalls = admittedCalls.filter(entry => entry.reserved);
+        const ordinaryCalls = admittedCalls.filter(entry => !entry.reserved);
+        const providers = ordinaryCalls.filter(entry => !entry.immediate);
+        const immediateCount = ordinaryCalls.length - providers.length;
+        const ownedReserved = reservedCalls.filter(entry => entry.owner === owner).length;
+        if (pendingReads.has(requestId) || pendingReads.size >= 72
+          || (reserved ? reservedCalls.length >= RESERVED_CAPACITY || ownedReserved >= AGENT_RESERVED_CAPACITY
+            : (immediate ? immediateCount >= IMMEDIATE_CAPACITY : providers.length >= PROVIDER_CAPACITY || providers.filter(entry => entry.owner === owner).length >= AGENT_PROVIDER_CAPACITY))) {
           reply({ id: requestId, error: "REQUEST_CAPACITY: Workbench request capacity reached. Cancelled provider work remains bounded until it settles; immediate inspection has reserved capacity." }); return;
         }
         const controller = new AbortController();
         pendingReads.set(requestId, controller);
-        const admitted = { owner, immediate };
+        const admitted = { owner, immediate, reserved };
         outstanding.add(admitted);
         const response = service.call(value.name, value.args, { signal: controller.signal }).then(async result => {
           if (value.name !== "get_status") return result;

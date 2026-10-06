@@ -102,6 +102,48 @@ describe("Server Injection document", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "execute-server-injection" });
   });
 
+  it("requires an explicit human approval click before an agent can send", () => {
+    const base = snapshot("review");
+    act(() => root.render(createElement(ServerInjectionDocument, {
+      runtime,
+      serverInjection: { ...base, draft: { ...base.draft, agentRequestId: "agent-request", agentApproved: false } }
+    })));
+    expect(container.textContent).toContain("Approve exact Client Message for agent send");
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Send Client Message once")).toBe(false);
+    const approval = [...container.querySelectorAll("button")].find(button => button.textContent === "Approve exact Client Message for agent send")!;
+    act(() => approval.click());
+    expect(dispatch).toHaveBeenCalledWith({ type: "approve-server-injection-for-agent" });
+  });
+
+  it("moves focus to approval status and restores the approval action on revocation", () => {
+    const base = snapshot("review");
+    const render = (approved: boolean, requestId = "agent-request") => act(() => root.render(createElement(ServerInjectionDocument, {
+      runtime,
+      serverInjection: {
+        ...base,
+        draft: { ...base.draft, agentRequestId: requestId, agentApproved: approved }
+      }
+    })));
+
+    render(false);
+    const approval = [...container.querySelectorAll("button")].find(button => button.textContent === "Approve exact Client Message for agent send")!;
+    approval.focus();
+    act(() => approval.click());
+    render(true);
+    const status = container.querySelector<HTMLElement>("[data-agent-approval-status]")!;
+    expect(status.tabIndex).toBe(-1);
+    expect(document.activeElement).toBe(status);
+
+    render(false);
+    const restoredApproval = [...container.querySelectorAll("button")].find(button => button.textContent === "Approve exact Client Message for agent send")!;
+    expect(document.activeElement).toBe(restoredApproval);
+
+    const back = [...container.querySelectorAll("button")].find(button => button.textContent === "Back to edit")!;
+    back.focus();
+    render(true, "agent-request-2");
+    expect(document.activeElement).toBe(back);
+  });
+
   it("labels an uncertain terminal state and requires a separate deliberate Repeat", () => {
     const base = snapshot("outcome");
     const value: WorkbenchServerInjectionSnapshot = {
@@ -189,6 +231,8 @@ function snapshot(
       ready: true,
       source: { kind: "captured-message", eventId: "event-1" },
       reviewedFingerprint: phase === "review" ? "fingerprint" : null,
+      agentRequestId: null,
+      agentApproved: false,
       outcome: null,
       repeatWarning: false,
       discardConfirmation: false,

@@ -9,21 +9,21 @@ describe("agent request cancellation routing", () => {
     const router = createBrokerRouter(), panel = peer(), first = peer(), second = peer();
     const p = router.join(panel, { role: "panel", protocolVersion: 1, panelSessionId: "panel", permission: "local" });
     const a = router.join(first, { role: "agent" }), b = router.join(second, { role: "agent" });
-    for (let i = 0; i < 17; i++) a.receive({ id: `first-${i}`, name: "get_status", agentConnectionId: "caller-forged", args: { panelSessionId: "panel" } });
+    for (let i = 0; i < 17; i++) a.receive({ id: `first-${i}`, name: "search_scope", agentConnectionId: "caller-forged", args: { panelSessionId: "panel", text: "item" } });
     expect(first.send.mock.calls.at(-1)![0]).toMatchObject({ id: "first-16", error: expect.stringMatching(/^REQUEST_CAPACITY:/) });
-    expect(panel.send.mock.calls.filter(([message]) => message.name === "get_status")).toHaveLength(16);
-    const firstTokens = panel.send.mock.calls.filter(([message]) => message.name === "get_status").map(([message]) => message.agentConnectionId);
+    expect(panel.send.mock.calls.filter(([message]) => message.name === "search_scope")).toHaveLength(16);
+    const firstTokens = panel.send.mock.calls.filter(([message]) => message.name === "search_scope").map(([message]) => message.agentConnectionId);
     expect(new Set(firstTokens).size).toBe(1);
     expect(firstTokens[0]).toMatch(/^[0-9a-f-]{36}$/);
     expect(firstTokens[0]).not.toBe("caller-forged");
-    b.receive({ id: "second", name: "get_status", args: { panelSessionId: "panel" } });
+    b.receive({ id: "second", name: "search_scope", args: { panelSessionId: "panel", text: "item" } });
     expect(panel.send.mock.calls.at(-1)![0].agentConnectionId).not.toBe(firstTokens[0]);
     const secondRoute = panel.send.mock.calls.at(-1)![0].id;
     p.receive({ id: secondRoute, result: { visible: true } });
     expect(second.send).toHaveBeenLastCalledWith({ id: "second", result: { visible: true } });
     a.receive({ type: "cancel", id: "first-0" });
-    a.receive({ id: "first-after-cancel", name: "get_status", args: { panelSessionId: "panel" } });
-    expect(panel.send.mock.calls.at(-1)![0]).toMatchObject({ name: "get_status" });
+    a.receive({ id: "first-after-cancel", name: "search_scope", args: { panelSessionId: "panel", text: "item" } });
+    expect(panel.send.mock.calls.at(-1)![0]).toMatchObject({ name: "search_scope" });
     router.dispose();
   });
 
@@ -32,10 +32,34 @@ describe("agent request cancellation routing", () => {
     router.join(panel, { role: "panel", protocolVersion: 1, panelSessionId: "panel", permission: "local" });
     const a = router.join(first, { role: "agent" }), b = router.join(second, { role: "agent" });
     const point = { interval: { id: "interval", ordinal: 1 }, committedEvidenceBoundary: null, retainedRange: null };
-    for (let i = 0; i < 3; i++) a.receive({ id: `wait-${i}`, name: "wait_for_evidence", args: { panelSessionId: "panel", after: point, pageEpoch: "epoch", timeoutMs: 20000 } });
+    const waits = [
+      ["wait_for_evidence", { after: point, pageEpoch: "epoch", timeoutMs: 20000 }],
+      ["wait_for_operation", { requestId: "receipt", timeoutMs: 20000 }],
+      ["wait_for_scenario", { runId: "run", pageEpoch: "epoch", timeoutMs: 20000 }]
+    ] as const;
+    waits.forEach(([name, args], i) => a.receive({ id: `wait-${i}`, name, args: { panelSessionId: "panel", ...args } }));
     expect(first.send.mock.calls.at(-1)![0]).toMatchObject({ id: "wait-2", error: expect.stringMatching(/^REQUEST_CAPACITY:/) });
-    b.receive({ id: "other-wait", name: "wait_for_evidence", args: { panelSessionId: "panel", after: point, pageEpoch: "epoch" } });
-    expect(panel.send.mock.calls.at(-1)![0]).toMatchObject({ name: "wait_for_evidence" });
+    b.receive({ id: "other-wait", name: "wait_for_scenario", args: { panelSessionId: "panel", runId: "run", pageEpoch: "epoch" } });
+    expect(panel.send.mock.calls.at(-1)![0]).toMatchObject({ name: "wait_for_scenario" });
+    router.dispose();
+  });
+
+  it("admits status, receipt lookup, recovery and pause in bounded reserved headroom after ordinary saturation", () => {
+    const router = createBrokerRouter(), panel = peer(), agents = Array.from({ length: 4 }, () => peer());
+    router.join(panel, { role: "panel", protocolVersion: 1, panelSessionId: "panel", permission: "local" });
+    const routes = agents.map(agent => router.join(agent, { role: "agent" }));
+    for (let owner = 0; owner < agents.length; owner++) {
+      for (let i = 0; i < 16; i++) routes[owner]!.receive({ id: `ordinary-${owner}-${i}`, name: "search_scope", args: { panelSessionId: "panel", text: "row" } });
+    }
+    expect(panel.send.mock.calls.filter(([message]) => message.name === "search_scope")).toHaveLength(64);
+    const urgent = [
+      ["get_status", {}], ["get_operation", { requestId: "known" }], ["recover_agent_document", {}],
+      ["control_scenario", { runId: "run", requestId: "pause", action: "pause" }]
+    ] as const;
+    urgent.forEach(([name, extra], i) => routes[Math.min(i, 2)]!.receive({ id: `urgent-${i}`, name, args: { panelSessionId: "panel", ...extra } }));
+    expect(panel.send.mock.calls.slice(-4).map(([message]) => [message.name, message.admissionClass])).toEqual([
+      ["get_status", "reserved"], ["get_operation", "reserved"], ["recover_agent_document", "reserved"], ["control_scenario", "reserved"]
+    ]);
     router.dispose();
   });
 

@@ -20,8 +20,11 @@ import {
 } from "./diagnostic-observation";
 
 export const SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT = 16;
+export const SCENARIO_MAX_MEMBER_ID_LENGTH = 256;
+export const SCENARIO_MAX_CHECKPOINT_NAME_LENGTH = 256;
+export const SCENARIO_MAX_ASSERTION_ACTIVE_MS = 300_000;
 
-export type ScenarioAssertionStatus = "pass" | "fail" | "waiting" | "expired" | "invalid" | "unavailable" | "not-evaluable";
+export type ScenarioAssertionStatus = "pass" | "fail" | "inconclusive" | "waiting" | "expired" | "invalid" | "unavailable" | "not-evaluable";
 export type ScenarioObservationCertainty = "certain" | "ambiguous" | "unavailable";
 export type ScenarioObservationProvenance = "injection-outcome" | "committed-local-evidence" | "correlated-local" | "local-effective" | "server" | "wire" | "history" | "diagnostic-observation";
 
@@ -39,6 +42,7 @@ export type ScenarioCommittedBoundarySnapshot = Readonly<{
   retainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }> | null;
   history: "accepting" | "unavailable" | "closed";
   projection: "live" | "recovering" | "failed";
+  temporalCoverage?: "complete" | "insufficient";
 }>;
 
 export type ScenarioCommittedBoundaryFeed = Readonly<{
@@ -54,6 +58,8 @@ export type ScenarioAssertionObservation = Readonly<{
     key: string;
     field?: string;
   }>): ScenarioCommandInspection;
+  temporalAbsence?: ReadonlyMap<string, Readonly<{ state: "absent" | "present" | "inconclusive"; lower: EvidenceRef | null; upper: EvidenceRef | null; matched?: EvidenceRef }>>;
+  localEvidenceFields?: ReadonlyMap<string, ScenarioCommandInspection>;
   diagnosticReads?: ReadonlyMap<string, DiagnosticObservationRead>;
 }>;
 
@@ -98,10 +104,10 @@ export function validateScenarioCheckpoint(
     return frozen({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint must be an object." });
   }
   const rawCheckpoint = checkpoint as unknown as Readonly<Record<string, unknown>>;
-  if (rawCheckpoint.kind !== "checkpoint" || typeof rawCheckpoint.id !== "string" || rawCheckpoint.id.length === 0 || rawCheckpoint.id.length > 256) {
+  if (rawCheckpoint.kind !== "checkpoint" || typeof rawCheckpoint.id !== "string" || rawCheckpoint.id.length === 0 || rawCheckpoint.id.length > SCENARIO_MAX_MEMBER_ID_LENGTH) {
     return frozen({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint requires a non-empty stable identity and checkpoint kind." });
   }
-  if (typeof rawCheckpoint.name !== "string" || rawCheckpoint.name.trim().length < 1 || rawCheckpoint.name.length > 256) {
+  if (typeof rawCheckpoint.name !== "string" || rawCheckpoint.name.trim().length < 1 || rawCheckpoint.name.length > SCENARIO_MAX_CHECKPOINT_NAME_LENGTH) {
     return frozen({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint name must contain 1 to 256 characters." });
   }
   if (!Array.isArray(rawCheckpoint.assertions) || rawCheckpoint.assertions.length < 1 || rawCheckpoint.assertions.length > SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT) {
@@ -114,17 +120,20 @@ export function validateScenarioCheckpoint(
     }
     const assertion = rawAssertion as Partial<ScenarioAssertion> & { id?: unknown; kind?: unknown; withinActiveMs?: unknown; stepId?: unknown };
     const assertionId = typeof assertion.id === "string" ? assertion.id : "<missing>";
-    if (typeof assertion.id !== "string" || assertion.id.length === 0 || assertion.id.length > 256 || ids.has(assertion.id)) {
+    if (typeof assertion.id !== "string" || assertion.id.length === 0 || assertion.id.length > SCENARIO_MAX_MEMBER_ID_LENGTH || ids.has(assertion.id)) {
       return frozen({ ok: false, assertionId, reason: "Scenario Assertion identities must be non-empty and stable within the Checkpoint." });
     }
     ids.add(assertion.id);
     if (!isAssertionKind(assertion.kind)) return frozen({ ok: false, assertionId, reason: "Unsupported Scenario Assertion kind." });
-    const requiresStep = assertion.kind === "prior-injection-outcome" || assertion.kind === "listener-count" || assertion.kind === "correlated-local-evidence-exists";
+    const requiresStep = assertion.kind === "prior-injection-outcome" || assertion.kind === "listener-count" || assertion.kind === "correlated-local-evidence-exists" || assertion.kind === "local-evidence-field-equals";
     if (requiresStep && (typeof assertion.stepId !== "string" || !context.earlierStepIds.includes(assertion.stepId))) {
       return frozen({ ok: false, assertionId, reason: "Checkpoint assertions may reference only an earlier Scenario Step." });
     }
     if (assertion.kind === "prior-injection-outcome" && !["delivered", "partial", "failed", "acknowledgement-unknown", "blocked"].includes(assertion.expectedDisposition as string)) {
       return frozen({ ok: false, assertionId, reason: "Injection Outcome expectation is unsupported." });
+    }
+    if (assertion.kind === "prior-injection-outcome" && assertion.expectedDisposition !== "delivered") {
+      return frozen({ ok: false, assertionId, reason: "Checkpoint is unreachable: partial, failed, unknown or blocked Injection Outcomes stop the Run before any later Checkpoint. Inspect the terminal Trace instead." });
     }
     if (assertion.kind === "listener-count" && context.deliveryPath === "wire") {
       return frozen({ ok: false, assertionId, reason: "Wire delivery does not expose listener counts; this assertion is unavailable." });
@@ -144,7 +153,7 @@ export function validateScenarioCheckpoint(
     if ((assertion.kind === "command-key-exists" || assertion.kind === "command-field-equals") && (typeof assertion.key !== "string" || assertion.key.length === 0)) {
       return frozen({ ok: false, assertionId, reason: "COMMAND key must not be empty." });
     }
-    if (assertion.kind === "command-key-exists" || assertion.kind === "command-field-equals") {
+    if (assertion.kind === "command-key-exists" || assertion.kind === "command-field-equals" || assertion.kind === "server-item-update-absent") {
       const item = assertion.item as unknown;
       const itemRecord = typeof item === "object" && item !== null && !Array.isArray(item)
         ? item as Readonly<Record<string, unknown>>
@@ -160,8 +169,11 @@ export function validateScenarioCheckpoint(
         return frozen({ ok: false, assertionId, reason: "COMMAND assertion requires an exact item name or positive item position." });
       }
     }
-    if (assertion.kind === "command-field-equals" && (typeof assertion.field !== "string" || assertion.field.length === 0 || !isJsonPrimitive(assertion.expected))) {
+    if ((assertion.kind === "command-field-equals" || assertion.kind === "local-evidence-field-equals") && (typeof assertion.field !== "string" || assertion.field.length === 0 || !isJsonPrimitive(assertion.expected))) {
       return frozen({ ok: false, assertionId, reason: "Primitive equality requires a named field and one finite JSON primitive expectation." });
+    }
+    if (assertion.kind === "server-item-update-absent" && (typeof assertion.duringActiveMs !== "number" || !Number.isFinite(assertion.duringActiveMs) || assertion.duringActiveMs < 1 || assertion.duringActiveMs > SCENARIO_MAX_ASSERTION_ACTIVE_MS)) {
+      return frozen({ ok: false, assertionId, reason: "Temporal absence requires 1 to 300000 ms of active observation time." });
     }
     if (assertion.kind === "diagnostic-observation-exists") {
       if (assertion.contractVersion !== DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION) {
@@ -184,12 +196,17 @@ export function validateScenarioCheckpoint(
       const allowed = assertion.kind === "correlated-local-evidence-exists"
         || (assertion.kind === "command-key-exists" && assertion.expected === "present")
         || assertion.kind === "command-field-equals"
+        || assertion.kind === "local-evidence-field-equals"
         || assertion.kind === "diagnostic-observation-exists";
       if (!allowed) return frozen({ ok: false, assertionId, reason: "within is available only for positive Evidence, key-exists, or primitive-equality assertions." });
-      if (typeof assertion.withinActiveMs !== "number" || !Number.isFinite(assertion.withinActiveMs) || assertion.withinActiveMs < 1 || assertion.withinActiveMs > 300_000) {
+      if (typeof assertion.withinActiveMs !== "number" || !Number.isFinite(assertion.withinActiveMs) || assertion.withinActiveMs < 1 || assertion.withinActiveMs > SCENARIO_MAX_ASSERTION_ACTIVE_MS) {
         return frozen({ ok: false, assertionId, reason: "within must be a finite active-time duration from 1 to 300000 ms." });
       }
     }
+  }
+  const temporal = checkpoint.assertions.filter(assertion => assertion.kind === "server-item-update-absent");
+  if (temporal.length > 1 || (temporal.length && checkpoint.assertions.some(assertion => "withinActiveMs" in assertion && assertion.withinActiveMs !== undefined))) {
+    return frozen({ ok: false, assertionId: temporal[0]!.id, reason: "Use one temporal absence window per Checkpoint, without mixing eventual within windows." });
   }
   return frozen({ ok: true });
 }
@@ -210,6 +227,14 @@ export function evaluateScenarioCheckpoint(
     return unavailableEvaluation(checkpoint, boundary.boundary, activeOffsetMs, diagnosticCurrentBoundary);
   }
   const independentlyEvaluated = checkpoint.assertions.map((assertion) => {
+    if (assertion.kind === "server-item-update-absent") {
+      const window = observation.temporalAbsence?.get(assertion.id);
+      const status: ScenarioAssertionStatus = window?.state === "present" ? "fail"
+        : boundary.temporalCoverage !== "complete" || window?.state === "inconclusive" ? "inconclusive"
+        : activeOffsetMs - startedActiveOffsetMs < assertion.duringActiveMs ? "waiting"
+        : window?.state === "absent" ? "pass" : "inconclusive";
+      return result(assertion, status, { state: status === "pass" ? "absent-over-observed-window" : status === "waiting" ? "observing-window" : status, certainty: status === "inconclusive" ? "unavailable" : "certain", provenance: "server", evidence: window?.matched ?? window?.upper ?? null }, [window?.lower, window?.upper, window?.matched].filter((reference): reference is EvidenceRef => Boolean(reference)));
+    }
     const evaluated = evaluateAssertion(assertion, observation);
     const withinActiveMs = "withinActiveMs" in assertion ? assertion.withinActiveMs : undefined;
     const elapsed = activeOffsetMs - startedActiveOffsetMs;
@@ -249,6 +274,7 @@ export function evaluateScenarioCheckpoint(
 
 function evaluateAssertion(assertion: ScenarioAssertion, observation: ScenarioAssertionObservation): ScenarioAssertionResult {
   switch (assertion.kind) {
+    case "server-item-update-absent": throw new Error("Temporal absence requires bounded window evaluation.");
     case "prior-injection-outcome": {
       const outcome = observation.priorOutcomes.get(assertion.stepId);
       return result(assertion, outcome?.disposition === assertion.expectedDisposition ? "pass" : "fail", { state: outcome ? "outcome" : "absent", value: outcome?.disposition, certainty: "certain", provenance: "injection-outcome", evidence: null }, []);
@@ -262,6 +288,17 @@ function evaluateAssertion(assertion: ScenarioAssertion, observation: ScenarioAs
     case "correlated-local-evidence-exists": {
       const evidence = observation.correlatedLocalEvidence.get(assertion.stepId) ?? null;
       return result(assertion, evidence ? "pass" : assertion.withinActiveMs ? "waiting" : "fail", { state: evidence ? "committed" : "absent", certainty: "certain", provenance: "committed-local-evidence", evidence }, evidence ? [evidence] : []);
+    }
+    case "local-evidence-field-equals": {
+      const inspected = observation.localEvidenceFields?.get(assertion.id);
+      const correlated = observation.correlatedLocalEvidence.get(assertion.stepId);
+      if (!inspected || !inspected.evidence || !correlated || correlated.eventId !== inspected.evidence.eventId || correlated.intervalId !== inspected.evidence.intervalId || correlated.sequence !== inspected.evidence.sequence) {
+        return result(assertion, "unavailable", { state: "exact-local-evidence-unavailable", certainty: "unavailable", provenance: "committed-local-evidence", evidence: null }, []);
+      }
+      const nonEvaluable = inspectionTerminalStatus(inspected);
+      if (nonEvaluable) return result(assertion, nonEvaluable, inspected, [inspected.evidence]);
+      const matches = inspected.state === "concrete" && Object.is(inspected.value, assertion.expected);
+      return result(assertion, matches ? "pass" : "fail", inspected, [inspected.evidence]);
     }
     case "command-key-exists": {
       const inspected = observation.inspectCommand({ item: assertion.item, key: assertion.key });
@@ -334,6 +371,8 @@ function checkpointDiagnosticCurrentBoundary(
 }
 
 function inspectionTerminalStatus(inspection: ScenarioCommandInspection): ScenarioAssertionStatus | null {
+  if (inspection.certainty === "unavailable") return "unavailable";
+  if (inspection.certainty === "ambiguous") return "not-evaluable";
   if (inspection.state === "ambiguous-server-null") return "not-evaluable";
   if (inspection.state === "redacted" || inspection.state === "unresolved-wire" || inspection.state === "unavailable") return "unavailable";
   return null;
@@ -371,7 +410,7 @@ function boundedObserved(assertion: ScenarioAssertion, status: ScenarioAssertion
     valueLimited: {
       originalBytes,
       retainedBytes: utf8Bytes(value),
-      comparison: assertion.kind === "command-field-equals" ? status === "pass" ? "equal" : "different" : "not-compared"
+      comparison: assertion.kind === "command-field-equals" || assertion.kind === "local-evidence-field-equals" ? status === "pass" ? "equal" : "different" : "not-compared"
     }
   };
 }
@@ -398,10 +437,12 @@ function utf8Bytes(value: string): number {
 
 function expectedFor(assertion: ScenarioAssertion): Readonly<Record<string, unknown>> {
   switch (assertion.kind) {
+    case "server-item-update-absent": return { absent: "Server Item Update", item: assertion.item, duringActiveMs: assertion.duringActiveMs };
     case "prior-injection-outcome": return { disposition: assertion.expectedDisposition };
     case "listener-count": return { count: assertion.count, value: assertion.expected };
     case "correlated-local-evidence-exists": return { exists: true };
     case "command-key-exists": return { key: assertion.expected };
+    case "local-evidence-field-equals":
     case "command-field-equals": return { primitive: assertion.expected };
     case "diagnostic-observation-exists": return {
       contractVersion: assertion.contractVersion,
@@ -422,16 +463,16 @@ function unavailableEvaluation(
   return frozen({
     checkpointId: checkpoint.id,
     checkpointName: checkpoint.name,
-    status: "unavailable",
+    status: checkpoint.assertions.some(assertion => assertion.kind === "server-item-update-absent") ? "inconclusive" : "unavailable",
     activeOffsetMs,
     boundary,
     diagnosticCurrentBoundary,
-    assertions: checkpoint.assertions.map((assertion) => result(assertion, "unavailable", { state: "committed-boundary-unavailable", certainty: "unavailable", provenance: "history", evidence: boundary }, boundary ? [boundary] : []))
+    assertions: checkpoint.assertions.map((assertion) => result(assertion, assertion.kind === "server-item-update-absent" ? "inconclusive" : "unavailable", { state: "committed-boundary-unavailable", certainty: "unavailable", provenance: "history", evidence: boundary }, boundary ? [boundary] : []))
   });
 }
 
 function isAssertionKind(value: unknown): value is ScenarioAssertion["kind"] {
-  return value === "prior-injection-outcome" || value === "listener-count" || value === "correlated-local-evidence-exists" || value === "command-key-exists" || value === "command-field-equals" || value === "diagnostic-observation-exists";
+  return value === "server-item-update-absent" || value === "local-evidence-field-equals" || value === "prior-injection-outcome" || value === "listener-count" || value === "correlated-local-evidence-exists" || value === "command-key-exists" || value === "command-field-equals" || value === "diagnostic-observation-exists";
 }
 
 function isJsonPrimitive(value: unknown): value is ScenarioPrimitive {

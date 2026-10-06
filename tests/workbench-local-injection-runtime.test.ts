@@ -209,6 +209,101 @@ class ScenarioTestClock implements ScenarioClock {
 }
 
 describe("WorkbenchRuntime Local Injection", () => {
+  it.each([false, true])("observes bounded absence with paused-time Server update=%s", async (serverDuringPause) => {
+    const clock = new ScenarioTestClock();
+    const history = historyWithCommandTarget();
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scenarioClock: clock, localInjectionExecutor: { execute: vi.fn(async () => result("success", { requestId: "absence", attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) } });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "add-scenario-checkpoint" });
+    const checkpoint = runtime.getSnapshot().scenario!.scenario.members.find(member => member.kind === "checkpoint")!;
+    runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: { ...checkpoint, assertions: [{ id: "absence", kind: "server-item-update-absent", item: { name: identity.itemName, position: 1 }, duringActiveMs: 100 }] } });
+    runtime.dispatch({ type: "review-scenario" });
+    runtime.agent!.control("step");
+    await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace).toHaveLength(1));
+    runtime.agent!.control("play");
+    clock.advance(0);
+    await flushAsync();
+    expect(runtime.getSnapshot().scenario?.runner?.activeCheckpoint?.status).toBe("waiting");
+    clock.advance(40);
+    runtime.agent!.control("pause");
+    clock.advance(1000);
+    if (serverDuringPause) {
+      await history.offer(commandEvent("server-paused-9", "item-update", { update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 9 }, changedFields: { qty: 9 } } }));
+      await flushAsync();
+    }
+    expect(runtime.getSnapshot().scenario?.run?.trace).toHaveLength(1);
+    runtime.agent!.control("play");
+    clock.advance(59);
+    await flushAsync();
+    expect(runtime.getSnapshot().scenario?.run?.trace).toHaveLength(1);
+    clock.advance(1);
+    await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.phase).toBe(serverDuringPause ? "stopped" : "complete"));
+    expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ kind: "checkpoint", status: serverDuringPause ? "fail" : "pass", startedActiveOffsetMs: 0, settledActiveOffsetMs: 100, assertions: [{ observed: { state: serverDuringPause ? "fail" : "absent-over-observed-window" } }] });
+    runtime.dispose();
+  });
+
+  it.each(["MERGE", "DISTINCT"])("asserts exact committed %s Step fields through canonical lookup", async mode => {
+    const subscription = { id: identity.subscriptionId, mode, items: [identity.itemName], fields: ["price"], active: true, subscribed: true };
+    const events = ["client-created", "client-status", "subscription-created", "subscription-started", "listener-added", "item-update"].map((kind, index) => commandEvent(`assert-${index + 1}`, kind as LightstreamerEventEnvelope["kind"], { subscription, topology: { ...pageTopology("native-page"), captureSequence: index + 1 }, ...(kind === "item-update" ? { update: { fields: { price: "10" }, changedFields: { price: "10" } } } : {}) }));
+    const runtime = createWorkbenchRuntime({ history: createAuthoritativeHistory({ precommitted: events }), captureStatus: "capturing", localInjectionExecutor: { execute: vi.fn(async () => result("success", { requestId: `assert-${mode}`, attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) } });
+    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.loading).toBe(false));
+    const scope = runtime.getSnapshot().scope.nodes.find(node => node.kind === "item")!;
+    await runtime.agent!.prepareScenarioPlan({ members: [{ kind: "step", id: "first", scopeId: scope.id, document: JSON.stringify({ command: null, key: null, isSnapshot: false, fields: { price: null } }) }, { kind: "checkpoint", id: "check", name: "Exact Local field", assertions: [{ id: "field", kind: "local-evidence-field-equals", stepId: "first", field: "price", expected: null }] }] }, "native-page", () => true);
+    runtime.agent!.control("step");
+    await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace).toHaveLength(1));
+    runtime.agent!.control("step");
+    await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.phase).toBe("complete"));
+    expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ kind: "checkpoint", status: "pass", assertions: [{ observed: { value: null, provenance: "committed-local-evidence", evidence: { eventId: `synthetic-assert-${mode}` } } }] });
+    runtime.dispose();
+  });
+
+  it.each(["MERGE", "DISTINCT"])("freezes ordered source-free %s Scenario baselines and rechecks native delivery", async (mode) => {
+    const subscription = { id: identity.subscriptionId, mode, items: [identity.itemName], fields: ["price"], active: true, subscribed: true };
+    const events = ["client-created", "client-status", "subscription-created", "subscription-started", "listener-added", "item-update"].map((kind, index) => commandEvent(`native-${index + 1}`, kind as LightstreamerEventEnvelope["kind"], { subscription, topology: { ...pageTopology("native-page"), captureSequence: index + 1 }, ...(kind === "item-update" ? { update: { fields: { price: "10" }, changedFields: { price: "10" } } } : {}) }));
+    let sequence = 0;
+    const execute = vi.fn(async (_request: unknown) => result("success", { requestId: `native-mode-${++sequence}`, attemptedCount: 1, deliveredCount: 1, failedCount: 0 }));
+    const runtime = createWorkbenchRuntime({ history: createAuthoritativeHistory({ precommitted: events }), captureStatus: "capturing", localInjectionExecutor: { execute } });
+    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.loading).toBe(false));
+    const item = runtime.getSnapshot().scope.nodes.find(node => node.kind === "item")!;
+    const document = JSON.stringify({ command: null, key: null, isSnapshot: false, fields: { price: null } });
+    await runtime.agent!.prepareScenarioPlan({ members: [{ kind: "step", id: "first", scopeId: item.id, document }, { kind: "step", id: "equal", scopeId: item.id, document }] }, "native-page", () => true);
+    expect(runtime.getSnapshot().scenario?.run?.steps.map(step => step.nativeChanges?.changedFields)).toEqual([{ price: null }, {}]);
+    for (let index = 0; index < 2; index += 1) {
+      runtime.agent!.control("step");
+      await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace.filter(entry => entry.kind === "attempted")).toHaveLength(index + 1));
+    }
+    expect(execute.mock.calls.map(call => (call[0] as { draft: { changedFields: unknown } }).draft.changedFields)).toEqual([{ price: null }, {}]);
+    expect(runtime.getSnapshot().scenario?.phase).toBe("complete");
+    runtime.dispose();
+  });
+
+  it.each(["MERGE", "DISTINCT"])("authors source-free %s values against committed native item baselines", async (mode) => {
+    const subscription = { id: identity.subscriptionId, mode, items: [identity.itemName], fields: ["price", "halted"], active: true, subscribed: true };
+    const events = ["client-created", "client-status", "subscription-created", "subscription-started", "listener-added", "item-update"].map((kind, index) => commandEvent(`mode-${index + 1}`, kind as LightstreamerEventEnvelope["kind"], {
+      subscription, topology: { ...pageTopology("native-page"), captureSequence: index + 1 }, ...(kind === "item-update" ? { update: { isSnapshot: false, fields: { price: "10", halted: false }, changedFields: { price: "10", halted: false } } } : {})
+    }));
+    const history = createAuthoritativeHistory({ precommitted: events });
+    let index = 0;
+    const execute = vi.fn(async (_request: unknown) => result("success", { requestId: `mode-${++index}`, attemptedCount: 1, deliveredCount: 1, failedCount: 0 }));
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: { execute } });
+    await vi.waitFor(() => expect(runtime.getSnapshot().scope.nodes.some(node => node.kind === "item")).toBe(true));
+    const item = runtime.getSnapshot().scope.nodes.find(node => node.kind === "item")!;
+    runtime.dispatch({ type: "set-scope", scopeId: item.id });
+    await vi.waitFor(() => expect(runtime.getSnapshot().localInjection.availability.commandScope.available).toBe(true));
+    const document = JSON.stringify({ command: null, key: null, isSnapshot: true, fields: { price: "10", halted: null } });
+    await runtime.agent!.prepare([{ scopeId: item.id, document }], false, "native-page", () => true);
+    expect(runtime.agent!.local().draft).toMatchObject({ source: { kind: "authored", rawText: null }, ready: true, nativeChanges: { changedFields: { halted: null } } });
+    runtime.agent!.execute();
+    await vi.waitFor(() => expect(runtime.agent!.local().draft?.outcome?.disposition).toBe("delivered"));
+    expect((execute.mock.calls[0]?.[0] as { draft: unknown }).draft).toMatchObject({ command: null, key: null, isSnapshot: true, changedFields: { halted: null }, fields: { price: "10", halted: null } });
+    runtime.agent!.finish();
+    await runtime.agent!.prepare([{ scopeId: item.id, document }], false, "native-page", () => true);
+    expect(runtime.agent!.local().draft?.nativeChanges?.changedFields).toEqual({});
+    runtime.dispose();
+  });
+
   it("parks an edited Scenario for Evidence, resumes the same Steps, and confirms discard", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     await flushAsync();
@@ -301,6 +396,38 @@ describe("WorkbenchRuntime Local Injection", () => {
     expect(runtime.getSnapshot().scenario?.run?.trace[0]).toMatchObject({
       kind: "attempted", outcome: { status }, evidence: null, retention: "NOT_CREATED", evidenceAvailability: "NOT_APPLICABLE", assertion: "NOT_EVALUATED"
     });
+    runtime.dispose();
+  });
+
+  it("freezes native same-key change flags across an ordered generated ADD and equal UPDATEs", async () => {
+    let sequence = 0;
+    const execute = vi.fn(async (_request: unknown) => result("success", { requestId: `native-sequence-${++sequence}`, attemptedCount: 1, deliveredCount: 1, failedCount: 0 }));
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", localInjectionExecutor: { execute } });
+    await flushAsync();
+    beginSelected(runtime);
+    const doc = (command: string) => JSON.stringify({ command, key: "fresh-key", isSnapshot: false, fields: { command, key: "fresh-key", qty: null } });
+    runtime.dispatch({ type: "set-local-injection-json", text: doc("ADD") });
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    const first = runtime.getSnapshot().scenario!.scenario.steps[0]!.id;
+    runtime.dispatch({ type: "duplicate-scenario-step", stepId: first });
+    const second = runtime.getSnapshot().scenario!.scenario.steps[1]!.id;
+    runtime.dispatch({ type: "set-scenario-step-json", stepId: second, text: doc("UPDATE") });
+    runtime.dispatch({ type: "duplicate-scenario-step", stepId: second });
+    runtime.dispatch({ type: "review-scenario" });
+    const run = runtime.getSnapshot().scenario?.run;
+    expect(runtime.getSnapshot().scenario?.phase).toBe("review");
+    expect(run?.steps.map(step => step.nativeChanges?.changedFields)).toEqual([{ command: "ADD", key: "fresh-key", qty: null }, { command: "UPDATE" }, {}]);
+    expect(Object.isFrozen(run?.steps[1]?.nativeChanges?.context.baseline?.fields)).toBe(true);
+    for (let index = 0; index < 3; index += 1) {
+      runtime.dispatch({ type: "step-next-scenario" });
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(index + 1));
+      await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace.filter(entry => entry.kind === "attempted")).toHaveLength(index + 1));
+    }
+    expect(execute.mock.calls.map(call => (call[0] as unknown as { draft: { changedFields: unknown } }).draft.changedFields)).toEqual([{ command: "ADD", key: "fresh-key", qty: null }, { command: "UPDATE" }, {}]);
+    expect(runtime.getSnapshot().scenario?.phase).toBe("complete");
+    const committed = await runtime.agent!.query({ at: "LATEST_COMMITTED", size: 100, includePayload: true });
+    const local = committed.page.evidence.map(record => record.payload as LightstreamerEventEnvelope).filter(event => event?.synthetic);
+    expect(local.map(event => event.update?.changedFields)).toEqual([{ command: "ADD", key: "fresh-key", qty: null }, { command: "UPDATE" }, {}]);
     runtime.dispose();
   });
 
@@ -1006,7 +1133,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("executes an explicit concrete null replacement after a value-equal final edit", async () => {
+  it("refuses a generated UPDATE when its prior same-key null baseline remains ambiguous", async () => {
     const history = historyWithCommandTarget({
       update: {
         isSnapshot: false,
@@ -1032,13 +1159,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect(executor.execute.mock.calls[0]?.[0]).toMatchObject({
-      draft: {
-        fields: { qty: null },
-        fieldValueStates: { qty: "concrete" }
-      }
-    });
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(runtime.getSnapshot().localInjection.draft?.nativeChanges?.semantics.refusal).toContain("ambiguous");
+    expect(runtime.getSnapshot().localInjection.draft?.outcome?.disposition).toBe("blocked");
     runtime.dispose();
   });
 
@@ -1052,7 +1175,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       },
       commandScope: {
         available: false,
-        reason: "Select a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context."
+        reason: "Select a live COMMAND, MERGE or DISTINCT Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context."
       }
     });
 
@@ -1065,7 +1188,8 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispatch({ type: "set-scope", scopeId: item?.id ?? null });
     expect(runtime.getSnapshot().localInjection.availability.commandScope).toEqual({
       available: true,
-      reason: null
+      reason: null,
+      mode: "COMMAND"
     });
     runtime.dispose();
 
@@ -1077,8 +1201,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     expect(merge.getSnapshot().localInjection.availability).toEqual({
       selectedUpdate: { available: true, reason: null },
       commandScope: {
-        available: false,
-        reason: "Select a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context."
+        available: true,
+        reason: null,
+        mode: "MERGE"
       }
     });
     merge.dispose();
@@ -1213,7 +1338,8 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispatch({ type: "set-scope", scopeId: subscription?.id ?? null });
     expect(runtime.getSnapshot().localInjection.availability.commandScope).toEqual({
       available: true,
-      reason: null
+      reason: null,
+      mode: "COMMAND"
     });
     runtime.dispatch({ type: "begin-local-injection-from-scope" });
 
@@ -1294,7 +1420,8 @@ describe("WorkbenchRuntime Local Injection", () => {
     ambiguousRuntime.dispatch({ type: "set-scope", scopeId: secondItem?.id ?? null });
     expect(ambiguousRuntime.getSnapshot().localInjection.availability.commandScope).toEqual({
       available: true,
-      reason: null
+      reason: null,
+      mode: "COMMAND"
     });
     ambiguousRuntime.dispatch({ type: "begin-local-injection-from-scope" });
     expect(ambiguousRuntime.getSnapshot().localInjection.draft?.anchor).toMatchObject({
@@ -1313,9 +1440,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     mergeRuntime.dispatch({ type: "set-scope", scopeId: mergeItem?.id ?? null });
     mergeRuntime.dispatch({ type: "begin-local-injection-from-scope" });
     expect(mergeRuntime.getSnapshot().localInjection).toMatchObject({
-      state: "idle",
-      draft: null,
-      entryError: expect.stringContaining("COMMAND Item")
+      state: "active",
+      draft: { source: { kind: "authored" }, document: { command: null, key: null, fields: { price: null, halted: null } } },
+      entryError: null
     });
     mergeRuntime.dispose();
   });
@@ -1598,6 +1725,23 @@ describe("WorkbenchRuntime Local Injection", () => {
       ready: false,
       diagnostics: expect.arrayContaining([expect.objectContaining({ code })])
     });
+    runtime.dispose();
+  });
+
+  it("invalidates generated change flags when the same-key committed baseline drifts", async () => {
+    const history = historyWithCommandTarget();
+    const execute = vi.fn(async (_request: unknown) => result("success"));
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: { execute } });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(1) });
+    runtime.dispatch({ type: "review-local-injection" });
+    expect(runtime.getSnapshot().localInjection.draft?.nativeChanges?.changedFields).toEqual({ command: "UPDATE" });
+    await history.offer(commandEvent("drifted-baseline", "item-update", { update: { command: "UPDATE", key: "order-1", isSnapshot: false, fields: { command: "UPDATE", key: "order-1", qty: 1 }, changedFields: { command: "UPDATE" } } })).settled;
+    await vi.waitFor(() => expect(runtime.getSnapshot().localInjection.draft?.phase).toBe("edit"));
+    runtime.dispatch({ type: "execute-local-injection" });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    expect((execute.mock.calls[0]?.[0] as { draft: { changedFields: unknown } }).draft.changedFields).toEqual({});
     runtime.dispose();
   });
 

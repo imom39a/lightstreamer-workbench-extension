@@ -98,6 +98,7 @@ describe("release packaging verification gate", () => {
       "tests/history-100k-02-indexeddb.test.ts"
     ]));
     expect(plan.heavyWork).toEqual([
+      "tests/agent-maximum-history-work.test.ts",
       "tests/agent-mcp-efficiency.test.ts",
       "tests/agent-status-budget.test.ts",
       "tests/activity-timeline-projection.test.ts",

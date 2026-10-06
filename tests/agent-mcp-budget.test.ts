@@ -11,12 +11,21 @@ const readPoint = { interval: { id: "i", ordinal: 1 }, committedEvidenceBoundary
 const argumentsByTool: Record<string, Record<string, unknown>> = {
   list_panel_sessions: {}, get_pairing_requests: {}, confirm_pairing: { requestId: "pairing", code: "1234-5678" },
   get_status: {}, list_scope: {}, search_scope: { text: "item" }, get_scope: { scopeId: "page" },
+  aggregate_evidence: { within: "page", aggregate: { unit: "evidence-records" } },
+  generate_agent_candidates: { pageEpoch: "epoch", base: { scopeId: "item" } },
+  read_bundle: { pageEpoch: "epoch", operations: [{ id: "read", kind: "evidence", args: { within: "page" } }] },
   query_evidence: { within: "page" }, search_evidence: { within: "page", text: "item" }, summarize_evidence: { within: "page" }, describe_stream: {},
   wait_for_evidence: { after: readPoint, pageEpoch: "epoch" }, get_evidence: { evidence: identity }, query_diagnostics: {},
   query_command_state: { scopeId: "subscription", pageEpoch: "epoch", projection: "observed-server", item: { name: "rows", position: 1 }, key: "row" },
+  query_command_rows: { scopeId: "subscription", pageEpoch: "epoch", projection: "observed-server", item: { name: "rows", position: 1 } },
+  query_command_keys: { scopeId: "subscription", pageEpoch: "epoch", projection: "observed-server", item: { name: "rows", position: 1 }, keys: ["row"] },
   update_agent_document: { token: "token", document: "{}" }, prepare_local_injection: { pageEpoch: "epoch", scopeId: "page" },
+  prepare_server_injection: { pageEpoch: "epoch", clientId: "client", sessionId: "session", message: "body", sequence: "seq", delayTimeout: null, enqueueWhileDisconnected: false, requestId: "server" },
+  execute_server_injection: { token: "token", requestId: "server" }, recover_server_injection: {}, abort_server_injection: { token: "token" },
+  recover_agent_document: {}, abort_agent_document: { token: "token" },
   execute_local_injection: { token: "token", requestId: "injection" }, get_operation: { requestId: "injection" },
   wait_for_operation: { requestId: "injection" },
+  wait_for_scenario: { runId: "run", pageEpoch: "epoch" },
   validate_agent_candidate: { pageEpoch: "epoch", draft: { scopeId: "page" } },
   prepare_scenario: { pageEpoch: "epoch", steps: [{ scopeId: "page" }] },
   control_scenario: { runId: "run", requestId: "control", action: "pause" }, get_scenario_trace: {}, finish_agent_document: { token: "token" }
@@ -31,9 +40,36 @@ describe("MCP read budget backstop", () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     try {
       const catalog = await client.listTools();
-      // Discovery loads the complete callable contract once. It is deliberately
-      // measured separately from the 8 KiB budget for each tool response.
-      expect(new TextEncoder().encode(JSON.stringify(catalog)).byteLength).toBeLessThanOrEqual(80 * 1024);
+      // User-approved 160 KiB amendment budgets the complete SDK discovery result.
+      expect(catalog.tools).toHaveLength(37);
+      expect(new TextEncoder().encode(JSON.stringify(catalog)).byteLength).toBeLessThanOrEqual(160 * 1024);
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it("serves bounded static contract and investigation guidance through MCP resources, prompts and initialization", async () => {
+    const channel: CompanionChannel = { send() {}, onMessage() {}, onClose() {}, close() {} };
+    const server = createMcpServer(channel);
+    const client = new Client({ name: "guidance-roundtrip-proof", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      expect(client.getInstructions()).toContain("list_panel_sessions");
+      expect(client.getInstructions()).toContain("exact inspected tab");
+      expect(client.getServerCapabilities()).toMatchObject({ resources: {}, prompts: {}, tools: {} });
+      const resources = await client.listResources();
+      expect(resources.resources).toHaveLength(1);
+      const resource = await client.readResource({ uri: resources.resources[0]!.uri });
+      expect(resource.contents[0]).toMatchObject({ mimeType: "text/markdown" });
+      expect((resource.contents[0] as any).text).toContain("Counts are retained Evidence records");
+      expect(new TextEncoder().encode(JSON.stringify(resource)).byteLength).toBeLessThanOrEqual(16 * 1024);
+      const prompts = await client.listPrompts();
+      expect(prompts.prompts.map(prompt => prompt.name)).toEqual(["investigate-lightstreamer"]);
+      const prompt = await client.getPrompt({ name: "investigate-lightstreamer", arguments: { question: "why did the COMMAND row disappear?" } });
+      const promptText = (prompt.messages[0]!.content as { text: string }).text;
+      expect(promptText).toContain("why did the COMMAND row disappear?");
+      expect(promptText).toContain("never repeat delivery with a new id");
+      expect(promptText).toContain("do not claim that a host will wake or resume automatically");
+      expect(new TextEncoder().encode(JSON.stringify(prompt)).byteLength).toBeLessThanOrEqual(8 * 1024);
     } finally { await client.close(); await server.close(); }
   });
 
@@ -65,7 +101,7 @@ describe("MCP read budget backstop", () => {
         expect(serialized, `${tool.name} must not leak the oversized source`).not.toContain("oversized-private-data");
         expect(result.isError).toBe(true);
         expect(result.structuredContent, `${tool.name} reports an actionable budget failure`).toMatchObject({ error: {
-          code: ["execute_local_injection", "control_scenario"].includes(tool.name) ? "DELIVERY_UNKNOWN" : "RESULT_BUDGET_EXCEEDED",
+          code: ["execute_local_injection", "execute_server_injection", "control_scenario"].includes(tool.name) ? "DELIVERY_UNKNOWN" : "RESULT_BUDGET_EXCEEDED",
           automaticRetry: false
         } });
       }
@@ -118,6 +154,25 @@ describe("MCP read budget backstop", () => {
       payloadSize = 6_000;
       const cursor = await client.callTool({ name: "query_evidence", arguments: { panelSessionId: "p", cursor: "c" } });
       expect(cursor.structuredContent).toMatchObject({ error: { code: "RESULT_BUDGET_EXCEEDED" } });
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it("preserves the bound response ceiling on COMMAND-row cursor continuations", async () => {
+    let receive: (message: Record<string, unknown>) => void = () => {};
+    const channel: CompanionChannel = {
+      send(message) { if (message.id) queueMicrotask(() => receive({ id: message.id, result: {
+        status: "ok", revision: 1, total: 0, projection: "observed-server", target: { scopeId: "scope", pageEpoch: "epoch", subscriptionId: "sub", item: { name: "item", position: 1 } },
+        readPoint, rows: [], nextCursor: null, boundedAdditionalMetadata: "x".repeat(5000)
+      } })); }, onMessage(callback) { receive = callback; }, onClose() {}, close() {}
+    };
+    const server = createMcpServer(channel), client = new Client({ name: "command-cursor-ceiling", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({ name: "query_command_rows", arguments: { panelSessionId: "p", cursor: "bound-16k-row-cursor" } });
+      expect(result.isError).not.toBe(true);
+      expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeGreaterThan(8192);
+      expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(65536);
     } finally { await client.close(); await server.close(); }
   });
 });

@@ -1,3 +1,4 @@
+import type { EvidenceFieldPredicate, EvidenceAggregateRequest } from "../../core/evidence-field-analytics";
 import {
   typedFacetValue,
   type EvidenceFilter,
@@ -10,6 +11,8 @@ import {
   type EvidenceLookupResult,
   type EvidencePageRequest,
   type EvidenceQueryRequest,
+  type EvidenceQueryWorkBudget,
+  type EvidenceSequenceWindow,
   type EvidenceReadPoint,
   type EvidenceSnapshot,
   type FacetDiscoveryRequest,
@@ -42,6 +45,10 @@ export type EvidenceInvestigationQueryRequest = Readonly<{
   find?: EvidenceFindRequest;
   includePayload?: boolean;
   signal?: AbortSignal;
+  workBudget?: EvidenceQueryWorkBudget;
+  sequenceWindow?: EvidenceSequenceWindow;
+  fieldPredicates?: readonly EvidenceFieldPredicate[];
+  aggregate?: EvidenceAggregateRequest;
 }>;
 
 export type EvidenceInvestigationQueryResult =
@@ -79,7 +86,11 @@ export function toEvidenceQueryRequest(
     ...(request.lookup === undefined ? {} : { lookup: request.lookup }),
     ...(request.find === undefined ? {} : { find: request.find }),
     ...(request.includePayload === true ? { includePayload: true } : {}),
-    ...(request.signal === undefined ? {} : { signal: request.signal })
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
+    ...(request.workBudget === undefined ? {} : { workBudget: request.workBudget }),
+    ...(request.sequenceWindow === undefined ? {} : { sequenceWindow: request.sequenceWindow }),
+    ...(request.fieldPredicates === undefined ? {} : { fieldPredicates: request.fieldPredicates }),
+    ...(request.aggregate === undefined ? {} : { aggregate: request.aggregate })
   });
 }
 

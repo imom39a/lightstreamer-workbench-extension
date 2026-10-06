@@ -91,7 +91,7 @@ describe("filter-impl-06 memory selection planner", () => {
       value: {
         totals: { matching: 1, inScope: 1 },
         page: { evidence: [{ identity: { eventId: "phrase-merge" } }] },
-        telemetry: { fullRetainedScan: true },
+        telemetry: { fullRetainedScan: false },
       },
     });
 
@@ -101,6 +101,18 @@ describe("filter-impl-06 memory selection planner", () => {
       value: {
         page: { evidence: [{ identity: { eventId: "long-field-record" } }] },
         telemetry: { fullRetainedScan: true },
+      },
+    });
+
+    const canonicalWithFacet = await query("canonical-only-long-token", {
+      mode: { include: [mergeCriterion], exclude: [] },
+    });
+    expect(canonicalWithFacet).toMatchObject({
+      ok: true,
+      value: {
+        totals: { matching: 1, inScope: 1 },
+        page: { evidence: [{ identity: { eventId: "long-field-record" } }] },
+        telemetry: { fullRetainedScan: false, projectionReads: 4, postingDriver: "mode" },
       },
     });
   });

@@ -1,20 +1,21 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, GetPromptRequestSchema, ListPromptsRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema, ReadResourceRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
-import { AGENT_RESPONSE_CONTRACT, AGENT_TOOLS, validateAgentCall } from "../protocol";
+import { AGENT_RESPONSE_CONTRACT, AGENT_TOOLS, agentTimeoutCode, isReservedAgentCall, validateAgentCall } from "../protocol";
 import metadata from "../../../agent/package.json";
 import { connectPortableBroker } from "./portable-broker";
 import type { PortableConfig } from "../portable-config";
 import type { CompanionChannel } from "../portable-channel";
 import { agentToolFailure, agentToolResult, agentToolResultBytes } from "./tool-result";
+import { AGENT_MCP_INITIALIZATION_INSTRUCTIONS, AGENT_READ_CONTRACT_RESOURCE_URI, AGENT_READ_GUIDANCE, investigationPrompt } from "./guidance";
 
-const cursorReads = new Set(["search_scope", "query_evidence", "search_evidence", "summarize_evidence"]);
-const consequential = new Set(["execute_local_injection", "control_scenario"]);
+const cursorReads = new Set(["search_scope", "query_evidence", "search_evidence", "summarize_evidence", "query_command_rows"]);
+const consequential = new Set(["execute_local_injection", "execute_server_injection", "control_scenario"]);
 
 /** Build the MCP interface over one already-connected companion channel. */
 export function createMcpServer(channel: CompanionChannel) {
-  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; reserved: boolean }>();
   channel.onMessage(message => {
     const callback = pending.get(String(message.id));
     if (!callback) return;
@@ -23,28 +24,51 @@ export function createMcpServer(channel: CompanionChannel) {
     else callback.resolve(message.result);
   });
   channel.send({ role: "agent" });
-  const server = new Server({ name: "lightstreamer-workbench", version: metadata.version }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "lightstreamer-workbench", version: metadata.version }, {
+    capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: AGENT_MCP_INITIALIZATION_INSTRUCTIONS
+  });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: AGENT_TOOLS.map(({ mutation: _mutation, ...tool }) => tool) }));
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [{
+    uri: AGENT_READ_CONTRACT_RESOURCE_URI, name: "workbench-read-contract", title: "Workbench agent read contract",
+    description: "Static, bounded guidance for scoped Evidence reads and safe Local Injection reproduction.", mimeType: "text/markdown"
+  }] }));
+  server.setRequestHandler(ReadResourceRequestSchema, async request => {
+    if (request.params.uri !== AGENT_READ_CONTRACT_RESOURCE_URI) throw new Error("Unknown Workbench agent resource.");
+    return { contents: [{ uri: AGENT_READ_CONTRACT_RESOURCE_URI, mimeType: "text/markdown", text: AGENT_READ_GUIDANCE }] };
+  });
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [{
+    name: "investigate-lightstreamer", title: "Investigate Lightstreamer Evidence",
+    description: "Guide a scoped Lightstreamer investigation and, when useful, a reviewed local reproduction.",
+    arguments: [{ name: "question", description: "What behavior or Lightstreamer event sequence are you investigating?", required: false }]
+  }] }));
+  server.setRequestHandler(GetPromptRequestSchema, async request => {
+    if (request.params.name !== "investigate-lightstreamer") throw new Error("Unknown Workbench agent prompt.");
+    return { description: "Use bounded Workbench Evidence reads and keep application/server conclusions within the captured Evidence.", messages: [{ role: "user", content: { type: "text", text: investigationPrompt(request.params.arguments?.question) } }] };
+  });
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     try { validateAgentCall(request.params.name, request.params.arguments ?? {}); }
     catch (error) { return agentToolFailure(error, "INVALID_ARGUMENT"); }
     try {
-      if (pending.size >= 64) throw new Error("REQUEST_CAPACITY: Too many pending Workbench calls.");
+      const reserved = isReservedAgentCall(request.params.name, request.params.arguments ?? {});
+      const reservedCount = [...pending.values()].filter(call => call.reserved).length;
+      if (pending.size >= 72 || (reserved ? reservedCount >= 8 : pending.size - reservedCount >= 64)) throw new Error("REQUEST_CAPACITY: Too many pending Workbench calls. Reserved status, receipt, recovery, pause and stop calls have bounded headroom.");
       const result = await new Promise<unknown>((resolve, reject) => {
         const id = randomUUID();
         const cancel = () => {
           try { channel.send({ type: "cancel", id }); } catch { /* Connection may already be closed. */ }
-          settle(new Error("QUERY_CANCELLED: The request was cancelled. A delivery may already have occurred; inspect its existing requestId before any further execution."));
+          const timeoutCode = agentTimeoutCode(request.params.name, request.params.arguments ?? {});
+          const code = timeoutCode === "QUERY_FAILED" ? "QUERY_CANCELLED" : timeoutCode;
+          settle(new Error(`${code}: The request was cancelled. Inspect its existing requestId before any further execution.`));
         };
         const timer = setTimeout(() => {
           try { channel.send({ type: "cancel", id }); } catch { /* The result remains uncertain. */ }
-          settle(new Error("DELIVERY_UNKNOWN: Workbench reply timed out. Inspect the existing operation; do not repeat an execution."));
+          settle(new Error(`${agentTimeoutCode(request.params.name, request.params.arguments ?? {})}: Workbench reply timed out. Inspect the existing operation before any further execution.`));
         }, 35000);
         function settle(error?: Error, value?: unknown) {
           pending.delete(id); clearTimeout(timer); extra.signal.removeEventListener("abort", cancel);
           if (error) reject(error); else resolve(value);
         }
-        pending.set(id, { resolve: value => settle(undefined, value), reject: error => settle(error) });
+        pending.set(id, { resolve: value => settle(undefined, value), reject: error => settle(error), reserved });
         extra.signal.addEventListener("abort", cancel, { once: true });
         if (extra.signal.aborted) { cancel(); return; }
         try { channel.send({ id, name: request.params.name, args: request.params.arguments ?? {} }); }

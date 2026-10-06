@@ -19,6 +19,11 @@ export function ServerInjectionDocument({
   const state = serverInjection.draft;
   const firstField = useRef<HTMLTextAreaElement | null>(null);
   const reviewAction = useRef<HTMLButtonElement | null>(null);
+  const approvalButton = useRef<HTMLButtonElement | null>(null);
+  const approvalStatus = useRef<HTMLParagraphElement | null>(null);
+  const approvalClickOwnedFocus = useRef(false);
+  const approvalStatusOwnedFocus = useRef(false);
+  const previousAgentApproval = useRef<boolean | null>(null);
   const pendingStatus = useRef<HTMLElement | null>(null);
   const outcomeAction = useRef<HTMLButtonElement | null>(null);
   const discardTrigger = useRef<HTMLButtonElement | null>(null);
@@ -36,6 +41,32 @@ export function ServerInjectionDocument({
     else if (previousDiscardConfirmation.current && !current) discardTrigger.current?.focus();
     previousDiscardConfirmation.current = current;
   }, [state?.discardConfirmation]);
+  useLayoutEffect(() => {
+    const current = state?.agentApproved ?? false;
+    const previous = previousAgentApproval.current;
+    let approvalFrame: number | undefined;
+    if (previous === false && current && approvalClickOwnedFocus.current) {
+      approvalStatus.current?.focus({ preventScroll: true });
+      // Keep the approval confirmation and its adjacent retry boundary
+      // readable together after the human action, including shallow panels.
+      approvalStatus.current?.closest("footer")?.scrollIntoView?.({ block: "end", behavior: "instant" });
+      const status = approvalStatus.current;
+      approvalFrame = requestAnimationFrame(() => {
+        if (!status?.isConnected || document.activeElement !== status) return;
+        const body = status.closest(".workbench-react__server-body");
+        // Reveal the complete confirmation after its final layout without
+        // moving focus again or inheriting a CSS smooth-scroll policy.
+        if (body?.scrollTo) body.scrollTo({ top: body.scrollHeight, behavior: "instant" });
+        else if (body) body.scrollTop = body.scrollHeight;
+      });
+      approvalClickOwnedFocus.current = false;
+    } else if (previous === true && !current && approvalStatusOwnedFocus.current) {
+      approvalButton.current?.focus();
+      approvalStatusOwnedFocus.current = false;
+    }
+    previousAgentApproval.current = current;
+    return () => { if (approvalFrame !== undefined) cancelAnimationFrame(approvalFrame); };
+  }, [state?.agentApproved]);
   if (!state) return null;
 
   const draft = state.value;
@@ -174,7 +205,21 @@ export function ServerInjectionDocument({
         <p>A Processed outcome confirms Lightstreamer handled the message; it does not prove a downstream business effect or attribute later Server Updates.</p>
         <footer className="workbench-react__server-actions">
           <div>
-            <button ref={reviewAction} type="button" onClick={() => dispatch({ type: "execute-server-injection" })}>Send Client Message once</button>
+            {state.agentRequestId ? <>
+              <button ref={(node) => { reviewAction.current = node; approvalButton.current = node; }} type="button" disabled={state.agentApproved} onClick={() => {
+                approvalClickOwnedFocus.current = document.activeElement === approvalButton.current;
+                dispatch({ type: "approve-server-injection-for-agent" });
+              }}>
+                {state.agentApproved ? "Approved for one agent send" : "Approve exact Client Message for agent send"}
+              </button>
+              {state.agentApproved ? <p ref={approvalStatus} tabIndex={-1} data-agent-approval-status
+                onFocus={() => { approvalStatusOwnedFocus.current = true; }}
+                onBlur={() => { approvalStatusOwnedFocus.current = false; }}>
+                This approval is bound to the displayed Client, Session, message, sequence, timeout, and enqueue choice. Return to the agent to continue.
+              </p> : <span>
+                {"This click approves only the exact call shown above. Editing or a Session change clears approval."}
+              </span>}
+            </> : <button ref={reviewAction} type="button" onClick={() => dispatch({ type: "execute-server-injection" })}>Send Client Message once</button>}
             <span>No automatic retry occurs, including when the outcome becomes Unknown.</span>
           </div>
           <button type="button" onClick={() => dispatch({ type: "edit-server-injection" })}>Back to edit</button>

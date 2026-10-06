@@ -40,9 +40,18 @@ validation, immutable Run, serial delivery, Evidence commitment, drift and
 hidden-panel pause rules. A human edit invalidates the prepared agent version.
 Duplicate request ids retrieve an existing receipt rather than redelivering;
 lost outcomes remain unknown after panel loss. No arbitrary page evaluation,
-History clearing, Server Injection or backend stream mutation is exposed.
-Browser automation separately verifies the downstream app: Local delivery is
-not proof of application behavior or server state.
+History clearing, backend stream mutation, or agent-callable approval is
+exposed. Agent-assisted Server Injection is a separate reviewed capability:
+the agent may prepare a Client Message in the existing Server Injection
+document, but Local Injection access alone cannot authorize sending. Each
+message requires a separate visible human approval bound to the exact current
+page, Client, Session, body and send options. The panel consumes that approval
+once; edits, retargeting, Session changes, or access revocation clear it.
+Execution uses the inspected client's normal `sendMessage` path and the same
+request ID for receipt recovery. An Unknown outcome is never resent
+automatically. Browser automation separately verifies downstream behavior;
+neither Local delivery nor successful Client Message handling proves an
+application effect or Server Update attribution.
 
 The generic core retains its Lightstreamer vocabulary. Agent access is an
 integration boundary, not a new domain aggregate or permanent workspace pane.

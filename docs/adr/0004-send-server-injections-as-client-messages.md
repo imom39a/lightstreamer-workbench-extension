@@ -19,3 +19,4 @@ A Server Injection sends a Client Message through the inspected Lightstreamer cl
 - One Server Injection may cause zero, one, or many Server Updates.
 - Without application-supported Injection Attribution, Workbench cannot reliably prove that a particular Server Update resulted from the Injection.
 - Applications may add translation or idempotency rules without constraining the generic core.
+- An agent may prepare a Client Message for visible review, but it cannot approve or authorize its send. Each agent-prepared message needs a separate human approval bound to the exact current page, Client, Session, body, and send options; execution reuses the approved request ID and never automatically retries an uncertain outcome.

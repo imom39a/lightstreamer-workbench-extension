@@ -1,3 +1,5 @@
+import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "../../src/core/evidence-filter-cursor";
+import { EvidenceSequenceWindowUnavailable, resolveEvidenceSequenceWindow } from "../../src/core/evidence-sequence-window";
 import { type LightstreamerEventEnvelope } from "../../src/core/event-envelope";
 import {
   copyCandidate,
@@ -251,14 +253,14 @@ export function createAuthoritativeHistory(
     });
   }
 
-  function queryReadPoint(): EvidenceReadPoint {
-    const identity = (reference: EvidenceRef): EvidenceReadPoint["committedEvidenceBoundary"] => Object.freeze({
+  const identity = (reference: EvidenceRef): NonNullable<EvidenceReadPoint["committedEvidenceBoundary"]> => Object.freeze({
       intervalId: reference.intervalId,
       pageId: interval.id,
       ownerId: "memory-event-history",
       sequence: reference.sequence,
       eventId: reference.eventId
     });
+  function queryReadPoint(): EvidenceReadPoint {
     const boundary = currentBoundary();
     const range = retainedRange();
     return Object.freeze({
@@ -277,7 +279,7 @@ export function createAuthoritativeHistory(
       ...(request.page.order === "OLDEST_FIRST" && request.page.cursor === undefined
         ? {}
         : { limit: request.page.size }),
-      offsetFromNewest: request.page.cursor === undefined ? 0 : Number(request.page.cursor),
+      offsetFromNewest: 0,
       order: "asc"
     };
     const compatibilityRead = options.readControl ? historyObject.read(compatibilityQuery) : null;
@@ -296,7 +298,11 @@ export function createAuthoritativeHistory(
       return gated(queryFailure("QUERY_FAILED", "The Evidence page size is outside the bounded contract."));
     }
 
+    let bounds: { first: number; last: number };
+    try { bounds = resolveEvidenceSequenceWindow(readPoint, request.sequenceWindow); }
+    catch (error) { return gated(queryFailure(error instanceof EvidenceSequenceWindowUnavailable ? "SEQUENCE_WINDOW_UNAVAILABLE" : "QUERY_FAILED", (error as Error).message)); }
     const records: SelectionRecord[] = currentEvidence.flatMap((entry) => {
+      if (entry.sequence < bounds.first || entry.sequence > bounds.last) return [];
       if (entry.candidate.kind === "topology-checkpoint" || entry.sequence > (readPoint.committedEvidenceBoundary?.sequence ?? 0) || entry.sequence < (readPoint.retainedRange?.first.sequence ?? 1)) return [];
       const cached = queryProjections.get(entry);
       if (cached) return [cached];
@@ -350,15 +356,17 @@ export function createAuthoritativeHistory(
     const inScope = matching.filter((record) => isInAround(record, around));
     const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
     let offset = 0;
-    if (request.page.cursor !== undefined) {
-      offset = Number(request.page.cursor);
-      if (!Number.isSafeInteger(offset) || offset < 0) {
-        return gated(queryFailure("QUERY_FAILED", "The Evidence page cursor is malformed."));
+    try {
+      const cursor = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
+      if (cursor) {
+        const anchor = ordered.findIndex(record => record.identity.sequence === cursor.anchor.sequence && record.identity.eventId === cursor.anchor.eventId);
+        if (anchor < 0) return gated(queryFailure("READ_POINT_UNAVAILABLE", "The Evidence page cursor is unavailable."));
+        offset = anchor + 1;
       }
-    }
-    if (offset > ordered.length) return gated(queryFailure("READ_POINT_UNAVAILABLE", "The Evidence page cursor is unavailable."));
+    } catch (error) { return gated(queryFailure("QUERY_FAILED", (error as Error).message)); }
     const page = ordered.slice(offset, offset + request.page.size);
-    const nextCursor = offset + page.length < ordered.length ? String(offset + page.length) : null;
+    const resumeCursor = page.length ? encodeEvidenceQueryCursor(readPoint, request, page.at(-1)!.identity) : null;
+    const nextCursor = offset + page.length < ordered.length ? resumeCursor : null;
     const discoveries = new Map<string, FacetDiscoveryResult>();
     for (const discovery of request.discover ?? []) {
       try {
@@ -409,7 +417,7 @@ export function createAuthoritativeHistory(
       ok: true,
       value: Object.freeze({
         readPoint,
-        page: Object.freeze({ evidence: Object.freeze(page.map(hydrate)), nextCursor }),
+        page: Object.freeze({ evidence: Object.freeze(page.map(hydrate)), nextCursor, resumeCursor }),
         totals: Object.freeze({ matching: matching.length, inScope: inScope.length }),
         discoveries: new Map(discoveries),
         lookup,
@@ -485,7 +493,12 @@ export function createAuthoritativeHistory(
     return Promise.resolve(closeOutcome);
   }
 
-  historyObject = { storage: { mode: "memory" }, status, offer, read, query, clear, follow, close };
+  historyObject = { storage: { mode: "memory" }, status, offer, read, query, clear, follow, close,
+    resolveIdentity: async reference => {
+      const entry = currentEvidenceBySequence.get(reference.sequence);
+      return !closed && entry?.intervalId === reference.intervalId && entry.eventId === reference.eventId ? identity(entry) : null;
+    }
+  };
   return historyObject;
 }
 

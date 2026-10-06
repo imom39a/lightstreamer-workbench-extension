@@ -211,6 +211,88 @@ function delivered(stepOrdinal: number) {
 }
 
 describe("Local Injection Scenario runner", () => {
+  function deferredFieldCheckpoint() {
+    const initial = createScenarioFromDraft(input("draft-1", "ADD", 0), { scenarioId: "deferred-field" });
+    const added = addScenarioCheckpoint(initial, { id: "checkpoint-1", kind: "checkpoint", name: "Loaded fields and observed absence", assertions: [
+      { id: "field", kind: "local-evidence-field-equals", stepId: "step-1", field: "qty", expected: "draft-1" },
+      { id: "absence", kind: "server-item-update-absent", item: { name: "orders", position: 1 }, duringActiveMs: 100 }
+    ] });
+    if (!added.ok) throw new Error(added.reason);
+    const reviewed = reviewScenario(added.scenario, { runId: "deferred-run", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    const clock = new FakeClock(), feed = new FakeBoundaryFeed();
+    const local = delivered(1).evidence;
+    const server = { intervalId: "interval-1", sequence: 2, eventId: "server-during-load" };
+    const publish = (coverage: "complete" | "insufficient", upper = local) => feed.publish({ boundary: upper, intervalId: "interval-1", retainedRange: { first: local, last: upper }, history: "accepting", projection: "live", temporalCoverage: coverage });
+    publish("complete");
+    let release!: () => void;
+    const temporalAbsence = vi.fn(async (_run, _checkpoint, lower, upper) => new Map([["absence", {
+      state: lower?.sequence === 1 && upper?.sequence === 2 ? "present" as const : "absent" as const,
+      lower, upper, ...(upper?.sequence === 2 ? { matched: server } : {})
+    }]]));
+    const runner = createLocalInjectionScenarioRunner(reviewed.run, { clock, allocateInjectionId: () => "injection", execute: async () => delivered(1), checkpoint: {
+      feed, observations: () => ({ priorOutcomes: new Map(), correlatedLocalEvidence: new Map([["step-1", local]]), inspectCommand: () => ({ state: "unavailable", certainty: "unavailable", provenance: "history", evidence: null }) }),
+      loadLocalEvidenceFields: () => new Promise(resolve => { release = () => resolve(new Map([["field", { state: "concrete", value: "draft-1", certainty: "certain", provenance: "committed-local-evidence", evidence: local }]])); }),
+      temporalAbsence
+    } });
+    return { runner, clock, feed, temporalAbsence, server, publish, release: () => release() };
+  }
+
+  it.each(["server-update", "coverage-loss"] as const)("observes %s during deferred Local field loading", async change => {
+    const fixture = deferredFieldCheckpoint();
+    fixture.runner.play(); fixture.clock.advance(0);
+    await vi.waitFor(() => expect(fixture.runner.snapshot().run.trace).toHaveLength(1));
+    fixture.clock.advance(0);
+    expect(fixture.feed.size()).toBe(1);
+    fixture.clock.advance(100);
+    if (change === "server-update") fixture.publish("complete", fixture.server);
+    else { fixture.publish("insufficient"); fixture.publish("complete"); }
+    fixture.release();
+    await vi.waitFor(() => expect(fixture.runner.snapshot().phase).toBe("stopped"));
+    expect(fixture.runner.snapshot().run.trace.at(-1)).toMatchObject({ kind: "checkpoint", status: change === "server-update" ? "fail" : "inconclusive", startedBoundary: { sequence: 1 } });
+    expect(fixture.feed.size()).toBe(0);
+    fixture.runner.dispose();
+  });
+
+  it("preserves Pause during a deferred Local field load and resumes the active window on Play", async () => {
+    const fixture = deferredFieldCheckpoint();
+    fixture.runner.play(); fixture.clock.advance(0);
+    await vi.waitFor(() => expect(fixture.runner.snapshot().run.trace).toHaveLength(1));
+    fixture.clock.advance(0); fixture.clock.advance(40);
+    fixture.runner.pause(); fixture.clock.advance(1000); fixture.release();
+    await vi.waitFor(() => expect(fixture.runner.snapshot().activeCheckpoint?.assertions).toHaveLength(2));
+    expect(fixture.runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 40, pauseReason: "USER" });
+    fixture.runner.play(); fixture.clock.advance(59);
+    expect(fixture.runner.snapshot().run.trace).toHaveLength(1);
+    fixture.clock.advance(1);
+    await vi.waitFor(() => expect(fixture.runner.snapshot().phase).toBe("complete"));
+    expect(fixture.runner.snapshot().run.trace.at(-1)).toMatchObject({ kind: "checkpoint", status: "pass", settledActiveOffsetMs: 100, startedBoundary: { sequence: 1 } });
+    expect(fixture.feed.size()).toBe(0);
+    fixture.runner.dispose();
+  });
+
+  it("keeps Stop terminal when a deferred temporal query settles later", async () => {
+    const fixture = deferredFieldCheckpoint();
+    let settle!: () => void;
+    fixture.temporalAbsence.mockImplementationOnce(async (_run, _checkpoint, lower, upper) => new Promise(resolve => {
+      settle = () => resolve(new Map([["absence", { state: "absent", lower, upper }]]));
+    }));
+    fixture.runner.play(); fixture.clock.advance(0);
+    await vi.waitFor(() => expect(fixture.runner.snapshot().run.trace).toHaveLength(1));
+    fixture.clock.advance(0); fixture.release();
+    await vi.waitFor(() => expect(fixture.runner.snapshot().activeCheckpoint?.assertions).toHaveLength(2));
+    fixture.clock.advance(100);
+    expect(fixture.temporalAbsence).toHaveBeenCalledTimes(1);
+    fixture.runner.stop();
+    const stopped = fixture.runner.snapshot().run;
+    settle();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(fixture.runner.snapshot()).toMatchObject({ phase: "stopped", run: stopped });
+    expect(fixture.runner.snapshot().run.trace.some(entry => entry.kind === "checkpoint")).toBe(false);
+    expect(fixture.feed.size()).toBe(0);
+    fixture.runner.dispose();
+  });
+
   it("queries all condition severities before reducing the latest lifecycle transition", async () => {
     const clock = new FakeClock();
     const feed = new FakeBoundaryFeed();

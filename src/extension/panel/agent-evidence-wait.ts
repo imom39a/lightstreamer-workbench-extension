@@ -1,4 +1,4 @@
-import type { DeterministicEvidenceRecord, EvidenceReadPoint, EvidenceSnapshot } from "../../core/evidence-filter-contract";
+import type { DeterministicEvidenceRecord, EvidenceReadPoint, EvidenceSnapshot, EvidenceSequenceWindow } from "../../core/evidence-filter-contract";
 import type { HistoryStatus } from "../../core/event-history-authoritative";
 
 export type AgentEvidenceWaitStatus = "MATCHED" | "TIMED_OUT" | "CANCELLED" | "HISTORY_CHANGED" | "HISTORY_INCOMPLETE" | "HISTORY_UNAVAILABLE" | "TARGET_CHANGED" | "QUERY_FAILED";
@@ -9,13 +9,14 @@ export type AgentEvidenceWaitResult = Readonly<{
   readPoint: EvidenceReadPoint | null;
   evidence: readonly DeterministicEvidenceRecord[];
   mayHaveMoreMatches: boolean;
+  sequenceWindow: Readonly<{ after: number; through: number }>;
 }>;
 
 /** Notify-only subscription, installed before the first bounded canonical query. */
 export type AgentEvidenceWaitSource = Readonly<{
   status(): { pageEpoch: string | null; history: HistoryStatus };
   subscribe(listener: () => void): () => void;
-  query(signal: AbortSignal): Promise<EvidenceSnapshot>;
+  query(signal: AbortSignal, window: EvidenceSequenceWindow): Promise<EvidenceSnapshot>;
 }>;
 
 /**
@@ -36,6 +37,7 @@ export function waitForAgentEvidence(
     let dirty = false;
     let lastSignature: string | undefined;
     let latest: EvidenceSnapshot | null = null;
+    let scannedThrough = afterSequence;
     let unsubscribe = () => {};
     let scheduled: ReturnType<typeof setTimeout> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -48,6 +50,7 @@ export function waitForAgentEvidence(
       input.signal?.removeEventListener("abort", cancelled);
       controller.abort();
       resolve({ status, reason, after: input.after, readPoint: latest?.readPoint ?? null, evidence,
+        sequenceWindow: { after: afterSequence, through: scannedThrough },
         mayHaveMoreMatches: evidence.length > 0 && Boolean(latest?.page.nextCursor) && evidence.at(-1)!.identity.sequence > afterSequence });
     }
     function cancelled() { finish("CANCELLED", "The observation request was cancelled; no Injection was performed."); }
@@ -64,7 +67,8 @@ export function waitForAgentEvidence(
       if ((current.history.retainedRange?.first.sequence ?? 1) > afterSequence + 1) {
         finish("HISTORY_INCOMPLETE", "Retention advanced past part of the requested observation window. This is not an Evidence Gap."); return null;
       }
-      if (current.history.continuity?.state === "GAPPED") {
+      const gap = current.history.continuity?.latestGap;
+      if (current.history.continuity?.state === "GAPPED" && (!gap || (gap.afterEvidence?.sequence ?? 0) >= afterSequence)) {
         finish("HISTORY_INCOMPLETE", "Event History reports an Evidence Gap; this wait cannot establish a continuous observation window. Query retained Evidence directly."); return null;
       }
       return current;
@@ -83,11 +87,13 @@ export function waitForAgentEvidence(
         const signature = JSON.stringify([current.pageEpoch, current.history.interval, current.history.committedEvidenceBoundary, current.history.retainedRange?.first, current.history.continuity]);
         if (signature === lastSignature) return;
         lastSignature = signature;
-        const snapshot = await source.query(controller.signal);
+        const through = current.history.committedEvidenceBoundary?.sequence ?? 0;
+        const snapshot = await source.query(controller.signal, { after: scannedThrough, through });
         if (finished || !checkContinuity()) return;
         latest = snapshot;
         if (snapshot.readPoint.interval.id !== input.after.interval.id) { finish("HISTORY_CHANGED", "The query crossed a History Interval change."); return; }
         if (snapshot.evaluation !== "COMPLETE") { finish("QUERY_FAILED", "The query could not evaluate all requested criteria."); return; }
+        scannedThrough = Math.min(through, snapshot.readPoint.committedEvidenceBoundary?.sequence ?? through);
         const evidence = snapshot.page.evidence.filter(record => record.identity.intervalId === input.after.interval.id && record.identity.sequence > afterSequence);
         if (evidence.length) { finish("MATCHED", "Matching committed Evidence was observed after the supplied boundary. This does not prove application behavior.", evidence); return; }
         if (input.timeoutMs === 0) finish("TIMED_OUT", "No match was observed through the returned read point; no absence claim extends beyond it.");

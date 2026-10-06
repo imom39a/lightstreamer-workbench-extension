@@ -48,6 +48,8 @@ const issue16FixtureUrl = new URL(
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
 type OfficialClientScenario =
+  | "native-MERGE"
+  | "native-DISTINCT"
   | "authored"
   | "server-injection"
   | "server-injection-recipe"
@@ -234,6 +236,12 @@ async function runOfficialClientPanelJourney(
         "the official client to report a server error and keepalive callback",
         30_000
       );
+    }
+
+    if (scenario === "native-MERGE" || scenario === "native-DISTINCT") {
+      await runOfficialNativeModeJourney(pageCdp, panelCdp, scenario === "native-MERGE" ? "MERGE" : "DISTINCT");
+      expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      return;
     }
 
     if (scenario === "scenario" || scenario === "captured-scenario") {
@@ -791,6 +799,48 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
   }
 }
 
+test("official-client source-free MERGE native callbacks preserve null and equal-value flags", async () => {
+  await runOfficialClientPanelJourney("2664,727", { width: 900, height: 700 }, "native-MERGE");
+});
+test("official-client source-free DISTINCT native callbacks preserve null and equal-value flags", async () => {
+  await runOfficialClientPanelJourney("2664,727", { width: 900, height: 700 }, "native-DISTINCT");
+});
+
+async function runOfficialNativeModeJourney(pageCdp: CdpClient, panelCdp: CdpClient, mode: "MERGE" | "DISTINCT"): Promise<void> {
+  const item = mode === "MERGE" ? "scenario.native-merge" : "scenario.native-distinct";
+  await evaluateByValue(pageCdp, `(() => {
+    window.LSEW_NATIVE_UPDATES = [];
+    window.LSEW_NATIVE_ERROR = null;
+    const subscription = new window.Subscription(${JSON.stringify(mode)}, [${JSON.stringify(item)}], ['modelId', 'modelValues']);
+    subscription.setRequestedSnapshot('yes');
+    subscription.addListener({ onItemUpdate(update) {
+      const all = {}, changed = {};
+      update.forEachField((name, position, value) => all[name] = value);
+      update.forEachChangedField((name, position, value) => changed[name] = value);
+      window.LSEW_NATIVE_UPDATES.push({ itemName: update.getItemName(), itemPosition: update.getItemPos(), snapshot: update.isSnapshot(), named: [update.getValue('modelId'), update.getValue('modelValues')], positional: [update.getValue(1), update.getValue(2)], flags: [update.isValueChanged('modelId'), update.isValueChanged(1), update.isValueChanged('modelValues'), update.isValueChanged(2)], all, changed });
+    }, onSubscriptionError(code, message) { window.LSEW_NATIVE_ERROR = {code, message}; } });
+    window.LSEW_NATIVE_SUBSCRIPTION = subscription;
+    window.LSEW_MUTATE_FIXTURE.client.subscribe(subscription);
+  })()`);
+  await waitForCondition(pageCdp, `window.LSEW_NATIVE_UPDATES.length >= 1 || window.LSEW_NATIVE_ERROR`, `official ${mode} subscription baseline`);
+  expect(await evaluateByValue(pageCdp, 'window.LSEW_NATIVE_ERROR')).toBe(null);
+  await waitForCondition(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')].filter(row => row.querySelector('.workbench-react__scope-identity')?.textContent?.includes(${JSON.stringify(item)})).length >= 1`, `official ${mode} Item Scope`);
+  if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')].find(row => row.querySelector('.workbench-react__scope-identity')?.textContent?.includes(${JSON.stringify(item)}))`)) await clickPanelButton(panelCdp, "Scope");
+  await evaluateByValue(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')].find(row => row.querySelector('.workbench-react__scope-identity')?.textContent?.includes(${JSON.stringify(item)}))?.scrollIntoView({block: 'nearest'})`);
+  await clickVisiblePanelElement(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')].filter(row => row.querySelector('.workbench-react__scope-identity')?.textContent?.includes(${JSON.stringify(item)})).at(-1)`, `official ${mode} Item Scope`);
+  for (let ordinal = 0; ordinal < 2; ordinal += 1) {
+    await pressVisiblePanelButton(panelCdp, `Author ${mode} Item Update`);
+    await waitForCondition(panelCdp, `document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]')`, `${mode} lazy editor`);
+    await replaceLocalInjectionJson(panelCdp, JSON.stringify({ command: null, key: null, isSnapshot: true, fields: { modelId: null, modelValues: null } }));
+    await waitForCondition(panelCdp, `[...document.querySelectorAll('button')].some(button => button.textContent?.trim() === 'Inject locally' && !button.disabled)`, `${mode} executable native document`);
+    await clickPanelButton(panelCdp, 'Inject locally');
+    await waitForCondition(pageCdp, `window.LSEW_NATIVE_UPDATES.length === ${ordinal + 2}`, `official ${mode} authored delivery ${ordinal + 1}`);
+    expect(await evaluateByValue(pageCdp, `window.LSEW_NATIVE_UPDATES.at(-1)`)).toEqual({ itemName: item, itemPosition: 1, snapshot: true, named: [null, null], positional: [null, null], flags: ordinal === 0 ? [true, true, true, true] : [false, false, false, false], all: { modelId: null, modelValues: null }, changed: ordinal === 0 ? { modelId: null, modelValues: null } : {} });
+    await waitForCondition(panelCdp, `document.querySelector('[aria-label="Local Injection Draft"]')?.textContent?.includes('DELIVERED LOCALLY')`, `${mode} terminal delivery`);
+    await clickPanelButton(panelCdp, 'Finish Local Injection');
+  }
+}
+
 test("official-client authored COMMAND Local Injection works through visible normal DevTools controls", async () => {
   await runOfficialClientPanelJourney("2664,727", { width: 900, height: 700 });
 });
@@ -1052,6 +1102,8 @@ async function runOfficialClientScenarioJourney(
     return true;
   })()`);
 
+
+
   await clickVisiblePanelElement(
     panelCdp,
     `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
@@ -1075,6 +1127,16 @@ async function runOfficialClientScenarioJourney(
     `document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]')`,
     "the captured Draft editor"
   );
+  const acceptedBeforeListener = await evaluateByValue<number>(panelCdp, `Number(document.querySelector('[aria-label="Workbench diagnostics"]')?.textContent?.match(/\\/(\\d+) Evidence/)?.[1] ?? 0)`);
+  await evaluateByValue(pageCdp, `(() => {
+    window.LSEW_COMMAND_FLAGS = [];
+    window.LSEW_MUTATE_FIXTURE.subscription.addListener({ onItemUpdate(update) {
+      const changed = {};
+      update.forEachChangedField((name, position, value) => changed[name] = value);
+      window.LSEW_COMMAND_FLAGS.push({ command: update.getValue('command'), key: update.getValue('key'), fields: ['key','command','modelId','modelValues'].map(name => update.getValue(name)), named: ['key','command','modelId','modelValues'].map(name => update.isValueChanged(name)), positional: [1,2,3,4].map(position => update.isValueChanged(position)), changed });
+    } });
+  })()`);
+  await waitForCondition(panelCdp, `Number(document.querySelector('[aria-label="Workbench diagnostics"]')?.textContent?.match(/\\/(\\d+) Evidence/)?.[1] ?? 0) > ${acceptedBeforeListener}`, "the secondary application listener to settle before Scenario review");
   await clickPanelButton(panelCdp, "Convert to Scenario");
   await waitForCondition(
     panelCdp,
@@ -1175,8 +1237,16 @@ async function runOfficialClientScenarioJourney(
   expect(firstRun.applicationEvents).toEqual([
     `live | scenario.mutate-reinject | ADD | ${scenarioKey} | Scenario ADD`,
     `live | scenario.mutate-reinject | UPDATE | ${scenarioKey} | Scenario UPDATE`,
-    `live | scenario.mutate-reinject | DELETE | ${scenarioKey} | Scenario DELETE`
+    `live | scenario.mutate-reinject | DELETE | ${scenarioKey} | invalid modelValues`
   ]);
+
+  const nativeCallbacks = await evaluateByValue<Array<{ command: string; key: string; fields: unknown[]; named: boolean[]; positional: boolean[]; changed: Record<string, unknown> }>>(pageCdp, 'window.LSEW_COMMAND_FLAGS');
+  expect(nativeCallbacks.map(update => [update.command, update.named, update.positional])).toEqual([
+    ['ADD', [true,true,true,true], [true,true,true,true]],
+    ['UPDATE', [false,true,false,true], [false,true,false,true]],
+    ['DELETE', [false,true,true,true], [false,true,true,true]]
+  ]);
+  expect(nativeCallbacks[2]).toMatchObject({ key: scenarioKey, fields: [scenarioKey, 'DELETE', null, null], changed: { command: 'DELETE', modelId: null, modelValues: null } });
 
   await clickPanelButton(panelCdp, "Run again");
   await waitForCondition(

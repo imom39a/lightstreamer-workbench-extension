@@ -1,5 +1,6 @@
+import Ajv from "ajv";
 import { describe, expect, it, vi } from "vitest";
-import { AGENT_TOOLS, validateAgentCall } from "../src/agent/protocol";
+import { AGENT_TOOLS, agentTimeoutCode, isReservedAgentCall, validateAgentCall } from "../src/agent/protocol";
 import { createFilter } from "../src/core/filter-algebra";
 import { createAgentService } from "../src/extension/panel/agent-service";
 import type { AgentQueryInput, AgentRuntime } from "../src/extension/panel/agent-runtime";
@@ -34,12 +35,57 @@ describe("agent query and discovery interface", () => {
   it("publishes standard bounded schemas and exposes query and stream output shapes", () => {
     const query = AGENT_TOOLS.find(tool => tool.name === "query_evidence")!;
     const stream = AGENT_TOOLS.find(tool => tool.name === "describe_stream")!;
-    expect((query.outputSchema as any).anyOf[0].required).toContain("readPoint");
-    expect((stream.outputSchema as any).anyOf[0].required).toContain("matchingTotal");
-    expect((query.outputSchema as any).anyOf[1].required).toEqual(["error"]);
+    const ajv = new Ajv({ strict: false });
+    const validatesQuery = ajv.compile(query.outputSchema);
+    const queryResult = { readPoint: point, totals: { matching: 0, inScope: 0 }, coverage: "COMPLETE", evaluation: "COMPLETE", storage: "MEMORY_FALLBACK", discoveries: {}, nextCursor: null, evidence: [], omissions: [] };
+    expect(validatesQuery(queryResult)).toBe(true);
+    const { readPoint: _point, ...withoutPoint } = queryResult;
+    expect(validatesQuery(withoutPoint)).toBe(false);
+    expect(validatesQuery({ ...queryResult, readPoint: {} })).toBe(false);
+    const validatesStream = ajv.compile(stream.outputSchema);
+    const streamResult = { readPoint: point, matchingTotal: 0, sampled: 0, completeness: "COMPLETE", nextCursor: null, omissions: [] };
+    expect(validatesStream(streamResult)).toBe(true);
+    const { matchingTotal: _total, ...withoutTotal } = streamResult;
+    expect(validatesStream(withoutTotal)).toBe(false);
+    expect(validatesStream({ ...streamResult, matchingTotal: -1 })).toBe(false);
+    expect(validatesQuery({ error: { code: "QUERY_FAILED", message: "failure", automaticRetry: false } })).toBe(true);
+    expect(validatesQuery({ error: {} })).toBe(false);
     const schemas = JSON.stringify([query.inputSchema, stream.inputSchema]);
     expect(schemas).not.toContain('"scalar"');
     expect(schemas).not.toContain('"nullable-object"');
+  });
+
+  it("advertises canonical authoring limits and accepts typed or legacy document input", () => {
+    const document = { command: "ADD", key: "k", isSnapshot: false, fields: { price: 1, metadata: { source: ["fixture", null] } } };
+    expect(() => validateAgentCall("prepare_local_injection", { panelSessionId: "p", pageEpoch: "e", document })).not.toThrow();
+    expect(() => validateAgentCall("prepare_local_injection", { panelSessionId: "p", pageEpoch: "e", document: JSON.stringify(document) })).not.toThrow();
+    expect(() => validateAgentCall("prepare_local_injection", { panelSessionId: "p", pageEpoch: "e", document: { ...document, fields: { price: "x".repeat(65 * 1024) } } })).toThrow("DOCUMENT_BUDGET_EXCEEDED");
+    const step = { kind: "step", id: "m".repeat(256), scopeId: "scope" };
+    const checkpoint = { kind: "checkpoint", id: "checkpoint", name: "check", assertions: [{ id: "assertion", kind: "correlated-local-evidence-exists", stepId: "step", withinActiveMs: 300_000 }] };
+    expect(() => validateAgentCall("prepare_scenario", { panelSessionId: "p", pageEpoch: "e", members: [step, checkpoint] })).not.toThrow();
+    expect(() => validateAgentCall("prepare_scenario", { panelSessionId: "p", pageEpoch: "e", members: [{ ...step, id: "m".repeat(257) }] })).toThrow("exactly one supported shape");
+    expect(() => validateAgentCall("prepare_scenario", { panelSessionId: "p", pageEpoch: "e", members: [{ ...checkpoint, assertions: [{ ...checkpoint.assertions[0], withinActiveMs: 300_001 }] }] })).toThrow("exactly one supported shape");
+    expect(isReservedAgentCall("get_status", {})).toBe(true);
+    expect(isReservedAgentCall("control_scenario", { action: "pause" })).toBe(true);
+    expect(isReservedAgentCall("control_scenario", { action: "play" })).toBe(false);
+    expect(isReservedAgentCall("wait_for_operation", {})).toBe(false);
+    expect(agentTimeoutCode("search_scope", {})).toBe("QUERY_FAILED");
+    expect(agentTimeoutCode("prepare_local_injection", {})).toBe("DOCUMENT_PUBLICATION_UNKNOWN");
+    expect(agentTimeoutCode("control_scenario", { action: "play" })).toBe("DELIVERY_UNKNOWN");
+    expect(agentTimeoutCode("control_scenario", { action: "pause" })).toBe("CONTROL_OUTCOME_UNKNOWN");
+    expect(AGENT_TOOLS.find(tool => tool.name === "recover_agent_document")!.inputSchema).toMatchObject({ properties: { requestId: expect.any(Object), maxBytes: expect.any(Object) } });
+  });
+
+  it("advertises bounded projection budgets and the exact-run wait contract", () => {
+    const budget = { maxProjectionReads: 1_000_000, maxPayloadHydrations: 1_000_000, deadlineMs: 30_000 };
+    for (const name of ["query_evidence", "search_evidence", "summarize_evidence", "describe_stream"]) {
+      const base = name === "describe_stream" ? { limit: 1 } : { within: "page", ...(name === "search_evidence" ? { text: "needle" } : {}) };
+      expect(() => validateAgentCall(name, { panelSessionId: "p", ...base, workBudget: budget })).not.toThrow();
+      expect(() => validateAgentCall(name, { panelSessionId: "p", ...base, workBudget: { ...budget, deadlineMs: 30_001 } })).toThrow("invalid integer");
+    }
+    expect(() => validateAgentCall("wait_for_evidence", { panelSessionId: "p", after: point, pageEpoch: "e", timeoutMs: 20_000, workBudget: budget })).not.toThrow();
+    expect(() => validateAgentCall("wait_for_scenario", { panelSessionId: "p", runId: "run", pageEpoch: "e", afterRevision: 0, timeoutMs: 0, maxBytes: 65536 })).not.toThrow();
+    expect(() => validateAgentCall("wait_for_scenario", { panelSessionId: "p", runId: "run" })).toThrow("required");
   });
 
   it("normalizes legacy text and typed facet criteria into the canonical query", async () => {

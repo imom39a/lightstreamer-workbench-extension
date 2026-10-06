@@ -184,7 +184,7 @@ describe("filter-impl-09 durable IndexedDB workload", () => {
       if (!result.ok) throw new Error("Expected search-mismatch query to succeed");
       expect(result.value.discoveries.get("key")).toEqual({
         state: "AVAILABLE", facet: "key", values: [{ value: active, count: 0, pinned: true }],
-        distinctTotal: 0, nextCursor: null, baseEvidenceCount: 1
+        distinctTotal: 0, nextCursor: null, resumeCursor: null, baseEvidenceCount: 1
       });
     } finally {
       await durable.close();

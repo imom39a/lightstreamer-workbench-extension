@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef, useState, type JSX } from "react";
 import type { WorkbenchRuntime, WorkbenchSnapshot } from "../workbench-runtime";
 import type { ScenarioAssertion, ScenarioCheckpoint, ScenarioStep, ScenarioTraceEntry } from "../../../core/local-injection-scenario";
 import type { DiagnosticAffectedIdentity, DiagnosticObservationRef } from "../../../core/diagnostic-observation";
+import { scrollLocalInjectionOwnerByPage } from "./local-injection-document";
 import { LocalInjectionCodeEditor } from "./local-injection-code-editor";
 import { ScenarioCapturePanel } from "./scenario-capture-panel";
 import "./scenario-capture-document.css";
@@ -187,7 +188,12 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
           </li>;
         })}</ol>
       </nav>
-      <div className="workbench-react__scenario-steps" aria-label="Focused Scenario member" ref={memberPane} onScroll={rememberMemberScroll}>
+      <div className="workbench-react__scenario-steps" aria-label="Focused Scenario member" tabIndex={0} ref={memberPane} onScroll={rememberMemberScroll} onKeyDownCapture={(event) => {
+        const pane = memberPane.current;
+        if (!pane || (event.target !== pane && event.target !== editorHeading.current) || event.altKey || event.ctrlKey || event.metaKey) return;
+        if (event.key === "PageDown" || event.key === "PageUp") { event.preventDefault(); scrollLocalInjectionOwnerByPage(pane, event.key); }
+        else if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); pane.scrollTop += event.key === "ArrowDown" ? 24 : -24; }
+      }}>
         <h2 className="workbench-react__scenario-focused-heading" ref={editorHeading} tabIndex={-1}>Focused {scenarioMembers.find(({ id }) => id === focusedMemberId)?.kind === "checkpoint" ? "Checkpoint" : "Step"}</h2>
       {run ? <section className="workbench-react__scenario-ledger" aria-label="Scenario Run ledger">
         <header><strong>Run Trace</strong></header>
@@ -309,7 +315,7 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
   const relatedDiagnostics = uniqueRelatedDiagnostics(results);
   const resultBoundary = trace?.resultBoundary ?? active?.boundary ?? null;
   const diagnosticCurrentBoundary = trace?.diagnosticCurrentBoundary ?? active?.diagnosticCurrentBoundary ?? null;
-  const terminalFailure = status === "fail" || status === "expired" || status === "invalid" || status === "unavailable" || status === "not-evaluable";
+  const terminalFailure = status === "inconclusive" || status === "fail" || status === "expired" || status === "invalid" || status === "unavailable" || status === "not-evaluable";
   const updateCheckpoint = (next: ScenarioCheckpoint): void => runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: next });
   return <article className="workbench-react__scenario-checkpoint" aria-label={`Scenario Checkpoint ${checkpoint.name}`} data-checkpoint-state={status} data-step-focused={focused ? "true" : "false"}>
     <header><button type="button" className="workbench-react__scenario-step-focus" aria-pressed={focused} onClick={() => runtime.dispatch({ type: "focus-scenario-member", memberId: checkpoint.id })}><strong>CHECKPOINT {ordinal}</strong></button><span>{checkpoint.id} · Zero Injections</span></header>
@@ -352,6 +358,26 @@ function CheckpointAssertionAuthoring({ assertion, precedingStepIds, onChange, p
   primitiveInput: string | undefined;
   onPrimitiveInput(text: string): void;
 }>): JSX.Element {
+  if (assertion.kind === "local-evidence-field-equals" || assertion.kind === "server-item-update-absent") {
+    return <div className="workbench-react__scenario-assertion-authoring">
+      <label>Assertion <select aria-label={`Assertion ${assertion.id} kind`} value={assertion.kind} disabled>
+        <option value={assertion.kind}>{assertion.kind === "local-evidence-field-equals" ? "Committed Local Evidence field equality" : "Observed Server Item Update absence"}</option>
+      </select></label>
+      <p>This agent-authored assertion is read-only here. To change it, remove this assertion and add a replacement, or prepare a revised plan with the agent.</p>
+      <dl>
+        {assertion.kind === "local-evidence-field-equals" ? <>
+          <dt>Earlier Step</dt><dd>{assertion.stepId}</dd>
+          <dt>Field</dt><dd>{assertion.field}</dd>
+          <dt>Expected primitive JSON</dt><dd>{JSON.stringify(assertion.expected)}</dd>
+          <dt>Within active ms</dt><dd>{assertion.withinActiveMs ?? "Immediate"}</dd>
+        </> : <>
+          <dt>Item name</dt><dd>{assertion.item.name ?? "Use item position"}</dd>
+          <dt>Item position</dt><dd>{assertion.item.position ?? "Use item name"}</dd>
+          <dt>Observation duration (active ms)</dt><dd>{assertion.duringActiveMs}</dd>
+        </>}
+      </dl>
+    </div>;
+  }
   const priorStepId = "stepId" in assertion ? assertion.stepId : precedingStepIds.at(-1) ?? "";
   const setKind = (kind: ScenarioAssertion["kind"]): void => {
     const next = defaultAssertion(assertion.id, kind, priorStepId);
@@ -385,9 +411,11 @@ function CheckpointAssertionAuthoring({ assertion, precedingStepIds, onChange, p
 
 function defaultAssertion(id: string, kind: ScenarioAssertion["kind"], stepId: string): ScenarioAssertion {
   switch (kind) {
+    case "server-item-update-absent": return { id, kind, item: { name: null, position: 1 }, duringActiveMs: 1000 };
     case "prior-injection-outcome": return { id, kind, stepId, expectedDisposition: "delivered" };
     case "listener-count": return { id, kind, stepId, count: "delivered", expected: 1 };
     case "correlated-local-evidence-exists": return { id, kind, stepId };
+    case "local-evidence-field-equals": return { id, kind, stepId, field: "", expected: "" };
     case "command-key-exists": return { id, kind, item: { name: null, position: 1 }, key: "", expected: "present" };
     case "command-field-equals": return { id, kind, item: { name: null, position: 1 }, key: "", field: "", expected: "" };
     case "diagnostic-observation-exists": return { id, kind, contractVersion: 1, ruleCode: "capture.disconnected", lifecycle: "condition", minimumSeverity: "warning", affected: { kind: "unavailable", reason: "page-identity-unavailable" } };
@@ -493,9 +521,11 @@ function defaultAffectedIdentity(kind: DiagnosticAffectedIdentity["kind"], prior
 
 function assertionLabel(assertion: ScenarioAssertion): string {
   switch (assertion.kind) {
+    case "server-item-update-absent": return `No captured Server Item Update for item ${assertion.item.name ?? assertion.item.position} during ${assertion.duringActiveMs} ms active time`;
     case "prior-injection-outcome": return `Step ${assertion.stepId.replace(/^step-/, "")} Injection Outcome is ${assertion.expectedDisposition}`;
     case "listener-count": return `Step ${assertion.stepId.replace(/^step-/, "")} ${assertion.count} listener count is ${assertion.expected}`;
     case "correlated-local-evidence-exists": return `Correlated committed Local Evidence exists after Step ${assertion.stepId.replace(/^step-/, "")}`;
+    case "local-evidence-field-equals": return `Committed Local Evidence from Step ${assertion.stepId} field ${assertion.field} strictly equals ${JSON.stringify(assertion.expected)}`;
     case "command-key-exists": return `Local Effective COMMAND key ${assertion.key} is ${assertion.expected}`;
     case "command-field-equals": return `Local Effective COMMAND field ${assertion.field} strictly equals ${JSON.stringify(assertion.expected)}`;
     case "diagnostic-observation-exists": return `Diagnostic Observation ${assertion.ruleCode} exists for Exact affected identity ${formatDiagnosticAffectedIdentity(assertion.affected)} · contract v${assertion.contractVersion} · ${assertion.lifecycle} · minimum ${assertion.minimumSeverity}`;

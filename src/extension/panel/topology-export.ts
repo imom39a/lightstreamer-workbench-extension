@@ -8,6 +8,7 @@ import {
   type TopologySubscription
 } from "../../core/topology-state";
 import { type TopologyProjectionStatus } from "./topology-projection";
+import { isCredentialFieldName } from "../../core/credential-field";
 
 export const TOPOLOGY_SNAPSHOT_SCHEMA =
   "https://lightstreamer.com/workbench/topology-snapshot/v1";
@@ -713,12 +714,7 @@ export function cloneCredentialSafe(value: unknown): unknown {
 }
 
 function isCredentialKey(key: string): boolean {
-  if (key === "credentialsExcluded") {
-    return false;
-  }
-  return /(?:password|passwd|authorization|credential|secret|token|cookie|api[-_]?key)/i.test(
-    key
-  );
+  return isCredentialFieldName(key);
 }
 
 function isoTime(value: number | null): string | null {

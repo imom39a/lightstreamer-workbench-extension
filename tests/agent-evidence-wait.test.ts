@@ -44,6 +44,16 @@ describe("bounded agent Evidence observation", () => {
     expect((await waitForAgentEvidence(f.source, { after: point(2), pageEpoch: "page", timeoutMs: 0 })).status).toBe("TIMED_OUT");
     expect(f.query).toHaveBeenCalledTimes(1); expect(f.listeners.size).toBe(0);
   });
+  it("queries only unseen suffixes after each complete no-match read", async () => {
+    vi.useFakeTimers(); const f = fixture();
+    f.query.mockImplementation(async () => snapshot((f.source.status().history.committedEvidenceBoundary?.sequence ?? 0), []));
+    const waiting = waitForAgentEvidence(f.source, { after: point(2), pageEpoch: "page", timeoutMs: 1000 });
+    await vi.advanceTimersByTimeAsync(1);
+    f.advance(10); await vi.advanceTimersByTimeAsync(110);
+    f.advance(20); await vi.advanceTimersByTimeAsync(110);
+    expect(f.query.mock.calls.map(call => (call as unknown[])[1])).toEqual([{ after: 2, through: 2 }, { after: 2, through: 10 }, { after: 10, through: 20 }]);
+    await vi.advanceTimersByTimeAsync(1000); expect((await waiting).status).toBe("TIMED_OUT");
+  });
   it("reports a last-moment target change before the coalesced recheck reaches the timeout", async () => {
     vi.useFakeTimers(); const f = fixture();
     const waiting = waitForAgentEvidence(f.source, { after: point(2), pageEpoch: "page", timeoutMs: 100 });

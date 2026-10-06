@@ -3084,8 +3084,8 @@ describe("WorkbenchRuntime", () => {
 
   it("protects, reviews, and executes one Server Injection Draft without mutating its source", async () => {
     const history = createAuthoritativeHistory();
-    const execute = vi.fn(async () => ({
-      requestId: "server-request-1",
+    const execute = vi.fn(async (_draft: unknown, requestId?: string) => ({
+      requestId: requestId ?? "server-request-1",
       ok: true,
       status: "processed" as const,
       timestamp: 500,
@@ -3218,7 +3218,7 @@ describe("WorkbenchRuntime", () => {
     await vi.waitFor(() => expect(runtime.getSnapshot().serverInjection?.draft?.phase).toBe("outcome"));
 
     expect(execute).toHaveBeenCalledTimes(1);
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ message: "changed" }));
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ message: "changed" }), undefined);
     expect(runtime.getSnapshot().serverInjection?.draft?.outcome).toMatchObject({
       status: "processed",
       response: "accepted"
@@ -3231,6 +3231,41 @@ describe("WorkbenchRuntime", () => {
     runtime.dispatch({ type: "request-discard-server-injection" });
     runtime.dispatch({ type: "confirm-discard-server-injection" });
     expect(runtime.getSnapshot().serverInjection?.draft).toBeNull();
+
+    const agentDraft = { sourceEventId: null, target: { pageEpoch: "page-server-injection", clientId: "client-server", sessionId: "session-server" }, message: "agent-body", sequence: "orders", delayTimeout: null, enqueueWhileDisconnected: false };
+    runtime.agent!.prepareServerInjection!(agentDraft, "agent-edited-request");
+    runtime.dispatch({ type: "set-server-injection-message", message: "human-edited-body" });
+    expect(() => runtime.agent!.abortServerInjection!("agent-edited-request")).toThrow("TARGET_CHANGED");
+    runtime.dispatch({ type: "request-discard-server-injection" });
+    runtime.dispatch({ type: "confirm-discard-server-injection" });
+    runtime.agent!.prepareServerInjection!(agentDraft, "agent-server-request");
+    runtime.dispatch({ type: "review-server-injection" });
+    expect(runtime.getSnapshot().serverInjection?.draft).toMatchObject({ agentRequestId: "agent-server-request", agentApproved: false, phase: "review" });
+    runtime.dispatch({ type: "execute-server-injection" });
+    expect(execute).toHaveBeenCalledTimes(1);
+    runtime.dispatch({ type: "approve-server-injection-for-agent" });
+    expect(runtime.getSnapshot().serverInjection?.draft?.agentApproved).toBe(true);
+    runtime.dispatch({ type: "edit-server-injection" });
+    expect(runtime.getSnapshot().serverInjection?.draft?.agentApproved).toBe(false);
+    runtime.dispatch({ type: "review-server-injection" });
+    runtime.dispatch({ type: "approve-server-injection-for-agent" });
+    runtime.agent!.revokeServerInjectionApproval!();
+    expect(runtime.getSnapshot().serverInjection?.draft?.agentApproved).toBe(false);
+    runtime.dispatch({ type: "approve-server-injection-for-agent" });
+    runtime.dispatch({ type: "set-visible", visible: false });
+    expect(runtime.getSnapshot().serverInjection?.draft?.agentApproved).toBe(false);
+    expect(() => runtime.agent!.executeApprovedServerInjection!("agent-server-request")).toThrow("TARGET_CHANGED");
+    expect(execute).toHaveBeenCalledTimes(1);
+    runtime.dispatch({ type: "set-visible", visible: true });
+    expect(runtime.getSnapshot().serverInjection?.draft?.agentApproved).toBe(false);
+    runtime.dispatch({ type: "approve-server-injection-for-agent" });
+    const approvedOutcome = await runtime.agent!.executeApprovedServerInjection!("agent-server-request");
+    expect(approvedOutcome.requestId).toBe("agent-server-request");
+    expect(execute).toHaveBeenCalledTimes(2);
+    runtime.dispatch({ type: "prepare-server-injection-repeat" });
+    expect(runtime.getSnapshot().serverInjection?.draft).toMatchObject({ phase: "edit", agentRequestId: null, agentApproved: false, repeatWarning: true });
+    runtime.dispatch({ type: "request-discard-server-injection" });
+    runtime.dispatch({ type: "confirm-discard-server-injection" });
 
     const inbound = runtime.getSnapshot().evidence.events.find(
       ({ raw }) => raw.kind === "item-update"
@@ -3258,6 +3293,13 @@ describe("WorkbenchRuntime", () => {
         sequence: "LSEW_FIXTURE_FIELD_UPDATES"
       }
     });
+    runtime.dispatch({ type: "request-discard-server-injection" });
+    runtime.dispatch({ type: "confirm-discard-server-injection" });
+    runtime.agent!.prepareServerInjection!(agentDraft, "agent-disposed-request");
+    runtime.dispatch({ type: "review-server-injection" });
+    runtime.dispatch({ type: "approve-server-injection-for-agent" });
     runtime.dispose();
+    expect(() => runtime.agent!.executeApprovedServerInjection!("agent-disposed-request")).toThrow("TARGET_CHANGED");
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });

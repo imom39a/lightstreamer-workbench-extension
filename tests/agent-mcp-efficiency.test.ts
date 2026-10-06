@@ -84,6 +84,7 @@ describe("MCP query efficiency contract", () => {
       runtime.dispatch({ type: "select-evidence", eventId: "eff-event-9996" });
       await waitFor(() => runtime.getSnapshot().selectedEvidence?.id === "eff-event-9996", "human selects a retained capture");
       runtime.dispatch({ type: "begin-local-injection-from-selection" });
+      await waitFor(() => runtime.getSnapshot().localInjection.draft?.phase === "edit", "human Draft loads its exact retained source before Scenario conversion");
       runtime.dispatch({ type: "convert-local-injection-to-scenario" });
       await waitFor(() => runtime.getSnapshot().scenario?.captureWorkspace.queryState === "ready", "human capture workspace loads all retained target Evidence");
       runtime.dispatch({ type: "set-scenario-capture-search", text: "KEY-" });

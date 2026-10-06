@@ -60,6 +60,20 @@ describe("Workbench agent domain API", () => {
     await call("finish_agent_document", { token: corrected.token });
     expect(runtime.agent!.local().draft).toBeNull();
   });
+  it("keeps validation and prepared native-change previews identical, including unavailable facts", async () => {
+    const { call, evidence, pageEpoch } = await fixture();
+    const invalid = await call("validate_agent_candidate", { pageEpoch, draft: { evidence, document: "{" } });
+    const prepared = await call("prepare_local_injection", { evidence, pageEpoch, document: "{" });
+    expect(invalid.candidates[0].nativeChanges).toBeNull();
+    expect(prepared.local.draft.nativeChanges).toBeNull();
+
+    const corrected = await call("update_agent_document", { token: prepared.token, document: document("UPDATE", 2) });
+    const validated = await call("validate_agent_candidate", { pageEpoch, draft: { evidence, document: document("UPDATE", 2) } });
+    expect(validated.candidates[0].nativeChanges).toEqual(corrected.local.draft.nativeChanges);
+    expect(corrected.local.draft.nativeChanges).toMatchObject({ changedFields: ["command", "qty"], policy: "native-mode", baseline: expect.any(String) });
+    expect(JSON.stringify(corrected.local.draft.nativeChanges)).not.toContain('"fields"');
+    expect(JSON.stringify(corrected.local.draft.nativeChanges)).not.toContain('"qty":1');
+  });
   it("observes asynchronous delivery completion through a bounded receipt wait", async () => {
     const { call, execute, evidence, pageEpoch } = await fixture();
     let release!: (value: any) => void;

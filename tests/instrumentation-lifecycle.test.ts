@@ -15,6 +15,9 @@ import {
 import { reduceCommandState } from "../src/core/command-state";
 import { createEventNormalizer } from "../src/core/event-normalizer";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
+import { createNewCommandDraftFromContext } from "../src/core/reinjection-draft";
+import { applyLocalInjectionDocumentToDraft } from "../src/core/local-injection-document";
+import { nativeBaselineFromDraft } from "../src/core/local-injection-change-semantics";
 
 const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000018";
 
@@ -964,6 +967,31 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     expect(following.fieldValueStates.document).toBe("unresolved-wire-difference");
   });
 
+  it("encodes generated ADD/null and DELETE clearing through supported wire delivery", () => {
+    FakeWebSocket.instances = [];
+    const messages: unknown[] = [];
+    const listeners: Array<(event: MessageEvent) => void> = [];
+    const target = { WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+      addEventListener(type: string, listener: (event: MessageEvent) => void) { if (type === "message") listeners.push(listener); } };
+    installLightstreamerInstrumentation(target, message => messages.push(message));
+    const socket = new target.WebSocket("wss://push.example.test/lightstreamer") as unknown as FakeWebSocket;
+    socket.send("LS_reqId=1&LS_op=add&LS_subId=3&LS_group=item&LS_schema=key+command+quantity&LS_mode=COMMAND&LS_snapshot=true");
+    socket.emitMessage("SUBCMD,3,1,3,1,2\nU,3,1,old|ADD|10");
+    const captures = messages.filter(message => (message as CaptureMessage).kind === "item-update").length;
+    const frames: string[] = [];
+    socket.addEventListener("message", (event: MessageEvent) => frames.push(String(event.data)));
+    const base = createNewCommandDraftFromContext({ subscriptionId: "subscription-1", mode: "COMMAND", captureSource: "wire", itemName: "item", itemPosition: 1, fields: ["key", "command", "quantity"] })!;
+    for (const command of ["ADD", "DELETE"]) {
+      const draft = applyLocalInjectionDocumentToDraft(base, { command, key: "fresh", isSnapshot: false, fields: { key: "fresh", command, quantity: null } });
+      expect(draft.changeSemantics?.limitations.join(" ")).toContain("official client derives its own bitmap");
+      listeners[0]({ source: target, data: { type: PAGE_REINJECT_REQUEST, panelSessionId: PANEL_SESSION_ID, requestId: `native-wire-${command}`,
+        draft: { ...createValidPageDraft(), executionTarget: "captured-wire", target: { subscriptionId: "subscription-1", listenerId: null }, item: { name: "item", position: 1 }, fields: draft.fields, changedFields: draft.changedFields, command: draft.command, key: draft.key }
+      } } as unknown as MessageEvent);
+    }
+    expect(frames).toEqual(["U,3,1,fresh|ADD|#\r\n", "U,3,1,fresh|DELETE|#\r\n"]);
+    expect(messages.filter(message => (message as CaptureMessage).kind === "item-update")).toHaveLength(captures);
+  });
+
   it("locally delivers a mutated wire COMMAND update through the captured WebSocket", () => {
     FakeWebSocket.instances = [];
     const messages: unknown[] = [];
@@ -1743,6 +1771,44 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         return typeof raw === "object" && raw !== null && !Array.isArray(raw) && raw.captureSource === "websocket-tlcp";
       })
     ).toBe(false);
+  });
+
+  it("delivers generated native change flags through positional and named listener APIs", () => {
+    const { target, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const names = ["key", "price", "command"];
+    const subscription = new target.Subscription("COMMAND", ["scenario"], names);
+    const received: Array<{ fields: Record<string, unknown>; changed: Record<string, unknown>; priceChanged: boolean; keyChanged: boolean; command: unknown; patch: unknown }> = [];
+    subscription.addListener({ onItemUpdate(update: {
+      forEachField(iterator: (name: string, position: number, value: unknown) => void): void;
+      forEachChangedField(iterator: (name: string, position: number, value: unknown) => void): void;
+      isValueChanged(field: string | number): boolean;
+      getValue(field: string | number): unknown;
+      getValueAsJSONPatchIfAvailable(field: string): unknown;
+    }) {
+      const fields: Record<string, unknown> = {}, changed: Record<string, unknown> = {};
+      update.forEachField((name, position, value) => { fields[name] = value; expect(update.getValue(position)).toBe(value); });
+      update.forEachChangedField((name, position, value) => { changed[name] = value; expect(update.isValueChanged(position)).toBe(true); });
+      received.push({ fields, changed, priceChanged: update.isValueChanged(2), keyChanged: update.isValueChanged("key"), command: update.getValue(3), patch: update.getValueAsJSONPatchIfAvailable("price") });
+    } });
+    client.subscribe(subscription);
+    const base = createNewCommandDraftFromContext({ subscriptionId: "subscription-1", mode: "COMMAND", listenerId: "listener-1", itemName: "scenario", itemPosition: 1, fields: names })!;
+    const doc = (command: string) => ({ command, key: "fresh", isSnapshot: false, fields: { key: "fresh", price: null, command } });
+    const add = applyLocalInjectionDocumentToDraft(base, doc("ADD"));
+    const update = applyLocalInjectionDocumentToDraft(base, doc("UPDATE"), new Set(), { baseline: nativeBaselineFromDraft(add, "preceding ADD") });
+    const repeated = applyLocalInjectionDocumentToDraft(base, doc("UPDATE"), new Set(), { baseline: nativeBaselineFromDraft(update, "preceding UPDATE") });
+    const deleted = applyLocalInjectionDocumentToDraft(base, doc("DELETE"));
+    for (const [index, draft] of [add, update, repeated, deleted].entries()) {
+      messageListeners[0]({ source: target, ports: [{ postMessage: vi.fn(), close: vi.fn() }], data: {
+        type: PAGE_REINJECT_REQUEST, panelSessionId: PANEL_SESSION_ID, requestId: `native-${index}`,
+        draft: { ...createValidPageDraft(), command: draft.command, key: draft.key, fields: draft.fields, changedFields: draft.changedFields }
+      } } as unknown as MessageEvent);
+    }
+    expect(received).toHaveLength(4);
+    expect(received[0]).toMatchObject({ changed: { key: "fresh", price: null, command: "ADD" }, priceChanged: true, keyChanged: true });
+    expect(received[1]).toMatchObject({ changed: { command: "UPDATE" }, priceChanged: false, keyChanged: false });
+    expect(received[2]?.changed).toEqual({});
+    expect(received[3]).toMatchObject({ fields: { key: "fresh", price: null, command: "DELETE" }, changed: { price: null, command: "DELETE" }, priceChanged: true, keyChanged: false, command: "DELETE", patch: null });
   });
 
   it("fans one synthetic Logical Update out to every current Subscription listener", () => {

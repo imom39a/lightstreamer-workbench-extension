@@ -126,6 +126,13 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 - Scenario Review seals one exact Subscription target and explicit ordered Steps into an immutable Run. Each Step remains one independently identified Local Injection with its own Draft, Outcome, and Evidence correlation.
 - Timed Runs remain serial and visible. Pause, Stop, hidden-panel behavior, drift, partial or unknown delivery, Evidence failure, assertions, and deliberate Run-again behavior follow ADR 0012; no control silently retries, loops, rolls back, or executes while hidden.
 
+### Server Injection
+
+- Server Injection always sends one Client Message through the inspected official client's current `sendMessage` path. It never manufactures an inbound Item Update or proves a downstream application effect.
+- An agent-prepared Server Injection remains a protected document in the existing Server Injection surface. Its Review shows the exact page, Client, current Session, body, sequence, timeout, and enqueue choice before the approval action.
+- Require a separate, visible human **Approve exact Client Message for agent send** action for each agent-prepared message. No agent tool or Local Injection grant can approve it. Approval is one-use and binds the exact reviewed target and arguments; any edit, retarget, Session change, or agent-access revocation clears it.
+- After approval, the agent may request one send using the same request ID. Duplicate requests retrieve the existing receipt, and an Unknown outcome remains terminal; never retry automatically. A deliberate Repeat is a new message requiring a new human review and approval.
+
 ## Destructive and consequential actions
 
 - Prefer Undo over confirmation when recovery is reliable.

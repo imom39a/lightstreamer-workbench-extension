@@ -16,6 +16,7 @@ import {
 import {
   evaluateScenarioCheckpoint,
   type ScenarioAssertionObservation,
+  type ScenarioCommandInspection,
   type ScenarioCheckpointEvaluation,
   type ScenarioCommittedBoundaryFeed
 } from "./local-injection-scenario-checkpoint";
@@ -125,6 +126,8 @@ export function createLocalInjectionScenarioRunner(
     checkpoint?: Readonly<{
       feed: ScenarioCommittedBoundaryFeed;
       observations(run: ScenarioRun): ScenarioAssertionObservation;
+      temporalAbsence?(run: ScenarioRun, checkpoint: ReviewedScenarioCheckpoint, lower: EvidenceRef | null, upper: EvidenceRef | null): Promise<NonNullable<ScenarioAssertionObservation["temporalAbsence"]>>;
+      loadLocalEvidenceFields?(run: ScenarioRun, checkpoint: ReviewedScenarioCheckpoint): Promise<ReadonlyMap<string, ScenarioCommandInspection>>;
       diagnostics?: Pick<DiagnosticObservationJournal, "currentBoundary" | "query" | "subscribe">;
     }>;
   }>
@@ -144,6 +147,9 @@ export function createLocalInjectionScenarioRunner(
   let checkpointUnsubscribe: (() => void) | null = null;
   let diagnosticCheckpointUnsubscribe: (() => void) | null = null;
   let diagnosticLoadGeneration = 0;
+  let fieldLoadGeneration = 0;
+  let localEvidenceFields: ReadonlyMap<string, ScenarioCommandInspection> = new Map();
+  let temporalPreparation: { boundary: EvidenceRef | null; continuous: boolean; unsubscribe: () => void } | null = null;
   let checkpointDiagnosticRefresh: (() => void) | null = null;
   let activeCheckpoint: ScenarioRunnerSnapshot["activeCheckpoint"] = null;
   let checkpointWasPlaying = false;
@@ -218,6 +224,9 @@ export function createLocalInjectionScenarioRunner(
 
   function stopCheckpointObservation(): void {
     diagnosticLoadGeneration += 1;
+    fieldLoadGeneration += 1;
+    temporalPreparation?.unsubscribe();
+    temporalPreparation = null;
     checkpointUnsubscribe?.();
     checkpointUnsubscribe = null;
     diagnosticCheckpointUnsubscribe?.();
@@ -275,6 +284,42 @@ export function createLocalInjectionScenarioRunner(
   function dispatchCheckpoint(member: ReviewedScenarioCheckpoint): void {
     const startedActiveOffsetMs = activeNow();
     const wasPlaying = phase === "waiting";
+    const temporal = member.assertions.find(assertion => assertion.kind === "server-item-update-absent");
+    const feed = adapter.checkpoint?.feed;
+    if (temporal && feed) {
+      // Loading committed fields or diagnostics is part of the active window.
+      // Observe its continuity and lower boundary before either async loader.
+      const preparation = { boundary: null as EvidenceRef | null, continuous: true, unsubscribe: () => {} };
+      const observe = (snapshot: ReturnType<ScenarioCommittedBoundaryFeed["snapshot"]>) => {
+        preparation.continuous &&= snapshot.temporalCoverage === "complete" && snapshot.history === "accepting" && snapshot.projection === "live";
+      };
+      preparation.unsubscribe = feed.subscribe(null, observe);
+      const initial = feed.snapshot();
+      observe(initial);
+      preparation.boundary = isBoundedEvidenceRef(initial.boundary) ? initial.boundary : null;
+      temporalPreparation = preparation;
+    }
+    const loader = adapter.checkpoint?.loadLocalEvidenceFields;
+    localEvidenceFields = new Map();
+    if (member.assertions.some(assertion => assertion.kind === "local-evidence-field-equals") && loader) {
+      const generation = ++fieldLoadGeneration;
+      phase = "checkpoint-waiting";
+      const durations = member.assertions.flatMap(assertion => assertion.kind === "server-item-update-absent" ? [assertion.duringActiveMs] : "withinActiveMs" in assertion && assertion.withinActiveMs !== undefined ? [assertion.withinActiveMs] : []);
+      activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs,
+        deadlineActiveOffsetMs: startedActiveOffsetMs + (durations.length ? Math.min(...durations) : 0), boundary: temporalPreparation?.boundary ?? null,
+        diagnosticCurrentBoundary: null, status: "waiting", assertions: Object.freeze([]) });
+      void loader(run, member).catch(() => new Map<string, ScenarioCommandInspection>()).then(fields => {
+        if (generation !== fieldLoadGeneration || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
+        localEvidenceFields = fields;
+        dispatchLoadedCheckpoint(member, startedActiveOffsetMs, wasPlaying);
+      });
+      publish();
+      return;
+    }
+    dispatchLoadedCheckpoint(member, startedActiveOffsetMs, wasPlaying);
+  }
+
+  function dispatchLoadedCheckpoint(member: ReviewedScenarioCheckpoint, startedActiveOffsetMs: number, wasPlaying: boolean): void {
     const diagnosticAssertions = member.assertions.filter((assertion) => assertion.kind === "diagnostic-observation-exists");
     if (diagnosticAssertions.length === 0) {
       beginCheckpoint(member, startedActiveOffsetMs, new Map(), wasPlaying);
@@ -286,7 +331,7 @@ export function createLocalInjectionScenarioRunner(
       beginCheckpoint(member, startedActiveOffsetMs, new Map(), wasPlaying);
       return;
     }
-    phase = "checkpoint-waiting";
+    if (phase !== "paused" || activeCheckpoint?.checkpointId !== member.id) phase = "checkpoint-waiting";
     checkpointWasPlaying = true;
     const diagnosticLoad = ++diagnosticLoadGeneration;
     const withinDurations = diagnosticAssertions.flatMap((assertion) => assertion.withinActiveMs === undefined ? [] : [assertion.withinActiveMs]);
@@ -353,14 +398,32 @@ export function createLocalInjectionScenarioRunner(
       return;
     }
     checkpointWasPlaying = wasPlaying;
-    const withinDurations = member.assertions.flatMap((assertion) => "withinActiveMs" in assertion && assertion.withinActiveMs !== undefined ? [assertion.withinActiveMs] : []);
+    const withinDurations = member.assertions.flatMap((assertion) => assertion.kind === "server-item-update-absent" ? [assertion.duringActiveMs] : "withinActiveMs" in assertion && assertion.withinActiveMs !== undefined ? [assertion.withinActiveMs] : []);
     const deadlineActiveOffsetMs = startedActiveOffsetMs + (withinDurations.length > 0 ? Math.min(...withinDurations) : 0);
-    let startedBoundary: EvidenceRef | null = null;
+    let startedBoundary: EvidenceRef | null = temporalPreparation?.boundary ?? null;
     let settled = false;
 
-    const evaluate = (snapshot: ReturnType<ScenarioCommittedBoundaryFeed["snapshot"]>): void => {
-      if (settled || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
-      const evaluation = evaluateScenarioCheckpoint(member, snapshot, { ...checkpointAdapter.observations(run), diagnosticReads }, activeNow(), startedActiveOffsetMs);
+    let temporalGeneration = 0;
+    let temporalContinuity = temporalPreparation?.continuous ?? true;
+    let temporalReads: ScenarioAssertionObservation["temporalAbsence"];
+    const temporalAssertions = member.assertions.filter(assertion => assertion.kind === "server-item-update-absent");
+    const evaluate = (snapshot: ReturnType<ScenarioCommittedBoundaryFeed["snapshot"]>, loaded = false): void => {
+      if (settled || phase === "disposed" || phase === "stopped" || run.members[run.nextMemberIndex]?.id !== member.id) return;
+      if (temporalAssertions.length) {
+        temporalContinuity &&= snapshot.temporalCoverage === "complete" && snapshot.history === "accepting" && snapshot.projection === "live";
+        if (!loaded && temporalAssertions.some(assertion => activeNow() - startedActiveOffsetMs >= assertion.duringActiveMs)) {
+          const generation = ++temporalGeneration;
+          const read = checkpointAdapter.temporalAbsence?.(run, member, startedBoundary, snapshot.boundary) ?? Promise.resolve(new Map());
+          void read.catch(() => new Map()).then(reads => {
+            if (generation !== temporalGeneration || settled) return;
+            temporalReads = reads;
+            evaluate(snapshot, true);
+          });
+          return;
+        }
+      }
+      const effectiveSnapshot = temporalContinuity ? snapshot : { ...snapshot, temporalCoverage: "insufficient" as const };
+      const evaluation = evaluateScenarioCheckpoint(member, effectiveSnapshot, { ...checkpointAdapter.observations(run), localEvidenceFields, temporalAbsence: temporalReads, diagnosticReads }, activeNow(), startedActiveOffsetMs);
       if (evaluation.status === "waiting") {
         activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: evaluation.boundary, diagnosticCurrentBoundary: evaluation.diagnosticCurrentBoundary, status: "waiting", assertions: evaluation.assertions });
         if (phase !== "paused") phase = "checkpoint-waiting";
@@ -405,8 +468,12 @@ export function createLocalInjectionScenarioRunner(
     // the initial boundary and the live subscription.
     checkpointUnsubscribe = checkpointAdapter.feed.subscribe(null, (snapshot) => evaluate(snapshot));
     const initialBoundary = checkpointAdapter.feed.snapshot();
-    startedBoundary = isBoundedEvidenceRef(initialBoundary.boundary) ? initialBoundary.boundary : null;
-    const initial = evaluateScenarioCheckpoint(member, initialBoundary, { ...checkpointAdapter.observations(run), diagnosticReads }, activeNow(), startedActiveOffsetMs);
+    if (!temporalPreparation) startedBoundary = isBoundedEvidenceRef(initialBoundary.boundary) ? initialBoundary.boundary : null;
+    if (temporalPreparation) {
+      temporalPreparation.unsubscribe();
+      temporalPreparation.unsubscribe = () => {};
+    }
+    const initial = evaluateScenarioCheckpoint(member, temporalContinuity ? initialBoundary : { ...initialBoundary, temporalCoverage: "insufficient" }, { ...checkpointAdapter.observations(run), localEvidenceFields, diagnosticReads }, activeNow(), startedActiveOffsetMs);
     if (initial.status === "waiting" && withinDurations.length > 0) {
       activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: initial.boundary, diagnosticCurrentBoundary: initial.diagnosticCurrentBoundary, status: "waiting", assertions: initial.assertions });
       const scheduleCheckpointDeadline = (): void => {

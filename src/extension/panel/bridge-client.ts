@@ -54,7 +54,7 @@ export type PanelBridgeConnection = {
     draft: ReinjectionDraft,
     executionTarget?: PageReinjectionExecutionTarget
   ): Promise<ReinjectionResult>;
-  sendServerInjection?(draft: ServerInjectionDraft): Promise<ServerInjectionExecutionResult>;
+  sendServerInjection?(draft: ServerInjectionDraft, requestId?: string): Promise<ServerInjectionExecutionResult>;
   resolveClientMessageRecipes?(
     context: ClientMessageRecipeContext
   ): Promise<ClientMessageRecipeResolution>;
@@ -195,8 +195,8 @@ export function connectPanelBridge(
 
       return reinjectThroughRuntime(requestId, payload);
     },
-    sendServerInjection(draft) {
-      const requestId = createServerInjectionRequestId();
+    sendServerInjection(draft, reservedRequestId) {
+      const requestId = reservedRequestId ?? createServerInjectionRequestId();
       if (!isServerInjectionDraftPayload(draft)) {
         return Promise.resolve(createServerBridgeErrorResult(
           requestId,

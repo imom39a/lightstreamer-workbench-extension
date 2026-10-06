@@ -13,6 +13,8 @@ import {
   type LightstreamerEventEnvelope
 } from "./event-envelope";
 import { classifyInjectionSourceFieldExecutability } from "./item-update-value-semantics";
+import { deriveNativeDraftChanges, type NativeChangeSemantics } from "./local-injection-change-semantics";
+export { draftFieldsMatchSource } from "./local-injection-change-semantics";
 
 export type DraftFieldValue = string | number | boolean | null;
 export type DraftFields = Record<string, DraftFieldValue>;
@@ -45,8 +47,9 @@ export type ReinjectionDraft = {
   isSnapshot: boolean;
   sourceIsSnapshot: boolean;
   manualChangedFieldsOverride: boolean;
+  changeSemantics?: NativeChangeSemantics;
   provenance: {
-    source: "clone" | "new-command";
+    source: "clone" | "new-command" | "new-item";
     sourceEventKind: string;
     sourceSynthetic: boolean;
   };
@@ -187,6 +190,27 @@ export function createNewCommandDraftFromContext(context: CommandItemContext): R
   };
 }
 
+/** Source-free authoring still requires an exact live item and declared field list. */
+export function createNewItemDraftFromContext(context: CommandItemContext): ReinjectionDraft | null {
+  if (context.mode === "COMMAND") return createNewCommandDraftFromContext(context);
+  if (context.mode !== "MERGE" && context.mode !== "DISTINCT") return null;
+  const subscriptionId = nonEmptyString(context.subscriptionId);
+  const itemName = nonEmptyString(context.itemName);
+  const itemPosition = typeof context.itemPosition === "number" && Number.isSafeInteger(context.itemPosition) && context.itemPosition > 0 ? context.itemPosition : null;
+  const names = normalizeSchemaFieldNames(context.fields);
+  if (!subscriptionId || (!itemName && itemPosition === null) || names.length === 0) return null;
+  const fields = schemaFields(names);
+  return {
+    sourceEventId: `new-item:${subscriptionId}:${context.listenerId ?? "wire"}:${itemName ?? `position-${itemPosition}`}`,
+    subscriptionMode: context.mode, captureSource: context.captureSource ?? (context.listenerId ? "listener" : "wire"),
+    target: { subscriptionId, listenerId: context.listenerId ?? null }, item: { name: itemName, position: itemPosition },
+    command: null, key: null, sourceCommand: null, sourceKey: null,
+    fields, sourceFields: { ...fields }, fieldValueStates: concreteFieldValueStates(fields), sourceFieldValueStates: concreteFieldValueStates(fields),
+    changedFields: {}, originalChangedFields: {}, isSnapshot: false, sourceIsSnapshot: false, manualChangedFieldsOverride: false,
+    provenance: { source: "new-item", sourceEventKind: "item-update", sourceSynthetic: true }
+  };
+}
+
 export function updateDraftField(
   draft: ReinjectionDraft,
   fieldName: string,
@@ -259,7 +283,8 @@ export function createInjectionSourceDraft(draft: ReinjectionDraft): Reinjection
     fieldValueStates: { ...draft.sourceFieldValueStates },
     changedFields: { ...draft.originalChangedFields },
     isSnapshot: draft.sourceIsSnapshot,
-    manualChangedFieldsOverride: false
+    manualChangedFieldsOverride: false,
+    changeSemantics: { version: 1, policy: "captured-bitmap", basis: draft.sourceEventId, limitations: ["JSON Patch callback fidelity is unavailable; Local Injection delivers complete field values."] }
   };
 }
 
@@ -278,6 +303,7 @@ export function validateDraftForExecutionTarget(
   }
 
   const errors = [...result.errors];
+  if (draft.changeSemantics?.refusal) errors.push(draft.changeSemantics.refusal);
   errors.push(...nonExecutableSourceFieldErrors(draft));
   if (executionTarget === "captured-listener") {
     if (options.bridgeAvailable === false) {
@@ -442,33 +468,7 @@ function refreshChangedFields(draft: ReinjectionDraft): ReinjectionDraft {
     return draft;
   }
 
-  return {
-    ...draft,
-    changedFields: draftFieldsMatchSource(draft)
-      ? { ...draft.originalChangedFields }
-      : deriveChangedFields(draft.sourceFields, draft.fields)
-  };
-}
-
-export function draftFieldsMatchSource(draft: ReinjectionDraft): boolean {
-  return (
-    draft.command === draft.sourceCommand &&
-    draft.key === draft.sourceKey &&
-    draft.isSnapshot === draft.sourceIsSnapshot &&
-    fieldRecordsEqual(draft.fields, draft.sourceFields)
-  );
-}
-
-function fieldRecordsEqual(left: DraftFields, right: DraftFields): boolean {
-  const leftEntries = Object.entries(left);
-  const rightKeys = Object.keys(right);
-  return (
-    leftEntries.length === rightKeys.length &&
-    leftEntries.every(
-      ([fieldName, value]) =>
-        Object.prototype.hasOwnProperty.call(right, fieldName) && Object.is(value, right[fieldName])
-    )
-  );
+  return deriveNativeDraftChanges(draft);
 }
 
 function normalizeFields(

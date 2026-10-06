@@ -287,7 +287,7 @@ function terminal(
         ...review.correlation,
         executionId,
         requestId: outcome.requestId,
-        sourceEventId: review.draft.provenance.source === "new-command"
+        sourceEventId: review.draft.provenance.source !== "clone"
           ? null
           : review.draft.sourceEventId
       }),

@@ -4,8 +4,6 @@ import {
 } from "./command-state";
 import {
   deriveDraftFieldValueStates,
-  draftFieldsMatchSource,
-  type DraftFields,
   type DraftFieldValue,
   type ReinjectionDraft
 } from "./reinjection-draft";
@@ -15,6 +13,7 @@ import {
   serializeJsonStringFields,
   type ExpandedJsonStringFieldValue
 } from "./json-string-fields";
+import { deriveNativeDraftChanges, type NativeChangeContext } from "./local-injection-change-semantics";
 
 export type LocalInjectionFields = Record<string, ExpandedJsonStringFieldValue>;
 
@@ -195,6 +194,9 @@ export function validateLocalInjectionDocument(
   }
 
   const commandSemantics = context.commandSemantics ?? "required";
+  if (commandSemantics === "not-applicable" && (document.command !== null || document.key !== null)) {
+    diagnostics.push(diagnostic("semantic", "non-command-identity", "MERGE and DISTINCT Item Updates require null top-level command and key values."));
+  }
   if (commandSemantics === "required" && context.mode !== "COMMAND") {
     diagnostics.push(
       diagnostic(
@@ -227,7 +229,8 @@ export function validateLocalInjectionDocument(
 export function applyLocalInjectionDocumentToDraft(
   source: ReinjectionDraft,
   document: LocalInjectionDocument,
-  explicitConcreteFields: ReadonlySet<string> = new Set()
+  explicitConcreteFields: ReadonlySet<string> = new Set(),
+  changeContext: NativeChangeContext = {}
 ): ReinjectionDraft {
   const expansion = expandJsonStringFields(source.fields);
   const serializedFields = serializeJsonStringFields(expansion, document.fields);
@@ -244,12 +247,7 @@ export function applyLocalInjectionDocumentToDraft(
     ),
     manualChangedFieldsOverride: false
   };
-  return {
-    ...draft,
-    changedFields: draftFieldsMatchSource(draft)
-      ? { ...draft.originalChangedFields }
-      : changedFields(source.sourceFields, serializedFields)
-  };
+  return deriveNativeDraftChanges(draft, changeContext);
 }
 
 export function localInjectionDocumentsEqual(
@@ -434,14 +432,6 @@ function duplicateJsonKeyDiagnostics(text: string): LocalInjectionDiagnostic[] {
   return duplicates.map(({ key, path }) =>
     diagnostic("syntax", "duplicate-key", `Duplicate JSON key "${key}" is not allowed.`, path)
   );
-}
-
-function changedFields(source: DraftFields, draft: DraftFields): DraftFields {
-  const changed: DraftFields = {};
-  for (const [key, value] of Object.entries(draft)) {
-    if (!Object.is(source[key], value)) changed[key] = value;
-  }
-  return changed;
 }
 
 function recordsEqual(left: LocalInjectionFields, right: LocalInjectionFields): boolean {

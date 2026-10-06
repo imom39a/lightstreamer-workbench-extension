@@ -1,3 +1,4 @@
+import type { EvidenceFieldPredicate, EvidenceAggregateRequest, EvidenceAggregateResult, EvidenceFieldEvaluation } from "./evidence-field-analytics";
 /** Storage- and renderer-neutral query contracts for Evidence filtering. */
 
 // The canonical algebra is exported from this contract boundary for
@@ -53,7 +54,7 @@ export type FacetDiscoveryRequest = Readonly<{
   scopeToFilter?: boolean;
 }>;
 export type FacetCount = Readonly<{ value: TypedFacetValue; count: number; pinned: boolean }>;
-export type FacetDiscoveryResult = Readonly<{ state: "AVAILABLE"; facet: EvidenceFilterFacet; values: readonly FacetCount[]; distinctTotal: number; nextCursor: string | null; baseEvidenceCount: number }> | Readonly<{ state: "UNAVAILABLE"; facet: EvidenceFilterFacet; reason: "ZERO_BASE" | "NO_CONCRETE_VALUES" | "DISCOVERY_FAILED" | "UNSUPPORTED_AT_READ_POINT"; values: readonly []; distinctTotal: null; nextCursor: null; baseEvidenceCount: number | null }>;
+export type FacetDiscoveryResult = Readonly<{ state: "AVAILABLE"; facet: EvidenceFilterFacet; values: readonly FacetCount[]; distinctTotal: number; nextCursor: string | null; resumeCursor?: string | null; baseEvidenceCount: number }> | Readonly<{ state: "UNAVAILABLE"; facet: EvidenceFilterFacet; reason: "ZERO_BASE" | "NO_CONCRETE_VALUES" | "DISCOVERY_FAILED" | "UNSUPPORTED_AT_READ_POINT"; values: readonly []; distinctTotal: null; nextCursor: null; baseEvidenceCount: number | null }>;
 export type RevealBlocker = Readonly<{ id: string; criterion: FilterCriterion | UnsupportedCriterion | "free-text" | "around-evidence" }>;
 export type DeterministicEvidenceRecord = Readonly<{ identity: EvidenceIdentity; timestamp: number; summary: string; searchText: string; facets: Readonly<Partial<Record<EvidenceFilterFacet, TypedFacetValue>>>; payload?: unknown }>;
 export type EvidenceLookupResult = Readonly<{ state: "RETAINED"; evidence: DeterministicEvidenceRecord; inScope: boolean; matchesFilter: boolean; blockingCriteria: readonly RevealBlocker[] }> | Readonly<{ state: "NOT_RETAINED" | "OTHER_INTERVAL"; identity: EvidenceIdentity }>;
@@ -122,8 +123,10 @@ export type EvidenceQueryTelemetry = Readonly<{
   discoveryMaterializedCandidates?: number;
   discoveryMaterializationBound?: number;
 }>;
-export type EvidenceSnapshot = Readonly<{ readPoint: EvidenceReadPoint; page: Readonly<{ evidence: readonly DeterministicEvidenceRecord[]; nextCursor: string | null }>; totals: Readonly<{ matching: number; inScope: number }>; discoveries: ReadonlyMap<EvidenceFilterFacet, FacetDiscoveryResult>; lookup: EvidenceLookupResult | null; find: EvidenceFindResult | null; evaluation: "COMPLETE" | "UNSUPPORTED_FILTER"; coverage: "COMPLETE" | "LIMITED"; storage: "INDEXED_DB" | "MEMORY_FALLBACK"; telemetry?: EvidenceQueryTelemetry }>;
-export type EvidenceQueryRequest = Readonly<{ at: "LATEST_COMMITTED" | EvidenceReadPoint; page: EvidencePageRequest; filter: EvidenceFilter; discover?: readonly FacetDiscoveryRequest[]; lookup?: EvidenceIdentity; find?: EvidenceFindRequest; includePayload?: boolean; signal?: AbortSignal }>;
+export type EvidenceSnapshot = Readonly<{ readPoint: EvidenceReadPoint; page: Readonly<{ evidence: readonly DeterministicEvidenceRecord[]; nextCursor: string | null; resumeCursor?: string | null }>; totals: Readonly<{ matching: number; inScope: number }>; discoveries: ReadonlyMap<EvidenceFilterFacet, FacetDiscoveryResult>; lookup: EvidenceLookupResult | null; find: EvidenceFindResult | null; evaluation: "COMPLETE" | "UNSUPPORTED_FILTER"; coverage: "COMPLETE" | "LIMITED"; storage: "INDEXED_DB" | "MEMORY_FALLBACK"; telemetry?: EvidenceQueryTelemetry; fieldEvaluation?: EvidenceFieldEvaluation; aggregate?: EvidenceAggregateResult }>;
+export type EvidenceSequenceWindow = Readonly<{ after: number; through?: number }>;
+export type EvidenceQueryWorkBudget = Readonly<{ maxProjectionReads?: number; maxPayloadHydrations?: number; deadlineMs?: number }>;
+export type EvidenceQueryRequest = Readonly<{ at: "LATEST_COMMITTED" | EvidenceReadPoint; page: EvidencePageRequest; filter: EvidenceFilter; discover?: readonly FacetDiscoveryRequest[]; lookup?: EvidenceIdentity; find?: EvidenceFindRequest; includePayload?: boolean; signal?: AbortSignal; workBudget?: EvidenceQueryWorkBudget; sequenceWindow?: EvidenceSequenceWindow; fieldPredicates?: readonly EvidenceFieldPredicate[]; aggregate?: EvidenceAggregateRequest }>;
 export interface EvidenceFilterQueryAdapter { query(request: EvidenceQueryRequest): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>>; }
-export type EvidenceFilterReadProblem = Readonly<{ code: "HISTORY_INTERVAL_UNAVAILABLE" | "READ_POINT_UNAVAILABLE" | "QUERY_FAILED" | "QUERY_CANCELLED" | "HISTORY_TERMINAL" | "AROUND_ANCHOR_UNAVAILABLE"; message: string }>;
+export type EvidenceFilterReadProblem = Readonly<{ code: "HISTORY_INTERVAL_UNAVAILABLE" | "READ_POINT_UNAVAILABLE" | "QUERY_FAILED" | "QUERY_WORK_BUDGET_EXCEEDED" | "SEQUENCE_WINDOW_UNAVAILABLE" | "QUERY_CANCELLED" | "HISTORY_TERMINAL" | "AROUND_ANCHOR_UNAVAILABLE"; message: string }>;
 export type EvidenceFilterLifecycleState = Readonly<{ phase: "ACTIVE" | "CLEARED" | "TERMINAL"; interval: Readonly<{ id: string; ordinal: number }>; committedEvidenceBoundary: EvidenceIdentity | null; retainedRange: Readonly<{ first: EvidenceIdentity; last: EvidenceIdentity }> | null; coverage: "COMPLETE" | "LIMITED"; storage: "INDEXED_DB" | "MEMORY_FALLBACK" }>;

@@ -6,6 +6,7 @@ import { LocalInjectionScenarioDocument } from "../src/extension/panel/react/loc
 import { createWorkbenchRuntime, type WorkbenchSnapshot, type WorkbenchScenarioCaptureWorkspace } from "../src/extension/panel/workbench-runtime";
 import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
+import { addScenarioCheckpoint } from "../src/core/local-injection-scenario";
 
 vi.mock("../src/extension/panel/react/local-injection-code-editor", () => ({ LocalInjectionCodeEditor: (props: { ariaLabel: string; compareOpen: boolean }) => createElement("textarea", { "aria-label": props.ariaLabel, "data-compare": props.compareOpen }) }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -35,6 +36,31 @@ async function setup(mode = "COMMAND", command = "ADD") {
 }
 
 describe("persistent Scenario capture document", () => {
+  it("keeps both agent-authored assertion kinds and complete parameters accurate in Edit", async () => {
+    const { host, snapshot, render, dispatch } = await setup("MERGE");
+    const assertions = [
+      { id: "agent-field", kind: "local-evidence-field-equals" as const, stepId: snapshot.scenario!.scenario.steps[0]!.id, field: "qty", expected: null, withinActiveMs: 250 },
+      { id: "agent-absence", kind: "server-item-update-absent" as const, item: { name: "orders", position: 1 }, duringActiveMs: 100 }
+    ];
+    // Separate Checkpoints obey the no-mixed-eventual/temporal window contract.
+    const first = addScenarioCheckpoint(snapshot.scenario!.scenario, { id: "agent-field-check", kind: "checkpoint", name: "Agent field", assertions: [assertions[0]!] });
+    if (!first.ok) throw new Error(first.reason);
+    const second = addScenarioCheckpoint(first.scenario, { id: "agent-absence-check", kind: "checkpoint", name: "Agent absence", assertions: [assertions[1]!] });
+    if (!second.ok) throw new Error(second.reason);
+    for (const [index, checkpoint] of second.scenario.members.filter(member => member.kind === "checkpoint").entries()) {
+      await render(undefined, { scenario: second.scenario, focusedMemberId: checkpoint.id });
+      const kind = host.querySelector<HTMLSelectElement>(`select[aria-label="Assertion ${assertions[index]!.id} kind"]`)!;
+      expect(kind.value).toBe(assertions[index]!.kind);
+      expect(kind.disabled).toBe(true);
+      const authoring = kind.closest(".workbench-react__scenario-assertion-authoring")!;
+      expect(authoring.textContent).toContain("read-only here");
+      expect(authoring.textContent).toContain(index === 0 ? "Expected primitive JSONnull" : "Observation duration (active ms)100");
+      expect(authoring.textContent).toContain(index === 0 ? "Within active ms250" : "Item nameordersItem position1");
+    }
+    expect(second.scenario.members.filter(member => member.kind === "checkpoint").flatMap(member => member.assertions)).toEqual(assertions);
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: "update-scenario-checkpoint" }));
+  });
+
   it.each(["MERGE", "DISTINCT"])("preserves %s Item Update meaning without invented COMMAND controls", async mode => {
     const { host, snapshot, dispatch, identity } = await setup(mode);
     expect(snapshot.scenario!.scenario.target.mode).toBe(mode);

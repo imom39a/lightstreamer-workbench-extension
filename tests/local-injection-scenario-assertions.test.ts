@@ -41,6 +41,28 @@ function checkpoint(assertions: ScenarioCheckpoint["assertions"]): ScenarioCheck
 }
 
 describe("Scenario Checkpoints", () => {
+  it("distinguishes bounded temporal absence from current-state absence and insufficient coverage", () => {
+    const cp = checkpoint([{ id: "absence", kind: "server-item-update-absent", item: { name: "orders", position: 1 }, duringActiveMs: 100 }]);
+    expect(validateScenarioCheckpoint(cp, { targetMode: "MERGE", deliveryPath: "listener", earlierStepIds: [] })).toEqual({ ok: true });
+    const observation: ScenarioAssertionObservation = { priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => { throw new Error("Current state is irrelevant"); }, temporalAbsence: new Map([["absence", { state: "absent", lower: boundary, upper: boundary }]]) };
+    expect(evaluateScenarioCheckpoint(cp, snapshot({ temporalCoverage: "complete" }), observation, 99, 0).status).toBe("waiting");
+    expect(evaluateScenarioCheckpoint(cp, snapshot({ temporalCoverage: "complete" }), observation, 100, 0).status).toBe("pass");
+    expect(evaluateScenarioCheckpoint(cp, snapshot({ temporalCoverage: "insufficient" }), observation, 100, 0).status).toBe("inconclusive");
+    expect(evaluateScenarioCheckpoint(cp, snapshot({ temporalCoverage: "complete", projection: "failed" }), observation, 100, 0).status).toBe("inconclusive");
+    expect(evaluateScenarioCheckpoint(cp, snapshot({ temporalCoverage: "insufficient" }), { ...observation, temporalAbsence: new Map([["absence", { state: "present", lower: boundary, upper: boundary, matched: boundary }]]) }, 100, 0).status).toBe("fail");
+  });
+
+  it("compares exact correlated Local Evidence fields across modes and refuses unavailable certainty", () => {
+    const assertion = { id: "field", kind: "local-evidence-field-equals" as const, stepId: "step-1", field: "price", expected: null };
+    const cp = checkpoint([assertion]);
+    for (const mode of ["COMMAND", "MERGE", "DISTINCT"]) expect(validateScenarioCheckpoint(cp, { targetMode: mode, deliveryPath: "listener", earlierStepIds: ["step-1"] })).toEqual({ ok: true });
+    const observation: ScenarioAssertionObservation = { priorOutcomes: new Map(), correlatedLocalEvidence: new Map([["step-1", boundary]]), inspectCommand: () => { throw new Error("COMMAND projection must not be read"); }, localEvidenceFields: new Map([["field", { state: "concrete", value: null, certainty: "certain", provenance: "committed-local-evidence", evidence: boundary }]]) };
+    expect(evaluateScenarioCheckpoint(cp, snapshot(), observation, 0).status).toBe("pass");
+    expect(evaluateScenarioCheckpoint(cp, snapshot(), { ...observation, correlatedLocalEvidence: new Map() }, 0).status).toBe("unavailable");
+    expect(evaluateScenarioCheckpoint(cp, snapshot(), { ...observation, localEvidenceFields: new Map([["field", { state: "unavailable", certainty: "unavailable", provenance: "committed-local-evidence", evidence: boundary }]]) }, 0).status).toBe("unavailable");
+    expect(validateScenarioCheckpoint(checkpoint([{ ...assertion, expected: NaN }]), { targetMode: "MERGE", deliveryPath: "listener", earlierStepIds: ["step-1"] }).ok).toBe(false);
+  });
+
   it("authors stable zero-Injection members, revisions Review, and counts only Injection Steps", () => {
     const target = { pageEpoch: "page", clientId: "client", sessionId: "session", subscriptionId: "sub", deliveryPath: "listener" as const, listenerId: "listener", mode: "COMMAND", schemaFields: ["command", "key"] };
     const draft: ScenarioDraftInput = {
@@ -121,6 +143,17 @@ describe("Scenario Checkpoints", () => {
     expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "command-key-exists", item: { name: 42, position: null }, key: "order-1", expected: "present" } as never]), {
       targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
     })).toEqual({ ok: false, assertionId: "a", reason: "COMMAND assertion requires an exact item name or positive item position." });
+  });
+
+  it("rejects prior failure expectations that fail-stop makes unreachable", () => {
+    for (const disposition of ["partial", "failed", "acknowledgement-unknown", "blocked"] as const) {
+      expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "prior-injection-outcome", stepId: "step-1", expectedDisposition: disposition }]), {
+        targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+      })).toMatchObject({ ok: false, reason: expect.stringContaining("unreachable") });
+    }
+    expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "prior-injection-outcome", stepId: "step-1", expectedDisposition: "delivered" }]), {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: true });
   });
 
   it("validates the exact normalized Diagnostic Observation assertion contract", () => {

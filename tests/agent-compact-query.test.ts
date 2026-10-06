@@ -25,6 +25,45 @@ async function fixture(events: LightstreamerEventEnvelope[]) {
 }
 
 describe("compact public agent reads", () => {
+  it("fits each wide terminal page with one history evaluation and preserves every tail record", async () => {
+    const events = Array.from({ length: 40 }, (_, index) => {
+      const event = item(index + 1, `wide-${index}`);
+      event.update!.fields!.qty = '\n"\\'.repeat(64);
+      return event;
+    });
+    const service = await fixture(events);
+    const query = vi.spyOn(runtimes.at(-1)!.agent!, "query");
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const before = query.mock.calls.length;
+      const page: any = await service.call("query_evidence", { panelSessionId: "panel", ...(cursor ? { cursor } : { within: "page", limit: 100, fields: ["qty"], maxBytes: 8192 }) });
+      expect(query.mock.calls.length - before).toBe(1);
+      expect(agentToolResultBytes(page)).toBeLessThanOrEqual(8192);
+      expect(page.totals.matching).toBe(40);
+      ids.push(...page.evidence.map((entry: any) => entry.identity.eventId));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(ids).toEqual(events.map(event => event.id));
+  });
+
+  it("fits distinct terminal summary pages once without losing values", async () => {
+    const events = Array.from({ length: 40 }, (_, index) => item(index + 1, `key-${String(index).padStart(2, "0")}-${"K".repeat(120)}`));
+    const service = await fixture(events);
+    const query = vi.spyOn(runtimes.at(-1)!.agent!, "query");
+    const values: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const before = query.mock.calls.length;
+      const page: any = await service.call("summarize_evidence", { panelSessionId: "panel", ...(cursor ? { cursor } : { within: "page", facet: "key", limit: 100, maxBytes: 4096 }) });
+      expect(query.mock.calls.length - before).toBe(1);
+      expect(agentToolResultBytes(page)).toBeLessThanOrEqual(4096);
+      expect(page.distinctTotal).toBe(40);
+      values.push(...page.values.map((entry: any) => entry.value.value)); cursor = page.nextCursor;
+    } while (cursor);
+    expect(values).toEqual(events.map(event => event.update!.key));
+  });
+
   it("filters retained Evidence by simple facets and projects requested safe fields", async () => {
     const service = await fixture([item(1, "row-a"), item(2, "row-b")]);
     const result = await service.call("query_evidence", { panelSessionId: "panel", within: "page", where: { kind: ["item-update"], key: ["row-a"] }, fields: ["qty", "password", "details"] }) as any;
@@ -58,6 +97,15 @@ describe("compact public agent reads", () => {
     expect(payload.evidence[0].payload.update.fields.plain).toBe(plain);
     expect(payload.evidence[0].payload.update.fields.details).toContain('9007199254740993');
     expect(payload.evidence[0].payload.update.fieldValueStates.details).toBe('redacted');
+  });
+  it("preserves ambiguous captured nulls and explicit concrete nulls in selected fields", async () => {
+    const event = item(1, "row-null");
+    event.update!.fields = { command: "ADD", key: "row-null", qty: null, details: null };
+    event.update!.fieldValueStates = { details: "concrete" };
+    const service = await fixture([event]);
+    const result: any = await service.call("query_evidence", { panelSessionId: "panel", within: "page", fields: ["qty", "details"] });
+    expect(result.evidence[0].fields.qty).toEqual({ state: "ambiguous-null" });
+    expect(result.evidence[0].fields.details).toEqual({ state: "concrete", value: null });
   });
   it("bounds deep embedded JSON and redacts escaped credential keys", async () => {
     const event = item(1, "row-a");

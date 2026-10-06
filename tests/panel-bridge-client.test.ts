@@ -616,8 +616,8 @@ describe("panel bridge client", () => {
       enqueueWhileDisconnected: false
     };
 
-    const resultPromise = bridge.sendServerInjection!(draft);
-    expect(requestId).toMatch(/^server-injection-/);
+    const resultPromise = bridge.sendServerInjection!(draft, "approved-server-request");
+    expect(requestId).toBe("approved-server-request");
     expect(deliveredDraft).toEqual(draft);
     port.messageListeners[0]({
       type: PANEL_CAPTURE_MESSAGE,

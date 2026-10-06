@@ -39,6 +39,7 @@ const indexedDbFiles = Object.freeze([
 // host. Their latency assertions remain in the tests; the phase timeout only
 // gives setup, teardown and full integration workloads a separate budget.
 const heavyWorkFiles = Object.freeze([
+  "tests/agent-maximum-history-work.test.ts",
   "tests/agent-mcp-efficiency.test.ts",
   "tests/agent-status-budget.test.ts",
   "tests/activity-timeline-projection.test.ts",

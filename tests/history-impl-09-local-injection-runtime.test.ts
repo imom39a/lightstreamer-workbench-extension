@@ -169,6 +169,7 @@ describe("history-impl-09 Local Injection committed Evidence boundary", () => {
     });
 
     await prepareAndExecute(runtime, 17);
+    await vi.waitFor(() => expect(runtime.getSnapshot().localInjection.draft?.outcome).not.toBeNull());
 
     expect(runtime.getSnapshot().localInjection.draft?.outcome).toMatchObject({
       disposition: "delivered",

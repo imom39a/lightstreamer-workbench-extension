@@ -1971,7 +1971,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
         {contextCollapsed ? <button ref={contextRestore} className="workbench-react__restore-pane" type="button" onClick={() => restorePane("context")}>Restore Context</button> : null}
         <strong className="workbench-react__scope-label">{scopeLabel}</strong>
         <span className="workbench-react__scope-status">{scopeStatus}</span>
-        {canAuthorCommandUpdate ? <button type="button" onClick={() => dispatch(runtime, { type: "begin-local-injection-from-scope" })}>Author COMMAND Item Update</button> : null}
+        {canAuthorCommandUpdate ? <button type="button" onClick={() => dispatch(runtime, { type: "begin-local-injection-from-scope" })}>{`Author ${snapshot.localInjection.availability.commandScope.mode ?? "COMMAND"} Item Update`}</button> : null}
       </nav>
       {localInjection.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Local Injection unavailable</strong><span>{localInjection.entryError}</span></div> : null}
       {serverInjection?.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Server Injection unavailable</strong><span>{serverInjection.entryError}</span></div> : null}

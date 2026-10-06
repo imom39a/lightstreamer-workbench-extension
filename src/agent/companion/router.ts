@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AGENT_PROTOCOL_VERSION, AGENT_RESPONSE_CONTRACT, validateAgentCall } from "../protocol";
+import { AGENT_PROTOCOL_VERSION, AGENT_RESPONSE_CONTRACT, agentTimeoutCode, isReservedAgentCall, validateAgentCall } from "../protocol";
 import type { Message } from "../protocol";
 import { agentToolResultBytes } from "../tool-result";
 
@@ -29,7 +29,7 @@ function globalListResult(name: string, items: readonly unknown[], args: Message
 /** Transports enforce their configured connection policy before joining. Routing never owns Capture or grants. */
 export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Message): unknown }) {
   const panels = new Map<string, { peer: BrokerPeer; session: Message }>();
-  const pending = new Map<string, { client: BrokerPeer; panel: BrokerPeer; id: string; name: string; timer: NodeJS.Timeout }>();
+  const pending = new Map<string, { client: BrokerPeer; panel: BrokerPeer; id: string; name: string; args: Message; reserved: boolean; timer: NodeJS.Timeout }>();
   function send(peer: BrokerPeer, value: Message) {
     try { peer.send(value); } catch { peer.close(); }
   }
@@ -59,7 +59,9 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
               if (request.client !== peer || request.id !== message.id) continue;
               clearTimeout(request.timer); pending.delete(route);
               send(request.panel, { type: "cancel", id: route });
-              send(peer, { id: message.id, error: "QUERY_CANCELLED: Request cancelled. A delivery may have occurred; inspect its existing requestId." });
+              const failure = agentTimeoutCode(request.name, request.args);
+              const code = failure === "QUERY_FAILED" ? "QUERY_CANCELLED" : failure;
+              send(peer, { id: message.id, error: `${code}: Request cancelled. Inspect the existing requestId before any further execution.` });
             }
             return;
           }
@@ -82,23 +84,29 @@ export function createBrokerRouter(pairing?: { list(): unknown; confirm(args: Me
             }
             const panel = panels.get(String((message.args as Message).panelSessionId));
             if (!panel) throw new Error("COMPANION_UNAVAILABLE: Panel Session is not connected. Open Workbench and check Agent access status.");
-            if (pending.size >= 64) throw new Error("REQUEST_CAPACITY: Companion request capacity reached. Wait for a pending call to settle.");
+            const reserved = isReservedAgentCall(message.name, message.args);
             const owned = [...pending.values()].filter(request => request.client === peer);
-            if (owned.length >= 16) throw new Error("REQUEST_CAPACITY: This agent has 16 pending calls. Wait for one to settle before requesting more.");
-            const waiting = (name: string) => name === "wait_for_evidence" || name === "wait_for_operation";
+            const reservedCount = [...pending.values()].filter(request => request.reserved).length;
+            const ownedReserved = owned.filter(request => request.reserved).length;
+            const ordinaryCount = pending.size - reservedCount;
+            const ownedOrdinary = owned.length - ownedReserved;
+            if (pending.size >= 72 || (reserved ? reservedCount >= 8 || ownedReserved >= 2 : ordinaryCount >= 64 || ownedOrdinary >= 16)) {
+              throw new Error("REQUEST_CAPACITY: Companion request capacity reached. Reserved status, receipt, recovery, pause and stop calls have bounded headroom.");
+            }
+            const waiting = (name: string) => name === "wait_for_evidence" || name === "wait_for_operation" || name === "wait_for_scenario";
             if (waiting(message.name) && owned.filter(request => waiting(request.name)).length >= 2) {
               throw new Error("REQUEST_CAPACITY: This agent has two pending waits. Wait for one to settle before starting another.");
             }
-            const route = randomUUID(), id = message.id;
+            const route = randomUUID(), id = message.id, name = message.name, args = message.args as Message;
             const timer = setTimeout(() => {
               pending.delete(route);
               send(panel.peer, { type: "cancel", id: route });
-              send(peer, { id, error: `${message.name === "execute_local_injection" || message.name === "control_scenario" ? "DELIVERY_UNKNOWN" : "QUERY_FAILED"}: Workbench reply timed out. Inspect an existing operation requestId before any further execution.` });
+              send(peer, { id, error: `${agentTimeoutCode(name, args)}: Workbench reply timed out. Inspect the existing operation requestId before any further execution.` });
             }, 30000);
-            pending.set(route, { client: peer, panel: panel.peer, id, name: message.name, timer });
+            pending.set(route, { client: peer, panel: panel.peer, id, name, args, reserved, timer });
             // Panel accounting uses this trusted peer token even after a route
             // is cancelled while an uncooperative provider is still settling.
-            send(panel.peer, { id: route, name: message.name, args: message.args, agentConnectionId });
+            send(panel.peer, { id: route, name, args, agentConnectionId, ...(reserved ? { admissionClass: "reserved" } : {}) });
           } catch (error) { send(peer, { id: message.id, error: error instanceof Error ? error.message : "Companion request failed." }); }
         },
         close() {

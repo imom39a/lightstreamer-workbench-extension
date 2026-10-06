@@ -156,7 +156,9 @@ describe("reinjection drafts", () => {
     });
     const edited = analyzeLocalInjectionDocument(editedText, context);
     expect(edited.ready).toBe(true);
-    const execution = applyLocalInjectionDocumentToDraft(source, edited.document!);
+    const execution = applyLocalInjectionDocumentToDraft(source, edited.document!, new Set(), {
+      baseline: { fields: source.fields, fieldValueStates: source.fieldValueStates, basis: "exact retained row" }
+    });
     expect(typeof execution.fields.modelValues).toBe("string");
     expect(JSON.parse(String(execution.fields.modelValues))).toEqual({
       passenger: { selected: true, priority: false }
@@ -330,7 +332,7 @@ describe("reinjection drafts", () => {
 
     const edited = updateDraftField(draft, "qty", 11);
 
-    expect(edited.changedFields).toEqual({ qty: 11 });
+    expect(edited.changedFields).toEqual({ command: "ADD", key: "alpha", qty: 11, status: "open" });
   });
 
   it("creates an unchanged Injection Source copy after the staged draft has been edited", () => {

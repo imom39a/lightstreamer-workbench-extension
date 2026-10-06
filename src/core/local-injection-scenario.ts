@@ -3,6 +3,7 @@ import type { DiagnosticAffectedIdentity, DiagnosticObservationBoundary } from "
 import type { LocalInjectionDiagnostic, LocalInjectionDocument } from "./local-injection-document";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
 import { validateScenarioCheckpoint } from "./local-injection-scenario-checkpoint";
+import type { NativeReviewedChangeFacts } from "./local-injection-change-semantics";
 
 export type ScenarioTarget = Readonly<{
   pageEpoch: string | null;
@@ -73,6 +74,13 @@ export type ScenarioAssertion = Readonly<{
   withinActiveMs?: number;
 }> | Readonly<{
   id: string;
+  kind: "local-evidence-field-equals";
+  stepId: string;
+  field: string;
+  expected: ScenarioPrimitive;
+  withinActiveMs?: number;
+}> | Readonly<{
+  id: string;
   kind: "command-key-exists";
   item: ScenarioDraftInput["item"];
   key: string;
@@ -86,6 +94,11 @@ export type ScenarioAssertion = Readonly<{
   field: string;
   expected: ScenarioPrimitive;
   withinActiveMs?: number;
+}> | Readonly<{
+  id: string;
+  kind: "server-item-update-absent";
+  item: ScenarioDraftInput["item"];
+  duringActiveMs: number;
 }> | Readonly<{
   id: string;
   kind: "diagnostic-observation-exists";
@@ -181,6 +194,7 @@ export type ReviewedScenarioStep = Readonly<{
   rawText: string;
   document: Readonly<LocalInjectionDocument>;
   relativeDelayMs: number;
+  nativeChanges?: NativeReviewedChangeFacts;
 }>;
 
 export type ReviewedScenarioCheckpoint = Readonly<{
@@ -232,7 +246,7 @@ export type ScenarioTraceEntry = Readonly<{
   checkpointName: string;
   memberOrdinal: number;
   kind: "checkpoint";
-  status: "pass" | "fail" | "expired" | "invalid" | "unavailable" | "not-evaluable";
+  status: "pass" | "fail" | "inconclusive" | "expired" | "invalid" | "unavailable" | "not-evaluable";
   startedActiveOffsetMs: number;
   settledActiveOffsetMs: number;
   startedBoundary: EvidenceRef | null;
@@ -569,6 +583,7 @@ export function reviewScenario(
     activeOffsetMs?: number;
     retainedRunBytes?: number;
     diagnosticObservationBoundary?: DiagnosticObservationBoundary | null;
+    nativeChangesByStepId?: ReadonlyMap<string, NativeReviewedChangeFacts>;
   }>
 ): Readonly<{ ok: true; run: ScenarioRun }> | Readonly<{ ok: false; reason: string; stepId?: string }> {
   if (facts.historyAccepting === false || facts.clearInProgress) {
@@ -601,6 +616,8 @@ export function reviewScenario(
       continue;
     }
     const step = member;
+    const nativeChanges = facts.nativeChangesByStepId?.get(step.id);
+    if (nativeChanges?.semantics.refusal) return Object.freeze({ ok: false as const, reason: nativeChanges.semantics.refusal, stepId: step.id });
     const keys = keysByItem.get(itemKey(step.draft.item)) ?? new Set<string>();
     keysByItem.set(itemKey(step.draft.item), keys);
     const plannedCommandBecomesValid = (step.draft.document?.command === "UPDATE" || step.draft.document?.command === "DELETE")
@@ -629,7 +646,8 @@ export function reviewScenario(
       sourceEventId: step.draft.sourceEventId,
       rawText: step.draft.rawText,
       document: step.draft.document,
-      relativeDelayMs: Math.max(0, step.draft.relativeDelayMs)
+      relativeDelayMs: Math.max(0, step.draft.relativeDelayMs),
+      ...(nativeChanges ? { nativeChanges } : {})
     });
     reviewedMembers.push(reviewed.at(-1)!);
     earlierStepIds.push(step.id);

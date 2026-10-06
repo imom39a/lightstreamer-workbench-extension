@@ -77,6 +77,8 @@ public final class FixtureDataAdapter implements SmartDataProvider {
       return;
     }
     if ("scenario.mutate-reinject".equals(itemName)
+        || "scenario.native-merge".equals(itemName)
+        || "scenario.native-distinct".equals(itemName)
         || CLIENT_MESSAGE_ITEM.equals(itemName)) {
       emitMutateReinjectSnapshot(itemName, itemHandle);
       return;
@@ -304,6 +306,8 @@ public final class FixtureDataAdapter implements SmartDataProvider {
     return "scenario.snapshot-basic".equals(itemName)
         || "scenario.add-update-delete".equals(itemName)
         || "scenario.mutate-reinject".equals(itemName)
+        || "scenario.native-merge".equals(itemName)
+        || "scenario.native-distinct".equals(itemName)
         || CLIENT_MESSAGE_ITEM.equals(itemName)
         || "scenario.continuous-evidence".equals(itemName)
         || ISSUE_16_EVENT_COUNTS.containsKey(itemName);

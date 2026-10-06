@@ -1,4 +1,4 @@
-import { type EvidenceIdentity, type EvidenceQueryRequest, type EvidenceReadPoint } from "./evidence-filter-contract";
+import { type EvidenceIdentity, type EvidenceQueryRequest, type EvidenceReadPoint, type EvidenceSnapshot } from "./evidence-filter-contract";
 
 function stableQueryValue(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -13,6 +13,9 @@ function cursorBoundary(readPoint: EvidenceReadPoint): string {
 function cursorQueryBinding(request: EvidenceQueryRequest): string {
   return stableQueryValue({
     discover: request.discover ?? null,
+    sequenceWindow: request.sequenceWindow ?? null,
+    fieldPredicates: request.fieldPredicates ?? null,
+    aggregate: request.aggregate ?? null,
     filter: request.filter,
     find: request.find ?? null,
     lookup: request.lookup ?? null,
@@ -57,4 +60,18 @@ export function decodeEvidenceQueryCursor(cursor: string | undefined, readPoint:
   } catch {
     throw new Error("The page cursor is malformed or no longer valid.");
   }
+}
+
+/** Fit a canonical page in memory, keeping all unreturned records reachable. */
+export function reanchorEvidenceQueryCursor(cursor: string, anchor: EvidenceIdentity): string {
+  const value = JSON.parse(decodeURIComponent(cursor)) as { v?: number; anchor?: EvidenceIdentity; point?: string; query?: string };
+  if (value.v !== 3 || typeof value.point !== "string" || typeof value.query !== "string") throw new Error("Invalid Evidence continuation.");
+  return encodeURIComponent(JSON.stringify({ ...value, anchor }));
+}
+
+/** Internal continuation material for a page that may be shortened by transport. */
+export function withEvidenceResumeCursor(snapshot: EvidenceSnapshot, request: EvidenceQueryRequest): EvidenceSnapshot {
+  const anchor = snapshot.page.evidence.at(-1)?.identity;
+  return Object.freeze({ ...snapshot, page: Object.freeze({ ...snapshot.page,
+    resumeCursor: anchor ? encodeEvidenceQueryCursor(snapshot.readPoint, request, anchor) : null }) });
 }

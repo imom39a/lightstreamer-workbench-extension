@@ -168,7 +168,8 @@ function discoverFromAccounting(
   const nextCursor = nextPosition < distinctTotal && orderedPage.length > 0
     ? cursorFor({ version: 1, facet: request.facet, search, size: request.size, filter: filterKey, readPoint: pointKey, position: nextPosition, anchor: orderedPage.at(-1)!.sortKey })
     : null;
-  return Object.freeze({ state: "AVAILABLE", facet: request.facet, values: Object.freeze(values), distinctTotal, nextCursor, baseEvidenceCount });
+  const resumeCursor = orderedPage.length ? cursorFor({ version: 1, facet: request.facet, search, size: request.size, filter: filterKey, readPoint: pointKey, position: nextPosition, anchor: orderedPage.at(-1)!.sortKey }) : null;
+  return Object.freeze({ state: "AVAILABLE", facet: request.facet, values: Object.freeze(values), distinctTotal, nextCursor, resumeCursor, baseEvidenceCount });
 }
 
 export function discoverFacet(
@@ -242,4 +243,22 @@ export function discoverFacetFromAccounting(
     }
   }
   return discoverFromAccounting(accounting, baseEvidenceCount, filter, readPoint, request, instrumentation);
+}
+
+/** Reanchor one evaluated discovery page after byte fitting its returned prefix. */
+export function reanchorFacetDiscoveryCursor(cursor: string, returned: readonly FacetCount[], omitted: number): string {
+  const parsed = parseCursor(cursor);
+  if (!parsed || !returned.length || !Number.isSafeInteger(omitted) || omitted < 0 || omitted >= parsed.position) throw new Error("Invalid discovery continuation prefix.");
+  const last = returned.at(-1)!.value;
+  // The ordering key must match the canonical discovery materializer.
+  return cursorFor({ ...parsed, position: parsed.position - omitted, anchor: compact(last).sortKey });
+}
+
+export function encodeFacetDiscoveryContinuation(readPoint: EvidenceReadPoint, filter: EvidenceFilter, request: FacetDiscoveryRequest, returned: readonly FacetCount[]): string {
+  if (!request.scopeToFilter || !returned.length) throw new Error("Discovery prefix fitting requires exact filtered discovery.");
+  const previous = parseCursor(request.cursor);
+  if (request.cursor && !previous) throw new Error("Invalid discovery continuation.");
+  return cursorFor({ version: 1, facet: request.facet, search: text(request.search), size: request.size,
+    filter: JSON.stringify({ filter, scopeToFilter: true }), readPoint: readPointKey(readPoint),
+    position: (previous?.position ?? 0) + returned.length, anchor: compact(returned.at(-1)!.value).sortKey });
 }
