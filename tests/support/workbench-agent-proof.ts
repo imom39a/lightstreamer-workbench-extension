@@ -69,7 +69,7 @@ export async function proveAgentFixture(root: string, panel: CdpRequestClient, p
     assert.equal(liveScope.node.retired, false);
     assert.equal(liveScope.readContext.source.mode, "COMMAND");
     assert.deepEqual([...liveScope.readContext.schema.fields].sort(), ["command", "key", "modelId", "modelValues"]);
-    assert.deepEqual(liveScope.readContext.item, { name: "scenario.mutate-reinject", position: 1 });
+    assert.deepEqual(liveScope.readContext.item, { name: fixtureItem, position: 1 });
     const anchor = liveScope.localInjection.anchor;
     assert.equal(anchor.itemName, fixtureItem);
     assert.equal(anchor.itemPosition, 1);
