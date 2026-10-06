@@ -4,10 +4,16 @@ import { execFileSync } from "node:child_process";
 import { spawn } from "cross-spawn";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createReleaseBundle, extractReleaseBundle, extractFrozenBrowser, readFrozenRelease } from "./package-mcp-release.mjs";
+import { assertStoreAnalyticsConfiguration, createReleaseBundle, extractReleaseBundle, extractFrozenBrowser, readFrozenRelease } from "./package-mcp-release.mjs";
 
 const root=resolve(import.meta.dirname,"..");
 const shaPattern=/^[a-f0-9]{40}$/;
+
+export function makeReleaseVerification({release,sourceSha,runId,results}) {
+  if (!shaPattern.test(sourceSha??"") || release.manifest.source?.commit!==sourceSha || !/^[a-f0-9]{64}$/.test(release.manifestSha256??"") || !/^\d+$/.test(String(runId??""))) throw new Error("Verification source/manifest/run identity mismatch.");
+  const jobs=Object.fromEntries(["plan","package","checks","portable","firefox","fixture","panel","site"].map(name=>[name,results?.[name]?.result??results?.[name]??"missing"]));
+  return {format:"lightstreamer-workbench-release-verification-v1",sourceCommit:sourceSha,manifestSha256:release.manifestSha256,scope:"release",runId:String(runId),passed:Object.values(jobs).every(result=>result==="success"),jobs};
+}
 
 export async function findRunRecovery({repository,runId,runAttempt,sourceSha,request=fetch,token}) {
   const api=runApi(repository,runId);
@@ -113,7 +119,11 @@ async function prepare(options) {
   const environment={...process.env,GITHUB_SHA:sourceSha,LSEW_ANALYTICS_DISABLED:"0",...(publishing?{}:{VITE_LSEW_GA_MEASUREMENT_ID:"G-VERIFY0000",VITE_LSEW_GA_API_SECRET:"verification-only-not-a-secret",VITE_LSEW_GA_DEBUG:"false"})};
   // Validate real store configuration through the existing Google validation
   // endpoint (not ingestion). Offline candidates carry explicit synthetic config.
-  if (publishing) await run(process.execPath,["scripts/validate-analytics.mjs"],environment);
+  if (publishing) {
+    const {loadEnv}=await import("vite");
+    assertStoreAnalyticsConfiguration({...loadEnv("production",root,"VITE_LSEW_GA_"),...environment});
+    await run(process.execPath,["scripts/validate-analytics.mjs"],environment);
+  }
   await run(process.execPath,["scripts/build-extension.mjs"],environment);
   await run(process.execPath,["scripts/build-extension.mjs","--browser","firefox"],environment);
   for (const browser of ["chrome","firefox"]) await run(process.execPath,["scripts/package-extension.mjs","--browser",browser,"--skip-typecheck","--skip-tests","--skip-build","--out-dir",directory],environment);
@@ -151,6 +161,56 @@ async function output(values,options) {
 async function main() {
   const [command,...raw]=process.argv.slice(2),options=parse(raw);
   if (command==="prepare") return prepare(options);
+  const expectedSource=options["expected-source"]??process.env.GITHUB_SHA;
+  if (!shaPattern.test(expectedSource??"") || (process.env.GITHUB_SHA && expectedSource!==process.env.GITHUB_SHA)) throw new Error("Expected source must match the full GITHUB_SHA for this run.");
+  if (["recovery","receipt-recovery"].includes(command)) {
+    checkedSource(expectedSource);
+    const context={repository:process.env.GITHUB_REPOSITORY,runId:process.env.GITHUB_RUN_ID,runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),sourceSha:expectedSource,token:process.env.GH_TOKEN??process.env.GITHUB_TOKEN};
+    const result=command==="recovery"?await findRunRecovery(context):await findReceiptRecovery({...context,channel:options.channel});
+    await output({mode:result.mode,artifact_id:result.artifactId??""},options);
+    console.log(`Release recovery: ${result.mode}.`);
+    return;
+  }
+  if (command==="restore") {
+    if (!options.bundle || !options["out-dir"]) throw new Error("Restore requires explicit --bundle and --out-dir.");
+    await extractReleaseBundle({bundlePath:resolve(options.bundle),directory:resolve(options["out-dir"]),expectedSource});
+    options.manifest=join(resolve(options["out-dir"]),"release-manifest.json");
+  }
+  if (!options.manifest) throw new Error("An explicit --manifest path is required; no latest-artifact fallback is available.");
+  const release=await readFrozenRelease({manifestPath:resolve(options.manifest),expectedSource});
+  if (["restore","inspect"].includes(command)) {
+    await output({version:release.manifest.mcp.version,filename:release.manifest.mcp.file,chrome:String(release.manifest.publicationIntent.chrome),firefox:String(release.manifest.publicationIntent.firefox),npm:String(release.manifest.publicationIntent.npm),manifest_sha256:release.manifestSha256},options);
+    console.log(`Validated frozen candidate: ${expectedSource}, browsers ${release.manifest.extension.version}, companion ${release.manifest.mcp.version}.`);
+    return;
+  }
+  if (command==="browser-input") {
+    if (!options["out-dir"]) throw new Error("Browser input requires an owned fresh --out-dir.");
+    const directory=await extractFrozenBrowser({manifestPath:resolve(options.manifest),expectedSource,browser:options.browser,directory:resolve(options["out-dir"])});
+    await output({directory},options);
+    console.log(`Validated exact ${options.browser} input.`);
+    return;
+  }
+  if (command==="verify") {
+    checkedSource(expectedSource);
+    if (!options.verification) throw new Error("Verification requires an explicit output file.");
+    const verification=makeReleaseVerification({release,sourceSha:expectedSource,runId:process.env.GITHUB_RUN_ID,results:JSON.parse(process.env.RELEASE_GATE_RESULTS??"null")});
+    await mkdir(dirname(resolve(options.verification)),{recursive:true});
+    await writeFile(options.verification,`${JSON.stringify(verification,null,2)}\n`);
+    if (!verification.passed) throw new Error("Full release verification failed or has missing/cancelled/skipped gates. Publication is blocked.");
+    console.log("Full release gates passed for the frozen manifest.");
+    return;
+  }
+  if (["submit","reconcile"].includes(command)) {
+    const sourceSha=checkedSource(expectedSource);
+    if (!options.receipt) throw new Error("Publication/status requires an explicit per-channel receipt path.");
+    const context={eventName:process.env.GITHUB_EVENT_NAME,ref:process.env.GITHUB_REF,expectedSource,sourceSha,runId:process.env.GITHUB_RUN_ID,runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT)};
+    const {submitReleaseChannel,reconcileReleaseChannel}=await import("./release-publication.mjs");
+    const arguments_={channel:options.channel,release,context,receiptPath:resolve(options.receipt)};
+    const receipt=command==="submit"?await submitReleaseChannel({...arguments_,verification:JSON.parse(await readFile(resolve(options.verification??""),"utf8"))}):await reconcileReleaseChannel(arguments_);
+    console.log(`${options.channel}: ${receipt.state}.`);
+    if (receipt.state==="attention-required") throw new Error(`The ${options.channel} receipt requires attention before another mutation.`);
+    return;
+  }
   throw new Error("Usage: release.mjs <prepare|restore|inspect|browser-input|recovery|receipt-recovery|verify|submit|reconcile> --expected-source SHA [--name value]");
 }
 if (process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
