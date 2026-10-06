@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromeTestArguments } from "../../scripts/chrome-test-policy.mjs";
 import { createBrowserFailureDiagnostics } from "../support/browser-failure-diagnostics.mjs";
+import { CHROME_ANALYTICS_TEST_ARGUMENTS, assertPanelAnalyticsOff, protectWorkbenchAnalytics } from "../support/browser-analytics-guard";
 
 import {
   CdpClient,
@@ -77,6 +78,7 @@ async function runOfficialClientPanelJourney(
   let devtoolsCdp: CdpClient | null = null;
   let panelCdp: CdpClient | null = null;
   const panelScriptUrls: string[] = [];
+  let analyticsGuard: Awaited<ReturnType<typeof protectWorkbenchAnalytics>> | undefined;
 
   try {
     const chromeExecutable = await resolveChromeExecutable(rootDir);
@@ -88,6 +90,7 @@ async function runOfficialClientPanelJourney(
         headless: true,
         disableNativeOcclusion: true,
         additional: [
+          ...CHROME_ANALYTICS_TEST_ARGUMENTS,
           "--auto-open-devtools-for-tabs",
           "--remote-debugging-port=0",
           `--disable-extensions-except=${extensionDir}`,
@@ -112,6 +115,7 @@ async function runOfficialClientPanelJourney(
     latestTargets = await waitForBrowserTargets(debugging.port, {
       workbenchManifest: extensionManifest
     });
+    analyticsGuard = await protectWorkbenchAnalytics({ port: debugging.port, manifest: extensionManifest });
     const inspectedTarget = latestTargets.find(
       (target) =>
         target.type === "page" &&
@@ -209,6 +213,8 @@ async function runOfficialClientPanelJourney(
     });
     await panelCdp.request("Debugger.enable");
     await panelCdp.request("Runtime.enable");
+    await assertPanelAnalyticsOff(panelCdp, Boolean(process.env.LSEW_FROZEN_RELEASE_MANIFEST));
+    analyticsGuard.assertQuiet();
     await installBrowserErrorCapture(panelCdp);
     await setPanelViewport(
       devtoolsCdp,
@@ -251,6 +257,7 @@ async function runOfficialClientPanelJourney(
     if (scenario === "native-MERGE" || scenario === "native-DISTINCT") {
       await runOfficialNativeModeJourney(pageCdp, panelCdp, scenario === "native-MERGE" ? "MERGE" : "DISTINCT");
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
       return;
     }
 
@@ -258,18 +265,21 @@ async function runOfficialClientPanelJourney(
       if (scenario === "captured-scenario") await runOfficialClientCapturedScenarioJourney(pageCdp, panelCdp);
       else await runOfficialClientScenarioJourney(pageCdp, panelCdp);
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
       return;
     }
 
     if (scenario === "server-injection") {
       await runOfficialClientServerInjectionJourney(pageCdp, panelCdp);
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
       return;
     }
 
     if (scenario === "server-injection-recipe") {
       await runOfficialClientServerInjectionRecipeJourney(pageCdp, panelCdp);
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
       return;
     }
 
@@ -303,6 +313,7 @@ async function runOfficialClientPanelJourney(
         expect.objectContaining({ code: expect.any(Number), message: expect.any(String) })
       ]));
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
       return;
     }
 
@@ -332,6 +343,7 @@ async function runOfficialClientPanelJourney(
         "the issue-16 Item choice to change current Scope"
        );
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
       return;
     }
 
@@ -407,6 +419,7 @@ async function runOfficialClientPanelJourney(
         "the selectable issue-16 invoice group Scope to constrain retained Evidence"
       );
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
       return;
     }
 
@@ -480,6 +493,7 @@ async function runOfficialClientPanelJourney(
         "Workbench Capture to keep ingesting updates after Evidence recovers"
       );
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
       return;
     }
 
@@ -778,12 +792,14 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         "the authored Local Evidence"
       );
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      analyticsGuard.assertQuiet();
   } catch (error) {
     const directory = await diagnostics.captureFailure(error, { targets: latestTargets, panelScriptUrls });
     if (directory) await test.info().attach("browser-failure", { path: join(directory, "failure.json"), contentType: "application/json" }).catch(() => {});
     throw error;
   } finally {
     await diagnostics.dispose();
+    analyticsGuard?.dispose();
     panelCdp?.close();
     devtoolsCdp?.close();
     pageCdp?.close();

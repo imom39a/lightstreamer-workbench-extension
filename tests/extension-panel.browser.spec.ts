@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromeTestArguments } from "../scripts/chrome-test-policy.mjs";
 import { createBrowserFailureDiagnostics } from "./support/browser-failure-diagnostics.mjs";
+import { CHROME_ANALYTICS_TEST_ARGUMENTS, assertPanelAnalyticsOff, protectWorkbenchAnalytics } from "./support/browser-analytics-guard";
 
 import {
   CdpClient,
@@ -46,6 +47,7 @@ async function runExtensionPanelSmoke(): Promise<void> {
   let panelCdp: CdpClient | null = null;
   let pageCdp: CdpClient | null = null;
   const panelCdps: CdpClient[] = [];
+  let analyticsGuard: Awaited<ReturnType<typeof protectWorkbenchAnalytics>> | undefined;
 
   try {
     const chromeExecutable = await resolveChromeExecutable(rootDir);
@@ -59,6 +61,7 @@ async function runExtensionPanelSmoke(): Promise<void> {
         headless: true,
         disableNativeOcclusion: true,
         additional: [
+          ...CHROME_ANALYTICS_TEST_ARGUMENTS,
           "--auto-open-devtools-for-tabs",
           "--remote-debugging-port=0",
           `--disable-extensions-except=${extensionDir}`,
@@ -81,6 +84,7 @@ async function runExtensionPanelSmoke(): Promise<void> {
     await diagnostics.connect(debugging.browserWebSocketUrl);
     await diagnostics.step("register the production Workbench DevTools panel");
     await waitForBrowserTargets(debugging.port, { workbenchManifest: extensionManifest });
+    analyticsGuard = await protectWorkbenchAnalytics({ port: debugging.port, manifest: extensionManifest });
     const panelSelection = await waitForWorkbenchPanel({
       listTargets: () => listBrowserTargets(debugging.port),
       connect: (target) => CdpClient.connect(target.webSocketDebuggerUrl ?? ""),
@@ -442,6 +446,9 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       assert.equal(proof.hasLegacyViews, false);
       assert.equal(proof.panel.width, proof.panel.viewportWidth);
       assert.equal(proof.panel.height, proof.panel.viewportHeight);
+      await assertPanelAnalyticsOff(survivingPanel, Boolean(process.env.LSEW_FROZEN_RELEASE_MANIFEST));
+      analyticsGuard.assertQuiet();
+      console.log("Browser analytics proof passed: packaged configuration preserved, saved Off, no analytics requests.");
       console.log(
         "Production extension panel smoke passed: DevTools selected the semantic Scope, Evidence, and Context workspace."
       );
@@ -450,6 +457,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     throw error;
   } finally {
     await diagnostics.dispose();
+    analyticsGuard?.dispose();
     pageCdp?.close();
     for (const connectedPanel of panelCdps) connectedPanel.close();
     extensionDevtoolsCdp?.close();
