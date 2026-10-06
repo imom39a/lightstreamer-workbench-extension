@@ -7,7 +7,7 @@ Install your browser's Workbench extension and the npm companion to let an MCP a
 - An app supporting local stdio MCP.
 - Browser, Node, and agent app on the same computer.
 
-Extension **2.0.9** in both browsers pairs with [published companion **0.1.8**](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). Both store submissions are awaiting review as of October 6, 2026; check [Release notes]({{site}}releases/). If your Chrome Store installation is still 2.0.8, keep [companion 0.1.7](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) until you update the extension.
+Extension **2.0.9** in both browsers pairs with [companion **0.1.8**, available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). Both store submissions are awaiting review as of October 6, 2026; check [Release notes]({{site}}releases/). If your Chrome Store installation is still 2.0.8, keep [companion 0.1.7](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) until you update the extension.
 
 User setup needs no repository checkout, compilation, Docker, account, or separately managed server.
 
