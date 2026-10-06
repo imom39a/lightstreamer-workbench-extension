@@ -1,4 +1,4 @@
-Install your browser's Workbench extension and the npm companion to let an MCP agent inspect Evidence and test application behavior.
+Install Workbench and its npm companion for MCP inspection and application testing.
 
 ## Requirements
 
@@ -7,21 +7,21 @@ Install your browser's Workbench extension and the npm companion to let an MCP a
 - An app supporting local stdio MCP.
 - Browser, Node, and agent app on the same computer.
 
-Extension **2.0.9** in both browsers pairs with [companion **0.1.8**, available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). Both store submissions are awaiting review as of October 6, 2026; check [Release notes]({{site}}releases/). If your Chrome Store installation is still 2.0.8, keep [companion 0.1.7](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) until you update the extension.
+Extension **2.0.9** in both browsers pairs with [companion **0.1.8**, available from npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). Both store submissions await review as of October 6, 2026; check [Release notes]({{site}}releases/). Chrome **2.0.8** still needs [companion 0.1.7](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) until upgraded.
 
-User setup needs no repository checkout, compilation, Docker, account, or separately managed server.
+Setup needs no checkout, build, Docker, account, or separate server.
 
 ## Install a matching extension
 
-Follow [Getting started]({{site}}docs/getting-started/) for Store installation. Check the installed version in `chrome://extensions` or Firefox `about:addons`.
+Follow [Getting started]({{site}}docs/getting-started/) for installation. Check versions in `chrome://extensions` or Firefox `about:addons`.
 
-While Chrome Store review is pending, get the [matching 2.0.9 bundle](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.8). Extract `extension/lightstreamer-workbench-v2.0.9.zip` and use **Developer mode → Load unpacked**. This tested download has usage analytics disabled. Copy Chrome's assigned ID; append `--extension-id YOUR_EXTENSION_ID` to setup.
+During Chrome Store review, get the [matching 2.0.9 bundle](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.8). Extract `extension/lightstreamer-workbench-v2.0.9.zip` and use **Developer mode → Load unpacked**. This tested download disables usage analytics. Copy Chrome's assigned ID; append `--extension-id YOUR_EXTENSION_ID` to setup.
 
-Firefox's first [Mozilla Add-ons release](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/) is awaiting review and is not publicly installable yet. Once approved, install its signed package and keep the default setup command; its permanent ID is `lightstreamer-workbench@imom39a`. Temporary developer installs through `about:debugging` disappear at browser exit.
+Firefox's [Mozilla Add-ons release](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/) awaits review and is not publicly installable yet. After approval, install its signed package with default setup; its permanent ID is `lightstreamer-workbench@imom39a`. Temporary `about:debugging` installs disappear at browser exit.
 
 ## Set up MCP
 
-1. Run setup for your installed extension version. For extension 2.0.9, it downloads companion 0.1.8 and prints version-pinned configuration:
+1. For extension 2.0.9, run setup to download companion 0.1.8 and print version-pinned configuration:
 
    macOS or Linux:
 
