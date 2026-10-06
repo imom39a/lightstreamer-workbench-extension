@@ -109,13 +109,16 @@ An npm unpublish tombstone still reserves every former version; the release plan
 
 Before a planned npm release, review the package README, confirm that the extension compatibility guidance is current, enable the variable, and land the reviewed change on `main`. Wait for package, all three Chrome platform checks, the Firefox platform/minimum/ESR checks, release-bundle assembly, publish, and registry verification. Confirm the package's README and dist-tag on npm, then restore the variable to `false`. Each browser store has its own gates and authority above. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for publisher configuration.
 
-## Version 2.0.9 preparation
+## Version 2.0.9 submission record
 
 The maintainer authorized Chrome and the first public Firefox release with the
 same extension version, after all work reaches `main`. Chrome product work was
-landed at `637e20ca3e088609b0421e988d8afa854016de0d`; Firefox support and companion
-0.1.8 are being verified before landing. This record is preparation, not a claim
-that either store package has been submitted or published.
+landed at `637e20ca3e088609b0421e988d8afa854016de0d`; the reviewed Firefox and
+shared-companion changes reached remote `main` at
+`55f9cdee7be1ec02154cb81f929fb5cb17c7981d` before either store package was built.
+Both **2.0.9** packages were submitted on **October 6, 2026** and are awaiting
+store review. Companion **0.1.8** is published. Store submission does not
+establish public availability or signed-install proof.
 
 Firefox keeps the shared Capture, Evidence/COMMAND, Local Injection/Scenario,
 reviewed Server Injection, exports, and MCP behavior. One companion verifies
@@ -130,7 +133,8 @@ Agent access remains On by default with a per-panel Off control. Analytics is
 optional and starts Off: native technical-and-interaction permission and the
 Workbench preference must both allow sending. A transient consent window owns
 the required direct user gesture. Cancellation, Deny, opt-out, and native
-revocation are tested; opt-out/revocation erase analytics identifiers. Private
+revocation are tested. Cancel/Deny saves Off; Allow/On and Deny/Off survive panel
+recreation without another permission request. Opt-out/revocation erase analytics identifiers. Private
 browsing is disabled. Chrome's permissions and analytics defaults are unchanged.
 
 The store privacy audit also corrects Chrome's data-category declarations to
@@ -155,9 +159,58 @@ for the loaded, enabled checkbox and use trusted Space input after reopening.
 Evidence scans now yield through browser port tasks or
 Node immediate tasks rather than accumulating zero-delay timer pauses between
 256-record batches. This is Non-UI and preserves cancellation, budgets, latched
-read points and retention guards; 27 focused checks passed. Final platform,
-source reproducibility, package, and store outcomes will be recorded after
-their gates complete.
+read points and retention guards; 27 focused checks passed.
+
+Final exact-source gates passed on `55f9cde`:
+
+- [Companion and browser run 37522892158](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/37522892158): one exact npm artifact, Chrome on Windows/macOS/Linux, Firefox stable on all three platforms, minimum 140.0 and both ESR lines on Linux, bundle assembly, npm publication and registry verification.
+- [Unit and official-client run 37522892023](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/37522892023): full Windows/Linux unit gates and official-client/MCP verification.
+- [Public documentation run 37522892175](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/37522892175): site build and deployment; live privacy, support and MCP pages returned HTTP 200 with matching disclosures.
+
+Configured production store packages were built on macOS arm64 with Node.js
+**24.19.0** and locked dependencies. Both pass ZIP integrity, root manifest,
+version, and the strict 1 MiB extension budget. Firefox lint and AMO validation
+report **zero errors, three warnings, zero notices**. The warnings are one
+Android-version warning outside the desktop release and two generated React DOM
+`innerHTML` warnings. A fresh source extraction, `npm ci` and
+`npm run build:firefox` reproduce all **30** Firefox output files byte-for-byte.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Chrome production `lightstreamer-workbench-v2.0.9.zip` | 553,067 | `38fd8d8afa9cbd0040d642a054be1205d48e55480d924b2f7dcf275f12c974ce` |
+| Firefox production `lightstreamer-workbench-firefox-v2.0.9.zip` | 555,441 | `af49374120587e9c30b4364a8c90d168a6ab4a6d659fecb001c26f4e8c4ef62a` |
+| Firefox reviewer source `lightstreamer-workbench-firefox-source-v2.0.9.zip` | 895,806 | `537a68af7589d71e0e6f0a19354feb58da467c6258efa33588bd7bca70dcbc5f` |
+| Published `lightstreamer-workbench-agent-0.1.8.tgz` | 204,252 | `cb0187bb9304ab5214809d96126d916fe239fff77887be8e56f7e7d2abc66a4c` |
+| CI `lightstreamer-workbench-mcp-v2.0.9.zip` | 758,045 | `5da657fc32584782a445129c231d8b1e9dbc05aaf05fb6b9aed29e91f82b9fa2` |
+
+The npm registry's `latest` is **0.1.8**, its `gitHead` is the full reviewed
+source above, and its public tarball matches the tested CI bytes. The
+[GitHub release](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.8)
+contains that tarball, the exact CI bundle and `SHA256SUMS`; all three anonymous
+asset downloads returned HTTP 200 with matching digests. The immutable bundle's
+`prepared-unpublished` manifest describes assembly before publication. Its
+included Chrome ZIP has analytics disabled for verification; only
+`extension/background.js` differs from the configured Chrome store build.
+The npm publication guard is restored to **false**.
+
+The Chrome dashboard confirms submitted draft **2.0.9**, **Pending review**,
+and published version **2.0.8**. The final submission kept **Publish
+automatically after review** checked. The listing, reviewer instructions and
+all nine data-category declarations were saved before submission; the five
+approved screenshots, icon and promotional assets are retained.
+
+The first Firefox listed submission validates permanent ID
+`lightstreamer-workbench@imom39a`, slug `lightstreamer-workbench`, version ID
+**6548853** and file ID **5092992**. Its
+[publisher version page](https://addons.mozilla.org/en-US/developers/addon/lightstreamer-workbench/versions/6548853)
+confirms **Awaiting Review**, desktop Firefox **140.0+**, Apache-2.0 license,
+attached reviewer source and saved reviewer/release notes. Listing description,
+privacy disclosure, icon, five shared screenshots/captions, homepage and support
+resources were saved. AMO presented no new binding agreement step in this flow;
+the maintainer had already confirmed policy/agreement review and account setup.
+The planned [public AMO URL](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/)
+is not yet publicly available. Mozilla approval, actual signed-package
+provenance and ordinary-user installed verification remain pending.
 
 ## Version 2.0.1 Preparation Record
 

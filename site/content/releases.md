@@ -1,13 +1,15 @@
 ## Extension 2.0.9 for Chrome and Firefox; MCP companion 0.1.8
 
-This release is in preparation. Both browser packages use **2.0.9** from the same reviewed source; store submission, approval, signing, and public availability are separate steps. Firefox is the first public Mozilla Add-ons candidate. Companion 0.1.8 publication is also pending. This page will record verified outcomes, rather than assume a Store release from a repository version.
+Both extension **2.0.9** packages were submitted on **October 6, 2026**, from the same reviewed source on `main`. Chrome Web Store shows **Pending review**, with automatic publication after approval; its currently published package is 2.0.8. The first [Firefox Mozilla Add-ons listing](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/) shows **Awaiting Review** in the publisher dashboard and is not publicly available yet. Store approval and signed-install verification remain pending.
+
+Companion [0.1.8 is published on npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). Its exact artifact passed Chrome checks on Windows, macOS, and Linux, Firefox stable on all three platforms, and Firefox minimum 140.0 plus both supported ESR lines on Linux. The [matching download and checksums](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.8) are available. The bundle contains the tested Chrome extension with analytics disabled; Firefox's signed package will come from Mozilla after approval.
 
 - Adds desktop Firefox 140+ support on Windows, macOS, and Linux, with regular browsing only.
 - Preserves Capture, COMMAND Evidence, Local Injection, Scenarios, reviewed Server Injection, and JSON/offline HTML exports across both browsers.
 - Shares one local companion across Chrome and Firefox panels, including multiple Firefox profiles and colliding browser tab numbers.
 - Expands MCP investigation and reviewed Client Message preparation. Each agent Server Injection needs a person's approval of its exact message and send arguments; duplicate requests retrieve the receipt.
 - Firefox declares required application-data sharing consent at installation for MCP. Agent access remains enabled by default and can be turned Off per panel.
-- Firefox analytics starts Off. Its optional native permission and Workbench preference must both allow collection. Cancellation or Deny leaves the panel usable; opt-out or native revocation stops collection and erases analytics identifiers.
+- Firefox analytics starts Off. Its optional native permission and Workbench preference must both allow collection. Allow/On and Deny/Off persist across panel openings without another prompt. Cancellation saves Off; opt-out or native revocation stops collection and erases analytics identifiers.
 
 Follow [browser installation]({{site}}docs/getting-started/) and [matching MCP setup]({{site}}docs/agent-access/). The earlier release status below was verified on its stated date.
 

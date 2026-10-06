@@ -18,13 +18,13 @@ Capture is observational. Workbench does not create clients or subscribe for the
 
 ## Agent access
 
-The same MCP companion supports Chrome and Firefox on macOS, Windows, and Linux. The 2.0.9 release candidate uses [lightstreamer-workbench-agent 0.1.8](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). It bounds serialized MCP replies to 8 KiB by default, supports larger responses up to 64 KiB where offered, and keeps cached Evidence out of operational status. Your agent app starts the companion. No hosted service or native installer is needed.
+The same MCP companion supports Chrome and Firefox on macOS, Windows, and Linux. Extension 2.0.9 uses [published lightstreamer-workbench-agent 0.1.8](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). It bounds serialized MCP replies to 8 KiB by default, supports larger responses up to 64 KiB where offered, and keeps cached Evidence out of operational status. Your agent app starts the companion. No hosted service or native installer is needed.
 
 Follow the [shared MCP setup guide](https://imom39a.github.io/lightstreamer-workbench-extension/docs/agent-access/).
 Use the [read contract](agent/READS.md) for scoped queries, summaries, and selected fields.
 See the [companion reference](agent/README.md) for local builds and migration.
 
-Chrome and Firefox use the same extension version, 2.0.9, from one source revision, with separate store packages and reviews. Companion 0.1.8 has its own npm version. See [release notes](https://imom39a.github.io/lightstreamer-workbench-extension/releases/) for publication status and the matching pair. Firefox supports desktop 140+ and regular browsing; the public AMO link will be added after its first submission.
+Chrome and Firefox use the same extension version, 2.0.9, from one source revision on `main`, with separate store packages and reviews. Both were submitted on October 6, 2026 and are awaiting review. The first [Firefox AMO listing](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/) is not publicly available yet. Companion 0.1.8 has its own npm version. See [release notes](https://imom39a.github.io/lightstreamer-workbench-extension/releases/) for publication status and the matching pair. Firefox supports desktop 140+ and regular browsing.
 
 ## Data and safety
 

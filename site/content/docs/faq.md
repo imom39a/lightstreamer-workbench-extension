@@ -4,7 +4,7 @@ The official Lightstreamer Web Client. Workbench is not a generic WebSocket insp
 
 ## Which browsers does Workbench support?
 
-Chrome and desktop Firefox 140+ on Windows, macOS, and Linux. Firefox 2.0.9 is the first release candidate and private browsing is disabled. See [Release notes]({{site}}releases/) for actual store availability. Safari is not supported yet.
+Chrome and desktop Firefox 140+ on Windows, macOS, and Linux. The first Firefox 2.0.9 submission is awaiting Mozilla review and is not publicly available yet; private browsing is disabled. See [Release notes]({{site}}releases/) for store availability. Safari is not supported yet.
 
 ## Does Local Injection reach the server?
 

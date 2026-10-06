@@ -1,8 +1,11 @@
 # First Firefox release: 2.0.9
 
 This is the manual public Mozilla Add-ons submission. Build from the reviewed
-`main` revision used for Chrome 2.0.9. Submission and public availability remain
-pending until independently verified.
+`main` revision used for Chrome 2.0.9. The listed submission completed on
+October 6, 2026 and shows **Awaiting Review**. Its version ID is `6548853`,
+file ID `5092992`, and permanent add-on ID was accepted. The planned public
+URL is <https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/>;
+public availability and signed-install proof remain pending.
 
 ## Publisher and package
 
@@ -107,16 +110,16 @@ Use the same disclosure in AMO privacy fields; do not claim all data stays local
 
 ## Manual checklist
 
-- [ ] Confirm the reviewed source is on `main` and both browser versions are 2.0.9.
-- [ ] Confirm local and CI gates, independent UI review, and maintainer privacy/release sign-off.
-- [ ] Confirm companion 0.1.8 is published and verified.
-- [ ] Build/audit the extension ZIP and reproduce the reviewer source archive exactly.
-- [ ] Deploy and verify the matching public documentation and privacy policy.
-- [ ] Sign in to the existing AMO Developer Hub; start a new public add-on submission.
-- [ ] Have the maintainer complete formal Distribution Agreement acceptance when AMO requires it.
-- [ ] Upload the extension ZIP; inspect every validator result and ID/version.
-- [ ] Upload reviewer source, description, license, icon/screenshots, support/privacy URLs, release notes, and reviewer instructions.
-- [ ] Verify privacy declarations and desktop/private-browsing support match the manifest and policy.
-- [ ] Complete the public review submission and retain its confirmation.
-- [ ] Record add-on URL, submitted version, review status, and source/digests.
+- [x] Confirm the reviewed source is on `main` and both browser versions are 2.0.9: `55f9cdee7be1ec02154cb81f929fb5cb17c7981d`.
+- [x] Confirm local and CI gates, independent UI review, and maintainer privacy/release authorization.
+- [x] Confirm companion 0.1.8 is published and verified on npm and GitHub.
+- [x] Build/audit the extension ZIP and reproduce all 30 reviewer-source output files exactly under Node.js 24.19.0.
+- [x] Deploy and verify the matching public documentation and privacy policy.
+- [x] Sign in to the existing AMO Developer Hub; start a new public add-on submission.
+- [x] Account prompts completed; AMO did not present a new binding Distribution Agreement acceptance step in this submission. The maintainer had already confirmed personal policy/agreement review.
+- [x] Upload the extension ZIP; inspect every validator result and ID/version: zero errors, three explained warnings, zero notices.
+- [x] Upload reviewer source, description, Apache-2.0 license, shared icon/five screenshots with captions, homepage/support/privacy resources, release notes, and reviewer instructions.
+- [x] Verify privacy declarations and desktop/private-browsing support match the manifest and policy.
+- [x] Complete the public review submission and retain its confirmation.
+- [x] Record add-on URL, submitted version, review status, and source/digests in [RELEASE.md](../RELEASE.md).
 - [ ] After approval, verify the public signed 2.0.9 package and one installed real-browser smoke test; submission alone does not satisfy this step.

@@ -114,3 +114,27 @@ choices and restored focus, forced colors, empty history, failure recovery and
 saved consent all satisfy the supplied acceptance criteria. The review found
 no remaining material finding or required evidence gap. Submission and public
 availability remain separate outcomes and are not inferred from these tests.
+
+## Exact-source publication and submission outcomes
+
+The reviewed implementation reached remote `main` at
+`55f9cdee7be1ec02154cb81f929fb5cb17c7981d`. Its final
+[browser/companion gate](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/37522892158),
+[Windows/Linux unit and official-client gate](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/37522892023)
+and [public documentation deployment](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/37522892175)
+all passed. The Windows/macOS/Linux native consent checks include saved
+Allow/On and Deny/Off after panel recreation, with no extra helper or prompt.
+
+Companion 0.1.8 is published on npm with the matching `gitHead`; its public bytes
+match the tested CI artifact. The GitHub tarball, bundle and checksum downloads
+also match. Both configured 2.0.9 store ZIPs were built after landing on `main`;
+fresh reviewer-source reconstruction matches all 30 Firefox output files.
+See [the release record](../../RELEASE.md#version-209-submission-record) for
+exact artifacts, digests and source provenance.
+
+On October 6, 2026, Chrome accepted 2.0.9 with **Pending review** and automatic
+publication after approval. Firefox accepted its first listed 2.0.9 submission,
+the reviewer source and completed listing, with **Awaiting Review**. Mozilla's
+validator reports zero errors, three explained warnings and zero notices.
+Firefox's public listing, signed package and signed-install journey are not
+verified yet; Project ticket `firefox-release-16` remains open.

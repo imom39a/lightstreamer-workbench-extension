@@ -10,7 +10,7 @@ Agent access is optional. It adds the npm companion, Node.js with npm, and one M
 
 ## Install
 
-1. Install [Lightstreamer Workbench from the Chrome Web Store]({{store}}). Firefox 2.0.9 is being prepared for its first public Mozilla Add-ons release; check [Release notes]({{site}}releases/) for the verified listing and availability.
+1. Install [Lightstreamer Workbench from the Chrome Web Store]({{store}}). Both 2.0.9 store submissions are awaiting review as of October 6, 2026. The first [Firefox Mozilla Add-ons listing](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/) is not publicly available yet. Check [Release notes]({{site}}releases/) for availability and [MCP setup]({{site}}docs/agent-access/) for the matching Chrome download while review is pending.
 2. Open the application page you want to inspect.
 3. Open the browser's developer tools.
 4. Select **Lightstreamer Workbench** from the DevTools panels.

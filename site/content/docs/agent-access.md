@@ -7,7 +7,7 @@ Install your browser's Workbench extension and the npm companion to let an MCP a
 - An app supporting local stdio MCP.
 - Browser, Node, and agent app on the same computer.
 
-The next release pairs extension **2.0.9** in both browsers with companion **0.1.8**. Publication is pending; check [Release notes]({{site}}releases/). Previously published [companion 0.1.7](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) is available from npm for Chrome extension 2.0.8 only.
+Extension **2.0.9** in both browsers pairs with [published companion **0.1.8**](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). Both store submissions are awaiting review as of October 6, 2026; check [Release notes]({{site}}releases/). If your Chrome Store installation is still 2.0.8, keep [companion 0.1.7](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.7) until you update the extension.
 
 User setup needs no repository checkout, compilation, Docker, account, or separately managed server.
 
@@ -15,13 +15,13 @@ User setup needs no repository checkout, compilation, Docker, account, or separa
 
 Follow [Getting started]({{site}}docs/getting-started/) for Store installation. Check the installed version in `chrome://extensions` or Firefox `about:addons`.
 
-While Chrome Store review is pending, get the matching bundle from [GitHub Releases](https://github.com/imom39a/lightstreamer-workbench-extension/releases). Extract `extension/lightstreamer-workbench-v2.0.9.zip` and use **Developer mode → Load unpacked**. Copy Chrome's assigned ID; append `--extension-id YOUR_EXTENSION_ID` to setup.
+While Chrome Store review is pending, get the [matching 2.0.9 bundle](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.8). Extract `extension/lightstreamer-workbench-v2.0.9.zip` and use **Developer mode → Load unpacked**. This tested download has usage analytics disabled. Copy Chrome's assigned ID; append `--extension-id YOUR_EXTENSION_ID` to setup.
 
-Firefox uses its signed Mozilla Add-ons release once available. Keep the default setup command; its permanent ID is `lightstreamer-workbench@imom39a`. Temporary developer installs through `about:debugging` disappear at browser exit.
+Firefox's first [Mozilla Add-ons release](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/) is awaiting review and is not publicly installable yet. Once approved, install its signed package and keep the default setup command; its permanent ID is `lightstreamer-workbench@imom39a`. Temporary developer installs through `about:debugging` disappear at browser exit.
 
 ## Set up MCP
 
-1. Once 0.1.8 is published, run setup. It downloads the companion and prints version-pinned configuration:
+1. Run setup for your installed extension version. For extension 2.0.9, it downloads companion 0.1.8 and prints version-pinned configuration:
 
    macOS or Linux:
 
