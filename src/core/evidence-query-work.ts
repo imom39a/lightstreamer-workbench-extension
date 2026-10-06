@@ -25,6 +25,24 @@ export function guardEvidenceQueryTelemetry<T extends Partial<EvidenceQueryTelem
 }
 /** Yield CPU scans to the browser task queue so cancellation can be observed. */
 export async function cooperateEvidenceQuery(index: number, signal?: AbortSignal): Promise<void> {
-  if (index % 256 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
+  if (index % 256 === 0) await new Promise<void>(resolve => {
+    // A zero-delay timer can take an entire Windows timer tick. A port message
+    // still yields to a real task, without accumulating that delay per batch.
+    if (typeof setImmediate === "function") {
+      setImmediate(resolve);
+      return;
+    }
+    if (typeof MessageChannel === "undefined") {
+      setTimeout(resolve, 0);
+      return;
+    }
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
   if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
 }

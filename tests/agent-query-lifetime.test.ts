@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createInMemoryEventHistory, type EventHistory } from "../src/core/event-history-authoritative";
 import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
@@ -32,7 +32,9 @@ async function expectFreshQueriesAgreeWithHistory(history: EventHistory): Promis
   }
 }
 
-afterEach(() => vi.useRealTimers());
+// Exercise the timer fallback so the tests can pause a query at its yield.
+beforeEach(() => { vi.stubGlobal("MessageChannel", undefined); vi.stubGlobal("setImmediate", undefined); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("materialized memory query lifetime", () => {
   it("does not repopulate the shared index after Clear and new Capture while yielding", async () => {
