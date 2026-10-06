@@ -1101,15 +1101,10 @@ async function runOfficialClientScenarioJourney(
     };
     return true;
   })()`);
-
-
-
-  await clickVisiblePanelElement(
-    panelCdp,
-    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-      .find((candidate) => candidate.textContent?.includes("fixture-message.TICKER") && candidate.getAttribute("data-evidence-source") === "SERVER")?.querySelector(".workbench-react__evidence-op")`,
-    "the deterministic Server ADD operation used to anchor the Scenario target"
-  );
+  const anchorOperation = `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+    .find((candidate) => candidate.textContent?.includes("fixture-message.TICKER") && candidate.getAttribute("data-evidence-source") === "SERVER")?.querySelector(".workbench-react__evidence-op")`;
+  await waitForCondition(panelCdp, `Boolean(${anchorOperation})`, "the committed Server ADD used to anchor the Scenario target");
+  await clickVisiblePanelElement(panelCdp, anchorOperation, "the deterministic Server ADD operation used to anchor the Scenario target");
   await waitForCondition(
     panelCdp,
     `[...document.querySelectorAll("button")].some(

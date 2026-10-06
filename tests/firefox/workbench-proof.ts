@@ -80,7 +80,7 @@ try {
       // A registered DevTools view can precede the panel's background-port
       // registration. The real topology checkpoint proves that round trip is
       // complete before this fixture emits its one-shot synthetic updates.
-      await waitForCondition(surface("devtools_panel"), "document.body.innerText.includes('Coverage USEFUL')", "the owned fixture Panel Session capture handshake");
+      await waitForCondition(surface("devtools_panel"), "document.body.innerText.includes('Coverage USEFUL') && Boolean(document.querySelector('[aria-label=\"Ordered Lightstreamer Evidence\"] [data-evidence-id]'))", "the owned fixture Panel Session capture handshake and retained checkpoint");
     }
     if (process.env.LSEW_FIREFOX_CONSENT_PROOF === "1") {
       const panelSurface = surface("devtools_panel");
