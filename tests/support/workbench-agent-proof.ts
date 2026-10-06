@@ -328,11 +328,11 @@ async function settle(read: () => Promise<any>, done: (value: any) => boolean) {
 }
 export async function click(cdp: CdpRequestClient, selector: string, text: string) {
   await waitForCondition(cdp, `(() => {
-    const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(element => element.textContent.trim() === ${JSON.stringify(text)});
+    const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(element => element.textContent.trim() === ${JSON.stringify(text)} && !element.disabled && element.getBoundingClientRect().width && element.getBoundingClientRect().height);
     return Boolean(element && !element.disabled && element.getBoundingClientRect().width && element.getBoundingClientRect().height);
   })()`, `available control: ${text}`);
   const point = await evaluateByValue<{ x: number; y: number }>(cdp, `(() => {
-    const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(element => element.textContent.trim() === ${JSON.stringify(text)});
+    const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(element => element.textContent.trim() === ${JSON.stringify(text)} && !element.disabled && element.getBoundingClientRect().width && element.getBoundingClientRect().height);
     if (!element) throw new Error('Missing control: ' + ${JSON.stringify(text)});
     element.scrollIntoView({ block: 'center' }); const rect = element.getBoundingClientRect();
     if (!rect.width || !rect.height) throw new Error('Control is hidden');
