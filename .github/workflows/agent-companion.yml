@@ -1,13 +1,35 @@
-name: Unified npm MCP companion
+name: Unified browser and MCP release
 
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      expected_source:
+        description: Full approved source commit; must equal this main dispatch SHA
+        type: string
+        required: true
+      publish_chrome:
+        description: Submit the frozen Chrome package for public review
+        type: boolean
+        default: false
+      publish_firefox:
+        description: Submit the frozen listed Firefox version and reviewer source
+        type: boolean
+        default: false
+      publish_npm:
+        description: Publish the frozen companion with npm trusted publishing
+        type: boolean
+        default: false
+      firefox_metadata:
+        description: Committed JSON file containing explicit release and reviewer notes
+        type: string
+        default: store-listing/firefox-submission.json
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: agent-companion-${{ github.ref }}
@@ -42,8 +64,8 @@ jobs:
 
   checks:
     name: Source and documentation checks
-    needs: plan
-    if: needs.plan.outputs.docs == 'true'
+    needs: [plan, package]
+    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.companion != 'true' || needs.package.result == 'success') && needs.plan.outputs.docs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -62,38 +84,66 @@ jobs:
   package:
     needs: plan
     if: needs.plan.outputs.companion == 'true'
-    name: Build one npm artifact
+    name: Freeze one browser and npm candidate
     runs-on: ubuntu-latest
     outputs:
-      filename: ${{ steps.release.outputs.filename }}
-      version: ${{ steps.release.outputs.version }}
-      publish: ${{ steps.release.outputs.publish }}
+      filename: ${{ steps.frozen.outputs.filename }}
+      version: ${{ steps.frozen.outputs.version }}
+      chrome: ${{ steps.frozen.outputs.chrome }}
+      firefox: ${{ steps.frozen.outputs.firefox }}
+      npm: ${{ steps.frozen.outputs.npm }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: 22.12.0
+          node-version: 24
           cache: npm
-      - run: npm ci
-      - run: node --test scripts/prepare-agent-release.test.mjs scripts/verify-agent-publication.test.mjs
-      - name: Select release version
-        id: release
+      - name: Recover the original candidate on a whole-run retry
+        id: recovery
         env:
-          PUBLISH_ENABLED: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AGENT_NPM_PUBLISH_ENABLED == 'true' }}
-        run: |
-          if [ "$PUBLISH_ENABLED" = "true" ]; then
-            node scripts/prepare-agent-release.mjs --release
-          else
-            node scripts/prepare-agent-release.mjs
-          fi
-      - run: npm run agent:pack
-      - uses: actions/upload-artifact@v6
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_EXPECTED_SOURCE: ${{ inputs.expected_source || github.sha }}
+        run: node scripts/release.mjs recovery --expected-source "$RELEASE_EXPECTED_SOURCE" --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v6
+        if: steps.recovery.outputs.mode == 'recover'
+        with:
+          artifact-ids: ${{ steps.recovery.outputs.artifact_id }}
+          path: release/frozen-input
+          merge-multiple: true
+      - run: npm ci
+      - name: Freeze all four exact inputs before heavy verification
+        if: steps.recovery.outputs.mode == 'prepare'
+        env:
+          RELEASE_EXPECTED_SOURCE: ${{ inputs.expected_source || github.sha }}
+          RELEASE_METADATA: ${{ inputs.firefox_metadata || 'store-listing/firefox-submission.json' }}
+          RELEASE_PUBLISH_CHROME: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_chrome || false }}
+          RELEASE_PUBLISH_FIREFOX: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_firefox || false }}
+          RELEASE_PUBLISH_NPM: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm || false }}
+          VITE_LSEW_GA_MEASUREMENT_ID: ${{ secrets.VITE_LSEW_GA_MEASUREMENT_ID }}
+          VITE_LSEW_GA_API_SECRET: ${{ secrets.VITE_LSEW_GA_API_SECRET }}
+          VITE_LSEW_GA_DEBUG: 'false'
+        run: node scripts/release.mjs prepare --expected-source "$RELEASE_EXPECTED_SOURCE" --metadata "$RELEASE_METADATA"
+      - name: Retain the immutable first-attempt candidate
+        if: steps.recovery.outputs.mode == 'prepare'
+        uses: actions/upload-artifact@v6
+        with:
+          name: workbench-frozen-release-${{ github.run_id }}
+          path: release/frozen-input/release-bundle.zip
+          if-no-files-found: error
+          retention-days: 90
+      - name: Restore and validate all frozen inputs and the selected version
+        id: frozen
+        run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA" --github-output "$GITHUB_OUTPUT"
+      - name: Keep the companion artifact available for manual consumers
+        if: steps.recovery.outputs.mode == 'prepare'
+        uses: actions/upload-artifact@v6
         with:
           name: workbench-agent-npm
           path: |
-            release/*.tgz
-            release/agent-release.json
+            release/frozen/agent/*.tgz
+            release/frozen/agent-release.json
           if-no-files-found: error
+          retention-days: 90
 
   portable:
     if: needs.plan.outputs.companion == 'true'
@@ -108,17 +158,17 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v6
         with:
-          name: workbench-agent-npm
-          path: release
+          name: workbench-frozen-release-${{ github.run_id }}
+          path: release/frozen-input
       - uses: actions/setup-node@v6
         with:
           node-version: 22.12.0
           cache: npm
       - run: npm ci
+      - name: Restore the frozen manifest and exact artifact bytes
+        run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
       - name: Use the artifact version for all platform checks
-        shell: bash
-        run: |
-          node --input-type=module -e 'import fs from "node:fs"; const plan = JSON.parse(fs.readFileSync("release/agent-release.json")); const file = "agent/package.json"; const metadata = JSON.parse(fs.readFileSync(file)); if (metadata.name !== plan.name || plan.sha !== process.env.GITHUB_SHA) throw new Error("Artifact source mismatch"); fs.writeFileSync(file, JSON.stringify({...metadata, version: plan.version, gitHead: plan.sha}, null, 2) + "\n");'
+        run: node scripts/release.mjs use-agent --manifest release/frozen/release-manifest.json --expected-source "$GITHUB_SHA"
       - run: npm run typecheck
       - name: Prove cross-agent skill setup, Evidence recovery, automatic connection and MCP routing
         run: npx vitest run tests/agent-setup.test.ts tests/agent-source-discovery.test.ts tests/agent-search.test.ts tests/agent-portable.test.ts tests/agent-connection.test.ts tests/agent-runtime.test.ts --maxWorkers=1 --no-file-parallelism
@@ -148,9 +198,10 @@ jobs:
           path: .cache/lsew-browsers
           key: chrome-for-testing-agent-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm run fixture:browser:install
-      - name: Prove the installed npm package and real Chrome connection
+      - name: Prove the installed npm package and exact frozen Chrome connection
         env:
-          LSEW_AGENT_PACKAGE_TARBALL: release/${{ needs.package.outputs.filename }}
+          LSEW_FROZEN_RELEASE_MANIFEST: release/frozen/release-manifest.json
+          LSEW_AGENT_PACKAGE_TARBALL: release/frozen/${{ needs.package.outputs.filename }}
         run: npm run agent:test:extension
       - name: Retain failed Chrome and MCP proof attempts
         if: always()
@@ -195,23 +246,24 @@ jobs:
           firefox-version: ${{ matrix.firefox }}
       - uses: actions/download-artifact@v6
         with:
-          name: workbench-agent-npm
-          path: release
+          name: workbench-frozen-release-${{ github.run_id }}
+          path: release/frozen-input
       - run: npm ci
       - run: python -m pip install -r scripts/firefox-requirements.txt
+      - name: Restore the frozen manifest and exact artifact bytes
+        run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
       - name: Use the verified npm artifact version
-        shell: bash
-        run: |
-          node --input-type=module -e 'import fs from "node:fs"; const plan = JSON.parse(fs.readFileSync("release/agent-release.json")); const file = "agent/package.json"; const metadata = JSON.parse(fs.readFileSync(file)); if (metadata.name !== plan.name || plan.sha !== process.env.GITHUB_SHA) throw new Error("Artifact source mismatch"); fs.writeFileSync(file, JSON.stringify({...metadata, version: plan.version, gitHead: plan.sha}, null, 2) + "\n");'
+        run: node scripts/release.mjs use-agent --manifest release/frozen/release-manifest.json --expected-source "$GITHUB_SHA"
       - name: Install and prove the same npm tarball
         env:
-          LSEW_AGENT_PACKAGE_TARBALL: release/${{ needs.package.outputs.filename }}
+          LSEW_AGENT_PACKAGE_TARBALL: release/frozen/${{ needs.package.outputs.filename }}
         run: npm run agent:test:package
-      - run: npm run build:firefox
-        env:
-          LSEW_ANALYTICS_DISABLED: '1'
+      - name: Load the exact frozen Firefox ZIP
+        run: node scripts/release.mjs browser-input --manifest release/frozen/release-manifest.json --expected-source "$GITHUB_SHA" --browser firefox --out-dir .cache/frozen-firefox-dist
       - name: Prove Firefox Capture, IndexedDB, exact-origin MCP, restart and revocation
         env:
+          LSEW_FIREFOX_DIST: .cache/frozen-firefox-dist
+          LSEW_FROZEN_RELEASE_MANIFEST: release/frozen/release-manifest.json
           LSEW_FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
           LSEW_FIREFOX_PYTHON: python
           LSEW_FIREFOX_EXTENSION_ONLY: '1'
@@ -231,6 +283,8 @@ jobs:
       - name: Prove Firefox to official-client Local Injection and Scenario delivery
         if: runner.os == 'Linux'
         env:
+          LSEW_FIREFOX_DIST: .cache/frozen-firefox-dist
+          LSEW_FROZEN_RELEASE_MANIFEST: release/frozen/release-manifest.json
           LSEW_FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
           LSEW_FIREFOX_PYTHON: python
           LSEW_AGENT_TEST_CLI: test-results/agent-package/node_modules/lightstreamer-workbench-agent/dist/cli.mjs
@@ -251,10 +305,10 @@ jobs:
         run: npm run test:firefox
       - name: Validate the Firefox manifest and packaged code
         if: runner.os == 'Linux' && matrix.firefox == 'latest'
-        run: npx --yes web-ext@10.7.0 lint --source-dir dist-firefox --output json > test-results/firefox/web-ext.json
+        run: npx --yes web-ext@10.7.0 lint --source-dir .cache/frozen-firefox-dist --output json > test-results/firefox/web-ext.json
       - name: Audit the Firefox ZIP structure, version and release budget
         if: runner.os == 'Linux' && matrix.firefox == 'latest'
-        run: npm run release:package:firefox -- --skip-typecheck --skip-tests --skip-build --out-dir test-results/firefox-release
+        run: npm run release:package:firefox -- --skip-typecheck --skip-tests --skip-build --dist .cache/frozen-firefox-dist --out-dir test-results/firefox-release
       - name: Stop the owned fixture
         if: always() && runner.os == 'Linux' && (steps.firefox_fixture.outcome == 'success' || steps.firefox_fixture.outcome == 'failure')
         run: npm run fixture:stop
@@ -263,6 +317,47 @@ jobs:
         with:
           name: firefox-proof-${{ matrix.os }}-${{ matrix.firefox }}
           path: test-results/firefox*/
+
+  fixture:
+    name: Full fixture release gate
+    if: github.event_name == 'workflow_dispatch'
+    needs: [plan, package]
+    uses: ./.github/workflows/fixture-scripts.yml
+    with:
+      full: true
+      frozen_artifact: workbench-frozen-release-${{ github.run_id }}
+
+  panel:
+    name: Full panel release gate
+    if: github.event_name == 'workflow_dispatch'
+    needs: [plan, package]
+    uses: ./.github/workflows/panel-ui.yml
+    with:
+      full: true
+      frozen_artifact: workbench-frozen-release-${{ github.run_id }}
+
+  site:
+    name: Full public site release gate
+    if: github.event_name == 'workflow_dispatch'
+    needs: [plan, package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:site
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: release-site-failure-${{ github.run_attempt }}
+          path: |
+            test-results/site/
+            test-results/site-report/
+          if-no-files-found: ignore
 
   release-bundle:
     if: needs.plan.outputs.companion == 'true'
@@ -274,31 +369,160 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22.12.0
-          cache: npm
-      - run: npm ci
-      - run: node --test scripts/package-mcp-release.test.mjs
       - uses: actions/download-artifact@v6
         with:
-          name: workbench-agent-npm
-          path: release
-      - name: Package the exact-source extension ZIP
-        run: npm run release:zip -- --skip-typecheck --skip-tests
-      - name: Combine verified portable artifacts
-        run: node scripts/package-mcp-release.mjs
+          name: workbench-frozen-release-${{ github.run_id }}
+          path: release/frozen-input
+      - name: Validate the verified candidate without rebuilding
+        run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
       - uses: actions/upload-artifact@v6
         with:
-          name: workbench-mcp-release-bundle
-          path: release/lightstreamer-workbench-mcp-v*.zip
+          name: workbench-mcp-release-bundle-${{ github.run_attempt }}
+          path: release/frozen-input/release-bundle.zip
           if-no-files-found: error
+          retention-days: 90
+
+  verification:
+    name: Bind full verification to the frozen manifest
+    if: always() && github.event_name == 'workflow_dispatch' && needs.package.result == 'success'
+    needs: [plan, checks, package, portable, firefox, fixture, panel, site, release-bundle]
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: workbench-release-verification-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - uses: actions/download-artifact@v6
+        with:
+          name: workbench-frozen-release-${{ github.run_id }}
+          path: release/frozen-input
+      - run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
+      - name: Require every full release gate
+        env:
+          RELEASE_GATE_RESULTS: ${{ toJSON(needs) }}
+        run: node scripts/release.mjs verify --manifest release/frozen/release-manifest.json --expected-source "$GITHUB_SHA" --verification release/release-verification.json
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: workbench-release-verification-${{ github.run_attempt }}
+          path: release/release-verification.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-chrome:
+    name: Submit Chrome Web Store
+    needs: [package, verification]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.chrome == 'true' && needs.verification.result == 'success'
+    runs-on: ubuntu-latest
+    environment: chrome-store
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: npm ci
+      - uses: actions/download-artifact@v6
+        with:
+          name: workbench-frozen-release-${{ github.run_id }}
+          path: release/frozen-input
+      - run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
+      - uses: actions/download-artifact@v6
+        with:
+          name: ${{ needs.verification.outputs.artifact }}
+          path: release
+      - name: Recover the latest saved channel receipt
+        id: receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release.mjs receipt-recovery --channel chrome --expected-source "$GITHUB_SHA" --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v6
+        if: steps.receipt.outputs.mode == 'recover'
+        with:
+          artifact-ids: ${{ steps.receipt.outputs.artifact_id }}
+          path: release/receipts
+          merge-multiple: true
+      - name: Submit or reconcile the exact frozen chrome candidate
+        env:
+          RELEASE_EXPECTED_SOURCE: ${{ inputs.expected_source }}
+          CWS_RESOURCE: ${{ vars.CWS_RESOURCE }}
+          CWS_ACCESS_TOKEN: ${{ secrets.CWS_ACCESS_TOKEN }}
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+        run: node scripts/release.mjs submit --channel chrome --manifest release/frozen/release-manifest.json --expected-source "$RELEASE_EXPECTED_SOURCE" --verification release/release-verification.json --receipt release/receipts/chrome.json
+      - name: Preserve partial and accepted publication receipts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: workbench-release-receipt-chrome-${{ github.run_attempt }}
+          path: release/receipts/chrome.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-firefox:
+    name: Submit Firefox AMO
+    needs: [package, verification]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.firefox == 'true' && needs.verification.result == 'success'
+    runs-on: ubuntu-latest
+    environment: firefox-store
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: npm ci
+      - uses: actions/download-artifact@v6
+        with:
+          name: workbench-frozen-release-${{ github.run_id }}
+          path: release/frozen-input
+      - run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
+      - uses: actions/download-artifact@v6
+        with:
+          name: ${{ needs.verification.outputs.artifact }}
+          path: release
+      - name: Recover the latest saved channel receipt
+        id: receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release.mjs receipt-recovery --channel firefox --expected-source "$GITHUB_SHA" --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v6
+        if: steps.receipt.outputs.mode == 'recover'
+        with:
+          artifact-ids: ${{ steps.receipt.outputs.artifact_id }}
+          path: release/receipts
+          merge-multiple: true
+      - name: Submit or reconcile the exact frozen firefox candidate
+        env:
+          RELEASE_EXPECTED_SOURCE: ${{ inputs.expected_source }}
+          AMO_API_KEY: ${{ secrets.AMO_API_KEY }}
+          AMO_API_SECRET: ${{ secrets.AMO_API_SECRET }}
+        run: node scripts/release.mjs submit --channel firefox --manifest release/frozen/release-manifest.json --expected-source "$RELEASE_EXPECTED_SOURCE" --verification release/release-verification.json --receipt release/receipts/firefox.json
+      - name: Preserve partial and accepted publication receipts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: workbench-release-receipt-firefox-${{ github.run_attempt }}
+          path: release/receipts/firefox.json
+          if-no-files-found: error
+          retention-days: 90
 
   publish:
     name: Publish the verified npm artifact
-    needs: [plan, checks, package, portable, firefox, release-bundle]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.package.outputs.publish == 'true'
+    needs: [package, verification]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.package.outputs.npm == 'true' && needs.verification.result == 'success'
     runs-on: ubuntu-latest
     environment: npm
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@v6
@@ -307,21 +531,44 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - run: npm ci
       - uses: actions/download-artifact@v6
         with:
-          name: workbench-agent-npm
+          name: workbench-frozen-release-${{ github.run_id }}
+          path: release/frozen-input
+      - run: node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source "$GITHUB_SHA"
+      - uses: actions/download-artifact@v6
+        with:
+          name: ${{ needs.verification.outputs.artifact }}
           path: release
-      - name: Publish with npm trusted publishing
+      - name: Recover the latest saved channel receipt
+        id: receipt
         env:
-          AGENT_TARBALL: ./release/${{ needs.package.outputs.filename }}
-        run: npm publish "$AGENT_TARBALL" --access public --provenance --ignore-scripts
-      - name: Verify registry version
-        run: node scripts/verify-agent-publication.mjs
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release.mjs receipt-recovery --channel npm --expected-source "$GITHUB_SHA" --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v6
+        if: steps.receipt.outputs.mode == 'recover'
+        with:
+          artifact-ids: ${{ steps.receipt.outputs.artifact_id }}
+          path: release/receipts
+          merge-multiple: true
+      - name: Submit or reconcile the exact frozen npm candidate
+        env:
+          RELEASE_EXPECTED_SOURCE: ${{ inputs.expected_source }}
+        run: node scripts/release.mjs submit --channel npm --manifest release/frozen/release-manifest.json --expected-source "$RELEASE_EXPECTED_SOURCE" --verification release/release-verification.json --receipt release/receipts/npm.json
+      - name: Preserve partial and accepted publication receipts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: workbench-release-receipt-npm-${{ github.run_attempt }}
+          path: release/receipts/npm.json
+          if-no-files-found: error
+          retention-days: 90
 
   result:
     name: Companion verification result
     if: always()
-    needs: [plan, checks, package, portable, firefox, release-bundle]
+    needs: [plan, checks, package, portable, firefox, release-bundle, fixture, panel, site, verification]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -333,3 +580,25 @@ jobs:
           PREFLIGHT_PLAN: ${{ needs.plan.outputs.plan }}
           PREFLIGHT_RESULTS: ${{ toJSON(needs) }}
         run: node scripts/preflight.mjs --gate companion
+      - name: Require complete manual release verification
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_VERIFICATION_RESULT: ${{ needs.verification.result }}
+        run: node --input-type=module -e 'if (process.env.RELEASE_VERIFICATION_RESULT !== "success") throw new Error("Full pinned release verification did not succeed");'
+
+  publication-result:
+    name: Selected publication result
+    if: always() && github.event_name == 'workflow_dispatch'
+    needs: [package, verification, publish-chrome, publish-firefox, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+      - name: Require each explicitly selected channel
+        env:
+          RELEASE_CHANNELS: ${{ toJSON(needs.package.outputs) }}
+          RELEASE_PUBLICATION_RESULTS: ${{ toJSON(needs) }}
+          RELEASE_REQUESTED_CHANNELS: ${{ toJSON(inputs) }}
+        run: |
+          node --input-type=module -e 'const channels=JSON.parse(process.env.RELEASE_CHANNELS); const results=JSON.parse(process.env.RELEASE_PUBLICATION_RESULTS); const requested=JSON.parse(process.env.RELEASE_REQUESTED_CHANNELS); for (const [channel,job] of [["chrome","publish-chrome"],["firefox","publish-firefox"],["npm","publish"]]) if (requested[`publish_${channel}`] === true && (channels[channel] !== "true" || results[job]?.result !== "success")) throw new Error(`${channel} publication requires attention (${results[job]?.result ?? "missing"})`);'

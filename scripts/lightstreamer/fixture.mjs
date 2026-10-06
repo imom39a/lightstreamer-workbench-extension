@@ -4,6 +4,7 @@ import { spawn } from "cross-spawn";
 import { copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareChromeTestInput } from "../browser-test-input.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(scriptDir, "../..");
@@ -191,10 +192,14 @@ async function waitForFixture() {
 }
 
 async function testFixture({ browserOnly = false } = {}) {
+  let browserInput;
   try {
-    await runProcess("npm", ["run", "build"], {
-      env: { ...process.env, LSEW_ANALYTICS_DISABLED: "1" }
-    });
+    browserInput = await prepareChromeTestInput({ rootDir, dryRun });
+    if (browserInput.needsBuild) {
+      await runProcess("npm", ["run", "build"], { env: browserInput.environment });
+    } else {
+      console.log(`${dryRun ? "[dry-run] " : ""}Testing frozen Chrome input from ${browserInput.environment.LSEW_FROZEN_RELEASE_MANIFEST}.`);
+    }
     await buildFixtureClient();
     await buildAdapter();
     await startFixture();
@@ -202,14 +207,15 @@ async function testFixture({ browserOnly = false } = {}) {
     if (!browserOnly) {
       await runFixtureSmokeTest();
     }
-    await runFixtureBrowserTest();
-    await runFixturePanelTest();
+    await runFixtureBrowserTest(browserInput.environment);
+    await runFixturePanelTest(browserInput.environment);
   } finally {
-    await stopFixture({ quiet: true });
+    try { await stopFixture({ quiet: true }); }
+    finally { await browserInput?.dispose(); }
   }
 }
 
-async function runFixtureBrowserTest() {
+async function runFixtureBrowserTest(environment) {
   const generatedBrowserTest = join(
     rootDir,
     "tests",
@@ -234,13 +240,13 @@ async function runFixtureBrowserTest() {
       target: "node20",
       logLevel: "silent"
     });
-    await runProcess(process.execPath, [generatedBrowserTest]);
+    await runProcess(process.execPath, [generatedBrowserTest], { env: environment });
   } finally {
     await rm(generatedBrowserTest, { force: true });
   }
 }
 
-async function runFixturePanelTest() {
+async function runFixturePanelTest(environment) {
   await runProcess("npm", [
     "exec",
     "--",
@@ -249,10 +255,7 @@ async function runFixturePanelTest() {
     "--config",
     "playwright.extension.config.ts"
   ], {
-    env: {
-      ...process.env,
-      LSEW_EXTENSION_DIR: "dist"
-    }
+    env: environment
   });
 }
 
