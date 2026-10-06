@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { deflateRawSync, gunzipSync, inflateRawSync } from "node:zlib";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -164,7 +164,7 @@ export async function extractReleaseBundle({ bundlePath, directory, expectedSour
   const allowed = new Set(["release-manifest.json","SHA256SUMS","README.txt","agent-release.json",... ["extension","firefox","firefoxSource","mcp","firefoxMetadata"].map(key => manifest[key]?.file)]);
   if (manifest.format !== "lightstreamer-workbench-mcp-release-v2" || manifest.source?.commit !== expectedSource || entries.size !== allowed.size || [...entries.keys()].some(name => !allowed.has(name))) throw new Error("Frozen bundle source, manifest or entry inventory is invalid.");
   const destination = resolve(directory);
-  await mkdir(destination,{ recursive: true });
+  await emptyOwnedDirectory(destination);
   for (const [name,bytes] of entries) {
     const path = safePath(destination,name);
     await mkdir(dirname(path),{ recursive: true });
@@ -178,6 +178,7 @@ export async function extractFrozenBrowser({ manifestPath, expectedSource, brows
   const release = await readFrozenRelease({ manifestPath,expectedSource });
   const entries = readZipEntries(release.artifacts[browser].bytes);
   const destination = resolve(directory);
+  await emptyOwnedDirectory(destination);
   for (const [name,bytes] of entries) {
     const path = safePath(destination,name);
     await mkdir(dirname(path),{ recursive: true });
@@ -187,6 +188,11 @@ export async function extractFrozenBrowser({ manifestPath, expectedSource, brows
 }
 
 function inside(directory,path) { const part=relative(directory,path); return !part.startsWith("..") && !isAbsolute(part); }
+async function emptyOwnedDirectory(directory) {
+  await mkdir(directory,{recursive:true});
+  const info=await lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink() || (await readdir(directory)).length) throw new Error("Frozen extraction requires a fresh empty owned directory.");
+}
 export function assertStoreAnalyticsConfiguration(configuration) {
   const measurementId=configuration.VITE_LSEW_GA_MEASUREMENT_ID,apiSecret=configuration.VITE_LSEW_GA_API_SECRET,debug=configuration.VITE_LSEW_GA_DEBUG;
   if (typeof measurementId!=="string" || !/^G-[A-Z0-9]+$/.test(measurementId) || typeof apiSecret!=="string" || !apiSecret.trim() || ![undefined,"","false","0"].includes(debug)) throw new Error("Production analytics configuration must be present with debug collection disabled.");

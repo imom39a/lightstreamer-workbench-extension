@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { appendFile, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { spawn } from "cross-spawn";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertStoreAnalyticsConfiguration, createReleaseBundle, extractReleaseBundle, extractFrozenBrowser, readFrozenRelease } from "./package-mcp-release.mjs";
@@ -62,7 +61,7 @@ function runApi(repository,runId) {
   return `https://api.github.com/repos/${repository}/actions/runs/${runId}`;
 }
 async function githubJson(url,{request,token}) {
-  const response=await request(url,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",...(token?{Authorization:`Bearer ${token}`}:{})},signal:AbortSignal.timeout(30000),redirect:"error"});
+  const response=await request(url,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2026-03-10",...(token?{Authorization:`Bearer ${token}`}:{})},signal:AbortSignal.timeout(30000),redirect:"error"});
   if (!response.ok) throw new Error(`GitHub release recovery lookup failed: HTTP ${response.status}.`);
   return response.json();
 }
@@ -96,6 +95,7 @@ function requireManualMain(sourceSha,publicationIntent) {
   if (process.env.GITHUB_EVENT_NAME!=="workflow_dispatch" || process.env.GITHUB_REF!=="refs/heads/main" || process.env.GITHUB_SHA!==sourceSha) throw new Error("Publication intent requires manual main dispatch with the exact approved GITHUB_SHA.");
 }
 async function run(command,args,env) {
+  const {default:spawn}=await import("cross-spawn");
   await new Promise((done,reject)=>{
     const child=spawn(command,args,{cwd:root,env,stdio:"inherit",shell:false});
     child.once("error",reject);
@@ -181,6 +181,14 @@ async function main() {
   if (["restore","inspect"].includes(command)) {
     await output({version:release.manifest.mcp.version,filename:release.manifest.mcp.file,chrome:String(release.manifest.publicationIntent.chrome),firefox:String(release.manifest.publicationIntent.firefox),npm:String(release.manifest.publicationIntent.npm),manifest_sha256:release.manifestSha256},options);
     console.log(`Validated frozen candidate: ${expectedSource}, browsers ${release.manifest.extension.version}, companion ${release.manifest.mcp.version}.`);
+    return;
+  }
+  if (command==="use-agent") {
+    checkedSource(expectedSource);
+    const path=join(root,"agent/package.json"),metadata=JSON.parse(await readFile(path,"utf8"));
+    if (metadata.name!==release.manifest.mcp.name) throw new Error("Source companion name differs from the frozen candidate.");
+    await writeFile(path,`${JSON.stringify({...metadata,version:release.manifest.mcp.version,gitHead:expectedSource},null,2)}\n`);
+    console.log("Using the frozen companion version for verification.");
     return;
   }
   if (command==="browser-input") {

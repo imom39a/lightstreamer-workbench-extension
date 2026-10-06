@@ -83,31 +83,144 @@ route. Keep Chrome and Firefox upload/submission steps separate. Record
 submission, review, signing, and public availability separately for each store;
 an uploaded or submitted package is not yet a public release.
 
-## MCP Candidate Bundle
+## Pinned browser and MCP candidate
 
-The companion workflow prepares one downloadable bundle after the same npm tarball passes its Windows, macOS, and Linux checks. The local command expects the matching extension ZIP, npm tarball, and `release/agent-release.json` to exist:
+`.github/workflows/agent-companion.yml` prepares one source-pinned candidate and
+verifies it before any publication. The workflow filename and `npm` environment
+remain unchanged because npm trusted publishing is bound to them. PR and push
+runs verify only. Manual dispatch defaults all three channel inputs to **false**;
+merging or changing a repository variable never publishes a package.
 
-```bash
-npm run release:zip -- --skip-typecheck --skip-tests
-node scripts/prepare-agent-release.mjs
-npm run agent:pack
-git restore -- agent/package.json
-npm run release:mcp-bundle
+On a manual run, enter the full approved `expected_source` commit. Publication
+requires `main`, that exact checked-out `GITHUB_SHA`, all full release gates and
+explicit `publish_chrome`, `publish_firefox` and/or `publish_npm` intent. Browser
+versions must match `package.json` and `public/manifest.json`. Bump both before a
+new store release; a matching remote version alone cannot prove which bytes were
+submitted. The companion keeps its independent version sequence. Review
+[the Firefox submission metadata](store-listing/firefox-submission.json), update
+its release/reviewer notes for the candidate, and commit it before dispatch. An
+alternative committed JSON path can be supplied through `firefox_metadata`.
+
+The first package job freezes the Chrome ZIP, Firefox ZIP, paired Firefox reviewer
+source, npm tarball, selected companion version plan and exact submission notes
+**before** the heavy gates. `release-manifest.json` v2 binds their filenames,
+byte sizes, SHA-256, browser identities, versions, source commit, analytics build
+mode and per-channel intent. The extension packages stay separate inside the
+same downloadable bundle. No upload command chooses a latest local ZIP.
+
+For a local verification candidate from a clean committed checkout:
+
+```sh
+npm ci
+node scripts/release.mjs prepare --expected-source FULL_COMMIT_SHA
+node scripts/release.mjs restore --bundle release/frozen-input/release-bundle.zip --out-dir release/frozen --expected-source FULL_COMMIT_SHA
+node scripts/release.mjs inspect --manifest release/frozen/release-manifest.json --expected-source FULL_COMMIT_SHA
 ```
 
-The planner writes `release/agent-release.json` and stamps `agent/package.json` with the selected version and current commit before packing. The restore command returns only that generated metadata to the committed source state; run this sequence from a clean checkout. The bundle is `release/lightstreamer-workbench-mcp-v<extension-version>.zip`. It contains the extension ZIP, companion tarball, `release-manifest.json`, `SHA256SUMS`, and a short `README.txt`. The manifest records each embedded relative path, byte size, SHA-256 digest, version, and full source commit. Packaging reads the ZIP-root extension manifest and npm tarball metadata and fails if their versions or `gitHead` disagree with the plan and checked-out source, or if tracked files are modified. The `workbench-mcp-release-bundle` CI artifact is available beside the existing `workbench-agent-npm` artifact after all three platform checks pass.
+The local command defaults to verification-only synthetic ingestion
+configuration, regardless of a maintainer's `.env.local`. Store-intent CI builds
+require configured production analytics, debug collection disabled and the
+existing `analytics:validate` gate. The source archive contains only the same
+publicly extractable ingestion configuration. Publisher, signing, account and
+npm credentials never enter it. Verification loads the frozen Chrome/Firefox
+bytes unchanged; an owned browser profile disables collection through the real
+preference/native-consent gates and blocks external traffic. The separate Firefox
+consent test continues to use a synthetic configuration.
 
-The bundle state is `prepared-unpublished` at assembly time. It records whether guarded npm publication is planned; if planned, the publish job waits for all three platform checks and successful bundle assembly. Bundle assembly itself does not publish, and this workflow does not publish the extension to the Chrome Web Store. The first companion package, `lightstreamer-workbench-agent@0.1.0`, was published to npm on September 28, 2026.
+The full manual gate includes source/unit/docs, Chrome Windows/macOS/Linux,
+Firefox latest on all three OSes plus the existing Linux minimum/ESR entries,
+reusable full fixture/panel verification, and `npm run test:site`. Pages deployment
+stays in its own workflow. Verification produces a manifest-bound JSON receipt
+requiring every gate to succeed; failure, cancellation or unexpected skip blocks
+all selected channels. Existing change-aware aggregate checks remain required.
 
-## npm companion publication
+`workbench-frozen-release-<run-id>` preserves `release-bundle.zip` for 90 days,
+including when later checks fail. A successful platform gate also exposes
+`workbench-mcp-release-bundle-<attempt>`. `workbench-agent-npm` remains available
+for manual companion consumers. The bundle is `prepared-unpublished`; store and
+npm outcomes live in separate channel receipts.
 
-`.github/workflows/agent-companion.yml` builds one npm tarball and checks that exact artifact on Windows, macOS, and Linux. Pull requests and other branches only test. A matching push to `main` publishes through the `npm` environment and npm trusted publishing with provenance when repository variable `AGENT_NPM_PUBLISH_ENABLED` is `true`. Keep it `false` outside a planned release. The environment permits only `main`; no npm token is stored in GitHub.
+## Automated channel setup and submission
 
-The source `agent/package.json` version is the minimum release version. On a publishing run, `scripts/prepare-agent-release.mjs` selects the next unused patch version from npm unless source declares a higher version. CI stamps that version and the source commit into the artifact without a version-only source commit. A retry of an already published commit skips publication; a registry lookup failure stops version selection. Workflow runs are serialized per branch. A manual workflow dispatch on `main` can retry a failed release when the repository variable remains enabled.
+A release manager configures these existing/new GitHub environments and their
+secrets; tooling changes alone do not provision publisher access. Restrict each
+publication environment to `main` and retain the maintainers' approval policy.
+The workflow needs read-only Actions access for same-run artifact/job recovery.
 
-An npm unpublish tombstone still reserves every former version; the release planner counts those versions when selecting a new patch. After a full unpublish, keep publication disabled during npm's 24-hour package-name hold. Never attempt to reuse a former version; see the [npm unpublish policy](https://docs.npmjs.com/policies/unpublish/).
+| Location | Configuration |
+| --- | --- |
+| Repository ingestion secrets | `VITE_LSEW_GA_MEASUREMENT_ID`, `VITE_LSEW_GA_API_SECRET`; these values are intentionally extractable from the store build/source. Debug is forced off. |
+| `chrome-store` environment | Variable `CWS_RESOURCE=publishers/PUBLISHER_ID/items/kfpgbhfphbhkebglopimjhfnnmbifocf`; secret `CWS_ACCESS_TOKEN` for a scoped short-lived OAuth token, or `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN` for the documented refresh flow. |
+| `firefox-store` environment | AMO API key issuer `AMO_API_KEY` and signing secret `AMO_API_SECRET` from the maintainer's Mozilla publisher account. The permanent existing add-on is `lightstreamer-workbench@imom39a`; create/review the account and accept binding agreements manually. |
+| `npm` environment | Existing npm trusted publisher for this repository, `agent-companion.yml` and environment `npm`; no npm token. The publish job uses Node 24/npm with `id-token: write` and publishes the exact tarball with provenance and scripts disabled. |
 
-Before a planned npm release, review the package README, confirm that the extension compatibility guidance is current, enable the variable, and land the reviewed change on `main`. Wait for package, all three Chrome platform checks, the Firefox platform/minimum/ESR checks, release-bundle assembly, publish, and registry verification. Confirm the package's README and dist-tag on npm, then restore the variable to `false`. Each browser store has its own gates and authority above. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for publisher configuration.
+Keep Google/Mozilla credentials out of CLI arguments, checked-in files, logs and
+artifacts. Google publisher membership and the Chrome Web Store API scope remain
+prerequisites from the manual instructions below. Prefer renewable scoped OAuth
+or a configured short-lived identity path over pasting a token that will expire
+while the full gates run. The adapter's refresh credentials are sent only to
+Google's OAuth endpoint, through environment variables. See [Chrome publishing
+API](https://developer.chrome.com/docs/webstore/api), [Mozilla API
+authentication](https://mozilla.github.io/addons-server/topics/api/auth.html),
+[Mozilla add-on APIs](https://mozilla.github.io/addons-server/topics/api/addons.html)
+and [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+Chrome uses the v2 exact media upload, fetchStatus and default public-review
+publish requests. Firefox uses the v5 existing-add-on **listed** upload and
+validation flow, creates one version with its exact paired reviewer source, and
+PATCHes translated release notes separately. npm verifies exact registry
+name/version/`gitHead` and SHA-512 integrity. Each stage persists a JSON receipt
+before and after a mutation, and `always()` uploads preserve partial outcomes.
+Receipt states distinguish prepared, uploaded, submitted, under review,
+approved/signed and publicly available. Submission success is not public release.
+Store review remains asynchronous; the CLI reconciles status without waiting
+indefinitely.
+
+## Retrying and reconciling a pinned run
+
+Use **rerun failed jobs** or **rerun all jobs on the original run**. A whole-run
+retry restores the first-attempt candidate and selected npm version; it does not
+rebuild the browser packages or allocate a patch. Receipt artifacts are named
+`workbench-release-receipt-<channel>-<attempt>`. Each publisher job restores the
+latest prior receipt for its channel, checks manifest/source/intent and remote
+state before any mutation, and preserves the other channels. A lost/expired
+candidate, missing receipt after a started publishing attempt, mismatched source,
+different bytes or ambiguous remote outcome stops with an actionable result.
+Do not delete those artifacts while a release remains in progress.
+
+For a later read-only store check, restore the original bundle and saved receipt
+in an owned checkout of its exact source, then use:
+
+```sh
+node scripts/release.mjs reconcile --channel firefox --manifest release/frozen/release-manifest.json --expected-source FULL_COMMIT_SHA --receipt release/receipts/firefox.json
+node scripts/release.mjs reconcile --channel chrome --manifest release/frozen/release-manifest.json --expected-source FULL_COMMIT_SHA --receipt release/receipts/chrome.json
+```
+
+Supply the original run identity and source context (`GITHUB_RUN_ID`,
+`GITHUB_RUN_ATTEMPT`, `GITHUB_SHA`, `GITHUB_REF=refs/heads/main`,
+`GITHUB_EVENT_NAME=workflow_dispatch`) and environment-only channel credentials.
+This reads remote state and updates the local receipt; it cannot authorize a new
+version or recover unknown acceptance by guessing. A newer dispatch cannot
+publish an older tarball by replacing `GITHUB_SHA`: npm provenance must identify
+the run's actual source. Start a new candidate only for a deliberately approved
+source/version, not as a retry workaround.
+
+Chrome's public API does not expose the uploaded ZIP digest or a durable upload
+ID. Its matching version is insufficient for byte equivalence; retry relies on
+saved accepted upload/publish receipts tied to the frozen input digest. Firefox
+repackages/signs the submitted archive, so its signed file hash differs from the
+unsigned frozen ZIP. Accepted upload UUID, version/file identity and exact source
+pairing establish the chain; signed output and unsigned input hashes remain
+separate. A failed notes PATCH can be retried against the known version without
+another upload or version creation. Unknown acceptance stays blocked. npm
+registry integrity provides an independent exact-tarball proof, and an unpublish
+tombstone still reserves a version. See the [npm unpublish
+policy](https://docs.npmjs.com/policies/unpublish/).
+
+The first companion package, `lightstreamer-workbench-agent@0.1.0`, was published
+on September 28, 2026. The old repository-wide `AGENT_NPM_PUBLISH_ENABLED` switch
+is removed; it no longer controls publication. The first Firefox manual route
+and submission record below remain historical guidance.
 
 ## Version 2.0.9 submission record
 
