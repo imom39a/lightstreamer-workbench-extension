@@ -22,7 +22,7 @@
     "test:site": "npm run site:check && node --test tests/site/site-analytics.test.mjs && playwright test --config playwright.site.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test-unit.mjs",
-    "test:release": "vitest run --no-file-parallelism --maxWorkers=1",
+    "test:release": "node scripts/test-unit.mjs --serial",
     "benchmark:panel": "vitest bench --run",
     "benchmark:event-history": "vitest bench --run benchmarks/event-history-indexeddb.bench.ts",
     "measure:event-history": "node scripts/event-history-performance.mjs",
