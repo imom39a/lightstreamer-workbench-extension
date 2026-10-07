@@ -4,8 +4,9 @@ Status: historical pre-implementation research, 2026-08-13. Change class: **Non-
 
 Implementation note, 2026-08-29: [ADR 0014](../adr/0014-continue-event-history-with-rolling-retention.md)
 and the current source supersede this note's proposed and stop-at-capacity behavior.
-The 100,000-record / 256 MiB normal and 5,000-record / 32 MiB memory values now
-bound rolling retained Evidence while Capture continues.
+The current budgets are 100,000 records / 256 MiB normal and 25,000 records /
+128 MiB memory, with rolling retained Evidence while Capture continues. The older
+5,000-record / 32 MiB memory values below belong to this historical investigation.
 
 ## Executive decision
 

@@ -4,7 +4,7 @@ Status: verified and merged to `main`; release publication is tracked separately
 
 ## Scope
 
-This is the actual extension implementation of the [accepted integrated Activity direction](../WORKBENCH_INTEGRATED_ACTIVITY.md), not another prototype iteration. Classification: **Material UI**. The base is `82bd61b6dabf8060da8d00be0a2245dbad50b5af`; the implementation branch is `feat/integrated-activity-timeline`. The approved production work is tracked as `activity-main-01` through `activity-main-03` in [Project 2](https://github.com/users/imom39a/projects/2).
+This is the actual extension implementation of the [accepted integrated Activity direction](../WORKBENCH_INTEGRATED_ACTIVITY.md), Classification: **Material UI**. The base is `82bd61b6dabf8060da8d00be0a2245dbad50b5af`; the completed implementation is integrated in main. The approved production work is tracked as `activity-main-01` through `activity-main-03` in [Project 2](https://github.com/users/imom39a/projects/2).
 
 The main Evidence surface owns one elapsed-time SERVER/LOCAL timeline. Its range selection uses canonical Filter; captured marks select or inspect existing Evidence. One collapsed Activity summary in Context retains exact counts, SERVER Snapshot/Live, bounded busiest identities, and captured bandwidth/frequency facts. The separate Open Activity doorway and bucket-table document are retired. Scope, Find, Filter, selection, Frozen position, and protected Local Injection documents remain independent.
 
@@ -51,29 +51,29 @@ The production modules last changed at `c4aeee77e87905b3a461ab0421aad48dbd79bb1c
 | `npm run release:package -- --skip-tests --skip-typecheck` | Passed after separate final-source typecheck and all 1,599 unit tests; rebuild and package audit verified a 434,081-byte ZIP, below the 1 MiB limit. The options avoid repeating the already completed checks. |
 | `npm run docs:check` | Passed with the final record |
 
-The final Darwin command was `CI=1 LSEW_UI_UPDATE=0 npm run test:ui`. The pinned-Linux command was:
+The final Darwin command was `CI=1 LSEW_UI_UPDATE=0 npm run test:ui`. A portable equivalent of the pinned-Linux command is:
 
 ```sh
 docker run --rm --ipc=host \
   --env HOME=/tmp/playwright-home \
   --env CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome \
   --env CI=1 --env LSEW_UI_UPDATE=0 \
-  --volume /private/tmp/lsw-activity-linux-c4aeee7-zlzy9e7s:/work \
-  --volume /private/tmp/lsw-activity-linux-deps-rl69oxxp/node_modules:/work/node_modules \
+  --volume "$PWD:/work" \
+  --tmpfs /work/node_modules:exec \
   --workdir /work \
-  mcr.microsoft.com/playwright:v1.62.1-noble npm run test:ui
+  mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui'
 ```
 
 The Linux source copy was archived from `c4aeee7`, then supplied with the approved 140 baseline images and native Linux dependencies. The image was Linux ARM64 (`sha256:caa6083aa787e4cfcaa661c73dd6244e4fa38d754dab0cc3b472156b277b0394`), with Node 24.18.1 and Chromium 151.0.7922.34. The host used Node 23.1.0 and Chromium 151.0.7922.174 for the UI matrix. The shipped-extension runners use the repository's Chrome for Testing resolver and shared browser cache:
 
 ```sh
-LSEW_BROWSER_CACHE_DIR=/Users/vinothshanmugam/code/lightstreamer-workbench-extension/.cache/lsew-browsers \
+LSEW_BROWSER_CACHE_DIR="$PWD/.cache/lsew-browsers" \
   npm run test:ui:extension
 
 LIGHTSTREAMER_PORT=18080 \
   LSEW_FIXTURE_URL=http://localhost:18080/ \
   LSEW_LIGHTSTREAMER_CONTAINER=lsew-activity-main-verification \
-  LSEW_BROWSER_CACHE_DIR=/Users/vinothshanmugam/code/lightstreamer-workbench-extension/.cache/lsew-browsers \
+  LSEW_BROWSER_CACHE_DIR="$PWD/.cache/lsew-browsers" \
   npm run fixture:test:browser
 ```
 

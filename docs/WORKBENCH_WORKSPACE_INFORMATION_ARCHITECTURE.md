@@ -2,7 +2,7 @@
 
 Status: accepted product direction, 2026-08-03
 
-This document records the selected workspace model for the Lightstreamer Workbench Chrome DevTools panel. It applies the [canonical developer journeys](CANONICAL_DEVELOPER_JOURNEYS.md), the historical [current-panel audit](CURRENT_PANEL_UI_AUDIT.md), and the [Chrome DevTools interaction research](research/chrome-devtools-interaction-conventions.md). The [UI Standard](WORKBENCH_UI_STANDARD.md) and its linked contracts govern Local Injection, density, keyboard, and visual semantics.
+This document records the selected workspace model for the Lightstreamer Workbench Chrome DevTools panel. It applies the [canonical developer journeys](CANONICAL_DEVELOPER_JOURNEYS.md) and the [Chrome DevTools interaction research](research/chrome-devtools-interaction-conventions.md). The [UI Standard](WORKBENCH_UI_STANDARD.md) and its linked contracts govern Local Injection, density, keyboard, and visual semantics.
 
 ## Decision
 
@@ -12,9 +12,9 @@ Ordered evidence is the permanent primary surface. A persistent runtime scope de
 
 The model combines:
 
-- the evidence-first organization of prototype A, **Scoped Evidence Console**;
-- the runtime-object dossier and explicit target clarity of prototype B, **Runtime Lens**;
-- ordinary compact master/detail Back restoration, without prototype C's maintained investigation-step taxonomy.
+- evidence-first investigation organized by explicit Scope;
+- contextual runtime-object details and exact target clarity;
+- ordinary compact master/detail Back restoration.
 
 The architecture has no permanent Timeline, Topology, and COMMAND State peer destinations. The [integrated Activity amendment](WORKBENCH_INTEGRATED_ACTIVITY.md) places one compact shared timeline above Ordered Evidence and one collapsed scoped Activity summary in existing Context; it retires the separate Activity doorway after preserving its useful details.
 
@@ -94,7 +94,7 @@ Live Capture never steals focus, selection, scroll position, or detail context. 
 
 One Panel Session owns one temporary Event History. The normal IndexedDB journal
 uses a rolling budget of 100,000 Evidence records or 256 MiB of canonical bytes;
-memory-backed History uses 5,000 records or 32 MiB. The Event History coordinator
+memory-backed History uses 25,000 records or 128 MiB. The Event History coordinator
 may move from IndexedDB to memory after bounded retry while preserving one
 interval and Evidence sequence. Storage mode, Capture Operation, Observation
 Coverage, continuity, and Live/Frozen position remain independent.
@@ -239,26 +239,11 @@ Rejected. A maintained Orient → Scope → Evidence → Explain → Act workflo
 
 The selected model retains only conventional compact master/detail Back restoration. It does not expose investigation steps, task frames, or a guided workflow trail.
 
-## Prototype evidence
+## Verification and supporting contracts
 
-The disposable [workbench-ui-04 prototype](../prototypes/workbench-ui-04/README.md) provides all three models on one deterministic diagnostic scenario. It includes captured-update and Local Injection transitions plus screenshots at:
+The accepted workspace is implemented in the production panel. The [panel verification procedure](agents/ui-verification.md), [independent visual-QA procedure](agents/ui-visual-qa.md), and committed production screenshot matrix cover compact, normal, shallow, and wide geometry.
 
-- compact: 563 × 700;
-- normal: 900 × 700;
-- wide: 1440 × 900.
-
-The [prototype comparison](../prototypes/workbench-ui-04/COMPARISON.md) records the evaluated trade-offs. The product owner reviewed the variants sequentially and explicitly accepted the Scoped Evidence Workspace synthesis.
-
-## Downstream decisions
-
-This decision fixes the workspace organizer and responsive structure. It deliberately leaves these questions to the existing frontier tickets:
-
-- complete Local Injection editor and outcome interaction;
-- exact density, pane sizing, overflow, and docked-size thresholds;
-- keyboard commands, focus ownership, selection behavior, and contextual-command details;
-- visual semantics for Capture confidence, lifecycle, provenance, diagnostics, and outcomes.
-
-Those decisions may refine the prototype but cannot reintroduce peer feature destinations or a maintained investigation stack without reopening this architecture decision.
+Local Injection, density, keyboard behavior, and visual semantics are defined by the accepted contracts linked in the [UI Standard](WORKBENCH_UI_STANDARD.md). They may refine the workspace without reintroducing peer feature destinations or a maintained investigation stack.
 
 ## Vocabulary resolution
 

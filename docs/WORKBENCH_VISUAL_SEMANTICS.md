@@ -156,7 +156,7 @@ Outcome evidence remains in the document or resulting Evidence trace. A disappea
 
 ## Theme, contrast, and forced colors
 
-Dark, Light, Follow DevTools, zoom, grayscale, and forced-colors modes preserve the same semantic text, ordering, and geometry.
+The accepted Dark theme, zoom, grayscale, and forced-colors modes preserve the same semantic text, ordering, and geometry. Browser Light emulation remains a regression input; it does not select a separate Workbench theme.
 
 - Ordinary text targets at least `4.5:1` contrast against its surface.
 - Large text and non-text component boundaries or state indicators target at least `3:1`.
@@ -177,11 +177,9 @@ Rejected. A fixed provenance/phase/COMMAND/lifecycle/diagnostic/outcome gutter i
 
 Rejected as the earlier variable-row universal ledger grammar. The approved 2026-09-11 Evidence stream keeps one fixed 30px rhythm and ordinary chronological rows; it does not create grouped sequence boundaries or another investigation taxonomy.
 
-## Verification evidence
+## Verification
 
-The disposable [workbench-ui-08 prototype](../prototypes/workbench-ui-08/README.md) provides the selected Plain Ledger and the two rejected contrasts over one deterministic Lightstreamer scenario. The later [workbench-ui-12 prototype](../prototypes/workbench-ui-12/README.md) records the maintainer-approved Scope priority blocks and Order rail amendment. Browser review covered populated and long-identity Scope, ordered Evidence, mixed Server and Local Evidence, degraded Capture, Frozen high volume, immutable raw Server evidence, empty Scope, and ready, invalid, stale-target, delivered, and failed Local Injection states.
-
-The selected model and contrasts were exercised at compact `563×700`, normal `900×700`, shallow `900×320`, and wide `1440×900` geometries in representative Dark and Light themes. Checks covered shell and pane overflow, textual provenance, non-color meaning, persistent Injection outcomes, keyboard isolation, and browser console errors. Type checking, extension build, JavaScript syntax checking, and whitespace validation passed. No production panel behavior changed.
+The committed production matrix and [panel verification procedure](agents/ui-verification.md) cover populated and long-identity Scope, ordered Evidence, Server and Local provenance, degraded Capture, Frozen high volume, immutable raw Evidence, empty Scope and Local Injection outcomes. Review compact, normal, shallow and wide geometries in Dark and forced colors, including text and non-color meaning, persistent outcomes, focus and overflow. The [independent visual-QA procedure](agents/ui-visual-qa.md) records the acceptance evidence.
 
 ## Vocabulary resolution
 

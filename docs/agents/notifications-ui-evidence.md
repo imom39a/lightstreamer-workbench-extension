@@ -72,7 +72,7 @@ Local logs and the isolated Playwright wrapper are in `test-results/notification
 | `CI=1 LSEW_UI_UPDATE=0 npm run test:ui` | Final staged-only browser run passed all 192 tests, including all 75 visual comparisons |
 | Final same browser command with `--grep 'Notifications\|500-field Draft'` | 11 passed after the final return-destination fix and affected-Scope route coverage |
 | Pinned Linux `test:ui:update`, then `test:ui`, each with `--grep 'visual baseline'` | 75 passed on each run |
-| `LSEW_VISUAL_PROTOTYPE_PORT=4214 LSEW_VISUAL_PANEL_PORT=4215 npm run test:ui:visual` | 80/80 captures passed |
+| `LSEW_VISUAL_PANEL_PORT=4215 npm run test:ui:visual` | 80/80 captures passed |
 | `npm run test:ui:extension` | Final-source repeat passed: authentic DevTools panel, two Panel Sessions, and controlled-disposal smoke |
 | `LIGHTSTREAMER_PORT=4216 LSEW_LIGHTSTREAMER_CONTAINER=lsew-notifications-fixture-staged LSEW_FIXTURE_URL=http://localhost:4216/ LSEW_BROWSER_CACHE_DIR=<pinned-cache> npm run fixture:test:browser` | Direct/message-channel/listener transport proof and all 7 official-client panel journeys passed, including Notifications → server-error Evidence |
 | Final `npm run release:package -- --skip-tests` after staged-only `npm test` | Typecheck, build, and ZIP audit passed on the final source; 437,398-byte ZIP, below the 1 MiB budget |

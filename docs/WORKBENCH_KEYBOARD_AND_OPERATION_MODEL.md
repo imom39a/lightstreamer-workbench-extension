@@ -2,7 +2,7 @@
 
 Status: accepted product direction, 2026-08-04
 
-This document defines the keyboard, focus, selection, filtering, contextual-action, and pointer behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md), [Elastic Triad layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md), and [single-event Local Injection editor](../prototypes/workbench-ui-05/COMPARISON.md). The production panel implements this model; the [UI Standard](WORKBENCH_UI_STANDARD.md) and later accepted amendments govern any differences.
+This document defines the keyboard, focus, selection, filtering, contextual-action, and pointer behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md), [Elastic Triad layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md), and [standalone Local Injection contract](WORKBENCH_UI_STANDARD.md#local-injection). The production panel implements this model; the [UI Standard](WORKBENCH_UI_STANDARD.md) and later accepted amendments govern any differences.
 
 ## Decision
 
@@ -200,7 +200,7 @@ The help surface describes behavior already present in visible controls; it is n
 
 ## Chrome and DevTools shortcut boundary
 
-The prototype checked proposed behavior against the current official [Chrome DevTools shortcut map](https://developer.chrome.com/docs/devtools/shortcuts) and [assistive-technology navigation guidance](https://developer.chrome.com/docs/devtools/accessibility/navigation). Workbench does not claim DevTools or browser chords for the Command Menu, file navigation, cross-resource search, panel cycling, Drawer, reload, docking, zoom, debugger control, or recording tools.
+The shortcut boundary follows the official [Chrome DevTools shortcut map](https://developer.chrome.com/docs/devtools/shortcuts) and [assistive-technology navigation guidance](https://developer.chrome.com/docs/devtools/accessibility/navigation). Workbench does not claim DevTools or browser chords for the Command Menu, file navigation, cross-resource search, panel cycling, Drawer, reload, docking, zoom, debugger control, or recording tools.
 
 Control/Command+F is the sole intentional context multiplexer because it follows established local-Find behavior and remains document-local inside editors. The former Control/Command+Enter direct Local Injection shortcut is retired. F6, Alt+number, pane-cycling chords, printable mnemonics, and focus modes are excluded from v1.
 
@@ -212,7 +212,7 @@ Material UI changes must verify:
 
 - complete keyboard traversal and operation without a pointer;
 - one Tab stop per composite and logical ordering at every geometry;
-- visible, independent focus and selection in light, dark, and forced-colors modes;
+- visible, independent focus and selection in Dark and forced-colors modes;
 - focus restoration after menu, Find, compact, and promoted-document transitions;
 - stable focus, selection, scroll, and editor state during live capture;
 - names, roles, states, row context, blocking reasons, and status outcomes with assistive technology;
@@ -228,24 +228,11 @@ Rejected as the v1 operating model. A searchable command projection could improv
 
 Rejected as the v1 operating model. Temporary mnemonic pane routing reduces long-distance Tab traversal, but adds memory burden, international-keyboard and assistive-technology risk, remapping, and conflict management.
 
-Revisit either accelerator only after measured usage identifies a concrete bottleneck that native composites, Find, and contextual menus cannot solve. Their prototypes remain comparison evidence, not dormant production features.
+Revisit either accelerator only after measured usage identifies a concrete bottleneck that native composites, Find, and contextual menus cannot solve.
 
-## Verification evidence
+## Verification
 
-The disposable [workbench-ui-07 prototype](../prototypes/workbench-ui-07/README.md) compares all three models on the same deterministic Workbench scenario. The selected Roving Instrument was browser-checked for:
-
-- keyboard movement and selection in Evidence;
-- explicit Evidence-to-Context opening;
-- staged Find Escape and exact trigger restoration;
-- pointer, Menu key, and Shift+F10 contextual parity;
-- unowned Escape preservation;
-- filtered-out selection retention and deliberate replacement;
-- editor Tab movement and indentation opt-in;
-- invalid and retired Injection targets without direct execution shortcuts;
-- Live, Frozen, empty, high-volume, menu, Local Injection, and validation-error scenarios;
-- compact, normal, shallow, and wide geometry in representative light and dark themes.
-
-JavaScript syntax checking, TypeScript checking, the production extension build, whitespace validation, browser overflow checks, and console inspection passed. No production panel behavior changed.
+The production browser suite covers Evidence movement and selection, Context inspection, staged Find Escape, contextual-menu keyboard and pointer parity, filtered selection, editor focus, invalid and retired Injection targets, and Live/Frozen transitions. Compact, normal, shallow, wide, Dark and forced-colors states follow the [panel verification procedure](agents/ui-verification.md) and [independent visual-QA procedure](agents/ui-visual-qa.md).
 
 ## Vocabulary resolution
 

@@ -2,7 +2,7 @@
 
 Material UI, approved by the maintainer on 2026-09-28. Project item:
 `agent-readiness-01` in [Project #2](https://github.com/users/imom39a/projects/2).
-Base: `8081249`. Branch: `codex/agent-access-readiness`.
+Implementation base: `8081249`; the completed work is integrated in main.
 
 ## Accepted behavior
 

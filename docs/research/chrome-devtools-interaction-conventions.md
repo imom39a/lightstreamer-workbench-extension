@@ -308,13 +308,13 @@ Chromium permits rare application-level semantic color tokens when system roles 
 
 ## Implications for later design tickets
 
-This research constrains, but does not answer, the information-architecture and prototype decisions:
+This research constrains, but does not answer, the information-architecture decisions:
 
 - Any candidate IA should demonstrate the full **orient → investigate → act** flow without duplicating controls across cards or pages.
-- At least one prototype should use the Protocol Monitor-like evidence pattern as a benchmark: compact actions, structured filter, dense selection surface, detail split, contextual draft action, and status summary.
-- Competing prototypes may organize peer surfaces differently, but each must use the same keyboard, selection, provenance, status, theme, and resizing rules.
-- Local Injection prototypes must show source, draft, target Subscription, validation, deliberate injection, and result provenance; simply placing a JSON textarea in a permanent card does not satisfy the domain exception.
-- Compact prototypes must be evaluated in both side-docked and bottom-docked shapes, not only as a conventional wide webpage.
+- Design comparisons should use the Protocol Monitor-like evidence pattern as a benchmark: compact actions, structured filter, dense selection surface, detail split, contextual draft action, and status summary.
+- Competing designs may organize peer surfaces differently, but each must use the same keyboard, selection, provenance, status, theme, and resizing rules.
+- Local Injection designs must show source, draft, target Subscription, validation, deliberate injection, and result provenance; simply placing a JSON textarea in a permanent card does not satisfy the domain exception.
+- Compact layouts must be evaluated in both side-docked and bottom-docked shapes, not only as a conventional wide webpage.
 
 ## Limitations and open validation work
 
@@ -323,7 +323,7 @@ This research constrains, but does not answer, the information-architecture and 
 - Built-in DevTools has access to native menus, private tokens, and richer dynamic theming that extension pages do not. Exact pixel/color/menu parity is neither possible nor necessary through the public panel API.
 - The public theme API exposes light/dark state, not Chrome's dynamic accent palette. A Workbench-specific accent can be semantically consistent but cannot claim exact dynamic-theme parity.
 - WAI-ARIA APG examples explicitly require testing across real browser/assistive-technology combinations. Automated checks alone cannot validate composite grids, trees, splitters, or focus behavior. [APG patterns](https://www.w3.org/WAI/ARIA/apg/patterns/)
-- This research did not run a comparative usability study or select breakpoints, row columns, pane defaults, Workbench navigation peers, or the final Local Injection placement. Those remain prototype/decision work.
+- This research did not run a comparative usability study or select breakpoints, row columns, pane defaults, Workbench navigation peers, or the final Local Injection placement. The accepted UI contracts record those subsequent decisions.
 
 ## Primary source index
 

@@ -3,35 +3,30 @@
     "id": "normal-density-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "live-selected" },
     "production": { "scenario": "live-selected", "setup": "none" }
   },
   {
     "id": "local-injection-captured-preview-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "B", "state": "edit", "frame": "compact", "setup": "captured-draft" },
     "production": { "scenario": "local-injection-json", "setup": "captured-draft" }
   },
   {
     "id": "local-injection-authored-direct-shallow-dark",
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
-    "prototype": { "variant": "B", "state": "review", "frame": "shallow", "setup": "authored-review" },
     "production": { "scenario": "local-injection-authored", "setup": "authored-direct" }
   },
   {
     "id": "local-injection-captured-diff-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "B", "state": "edit", "frame": "normal", "setup": "captured-draft" },
     "production": { "scenario": "local-injection-captured", "setup": "captured-draft-changed" }
   },
   {
     "id": "local-injection-captured-diff-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "B", "state": "edit", "frame": "wide", "setup": "captured-draft" },
     "production": { "scenario": "local-injection-captured", "setup": "captured-draft-changed" }
   },
   {
@@ -39,35 +34,30 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "B", "state": "review", "frame": "shallow", "setup": "authored-review" },
     "production": { "scenario": "local-injection-authored", "setup": "authored-direct" }
   },
   {
     "id": "server-injection-edit-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-edit", "setup": "server-injection" }
   },
   {
     "id": "server-injection-recipe-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-recipe", "setup": "server-injection" }
   },
   {
     "id": "server-injection-review-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-review", "setup": "server-injection" }
   },
   {
     "id": "server-injection-degraded-shallow-dark",
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
-    "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-degraded", "setup": "server-injection" }
   },
   {
@@ -75,70 +65,60 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-unknown", "setup": "server-injection" }
   },
   {
     "id": "server-injection-high-volume-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "reference": { "source": "production", "storageMode": "clean" },
     "production": { "scenario": "server-injection-high-volume", "setup": "server-injection" }
   },
   {
     "id": "normal-retained-find-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "frozen", "frame": "normal", "setup": "retained-find" },
     "production": { "scenario": "frozen-high-volume", "setup": "retained-find" }
   },
   {
     "id": "compact-long-identities-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "frozen", "frame": "compact", "setup": "long-identities" },
     "production": { "scenario": "frozen-high-volume", "setup": "none" }
   },
   {
     "id": "normal-help-resources-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "more-actions" },
     "production": { "scenario": "live-selected", "setup": "more-actions-help" }
   },
   {
     "id": "compact-help-resources-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "more-actions", "surface": "context" },
     "production": { "scenario": "live-selected", "setup": "more-actions-help" }
   },
   {
     "id": "shallow-help-resources-dark",
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "more-actions" },
     "production": { "scenario": "live-selected", "setup": "more-actions-help" }
   },
   {
     "id": "wide-selected-json-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "selected-json" },
     "production": { "scenario": "local-injection-json", "setup": "none" }
   },
   {
     "id": "normal-limited-capture-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "coverage", "frame": "normal", "setup": "none" },
     "production": { "scenario": "limited-capture", "setup": "none" }
   },
   {
     "id": "compact-memory-fallback-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "memory-operations", "surface": "context" },
     "production": { "scenario": "memory-fallback", "setup": "memory-operations" }
   },
   {
@@ -146,24 +126,24 @@
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
     "visualEvidenceOnly": true,
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
-    "production": { "scenario": "history-rolling-high-volume", "setup": "notifications-history-rollover" }
+    "production": { "scenario": "history-rolling-high-volume", "setup": "notifications-history-rollover" },
+    "reference": { "id": "notifications-volume-wide-dark" }
   },
   {
     "id": "normal-history-recovered-notifications-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
     "visualEvidenceOnly": true,
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer" },
-    "production": { "scenario": "history-journal-recovered", "setup": "notifications-history-recovered" }
+    "production": { "scenario": "history-journal-recovered", "setup": "notifications-history-recovered" },
+    "reference": { "id": "notifications-volume-normal-dark" }
   },
   {
     "id": "compact-history-journal-memory-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
     "visualEvidenceOnly": true,
-    "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "none" },
-    "production": { "scenario": "history-journal-memory-fallback", "setup": "history-memory" }
+    "production": { "scenario": "history-journal-memory-fallback", "setup": "history-memory" },
+    "reference": { "id": "compact-memory-fallback-dark" }
   },
   {
     "id": "shallow-history-gap-forced-dark",
@@ -171,63 +151,55 @@
     "theme": "dark",
     "forcedColors": true,
     "visualEvidenceOnly": true,
-    "prototype": { "variant": "C", "state": "coverage", "frame": "shallow", "setup": "none" },
-    "production": { "scenario": "history-evidence-gap", "setup": "history-gap" }
+    "production": { "scenario": "history-evidence-gap", "setup": "history-gap" },
+    "reference": { "id": "activity-main-shallow-forced-dark" }
   },
   {
     "id": "shallow-disconnected-dark",
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "disconnected", "frame": "shallow", "setup": "none" },
     "production": { "scenario": "disconnected", "setup": "none" }
   },
   {
     "id": "wide-recovering-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "recovering", "frame": "wide", "setup": "none" },
     "production": { "scenario": "recovering", "setup": "none" }
   },
   {
     "id": "compact-clear-confirmation-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "clear-confirmation", "surface": "context" },
     "production": { "scenario": "live-selected", "setup": "clear-confirmation" }
   },
   {
     "id": "normal-clear-confirmation-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "clear-confirmation", "surface": "context" },
     "production": { "scenario": "live-selected", "setup": "clear-confirmation" }
   },
   {
     "id": "wide-diagnostics-stress-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "coverage", "frame": "wide", "setup": "none" },
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   },
   {
     "id": "normal-diagnostics-stress-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "coverage", "frame": "normal", "setup": "none" },
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   },
   {
     "id": "shallow-diagnostics-stress-dark",
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "coverage", "frame": "shallow", "setup": "none" },
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   },
   {
     "id": "compact-diagnostics-stress-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "coverage", "frame": "compact", "setup": "none" },
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   },
   {
@@ -275,21 +247,18 @@
     "id": "activity-main-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "reference": { "source": "asset", "path": "docs/reference/integrated-activity/D-single-track-normal-dark.jpg" },
     "production": { "scenario": "integrated-activity-main", "setup": "activity-main" }
   },
   {
     "id": "activity-main-chooser-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "reference": { "source": "asset", "path": "docs/reference/integrated-activity/D-single-track-compact-light.jpg" },
     "production": { "scenario": "integrated-activity-main", "setup": "activity-main-chooser" }
   },
   {
     "id": "activity-main-summary-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "reference": { "source": "asset", "path": "docs/reference/integrated-activity/D-single-track-wide-dark.jpg" },
     "production": { "scenario": "integrated-activity-main", "setup": "activity-main-summary" }
   },
   {
@@ -297,91 +266,78 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "live-selected" },
     "production": { "scenario": "integrated-activity-main", "setup": "activity-main" }
   },
   {
     "id": "activity-10k-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "activity", "frame": "normal", "setup": "activity-10k" },
     "production": { "scenario": "activity-10k", "setup": "activity-10k" }
   },
   {
     "id": "activity-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "activity", "frame": "compact", "setup": "activity-graphical" },
     "production": { "scenario": "activity-graphical", "setup": "activity-graphical" }
   },
   {
     "id": "activity-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "activity", "frame": "wide", "setup": "activity-graphical" },
     "production": { "scenario": "activity-graphical", "setup": "activity-graphical" }
   },
   {
     "id": "activity-limited-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "coverage", "frame": "normal", "setup": "activity-limited" },
     "production": { "scenario": "limited-capture", "setup": "activity-limited" }
   },
   {
     "id": "activity-memory-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "activity-memory" },
     "production": { "scenario": "memory-fallback", "setup": "activity-memory" }
   },
   {
     "id": "scenario-edit-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario" }
   },
   {
     "id": "scenario-edit-normal-light",
     "viewport": { "width": 900, "height": 700 },
     "theme": "light",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario" }
   },
   {
     "id": "scenario-parked-compact-light",
     "viewport": { "width": 563, "height": 700 },
     "theme": "light",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-parked" }
   },
   {
     "id": "scenario-discard-confirmation-normal-light",
     "viewport": { "width": 900, "height": 700 },
     "theme": "light",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-discard-confirmation" }
   },
   {
     "id": "scenario-parked-discard-confirmation-compact-light",
     "viewport": { "width": 563, "height": 700 },
     "theme": "light",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-parked-discard-confirmation" }
   },
   {
     "id": "scenario-review-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-review", "setup": "scenario" }
   },
   {
     "id": "scenario-complete-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-complete", "setup": "scenario" }
   },
   {
@@ -389,28 +345,24 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-stop-in-flight", "setup": "scenario-inflight-stop" }
   },
   {
     "id": "scenario-paused-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-review", "setup": "scenario-hidden-pause" }
   },
   {
     "id": "scenario-membership-preview-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-membership-preview" }
   },
   {
     "id": "scenario-authored-undo-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-authored-undo" }
   },
   {
@@ -418,21 +370,18 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-high-volume", "setup": "scenario-capacity-refusal" }
   },
   {
     "id": "scenario-halt-partial-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "stopped", "frame": "compact", "setup": "scenario-halt", "referenceId": "scenario-halt-partial-compact-light" },
     "production": { "scenario": "local-injection-scenario-partial", "setup": "scenario" }
   },
   {
     "id": "scenario-halt-listener-drift-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "drift", "frame": "normal", "setup": "scenario-halt" },
     "production": { "scenario": "local-injection-scenario-listener-drift", "setup": "scenario" }
   },
   {
@@ -440,63 +389,54 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "unknown", "frame": "shallow", "setup": "scenario-halt" },
     "production": { "scenario": "local-injection-scenario-unknown", "setup": "scenario" }
   },
   {
     "id": "scenario-halt-server-drift-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "drift", "frame": "wide", "setup": "scenario-halt", "referenceId": "scenario-halt-server-drift-wide-light" },
     "production": { "scenario": "local-injection-scenario-server-drift", "setup": "scenario" }
   },
   {
     "id": "scenario-halt-unretained-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "unretained", "frame": "normal", "setup": "scenario-halt", "referenceId": "scenario-halt-unretained-normal-light" },
     "production": { "scenario": "local-injection-scenario-unretained", "setup": "scenario" }
   },
   {
     "id": "scenario-halt-cleared-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "cleared", "frame": "compact", "setup": "scenario-halt" },
     "production": { "scenario": "local-injection-scenario-cleared", "setup": "scenario" }
   },
   {
     "id": "scenario-checkpoint-authoring-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-authoring", "setup": "scenario-checkpoint" }
   },
   {
     "id": "scenario-checkpoint-review-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-review", "setup": "scenario-checkpoint" }
   },
   {
     "id": "scenario-checkpoint-waiting-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-waiting", "setup": "scenario-checkpoint" }
   },
   {
     "id": "scenario-checkpoint-pass-evidence-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-pass", "setup": "scenario-checkpoint" }
   },
   {
     "id": "scenario-checkpoint-failure-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-fail", "setup": "scenario-checkpoint" }
   },
   {
@@ -504,35 +444,30 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-wire-unavailable", "setup": "scenario-checkpoint" }
   },
   {
     "id": "scenario-checkpoint-ambiguous-null-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-ambiguous-null", "setup": "scenario-checkpoint" }
   },
   {
     "id": "scenario-checkpoint-high-volume-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-checkpoint-high-volume", "setup": "scenario-checkpoint-high-volume" }
   },
   {
     "id": "server-diagnostics-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-server-callbacks", "setup": "diagnostic-server" }
   },
   {
     "id": "server-diagnostics-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-server-callbacks", "setup": "diagnostic-server" }
   },
   {
@@ -540,28 +475,24 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "shallow", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-server-callbacks", "setup": "diagnostic-server" }
   },
   {
     "id": "server-diagnostics-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-server-callbacks", "setup": "diagnostic-server" }
   },
   {
     "id": "subscription-diagnostics-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
   },
   {
     "id": "subscription-diagnostics-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
   },
   {
@@ -569,28 +500,24 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "shallow", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
   },
   {
     "id": "subscription-diagnostics-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
   },
   {
     "id": "anomaly-diagnostics-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   },
   {
     "id": "anomaly-diagnostics-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   },
   {
@@ -598,49 +525,42 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "shallow", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   },
   {
     "id": "anomaly-diagnostics-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   },
   {
     "id": "scenario-diagnostic-authoring-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-authoring", "setup": "scenario-diagnostic-checkpoint" }
   },
   {
     "id": "scenario-diagnostic-review-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-review", "setup": "scenario-diagnostic-checkpoint" }
   },
   {
     "id": "scenario-diagnostic-waiting-wide-dark",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-waiting", "setup": "scenario-diagnostic-checkpoint" }
   },
   {
     "id": "scenario-diagnostic-pass-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-pass", "setup": "scenario-diagnostic-checkpoint" }
   },
   {
     "id": "scenario-diagnostic-fail-compact-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-fail", "setup": "scenario-diagnostic-checkpoint" }
   },
   {
@@ -648,367 +568,160 @@
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-diagnostic-unavailable", "setup": "scenario-diagnostic-checkpoint" }
   },
   {
     "id": "notifications-volume-compact-dark",
-    "viewport": {"width": 563, "height": 700},
+    "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": {"variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer"},
-    "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
+    "production": { "scenario": "notifications-volume", "setup": "notifications-volume" }
   },
   {
     "id": "notifications-volume-normal-dark",
-    "viewport": {"width": 900, "height": 700},
+    "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": {"variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer"},
-    "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
+    "production": { "scenario": "notifications-volume", "setup": "notifications-volume" }
   },
   {
     "id": "notifications-volume-shallow-forced-dark",
-    "viewport": {"width": 900, "height": 320},
+    "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "prototype": {"variant": "A", "state": "diagnostic", "frame": "shallow", "setup": "diagnostic-footer"},
-    "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
+    "production": { "scenario": "notifications-volume", "setup": "notifications-volume" }
   },
   {
     "id": "notifications-volume-wide-dark",
-    "viewport": {"width": 1440, "height": 900},
+    "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "prototype": {"variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer"},
-    "production": {"scenario": "notifications-volume", "setup": "notifications-volume"}
+    "production": { "scenario": "notifications-volume", "setup": "notifications-volume" }
   },
   {
     "id": "notifications-empty-compact-dark",
-    "viewport": {"width": 563, "height": 700},
+    "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": {"variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer"},
-    "production": {"scenario": "notifications-empty", "setup": "notifications-empty"}
+    "production": { "scenario": "notifications-empty", "setup": "notifications-empty" }
   },
   {
     "id": "readability-c-normal-dark",
-    "viewport": {"width": 1440, "height": 900},
+    "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "reference": {"source": "asset", "path": "prototypes/workbench-ui-12/screenshots/C-normal.jpg"},
-    "production": {"scenario": "recovering", "setup": "readability"}
+    "production": { "scenario": "recovering", "setup": "readability" }
   },
   {
     "id": "readability-c-compact-dark",
-    "viewport": {"width": 563, "height": 700},
+    "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "reference": {"source": "prototype-12", "variant": "C", "frame": "compact"},
-    "production": {"scenario": "frozen-high-volume", "setup": "readability-scope"}
+    "production": { "scenario": "frozen-high-volume", "setup": "readability-scope" }
   },
   {
     "id": "search-scopes-compact-dark",
-    "viewport": {
-      "width": 563,
-      "height": 700
-    },
+    "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "production": {
-      "scenario": "live-high-scope",
-      "setup": "scope-search"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/compact-long-identities-dark-darwin.png"
-    }
+    "production": { "scenario": "live-high-scope", "setup": "scope-search" }
   },
   {
     "id": "search-scopes-normal-dark",
-    "viewport": {
-      "width": 900,
-      "height": 700
-    },
+    "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "production": {
-      "scenario": "live-high-scope",
-      "setup": "scope-search"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/normal-density-dark-darwin.png"
-    }
+    "production": { "scenario": "live-high-scope", "setup": "scope-search" }
   },
   {
     "id": "search-scopes-shallow-dark",
-    "viewport": {
-      "width": 900,
-      "height": 320
-    },
+    "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
-    "production": {
-      "scenario": "live-high-scope",
-      "setup": "scope-search"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
-    }
+    "production": { "scenario": "live-high-scope", "setup": "scope-search" }
   },
   {
     "id": "search-scopes-wide-dark",
-    "viewport": {
-      "width": 1440,
-      "height": 900
-    },
+    "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "production": {
-      "scenario": "live-high-scope",
-      "setup": "scope-search"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/wide-selected-json-dark-darwin.png"
-    }
+    "production": { "scenario": "live-high-scope", "setup": "scope-search" }
   },
   {
     "id": "search-scopes-empty-normal-dark",
-    "viewport": {
-      "width": 900,
-      "height": 700
-    },
+    "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "production": {
-      "scenario": "live-high-scope",
-      "setup": "scope-search-empty"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/normal-density-dark-darwin.png"
-    }
+    "production": { "scenario": "live-high-scope", "setup": "scope-search-empty" }
   },
   {
     "id": "search-scopes-shallow-forced-dark",
-    "viewport": {
-      "width": 900,
-      "height": 320
-    },
+    "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "production": {
-      "scenario": "live-high-scope",
-      "setup": "scope-search"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
-    }
+    "production": { "scenario": "live-high-scope", "setup": "scope-search" }
   },
   {
     "id": "search-find-compact-dark",
-    "viewport": {
-      "width": 563,
-      "height": 700
-    },
+    "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "production": {
-      "scenario": "frozen-high-volume",
-      "setup": "retained-find"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/compact-long-identities-dark-darwin.png"
-    }
+    "production": { "scenario": "frozen-high-volume", "setup": "retained-find" }
   },
   {
     "id": "search-find-shallow-dark",
-    "viewport": {
-      "width": 900,
-      "height": 320
-    },
+    "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
-    "production": {
-      "scenario": "frozen-high-volume",
-      "setup": "retained-find"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
-    }
+    "production": { "scenario": "frozen-high-volume", "setup": "retained-find" }
   },
   {
     "id": "search-find-wide-dark",
-    "viewport": {
-      "width": 1440,
-      "height": 900
-    },
+    "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "production": {
-      "scenario": "frozen-high-volume",
-      "setup": "retained-find"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/wide-selected-json-dark-darwin.png"
-    }
+    "production": { "scenario": "frozen-high-volume", "setup": "retained-find" }
   },
   {
     "id": "search-find-shallow-forced-dark",
-    "viewport": {
-      "width": 900,
-      "height": 320
-    },
+    "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "forcedColors": true,
-    "production": {
-      "scenario": "frozen-high-volume",
-      "setup": "retained-find"
-    },
-    "reference": {
-      "source": "git",
-      "revision": "8081249a4cc9fd8fc871da0fcdf4c308446e97e8",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/shallow-help-resources-dark-darwin.png"
-    }
+    "production": { "scenario": "frozen-high-volume", "setup": "retained-find" }
   },
   {
     "id": "scenario-capture-default5000-normal-dark",
-    "viewport": {
-      "width": 900,
-      "height": 700
-    },
+    "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "reference": {
-      "source": "git",
-      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-review-normal-dark-darwin.png"
-    },
-    "production": {
-      "scenario": "local-injection-scenario-capture-volume",
-      "setup": "scenario-capture-default"
-    }
+    "production": { "scenario": "local-injection-scenario-capture-volume", "setup": "scenario-capture-default" }
   },
   {
     "id": "scenario-capture-default5000-wide-dark",
-    "viewport": {
-      "width": 1440,
-      "height": 900
-    },
+    "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "reference": {
-      "source": "git",
-      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-authored-undo-wide-dark-darwin.png"
-    },
-    "production": {
-      "scenario": "local-injection-scenario-capture-volume",
-      "setup": "scenario-capture-default"
-    }
+    "production": { "scenario": "local-injection-scenario-capture-volume", "setup": "scenario-capture-default" }
   },
   {
     "id": "scenario-capture-default5000-compact-dark",
-    "viewport": {
-      "width": 563,
-      "height": 700
-    },
+    "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "reference": {
-      "source": "git",
-      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-edit-compact-dark-darwin.png"
-    },
-    "production": {
-      "scenario": "local-injection-scenario-capture-volume",
-      "setup": "scenario-capture-default"
-    }
+    "production": { "scenario": "local-injection-scenario-capture-volume", "setup": "scenario-capture-default" }
   },
   {
     "id": "scenario-capture-default5000-shallow-forced-dark",
-    "viewport": {
-      "width": 900,
-      "height": 320
-    },
+    "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
-    "reference": {
-      "source": "git",
-      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-capacity-refusal-shallow-forced-dark-darwin.png"
-    },
-    "production": {
-      "scenario": "local-injection-scenario-capture-volume",
-      "setup": "scenario-capture-default"
-    },
+    "production": { "scenario": "local-injection-scenario-capture-volume", "setup": "scenario-capture-default" },
     "forcedColors": true
   },
   {
     "id": "scenario-capture-selected-batch-normal-dark",
-    "viewport": {
-      "width": 900,
-      "height": 700
-    },
+    "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "reference": {
-      "source": "git",
-      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-review-normal-dark-darwin.png"
-    },
-    "production": {
-      "scenario": "local-injection-scenario-capture-volume",
-      "setup": "scenario-capture-selected-batch"
-    }
+    "production": { "scenario": "local-injection-scenario-capture-volume", "setup": "scenario-capture-selected-batch" }
   },
   {
     "id": "scenario-capture-empty-normal-dark",
-    "viewport": {
-      "width": 900,
-      "height": 700
-    },
+    "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "reference": {
-      "source": "git",
-      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-review-normal-dark-darwin.png"
-    },
-    "production": {
-      "scenario": "local-injection-scenario-edit",
-      "setup": "scenario-capture-empty"
-    }
+    "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-capture-empty" }
   },
   {
     "id": "scenario-capture-read-failure-wide-dark",
-    "viewport": {
-      "width": 1440,
-      "height": 900
-    },
+    "viewport": { "width": 1440, "height": 900 },
     "theme": "dark",
-    "reference": {
-      "source": "git",
-      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-authored-undo-wide-dark-darwin.png"
-    },
-    "production": {
-      "scenario": "local-injection-scenario-edit",
-      "setup": "scenario-capture-read-failure"
-    }
+    "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-capture-read-failure" }
   },
   {
     "id": "scenario-capture-100-refusal-normal-dark",
-    "viewport": {
-      "width": 900,
-      "height": 700
-    },
+    "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "reference": {
-      "source": "git",
-      "revision": "09d49790a5cf3ee2fabbc271ba7708c780b9386b",
-      "path": "tests/ui/visual-regression.spec.ts-snapshots/scenario-review-normal-dark-darwin.png"
-    },
-    "production": {
-      "scenario": "local-injection-scenario-high-volume",
-      "setup": "scenario-capacity-refusal"
-    }
+    "production": { "scenario": "local-injection-scenario-high-volume", "setup": "scenario-capacity-refusal" }
   }
-
 ]

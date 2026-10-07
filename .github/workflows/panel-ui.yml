@@ -52,7 +52,7 @@ jobs:
     name: Panel UI browser gate
     runs-on: ubuntu-24.04
     container: mcr.microsoft.com/playwright:v1.62.1-noble
-    # The 328 browser checks plus 107-state visual packet can exceed 25 minutes
+    # The complete browser suite plus production visual packet can exceed 25 minutes
     # before the real-extension smoke. Keep orchestration headroom separate
     # from the unchanged per-test and measured operation budgets.
     timeout-minutes: 35
@@ -61,7 +61,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0 # Visual review references accepted snapshots at recorded revisions.
+          fetch-depth: 0 # Visual review reads committed production baselines.
 
       - name: Trust the mounted checkout in the job container
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -116,7 +116,7 @@ jobs:
           LSEW_UI_UPDATE: "0"
         run: npm run test:ui
 
-      - name: Generate prototype and production visual review evidence
+      - name: Generate committed-baseline and current production visual review evidence
         run: npm run test:ui:visual
 
       - name: Run unpacked production extension smoke

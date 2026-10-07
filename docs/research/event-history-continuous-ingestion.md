@@ -12,7 +12,9 @@ candidate gaps, and low-attention Notifications. References below to the
 "current implementation" describe the pre-decision baseline. Memory-first
 canonical acceptance, an independently committed indexer, failure-class-specific
 retry policy, export retention leases, and automatic interval rollover remain
-research options and are not part of this implementation.
+research options and are not part of this implementation. ADR 0014's later memory
+capacity amendment sets current memory retention to 25,000 records / 128 MiB;
+the 5,000-record / 32 MiB figures below describe the research baseline.
 
 ## Executive findings
 

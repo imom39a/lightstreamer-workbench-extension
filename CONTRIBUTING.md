@@ -177,7 +177,7 @@ npm run measure:event-history:100k
 
 Every matrix cell uses a fresh temporary profile and native IndexedDB. The
 normal tier is 100,000 Evidence records or 256 MiB of canonical accounted
-bytes; the startup memory fallback remains 5,000 records or 32 MiB. Browser
+bytes; the memory fallback retains up to 25,000 records or 128 MiB. Browser
 quota estimates and physical origin usage are advisory measurements, not
 reservations, and the gate never requires `unlimitedStorage`.
 
@@ -208,9 +208,9 @@ The runner covers deterministic Diagnose, Scope, Ordered Evidence, degraded oper
 npm run test:ui -- --scenario=local-injection-authored --viewport=900x700 --theme=dark
 ```
 
-`Auto`, `Dark`, and `Light` are supported themes. The semantic suite does not maintain a second renderer's screenshot baselines; it retains screenshots and other browser artifacts when a check fails. Capture deliberate visual-review evidence through the Workbench UI verification procedure. The runner uses `CHROME_PATH` when set, then the Chrome for Testing browser installed by `npm run fixture:browser:install`, then a system Chrome installation.
+Workbench uses the accepted Dark theme, including forced-colors support. Light browser emulation remains a regression input for legacy matrix identifiers; it does not enable a separate panel theme. The semantic suite does not maintain a second renderer's screenshot baselines; it retains screenshots and other browser artifacts when a check fails. Capture deliberate visual-review evidence through the Workbench UI verification procedure. The runner uses `CHROME_PATH` when set, then the Chrome for Testing browser installed by `npm run fixture:browser:install`, then a system Chrome installation.
 
-The production visual-regression matrix is part of `npm run test:ui`; it never rewrites its committed Playwright snapshots. Run `npm run test:ui:update` only for an intentional, reviewed baseline creation or update. Run `npm run test:ui:visual` to create the accepted-prototype reference, current production, and visual-diff packet at compact `563×700`, normal `900×700`, shallow `900×320`, and wide `1440×900` geometry. That packet is ignored local evidence for independent visual QA, not a pixel-parity acceptance threshold.
+The production visual-regression matrix is part of `npm run test:ui`; it never rewrites its committed Playwright snapshots. Run `npm run test:ui:update` only for an intentional, reviewed baseline creation or update. Run `npm run test:ui:visual` to create the committed production baseline, current production, and visual-diff packet at compact `563×700`, normal `900×700`, shallow `900×320`, and wide `1440×900` geometry. That packet is ignored local evidence for independent visual QA, not a pixel-parity acceptance threshold. References come from committed snapshots at `HEAD`; set `LSEW_VISUAL_BASELINE_REF` to the reviewed base revision when comparing a UI change. Four visual-only History states name existing production baselines at matching geometry; storage-headroom states retain their clean-production reference. The manifest records the exact reference revision and path.
 
 Before handoff for a Material UI change, run and record the purpose and outcome of:
 
@@ -218,7 +218,7 @@ Before handoff for a Material UI change, run and record the purpose and outcome 
 npm run typecheck                 # Type contracts
 npm test                          # Unit and command-contract tests
 npm run test:ui                   # Chromium behavior and read-only visual baselines
-npm run test:ui:visual            # Prototype/current/diff independent-review packet
+npm run test:ui:visual            # Committed baseline/current/diff review packet
 npm run test:ui:extension         # Shipped unpacked DevTools panel
 npm run fixture:test:browser      # Official-client Local Injection proof
 npm run build                      # Production build and extension audit

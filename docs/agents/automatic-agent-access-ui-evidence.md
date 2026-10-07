@@ -3,7 +3,7 @@
 Date: 2026-09-25. Class: Material UI. Internal Project item: `agent-auto-01 —
 Make open panels automatically available to agents` in
 [Lightstreamer Workbench Project #2](https://github.com/users/imom39a/projects/2).
-Base: `2a40fdd`; isolated branch `codex/automatic-agent-access`. Unrelated Scenario
+Implementation base: `2a40fdd`; the completed work is integrated in main. Unrelated Scenario
 work in the original checkout is excluded.
 
 ## Maintainer-approved behavior
@@ -49,7 +49,7 @@ record the new defaults, local-process trust and Panel Session lifetime.
   states and 9 key/JSON-stream states, 210 images total. Normal verification does
   not update baselines. Supplemental filter/key comparisons passed all 25 tests
   on Darwin; Linux integrated/new-agent comparison passed all 103 checks.
-- `LSEW_VISUAL_PROTOTYPE_PORT=4211 LSEW_VISUAL_PANEL_PORT=4212 npm run test:ui:visual`
+- `LSEW_VISUAL_PANEL_PORT=4212 npm run test:ui:visual`
   produced all 93 maintained captures: zero browser diagnostics or shell/document
   overflows, 86 axe-checked states with zero serious/critical findings, and
   77 visible/unobscured focus-checked states.

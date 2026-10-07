@@ -49,7 +49,6 @@
     "fixture:test": "node scripts/lightstreamer/fixture.mjs test",
     "fixture:test:browser": "node scripts/lightstreamer/fixture.mjs browser-test",
     "fixture:test:dry-run": "node scripts/lightstreamer/fixture.mjs test --dry-run",
-    "prototype:serve": "vite prototypes --host 127.0.0.1 --port 4175",
     "test:ui": "node scripts/test-ui.mjs",
     "test:ui:update": "node scripts/test-ui-update.mjs",
     "test:ui:visual": "node scripts/generate-workbench-visual-evidence.mjs",

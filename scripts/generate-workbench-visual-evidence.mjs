@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { extname, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
@@ -14,8 +14,8 @@ import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactRoot = resolve(projectRoot, process.env.LSEW_VISUAL_ARTIFACT_ROOT ?? "test-results/workbench-visual-qa");
-const scenarioHaltReferenceCommit = process.env.LSEW_SCENARIO_HALT_REFERENCE_COMMIT ?? "b750a93";
-const prototypePort = Number(process.env.LSEW_VISUAL_PROTOTYPE_PORT ?? 4191);
+const baselineRef = process.env.LSEW_VISUAL_BASELINE_REF ?? "HEAD";
+const baselineReviewIntent = "Compare committed platform baselines with current production. Update images only for an intentional, reviewed UI change and record the exact platform results.";
 const panelPort = Number(process.env.LSEW_VISUAL_PANEL_PORT ?? 4192);
 const allScenarios = JSON.parse(
   await readFile(resolve(projectRoot, "tests/ui/visual-matrix.json"), "utf8")
@@ -30,7 +30,7 @@ const baselineGrepArgument = grep ? ` -- --grep ${JSON.stringify(`visual baselin
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`Usage: npm run test:ui:visual [-- --print-matrix | --print-review-scope]
 
-Captures accepted Workbench design references, the shipped Workbench scenario harness,
+Captures committed production baselines, the shipped Workbench scenario harness,
 and an inspectable per-channel visual diff for the Material UI review packet.
 The artifacts are reference evidence, not a pixel-parity acceptance gate.
 
@@ -38,7 +38,11 @@ Options:
   --print-matrix  Print the deterministic viewport/theme/state matrix and exit.
   --print-review-scope  Print the bounded contact-sheet, axe, and focus matrix and exit.
   --grep <text>   Generate only matrix entries whose id includes text.
-  --help          Show this help.`);
+  --help          Show this help.
+
+LSEW_VISUAL_BASELINE_REF selects the committed baseline revision (default: HEAD).
+Four visual-only History states use recorded same-geometry production baselines;
+the five storage-headroom comparisons use a clean production reference instead.`);
   process.exit(0);
 }
 if (process.argv.includes("--print-matrix")) {
@@ -61,22 +65,14 @@ let browser;
 const startedAt = Date.now();
 
 try {
+  const baselineRevision = execFileSync("git", ["rev-parse", "--verify", "--end-of-options", `${baselineRef}^{commit}`], {
+    cwd: projectRoot, encoding: "utf8"
+  }).trim();
   await rm(artifactRoot, { recursive: true, force: true });
   await Promise.all(["reference", "current", "diff", "contact-sheets"].map((directory) =>
     mkdir(join(artifactRoot, directory), { recursive: true })
   ));
 
-  children.push(await startServer({
-    name: "accepted Workbench prototypes",
-    args: [
-      resolve(projectRoot, "node_modules/vite/bin/vite.js"),
-      "prototypes",
-      "--host", "127.0.0.1",
-      "--port", String(prototypePort),
-      "--strictPort"
-    ],
-    readyUrl: `http://127.0.0.1:${prototypePort}/workbench-ui-10/`
-  }));
   children.push(await startServer({
     name: "shipped Workbench scenario harness",
     args: [resolve(projectRoot, "scripts/ui-panel-server.mjs")],
@@ -91,27 +87,17 @@ try {
   });
   const results = [];
   for (const scenario of scenarios) {
-    const reference = scenario.reference?.source === "git"
-      ? await readGitBlob(scenario.reference.revision, scenario.reference.path)
-      : scenario.reference?.source === "asset"
-      ? await readFile(resolve(projectRoot, scenario.reference.path))
-      : scenario.reference?.source === "prototype-12"
-      ? await captureReadabilityPrototype(browser, scenario)
-      : scenario.reference?.source === "production"
+    const referencePath = `tests/ui/visual-regression.spec.ts-snapshots/${scenario.reference?.id ?? scenario.id}-${process.platform}.png`;
+    const reference = scenario.reference?.source === "production"
       ? (await captureProduction(browser, scenario, {
           ...scenario.production,
           storageMode: scenario.reference.storageMode
         })).png
-      : scenario.prototype?.setup === "scenario-halt"
-      ? await readGitBlob(
-          scenarioHaltReferenceCommit,
-          `tests/ui/visual-regression.spec.ts-snapshots/${scenario.prototype.referenceId ?? scenario.id}-${process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform}.png`
-        )
-      : await capturePrototype(browser, scenario);
+      : await readGitBlob(baselineRevision, referencePath);
     const current = await captureProduction(browser, scenario);
     const comparison = await createDiff(browser, reference, current.png, scenario.viewport);
     const paths = {
-      reference: join(artifactRoot, "reference", `${scenario.id}${scenario.reference?.source === "asset" ? extname(scenario.reference.path) : ".png"}`),
+      reference: join(artifactRoot, "reference", `${scenario.id}.png`),
       current: join(artifactRoot, "current", `${scenario.id}.png`),
       diff: join(artifactRoot, "diff", `${scenario.id}.png`)
     };
@@ -122,6 +108,9 @@ try {
     ]);
     results.push({
       ...scenario,
+      reference: scenario.reference?.source === "production"
+        ? scenario.reference
+        : { source: "git", revision: baselineRevision, path: referencePath },
       artifacts: Object.fromEntries(Object.entries(paths).map(([key, path]) => [key, relative(projectRoot, path)])),
       checks: current.checks,
       changedPixels: comparison.changedPixels,
@@ -145,13 +134,7 @@ try {
     browserMode: "headless",
     evidenceMode: "non-interactive",
     source: {
-      reference: scenarios.every(({ reference }) => reference?.source === "git")
-        ? "Prior accepted production baselines at each recorded Git revision; new search surfaces intentionally compare against the preceding investigation surface at the same geometry."
-        : scenarios.every(({ prototype }) => prototype?.setup === "scenario-halt")
-        ? `initial Scenario 05 production baselines at ${scenarioHaltReferenceCommit}; the surface is absent at implementation base e74d4ca, so these are explicit new-baseline references`
-        : scenarios.every(({ reference }) => reference?.source === "production")
-          ? "clean production storage-headroom scenarios with the advisory estimate omitted"
-          : "accepted prototypes/workbench-ui-10, approved prototypes/workbench-ui-12 Variant C captures/assets for readability-c-*, and archived reviewed Activity D images; storage-headroom states use clean production scenarios with the advisory estimate omitted",
+      reference: `Committed ${process.platform} production baselines at ${baselineRevision}; storage-headroom states compare clean production scenarios with the advisory estimate omitted. Each scenario records its exact reference.`,
       current: "production Workbench scenario harness using shipped panel root document",
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
@@ -165,8 +148,8 @@ try {
         "Search scopes identifies complete structural results by type, identity, path and lifecycle. Typing and browsing do not commit Scope; Enter chooses and staged Escape restores the origin.",
         "Compact, normal, shallow, wide and forced-colors states have reachable controls, visible focus, no shell overflow and no serious or critical axe findings."
       ],
-      matrixRationale: "Ten states cover populated and empty Scope search, retained Evidence Find, compact/normal/shallow/wide geometry, Dark and forced colors. Prior accepted production images show the preceding investigation surfaces at the same geometry.",
-      baselineIntent: "Add ten independently generated Darwin/Linux search baselines and update affected existing Scope and Find baselines. Compare prior, current, and diff artifacts in independent visual QA."
+      matrixRationale: "Ten states cover populated and empty Scope search, retained Evidence Find, compact/normal/shallow/wide geometry, Dark and forced colors. Committed production images provide the accepted reference at the same geometry.",
+      baselineIntent: baselineReviewIntent
     } : !grep && results.length === allScenarios.length ? {
       classification: "Material UI",
       changedWorkflow: "The integrated Workbench matrix covers the approved Scope priority blocks and full-key JSON Evidence stream, the main Evidence timeline and scoped Context Activity summary, Local Injection Scenario authoring and execution, protected Server Injection through LightstreamerClient.sendMessage, diagnostics, and compact operating actions in the shipped panel shell.",
@@ -195,9 +178,9 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; every captured footer Dismiss action is checked individually, and help-resource, shallow diagnostic-disclosure, and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
-      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark and forced-colors themes; approved Variant C base/current/diff comparisons; Activity, Local and Server Injection, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
+      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark and forced-colors themes; committed baseline/current/diff comparisons; Activity, Local and Server Injection, Scenario, diagnostics, storage-headroom, and operating-action workflows.`,
       readabilityComparison: results.filter(({ id }) => id.startsWith("readability-c-")).map(({ id, artifacts, changedPixels, totalPixels }) => ({ id, artifacts, changedPixels, totalPixels })),
-      baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
+      baselineIntent: baselineReviewIntent
     } : results.every(({ id }) => id.startsWith("local-injection-")) ? {
       classification: "Material UI",
       changedWorkflow: "A standalone Local Injection uses the authoring surface as its preview: captured Drafts compare Source and Draft by default, and valid captured or authored Drafts inject directly without a separate Review document.",
@@ -219,7 +202,7 @@ try {
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked Local Injection states retained a visible, unobscured Inject locally control; maintained browser scenarios separately cover physical keyboard entry and traversal.`,
       matrixRationale: "Five deterministic states cover captured preview at compact Dark, a changed captured Draft at normal Dark and wide Dark, authored direct delivery at shallow Dark, and the same shallow action in forced colors.",
-      baselineIntent: "Replace the obsolete standalone Review baselines, update the captured Draft baseline for default comparison, and add Darwin/Linux normal, wide, and forced-colors baselines for the simplified workflow."
+      baselineIntent: baselineReviewIntent
     } : results.every(({ id }) => id.startsWith("server-injection-")) ? {
       classification: "Material UI",
       changedWorkflow: "Server Injection clones or authors one Client Message and submits it once through the exact inspected Lightstreamer client's current sendMessage path.",
@@ -240,7 +223,7 @@ try {
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked Server Injection states retained visible, unobscured controls; the maintained browser journey separately checks phase focus and discard restoration.`,
       matrixRationale: "Six deterministic states cover application-guided authoring at normal Dark, compact Dark editing, normal Dark Review, shallow Dark disconnection, shallow forced-colors Dark Unknown, and a wide Dark high-volume message.",
-      baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all six protected Server Injection states."
+      baselineIntent: baselineReviewIntent
     } : results.every(({ production }) => production.setup.startsWith("activity")) ? {
       classification: "Material UI",
       changedWorkflow: "Activity is integrated into the existing Evidence and Context workspace; the separate Activity page is retired.",
@@ -259,7 +242,7 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: "Timeline, coincident-event chooser and Context disclosure controls retain visible, unobscured keyboard focus; the maintained Activity browser tests exercise range selection, Reset/Back and restoration.",
-      baselineIntent: "Replace the five old Activity-page baselines with Context summaries and add four integrated Activity states; refresh other affected shell baselines separately with explicit base/current review."
+      baselineIntent: baselineReviewIntent
     } : results.some(({ id }) => id.startsWith("scenario-capture-")) ? {
       classification: "Material UI",
       changedWorkflow: "Captured-update Scenario composition keeps a bounded retained capture workspace beside an explicit ordered queue and one focused member editor.",
@@ -281,8 +264,8 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} states retain visible, unobscured focus. Maintained behavior tests exercise search/checkbox/Add/queue keyboard routes, native Trace activation, editor state, exact capture scroll and Park restoration.`,
-      matrixRationale: "Thirty-two existing Scenario states preserve editing, Review, controls, drift, partial/unknown, retention, Checkpoints, discard and high-volume truth. Eight accepted-C states add 5,000 retained captures at four geometries, selected batch, empty search, query failure and visible 100-Step refusal. Dark-only remains accepted; legacy light-named states are historical identifiers.",
-      baselineIntent: "Intentionally update affected existing Scenario images and add eight accepted-C Darwin/Linux baseline pairs. Review exact pre-change, current and diff artifacts independently; normal comparisons never update images."
+      matrixRationale: "Thirty-two existing Scenario states preserve editing, Review, controls, drift, partial/unknown, retention, Checkpoints, discard and high-volume truth. Eight captured-update states add 5,000 retained captures at four geometries, selected batch, empty search, query failure and visible 100-Step refusal. Dark-only remains accepted; legacy light-named states are historical identifiers.",
+      baselineIntent: baselineReviewIntent
     } : results.some(({ id }) => id.startsWith("scenario-parked-") || id.startsWith("scenario-discard-confirmation-") || id.startsWith("scenario-parked-discard-confirmation-")) ? {
       classification: "Material UI",
       changedWorkflow: "An edited Local Injection Scenario can return to Evidence, resume with its Steps intact, or be discarded after inline confirmation.",
@@ -290,7 +273,7 @@ try {
         "Back to Evidence parks the temporary Scenario and restores the originating investigation without losing Step edits or Review state.",
         "A visible parked Scenario route resumes the same document; competing protected Drafts stay blocked until the Scenario is finished or discarded.",
         "Discard requires explicit inline confirmation in both the active and parked states, supports Escape and Keep, and restores investigation focus.",
-        "An active Run must be stopped before leaving or discarding; compact, normal, shallow, wide, Dark, Light, and forced-colors states keep controls reachable without serious or critical axe findings."
+        "An active Run must be stopped before leaving or discarding; compact, normal, shallow, wide, Dark and forced-colors states keep controls reachable without serious or critical axe findings."
       ],
       browserResult: {
         scenarioCaptures: `${results.length}/${results.length} passed`,
@@ -303,7 +286,7 @@ try {
       },
       keyboardAndFocus: "The browser journey checks Scenario heading focus on Resume, origin focus on Back, the current Evidence focus after parked discard, and Escape/Keep restoration to the discard trigger.",
       matrixRationale: "Existing Scenario states cover editing, Review, running, stopped, failures, Checkpoints, and high volume. New Light states cover normal editing, compact parked navigation, and active and parked discard confirmation.",
-      baselineIntent: "Update only affected Scenario baselines and add the four new navigation states on the current platform."
+      baselineIntent: baselineReviewIntent
     } : results.some(({ id }) => id.startsWith("scenario-diagnostic-")) ? {
       classification: "Material UI",
       changedWorkflow: "A Scenario Diagnostic Observation Checkpoint authorizes a journal cursor, evaluates only later normalized observations, and preserves compact provenance without copying diagnostic messages.",
@@ -324,7 +307,7 @@ try {
       },
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} diagnostic Checkpoint states retained visible, unobscured controls with browser focus evidence.`,
       matrixRationale: "Six deterministic states cover compact Dark authoring, normal Dark Review, wide Dark waiting, normal Dark pass and route, compact Dark failure, and shallow forced-colors Dark journal unavailability.",
-      baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for all six Diagnostic Observation Checkpoint states."
+      baselineIntent: baselineReviewIntent
     } : results.some(({ id }) => id.startsWith("scenario-checkpoint-")) ? {
       classification: "Material UI",
       changedWorkflow: "A Scenario Checkpoint authors protected assertions, evaluates one exact committed Evidence boundary without dispatching an Injection, and exposes waiting and terminal truth in the promoted document.",
@@ -344,7 +327,7 @@ try {
       },
       keyboardAndFocus: "Evaluated retained-Evidence routes are activated through physical keyboard input in the browser gate. Each state scrolls its exact Checkpoint into view; the shallow wire refusal physically focuses its protected Assertion control inside the one Scenario scroll, while other states focus the labelled CHECKPOINT control.",
       matrixRationale: "Eight deterministic states cover compact Dark authoring, normal Dark Review, wide Dark waiting, normal Dark pass and Evidence route, compact Dark failure, shallow forced-colors Dark wire unavailability, wide Dark ambiguous Server null, and wide Dark 100-Step plus 100-Checkpoint high volume.",
-      baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all eight Scenario Checkpoint states."
+      baselineIntent: baselineReviewIntent
     } : results.some(({ id }) => id.startsWith("scenario-")) ? {
       classification: "Material UI",
       changedWorkflow: "A reviewed same-target Scenario halts before unsafe work, records exact target/listener/Server-Evidence drift, and preserves truthful partial, unknown, delivered-unretained, and post-Clear Evidence outcomes.",
@@ -364,7 +347,7 @@ try {
       },
       keyboardAndFocus: "Drift exposes Re-review immutable plan as the sole primary control with visible physical-keyboard focus; Stop remains reachable, terminal controls recover semantically, and passive evidence cannot steal focus.",
       matrixRationale: "Fourteen Scenario states retain the eight authoring/clock baselines and add compact partial counts, normal listener drift, shallow forced-colors unknown, wide Server Evidence drift, normal delivered-unretained, and compact post-Clear unavailable Evidence.",
-      baselineIntent: "Maintain platform-specific Darwin and Linux baselines for all fourteen Scenario membership, timing, halt, retention, and Evidence-availability states."
+      baselineIntent: baselineReviewIntent
     } : {
       classification: "Material UI",
       changedWorkflow: "The global diagnostics footer keeps mixed Warning, Error, and Information entries readable and discoverable without taking over the Evidence workspace.",
@@ -383,7 +366,7 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: "Every mixed-footer Dismiss action is keyboard-focusable, visible, and unobscured; shallow Diagnostic details expands to a keyboard-reachable recovery route, and Home restores the explicit diagnostic-count cue. Existing footer focus and forced-colors checks remain green.",
-      baselineIntent: "Update tracked baselines that render diagnostics and add Darwin/Linux baselines for the four mixed-severity stress geometries. Five Darwin-only native-scrollbar snapshots are normalized to the current release-prep rendering; their semantic content is unchanged."
+      baselineIntent: baselineReviewIntent
     },
     durationMs: Date.now() - startedAt,
     scenarios: results
@@ -498,7 +481,7 @@ async function createContactSheets(runningBrowser, results) {
     const requiredFocusIds = [...requiredDiagnosticIds, ...requiredStorageIds, ...requiredActivityIds, ...requiredReadabilityIds];
     const missingFocusIds = requiredFocusIds.filter((id) => !affectedIds.includes(id));
     if (requiredActivityIds.length !== 9 || requiredDiagnosticIds.length !== 19 || requiredStorageIds.length !== 5 || requiredReadabilityIds.length !== 2 || missingFocusIds.length > 0) {
-      throw new Error(`Contact sheets require all 9 integrated Activity, 12 diagnostic, 7 Notifications, 5 storage-headroom and 2 Variant C readability states; missing: ${missingFocusIds.join(", ") || "none"}.`);
+      throw new Error(`Contact sheets require all 9 integrated Activity, 12 diagnostic, 7 Notifications, 5 storage-headroom and 2 Scope readability states; missing: ${missingFocusIds.join(", ") || "none"}.`);
     }
   }
   const output = {};
@@ -599,139 +582,6 @@ async function writeContactSheet(runningBrowser, results, views, relativePath) {
     return relative(projectRoot, outputPath);
   } finally {
     await context.close();
-  }
-}
-
-async function capturePrototype(runningBrowser, scenario) {
-  const context = await runningBrowser.newContext({
-    viewport: { width: scenario.viewport.width + 20, height: scenario.viewport.height + 20 },
-    colorScheme: scenario.theme,
-    forcedColors: scenario.forcedColors ? "active" : "none"
-  });
-  const page = await context.newPage();
-  try {
-    const query = new URLSearchParams({
-      ...scenario.prototype,
-      theme: scenario.theme,
-      presentation: "1"
-    });
-    await page.goto(`http://127.0.0.1:${prototypePort}/workbench-ui-10/?${query}`, { waitUntil: "networkidle" });
-    const workbench = page.locator(".workbench");
-    await workbench.waitFor({ state: "visible" });
-    await assertPrototypeSetup(page, workbench, scenario.prototype.setup);
-    if (scenario.production.setup === "more-actions-help") {
-      const body = page.locator(".context-body");
-      await body.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-    }
-    await page.evaluate(() => document.fonts.ready);
-    return await workbench.screenshot({ animations: "disabled", caret: "hide" });
-  } finally {
-    await context.close();
-  }
-}
-
-async function captureReadabilityPrototype(runningBrowser, scenario) {
-  const context = await runningBrowser.newContext({
-    viewport: scenario.viewport,
-    colorScheme: scenario.theme,
-    forcedColors: scenario.forcedColors ? "active" : "none"
-  });
-  const page = await context.newPage();
-  try {
-    const query = new URLSearchParams({
-      variant: scenario.reference.variant,
-      frame: scenario.reference.frame
-    });
-    await page.goto(`http://127.0.0.1:${prototypePort}/workbench-ui-12/?${query}`, { waitUntil: "networkidle" });
-    const workbench = page.locator(".workbench.variant-c");
-    await workbench.waitFor({ state: "visible" });
-    const text = await workbench.innerText();
-    for (const marker of ["Inspected page", "1 client · 15 subscriptions", "ORDERED EVIDENCE", "EVENT", "Item Update"]) {
-      if (!text.includes(marker)) throw new Error(`Variant C readability reference is missing ${JSON.stringify(marker)}.`);
-    }
-    await page.evaluate(() => document.fonts.ready);
-    return await page.screenshot({ animations: "disabled", caret: "hide" });
-  } finally {
-    await context.close();
-  }
-}
-
-async function assertPrototypeSetup(page, workbench, setup) {
-  const expectedText = {
-    "live-selected": ["evt-1842", "Open complete raw"],
-    "captured-draft": ["topology-small-subscription", "json-string-event", "json-string-alpha"],
-    "authored-review": ["topology-small-subscription", "None · newly authored", "visual-review"],
-    "more-actions": ["Session operations", "Copy retained scoped Evidence"],
-    "memory-operations": ["in-memory fallback", "Panel Session closes."],
-    "clear-confirmation": ["Clear retained events", "This removes retained Evidence from this Panel Session and cannot be undone."],
-    "selected-json": ["json-string-event", "JSON string", "AIRPORT-02"],
-    "activity-10k": ["Observed Server activity", "9,999 Logical Updates", "Server Logical Updates and Update Deliveries"],
-    "activity-graphical": ["Observed Server activity", "Server Logical Updates and Update Deliveries"],
-    "activity-limited": ["Observed Server activity", "Coverage LIMITED", "Observation Coverage is limited"],
-    "activity-memory": ["Observed Server activity"]
-  }[setup];
-  if (expectedText) {
-    const text = await workbench.innerText();
-    for (const marker of expectedText) {
-      if (!text.includes(marker)) throw new Error(`Prototype setup ${setup} is missing ${JSON.stringify(marker)}.`);
-    }
-  }
-  if (setup === "activity-10k" || setup === "activity-graphical") {
-    await workbench.getByRole("table", { name: "Activity timeline buckets" }).waitFor();
-  }
-  if (setup === "authored-review") {
-    const text = await workbench.innerText();
-    if (text.includes("evt-1842 · SERVER · immutable")) {
-      throw new Error("Authored Review prototype must not claim an immutable captured source.");
-    }
-  }
-  if (setup === "retained-find") {
-    const query = "complete-retained-find-anchor";
-    const inputValue = await page.locator("#prototype-find").inputValue();
-    const matches = page.locator(`.evidence-row[data-find-anchor="${query}"]`);
-    if (inputValue !== query || await matches.count() !== 3 || await page.locator(".evidence-row.find-current").count() !== 1) {
-      throw new Error("Retained Find prototype must derive one current result from exactly three matching events.");
-    }
-  }
-  if (["retained-find", "long-identities"].includes(setup)) {
-    const text = await workbench.innerText();
-    if (!text.includes("View FROZEN · 30 newer") || !text.includes("Frozen · 30 newer")) {
-      throw new Error(`Prototype setup ${setup} must report the same 30-newer frozen window in both status surfaces.`);
-    }
-  }
-  if (setup === "long-identities") {
-    const eventId = "retained-evidence-event-3961-from-orders-command-subscription-with-long-production-identity";
-    const row = page.locator(`.evidence-row[data-event="${eventId}"]`);
-    if (await row.count() !== 1) {
-      throw new Error(`Long-identity prototype is missing event ${JSON.stringify(eventId)}.`);
-    }
-    const text = await row.textContent() ?? "";
-    for (const marker of [
-      "portfolio/orders/north-america/enterprise-customer-primary-book",
-      "customer-order-command-key-with-long-production-identity-1"
-    ]) {
-      if (!text.includes(marker)) throw new Error(`Long-identity prototype is missing ${JSON.stringify(marker)}.`);
-    }
-  }
-  if (setup === "clear-confirmation") {
-    const clear = workbench.getByRole("button", { name: "Clear retained events" });
-    if (await clear.evaluate((element) => element === document.activeElement)) {
-      throw new Error("Prototype Clear retained events must not be auto-focused.");
-    }
-    let reached = false;
-    for (let index = 0; index < 40; index += 1) {
-      await page.keyboard.press("Tab");
-      if (await clear.evaluate((element) => element === document.activeElement)) {
-        reached = true;
-        break;
-      }
-    }
-    if (!reached) throw new Error("Prototype Clear retained events was not reached by physical Tab navigation.");
-    const style = await clear.evaluate((element) => {
-      const computed = getComputedStyle(element);
-      return `${computed.outlineStyle} ${computed.outlineWidth} ${computed.outlineOffset}`;
-    });
-    if (style !== "solid 3px 2px") throw new Error(`Prototype Clear focus treatment is ${style}.`);
   }
 }
 
@@ -839,7 +689,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
         };
       });
       if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
-        throw new Error(`Variant C Scope focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
+        throw new Error(`Scope focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
     }
     if (isLocalInjectionSetup(scenario.production.setup)) {

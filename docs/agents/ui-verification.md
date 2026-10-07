@@ -40,13 +40,19 @@ instrumentation changes run the appropriate `fixture:*` browser proof.
 Bounded UI changes exercise the affected deterministic scene and the geometry,
 theme, keyboard, and accessibility evidence required by the standard.
 Material UI changes cover compact and normal viewports, relevant shallow and
-wide geometry, and representative Dark and Light themes defined in
+wide geometry, and Dark and forced-colors states defined in
 `tests/ui/visual-matrix.json`. `npm run test:ui` compares committed production
 baselines and never updates them. Use only `npm run test:ui:update` for an
 intentional baseline change and record why it changed. Every baseline creation
 or update is a Material UI change. Run `npm run test:ui:visual` to create the
-accepted-prototype reference, current production, and diff artifacts under
-`test-results/workbench-visual-qa/`; inspect all three before handoff.
+committed production baseline, current production, and diff artifacts under
+`test-results/workbench-visual-qa/`; inspect all three before handoff. References
+come from snapshots committed at `HEAD`. For a UI change, set
+`LSEW_VISUAL_BASELINE_REF` to the reviewed base revision. New visual states may
+name a preceding same-geometry baseline with `reference.id` in the matrix. The
+manifest pins each reference to its resolved commit and platform path. Four
+visual-only History states name existing production baselines at matching geometry. The five
+visual-only storage-headroom states compare clean production references.
 
 Record the changed workflows, scenarios, viewport sizes, themes, browser
 tests, screenshot artifacts, accessibility results, and any intentional

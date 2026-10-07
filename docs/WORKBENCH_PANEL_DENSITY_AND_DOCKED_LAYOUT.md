@@ -2,7 +2,7 @@
 
 Status: accepted product direction, 2026-08-03; readability amendment accepted 2026-08-29
 
-This document records the selected density, pane, resizing, overflow, and docked-size behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md) and [Local Injection interaction model](../prototypes/workbench-ui-05/COMPARISON.md). The production panel implements this model; the [UI Standard](WORKBENCH_UI_STANDARD.md) and later accepted amendments govern any differences.
+This document records the selected density, pane, resizing, overflow, and docked-size behavior for the Lightstreamer Workbench Chrome DevTools panel. It refines the accepted [Scoped Evidence Workspace](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md) and [standalone Local Injection contract](WORKBENCH_UI_STANDARD.md#local-injection). The production panel implements this model; the [UI Standard](WORKBENCH_UI_STANDARD.md) and later accepted amendments govern any differences.
 
 ## Decision
 
@@ -14,7 +14,7 @@ This is a two-axis DevTools layout system, not a conventional webpage breakpoint
 
 ## Geometry solver
 
-Layout gates are derived from the usable content box after persistent operating, scope/origin, and status/action strips. The prototype uses these representative gates:
+Layout gates are derived from the usable content box after persistent operating, scope/origin, and status/action strips. The layout uses these representative gates:
 
 - **Wide Triad:** approximately `1120px` or wider with useful height. Scope, dominant Evidence, and Context coexist.
 - **Normal Stack:** approximately `700px` or wider and `440px` or taller. Evidence appears above resizable Context; Scope is parked behind its breadcrumb action.
@@ -234,13 +234,11 @@ Rejected as the universal rule. One surface at every geometry gives excellent co
 
 Elastic Triad borrows Viewport Lease's full-canvas behavior for document-heavy operations and rejects the assumption that every ordinary detail requires promotion.
 
-## Verification evidence
+## Verification
 
-The disposable [workbench-ui-06 prototype](../prototypes/workbench-ui-06/README.md) provides all three models on one deterministic Lightstreamer scenario. The selected Elastic Triad was browser-checked across compact, normal, shallow, and wide frames; Live Evidence, selected detail, high-volume evidence, Local Injection, diagnostics, and export; and representative Dark and Light themes.
+The production matrix covers compact, normal, shallow and wide frames, Live and Frozen Evidence, selected detail, high volume, Local Injection, diagnostics and export. The [panel verification procedure](agents/ui-verification.md) checks overflow, pane relocation, textual provenance, document promotion, Source/Draft scroll ownership, action reachability, keyboard focus and browser diagnostics. Independent review follows the [visual-QA procedure](agents/ui-visual-qa.md).
 
-Checks covered panel-level overflow, pane relocation, compact two-line evidence rows, textual provenance, full-canvas Local Injection, Source/Draft scroll ownership, action reachability, variant switching, and browser console errors. Type checking, the extension build, JavaScript syntax checking, and whitespace validation passed. No production panel behavior changed.
-
-The 2026-08-29 readability amendment was evaluated in the disposable `workbench-ui-12` prototype at normal and compact geometry. The product owner explicitly selected Variant C, **Priority blocks + order rail**, without adjustment; production verification supersedes the prototype's illustrative values and styling.
+The accepted Scope priority blocks remain part of the density contract; the current fixed 30px, single-line Evidence grammar is defined by the later [UI Standard amendment](WORKBENCH_UI_STANDARD.md#single-line-key-and-json-stream-amendment--2026-09-11).
 
 ## Vocabulary resolution
 

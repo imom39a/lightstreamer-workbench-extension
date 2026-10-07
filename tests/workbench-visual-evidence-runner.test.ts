@@ -23,9 +23,9 @@ describe("Workbench visual-evidence runner", () => {
     expect(matrix).toHaveLength(115);
   });
 
-  it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
+  it("retains the diagnostic stress matrix and requires reviewed baseline updates", () => {
     expect(runnerSource).toContain(
-      'baselineIntent: "Update tracked baselines that render diagnostics and add Darwin/Linux baselines for the four mixed-severity stress geometries. Five Darwin-only native-scrollbar snapshots are normalized to the current release-prep rendering; their semantic content is unchanged."'
+      'const baselineReviewIntent = "Compare committed platform baselines with current production. Update images only for an intentional, reviewed UI change and record the exact platform results.";'
     );
     expect(matrix.filter((scenario: { production?: { scenario?: string } }) =>
       scenario.production?.scenario === "diagnostics-stress"
@@ -172,15 +172,13 @@ describe("Workbench visual-evidence runner", () => {
     }
   });
 
-  it("keeps reviewed D screenshots as static design references for the production Activity states", () => {
-    const activityReferences = matrix.filter((scenario: { reference?: { source?: string; path?: string } }) =>
-      scenario.reference?.source === "asset" && scenario.reference.path?.startsWith("docs/reference/integrated-activity/")
-    );
-    expect(activityReferences).toHaveLength(3);
-    for (const scenario of activityReferences) {
-      const jpeg = readFileSync(join(rootDir, scenario.reference.path));
-      expect(jpeg.subarray(0, 3)).toEqual(Buffer.from([255, 216, 255]));
-      expect(scenario.reference.path).toMatch(/\.jpg$/);
+  it("has a matching production PNG reference for every committed-baseline comparison on both platforms", () => {
+    for (const scenario of matrix.filter((entry: { reference?: { source?: string } }) => entry.reference?.source !== "production")) {
+      for (const platform of ["darwin", "linux"]) {
+        const png = readFileSync(join(rootDir, "tests/ui/visual-regression.spec.ts-snapshots", `${scenario.reference?.id ?? scenario.id}-${platform}.png`));
+        expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+        expect({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) }).toEqual(scenario.viewport);
+      }
     }
   });
 
@@ -193,14 +191,6 @@ describe("Workbench visual-evidence runner", () => {
     const ids = matrix.filter((scenario: { id: string }) => scenario.id.startsWith("scenario-capture-")).map((scenario: { id: string }) => scenario.id);
     expect(scope).toEqual({ contactSheetScenarioIds: ids, accessibilityScenarioIds: ids, focusScenarioIds: ids });
     expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(16 * 1_024);
-  });
-
-  it("keeps the approved Variant C normal asset and compact prototype as readability references", () => {
-    const readabilityReferences = matrix.filter((scenario: { id: string }) => scenario.id.startsWith("readability-c-"));
-    expect(readabilityReferences).toMatchObject([
-      { id: "readability-c-normal-dark", reference: { source: "asset", path: "prototypes/workbench-ui-12/screenshots/C-normal.jpg" } },
-      { id: "readability-c-compact-dark", reference: { source: "prototype-12", variant: "C", frame: "compact" } }
-    ]);
   });
 
   it("defines isolated clean-base and low-headroom production references", () => {

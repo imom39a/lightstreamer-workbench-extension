@@ -2,7 +2,7 @@
 
 Status: accepted product direction, 2026-08-03
 
-This document defines the developer journeys that the Lightstreamer Workbench UI must optimize. It governs production and future UI work without prescribing a screen. The journeys preserve the domain language in [CONTEXT.md](../CONTEXT.md), the constraints identified by the historical [current-panel audit](CURRENT_PANEL_UI_AUDIT.md), and the behavioral guidance in the [Chrome DevTools conventions research](research/chrome-devtools-interaction-conventions.md).
+This document defines the developer journeys that the Lightstreamer Workbench UI must optimize. It governs production and future UI work without prescribing a screen. The journeys preserve the domain language in [CONTEXT.md](../CONTEXT.md) and the behavioral guidance in the [Chrome DevTools conventions research](research/chrome-devtools-interaction-conventions.md).
 
 ## Product outcome
 
@@ -95,8 +95,8 @@ Workbench may show uncertainty when coverage cannot support a stronger claim. Ab
 - The selected runtime object retired while evidence was being inspected; historical evidence remains read-only and clearly distinguished from a live target.
 
 One Panel Session owns one temporary rolling Event History. Normal retention is
-100,000 Evidence records or 256 MiB; memory-backed retention is 5,000 records or
-32 MiB. The oldest accepted prefix rolls away at the budget, and a failed durable
+100,000 Evidence records or 256 MiB; memory-backed retention is 25,000 records or
+128 MiB. The oldest accepted prefix rolls away at the budget, and a failed durable
 commit can fall back to memory without stopping Capture. Notifications keeps the
 bounded incident and recovery history. Controlled Close attempts erasure and a
 new Panel Session never replays abandoned data.
@@ -266,7 +266,7 @@ The developer understands the confidence boundary of the available evidence and 
 
 ## UI implications to test, not assumed layouts
 
-Information-architecture prototypes must demonstrate that:
+Workspace changes must demonstrate that:
 
 - Opening the panel answers “is Workbench observing the runtime I care about?” before asking the developer to choose among feature areas.
 - Selection of a client, Session, Subscription, item, key, or event carries into related evidence, detail, and action instead of forcing repeated context selection.

@@ -14,7 +14,7 @@ The following accepted contracts provide detailed rules:
 
 - [Canonical Developer Journeys](CANONICAL_DEVELOPER_JOURNEYS.md) — the operator, journey priority, completion conditions, and degraded paths.
 - [Workbench Workspace Information Architecture](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md) — Scoped Evidence Workspace.
-- [Local Injection interaction prototype](../prototypes/workbench-ui-05/COMPARISON.md) — historical design evidence for one protected standalone target-anchored raw-JSON Injection Draft. Its separate standalone Review screen is superseded by this standard; the accepted Scenario boundary remains separate.
+- [Standalone Local Injection](#local-injection) — one protected target-anchored raw-JSON Injection Draft with direct, deliberate Local delivery; the accepted Scenario Review boundary remains separate.
 - [Local Injection Scenario model](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md) — explicit single-target membership, immutable reviewed Run plans, deterministic controls, fail-closed outcomes, assertions, and traceability.
 - [Workbench Panel Density and Docked Layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md) — Elastic Triad.
 - [Workbench Keyboard and Operation Model](WORKBENCH_KEYBOARD_AND_OPERATION_MODEL.md) — Roving Instrument.
@@ -274,13 +274,13 @@ The product owner explicitly approved, one decision at a time:
 
 ## Single-line key and JSON stream amendment — 2026-09-11
 
-The primary maintainer selected the key-first Variant A prototype, requested the historical Codes reference and operation mapping, then explicitly approved production implementation after requiring complete, single-line, horizontally scrollable keys. This supersedes the 2026-08-29 four-column/two-line **Evidence** grammar; the structural Scope priority blocks remain accepted.
+The primary maintainer approved the key-first Evidence stream, historical Codes reference and operation mapping, with complete, single-line, horizontally scrollable keys. This supersedes the 2026-08-29 four-column/two-line **Evidence** grammar; the structural Scope priority blocks remain accepted.
 
 The stream uses Op / Key or item / Data with a fixed 30px row rhythm. Only Op is pinned horizontally. Exact COMMAND keys, or the applicable item/subscription/client identity, size their column to content; they never wrap or use ellipsis. The key and captured data scroll together within the existing bounded Evidence window. No event number or repeated Item Update column returns. Exact retained sequence, event identity, timestamp, provenance, phase, and command remain inspectable through accessible labels and Context.
 
 The historical TLCP and Workbench capture codes remain distinct in a bounded **Codes** reference. U means Item Update regardless of COMMAND ADD/UPDATE/DELETE; command, snapshot and Local annotations do not redefine U. Newer Workbench evidence receives explicit additional meanings, without implying literal wire capture. **Readable** shows application field values and labels decoded JSON strings; **Raw fields** preserves captured types. Large previews are explicitly bounded with full evidence available in Context. Captured values, injection boundaries, chronology, Find, Filter, Scope and selection are unchanged.
 
-This is a Material UI change, approved by the maintainer in Codex thread `01a08ba4-a8cb-7e00-91e4-c44ab0337388`. Dark-only including forced colors remains the preceding explicit theme decision. Production evidence and independent review are recorded in [key/JSON stream verification](agents/key-json-stream-evidence.md). The disposable prototype stays on `prototype/evidence-density-proposals`; production adopts the decision, not its renderer.
+This is a Material UI change, approved by the maintainer in Codex thread `01a08ba4-a8cb-7e00-91e4-c44ab0337388`. Dark-only including forced colors remains the preceding explicit theme decision. Production evidence and independent review are recorded in [key/JSON stream verification](agents/key-json-stream-evidence.md).
 
 
 ## Contextual search amendment — 2026-09-28
@@ -327,7 +327,7 @@ Implementation, regression and independent-review evidence is recorded in
 
 ## Captured-update Scenario workspace amendment — 2026-10-01
 
-The maintainer selected captured-update prototype C because composition across
+The maintainer approved the captured-update workspace because composition across
 thousands of events needs persistent search and selection beside an ordered
 Scenario queue. The maintainer explicitly authorized implementation and thorough
 regression and MCP verification with Sol 6.1 medium subagents in Codex thread

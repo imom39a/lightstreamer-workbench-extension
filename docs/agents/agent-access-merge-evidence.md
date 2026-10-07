@@ -1,7 +1,7 @@
 # Automatic Agent access / Scenario navigation merge
 
-Date: 2026-09-25. Maintainer-requested merge of `codex/automatic-agent-access`
-(`49272a2`) into `codex/workbench-agent-access` (`10a889b`). The target working
+Date: 2026-09-25. Maintainer-requested integration of automatic Agent access
+(`49272a2`) with Scenario navigation (`10a889b`). The target working
 tree was clean before merging; its Scenario navigation work was already committed.
 Classification: Material UI integration because screenshot baselines overlap.
 
@@ -26,7 +26,7 @@ This resolves 56 conflicts and refreshes eight additional images, 64 in total.
 - Both platform updates passed all 32 Scenario states. Pinned Linux read-only
   comparison passed all 56 agent-access and Scenario checks, including the five
   dock-transition widths and optional authentication.
-- `LSEW_VISUAL_PROTOTYPE_PORT=4221 LSEW_VISUAL_PANEL_PORT=4222 npm run test:ui:visual -- --grep scenario-`
+- `LSEW_VISUAL_PANEL_PORT=4222 npm run test:ui:visual -- --grep scenario-`
   generated all 32 maintained Scenario captures: zero browser diagnostics,
   zero shell/document overflows, zero serious/critical findings in 32 axe checks,
   and visible/unobscured controls in all 24 focus-checked states.
@@ -34,7 +34,7 @@ This resolves 56 conflicts and refreshes eight additional images, 64 in total.
   `test-results/agent-merge-visual-qa/manifest.json`: 120 full-size
   reference/current/diff triplets (64 against the target parent and 56 against
   the incoming parent), arranged in 30 contact sheets. This supplements the
-  maintained prototype/current/diff packet.
+  maintained reference/current/diff packet.
 - Initial unit execution overlapped platform screenshot generation and exceeded
   two existing 500ms performance limits; the remaining 1,564 ordinary checks
   passed. The full rerun without those competing browser jobs passed all
@@ -78,8 +78,7 @@ CHROME_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' LSEW_
 
 ## Merge and cross-platform CI
 
-Merge commit `dc0ad61` has parents `10a889b` and `49272a2` and is pushed to
-`codex/workbench-agent-access`. [Windows and Linux CI](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36173543097)
+Merge commit `dc0ad61` has parents `10a889b` and `49272a2` and is integrated in main. [Windows and Linux CI](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/36173543097)
 passed on that merge, including automatic discovery/restart/revocation,
 optional authentication, and installer-free Windows setup/package checks.
 The follow-up changes only test synchronization and this record; tested

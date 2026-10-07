@@ -23,12 +23,12 @@ The suite uses fixed scenario data, timestamps, viewport sizes, themes,
 `deviceScaleFactor: 1`, and disabled animations. It retains screenshots,
 traces, video, page HTML, and console output when a check fails.
 
-`visual-regression.spec.ts` is the small committed production baseline matrix.
+`visual-regression.spec.ts` defines the committed production baseline matrix.
 Its core states cover normal `900×700` Evidence density (Dark), compact
-`563×700` captured Source/Draft preview (Light), and shallow `900×320` authored
+`563×700` captured Source/Draft preview (Dark), and shallow `900×320` authored
 Draft with direct local delivery (Dark).
 Additional field-UX states cover complete retained Find at normal geometry
-(Dark), long identities at compact geometry (Light), and reversible More
+(Dark), long identities at compact geometry (Dark), and reversible More
 actions across shallow, normal, and compact geometry. Wide states remain
 covered by selected JSON, recovery, diagnostics, Activity, and Scenario cases.
 `npm run test:ui` can only compare those images.
@@ -43,7 +43,12 @@ Use `npm run test:ui:update` for a deliberate baseline creation or update and
 record the inspected artifacts and reason in the Project item or pull request.
 
 Run `npm run test:ui:visual` for the independent Material-UI review packet.
-It captures every manifest-selected state from the accepted `workbench-ui-10`
-prototype, the production harness, and inspectable visual diffs in
-`test-results/workbench-visual-qa/`. The prototype diff is evidence for
-semantic review, not a pixel-parity threshold.
+It compares every manifest-selected production state with its committed
+platform baseline and writes inspectable visual diffs in
+`test-results/workbench-visual-qa/`. Set `LSEW_VISUAL_BASELINE_REF` to a reviewed
+base revision when checking a UI change; the default is `HEAD`. The manifest
+records the resolved commit and platform path. New states can use `reference.id`
+to name a preceding same-geometry baseline, as the four visual-only History
+states do. The five storage-headroom states
+compare clean production references. The diff supports semantic review; it is
+not a pixel-parity threshold.

@@ -106,7 +106,7 @@ function immediateScheduler(): WorkbenchRuntimeScheduler {
   };
 }
 
-describe("history-impl-10 continuity-first History condition", () => {
+describe("continuous-history continuity-first History condition", () => {
   it("keeps routine rolling retention out of the footer", () => {
     expect(historyConditionFor(input({
       retention: {
@@ -240,7 +240,7 @@ describe("history-impl-10 continuity-first History condition", () => {
 
   it("coalesces rollover into Notifications without a footer warning", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-rollover",
+      panelSessionId: "continuous-history-rollover",
       byteEstimator: () => 10,
       capacity: { maxRetainedCount: 2, maxRetainedBytes: 1_000 }
     });
@@ -260,7 +260,7 @@ describe("history-impl-10 continuity-first History condition", () => {
 
   it("keeps Capture running and records one warning when the journal falls back to memory", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-memory-fallback",
+      panelSessionId: "continuous-history-memory-fallback",
       commitBatch: async () => { throw new Error("journal unavailable"); }
     });
     const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scheduler: immediateScheduler() });
@@ -277,7 +277,7 @@ describe("history-impl-10 continuity-first History condition", () => {
 
   it("keeps later Capture running while one Evidence gap limits continuity", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-gap",
+      panelSessionId: "continuous-history-gap",
       byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
       capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 }
     });
@@ -301,10 +301,10 @@ describe("history-impl-10 continuity-first History condition", () => {
 
   it("updates one gap episode only when another Evidence gap occurs", async () => {
     const diagnosticObservations = createMemoryDiagnosticObservationJournal({
-      panelSessionId: "history-impl-10-gap-episode"
+      panelSessionId: "continuous-history-gap-episode"
     });
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-gap-episode",
+      panelSessionId: "continuous-history-gap-episode",
       byteEstimator: (event) => event.id.startsWith("too-large") ? 11 : 1,
       capacity: { maxRetainedCount: 100, maxRetainedBytes: 10 }
     });
@@ -359,7 +359,7 @@ describe("history-impl-10 continuity-first History condition", () => {
 
   it("reports stopped Capture independently from an existing Evidence gap", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-gap-disconnected",
+      panelSessionId: "continuous-history-gap-disconnected",
       byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
       capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 }
     });
@@ -389,7 +389,7 @@ describe("history-impl-10 continuity-first History condition", () => {
 
   it("restores useful Capture coverage when Clear starts a fresh interval after an Evidence gap", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-gap-clear",
+      panelSessionId: "continuous-history-gap-clear",
       byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
       capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 }
     });
@@ -426,7 +426,7 @@ describe("history-impl-10 continuity-first History condition", () => {
 
   it("preserves the gap boundary and reports an unsuccessful durable Clear", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-gap-clear-failed",
+      panelSessionId: "continuous-history-gap-clear-failed",
       byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
       capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 },
       clearJournal: () => { throw new Error("durable Clear unavailable"); }
@@ -459,7 +459,7 @@ describe("history-impl-10 continuity-first History condition", () => {
 
   it("keeps a later memory fallback in Notifications when an Evidence gap owns the footer", async () => {
     const history = await createMemoryEventHistoryForTests({
-      panelSessionId: "history-impl-10-gap-then-memory-fallback",
+      panelSessionId: "continuous-history-gap-then-memory-fallback",
       byteEstimator: (event) => event.id === "too-large" ? 11 : 5,
       capacity: { maxRetainedCount: 10, maxRetainedBytes: 10 },
       commitBatch: async () => { throw new Error("journal unavailable"); }

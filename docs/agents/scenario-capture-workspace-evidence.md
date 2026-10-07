@@ -178,11 +178,10 @@ original-click diagnosis limitations remain unchanged.
 
 ## Design source and work tracking
 
-The throwaway source stays on local branch
-`prototype/scenario-builder-20261001`, captured at
-`4c359783df6c356b4c9a08247350f8ff5a715656` with runnable documentation at
-`804b542`. Production adopts the accepted workflow; prototype switchers,
-textareas, mock actions and simulated delivery are not promoted.
+The accepted captured-update composition workflow is implemented in the
+production Scenario workspace and covered by the verification above. Disposable
+design renderers and simulated delivery are retired; accepted target, Source,
+Draft, explicit membership and immutable Review boundaries remain authoritative.
 
 Work is tracked in the existing internal draft **scenario-builder-prototype-01 —
 Make captured-update Scenario building explicit and responsive** in

@@ -14,20 +14,23 @@ Create a packet from deterministic local scenarios containing:
 
 - source acceptance criteria and changed workflows;
 - base, changed, and diff images for every affected visual state;
-- compact, normal, and wide viewport sizes plus representative Dark and Light
-  themes;
+- compact, normal, shallow, and wide viewport sizes in Dark and forced colors;
 - browser test output, axe serious/critical results, and keyboard/focus notes;
 - the exact command used to produce the artifacts and whether a baseline was
   intentionally changed.
 
 The maintained packet command is `npm run test:ui:visual`. It writes
 `test-results/workbench-visual-qa/reference/`, `current/`, `diff/`,
-`contact-sheets/`, and a manifest that identifies the accepted prototype
-state, production scenario, viewport, theme, pixel-delta summary, and contact
+`contact-sheets/`, and a manifest that identifies the committed production baseline
+revision and path, current scenario, viewport, theme, pixel-delta summary, and contact
 sheet paths. The visual diff is an inspectable reference delta, not a parity
 threshold: compare hierarchy, reachability, protected Local Injection
-boundaries, and semantic meaning against the accepted prototype and UI
-standard. The affected Material UI scenarios are also arranged in labeled
+boundaries, and semantic meaning against the committed baseline and UI
+standard. Set `LSEW_VISUAL_BASELINE_REF` to the reviewed base revision for a UI
+change; the default is `HEAD`. Storage-headroom states use clean production
+references so the advisory estimate can be reviewed independently. Four visual-only
+History states name existing production baselines at matching geometry.
+The affected Material UI scenarios are also arranged in labeled
 reference/current/diff contact sheets so an independent reviewer can inspect
 the compact focused confirmation, normal focused confirmation, and compact
 memory-fallback states without opening each artifact separately.
@@ -40,7 +43,13 @@ readiness until fixed or explicitly accepted as an intentional design
 decision. Record the findings and outcome in the pull request or the related
 Project ticket.
 
-## This batch
+## Historical verification records
+
+The records below preserve the checks and design decisions from their original
+dates. Earlier theme, row-grammar and matrix counts describe those batches;
+the current UI Standard and generated manifest govern new work.
+
+### Initial repair batch
 
 The workbench-repair-01 through workbench-repair-05 batch used
 `tests/ui/visual-matrix.json`. `npm run test:ui:visual` generated and the
@@ -181,8 +190,8 @@ npm run docs:check
 
 ## Readability UX batch
 
-The `readability-ui-01` batch adds the approved `workbench-ui-12` Variant C
-Scope priority blocks and Ordered Evidence reading order to the maintained
+The `readability-ui-01` batch adds the approved Scope priority blocks and Evidence
+reading order to the maintained
 matrix. The Scope row now presents type and lifecycle first, identity on its
 own primary line, and facts second; compact pressure may visually truncate the
 identity because the exact value remains available from the owning tree item.

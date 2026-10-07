@@ -11,7 +11,6 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   visualEvidenceOnly?: boolean;
-  prototype?: { variant: string; state: string; frame: string; setup: string; surface?: string };
   production: { scenario: string; setup: "scope-search" | "scope-search-empty" | "none" | "readability" | "readability-scope" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "activity-main" | "activity-main-chooser" | "activity-main-summary" | "scenario" | "scenario-parked" | "scenario-discard-confirmation" | "scenario-parked-discard-confirmation" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-capture-default" | "scenario-capture-selected-batch" | "scenario-capture-empty" | "scenario-capture-read-failure" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "captured-draft-changed" | "authored-direct" | "server-injection" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" | "notifications-volume" | "notifications-empty" };
 }>;
 const matrix = rawMatrix.filter((visual) => !visual.visualEvidenceOnly) as readonly VisualCase[];
