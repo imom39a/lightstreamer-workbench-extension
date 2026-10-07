@@ -47,7 +47,7 @@ describe("release packaging verification gate", () => {
 
     expect(packageJson.scripts.test).toBe("node scripts/test-unit.mjs");
     expect(packageJson.scripts["test:release"]).toBe(
-      "vitest run --no-file-parallelism --maxWorkers=1"
+      "node scripts/test-unit.mjs --serial"
     );
 
     const serialGate = 'run("npm", ["run", "test:release"]);';

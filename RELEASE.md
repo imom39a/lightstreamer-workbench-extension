@@ -28,6 +28,8 @@ npm run release:package
 release/lightstreamer-workbench-v<version>.zip
 ```
 
+The release unit gate reuses the complete `npm test` plan, validated against test discovery, in fresh processes for ordinary tests, IndexedDB tests, and heavy workloads. Every file runs serially, with the existing phase budgets and all explicit latency assertions preserved.
+
 Useful variants:
 
 ```bash

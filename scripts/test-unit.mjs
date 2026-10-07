@@ -113,18 +113,20 @@ function runPhase(label, files, forwardedArgs, isolationArgs = []) {
 try {
   const discovered = discoverTestFiles(testsRoot).sort();
   const plan = validatePlan(discovered);
-  const forwardedArgs = process.argv.slice(2);
+  const requestedArgs = process.argv.slice(2);
+  const serial = requestedArgs.includes("--serial");
+  const forwardedArgs = requestedArgs.filter(arg => arg !== "--serial");
   if (forwardedArgs.includes("--print-plan")) {
     await new Promise(resolve => process.stdout.write(JSON.stringify(plan) + "\n", resolve));
     process.exit(0);
   }
-  // Keep ordinary tests parallel without letting host-wide worker fan-out starve
-  // their intentionally bounded browserless build and publication checks.
+  // Release uses the same complete plan and fresh phase processes, with every
+  // file serial. Ordinary development runs retain their bounded parallelism.
   const ordinaryStatus = runPhase(
-    "parallel ordinary suite",
+    serial ? "serialized ordinary suite" : "parallel ordinary suite",
     plan.ordinary,
     forwardedArgs,
-    ["--maxWorkers=2"]
+    serial ? ["--no-file-parallelism", "--maxWorkers=1"] : ["--maxWorkers=2"]
   );
   if (ordinaryStatus !== 0) process.exit(ordinaryStatus);
   const isolatedStatus = runPhase(
