@@ -258,6 +258,57 @@ canonical policy URL were verified unchanged. Firefox publisher sign-in requires
 two-step authentication before its live listing can be updated. No 2.0.10 store
 submission is established by these preparation checks.
 
+The reviewed preparation source is
+`179a6cf9559324e5418c837397a0b5f32388331e`. The public policy, export/privacy guide,
+and candidate release notes deployed successfully in
+[Pages run 41714453489](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/41714453489);
+all three live routes returned HTTP 200 with the new wording.
+
+[Release run 41714611335](https://github.com/imom39a/lightstreamer-workbench-extension/actions/runs/41714611335)
+froze production-configured packages and the paired reviewer source in
+`workbench-frozen-release-41714611335`, retained for 90 days. The CI browser ZIPs
+match the locally verified ZIPs byte-for-byte. A fresh reviewer-source extraction,
+locked install, and Firefox build under Node **24.18.1** reproduce all **31**
+submitted-candidate output files exactly.
+
+| Frozen artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Chrome `lightstreamer-workbench-v2.0.10.zip` | 556,302 | `b6c337cafc84109e7ebdbc2ba41bec479d7d871a8655c92432f549572b3e2357` |
+| Firefox `lightstreamer-workbench-firefox-v2.0.10.zip` | 558,722 | `072d85ddf2fbe152cf9955381b840622b72fdacd6f5f305861331d60d36ebb91` |
+| Firefox reviewer source | 950,569 | `e7d927bfe5567c3df050fe1c95f671e359c5bda9348732c0bb5a7a777bb0f77a` |
+
+**Publication is held.** The full release gate failed both CI attempts at the
+compact 563×700 authored COMMAND journey, waiting for the Local Injection JSON
+editor to open. The same frozen package passed two targeted macOS compact runs,
+two isolated Linux compact runs, and three Linux normal/compact pairs with the
+CI Node and Chrome versions. These passes do not resolve the CI failure or
+authorize skipping its assertion. Both macOS jobs were also cancelled without
+acquiring a runner; GitHub's annotations report hosted macOS arm64 capacity
+constraints. The remaining panel gate was still running at this status check.
+Successful Windows/Linux, source/unit, Firefox minimum/ESR, and site checks do
+not replace the incomplete full gate.
+
+The Chrome publisher API still confirms **2.0.9 PUBLISHED at 100%**, with no
+submitted revision. The new 2.0.10 listing explanation is a saved draft, not a
+public listing update. Firefox's live listing update and submission still need
+publisher two-step sign-in. No 2.0.10 browser package was uploaded or submitted,
+and no npm publication was requested.
+
+The Chrome workflow environment was configured for the `main` branch only,
+with the existing public resource identity and production ingestion settings.
+Its short-lived publisher token was removed after the held attempt; refresh
+that credential for a later verified submission. No account permission or
+global gcloud configuration was changed.
+
+An isolated store-asset regeneration preserved the current source assets.
+Four screenshots reproduce exactly; the Local Injection sample now exposes
+incomplete native-baseline fixture metadata and was not adopted. Generated
+icon, promo, gallery, and social-card byte differences have zero pixel delta.
+Internal follow-ups `privacy-release-20261103-01` (verification and publication)
+and `privacy-release-20261103-02` (screenshot fixture) are **Todo** draft items in
+Project #2. They are not repository Issues. Retry the original preserved run
+if source is unchanged; a source fix requires a deliberate new frozen candidate.
+
 ## Version 2.0.9 public availability — November 3, 2026
 
 The public [Chrome Web Store listing](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf)
