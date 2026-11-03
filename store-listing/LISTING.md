@@ -46,14 +46,16 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description and reviewer instructions below are prepared for extension 2.0.9 with matching companion 0.1.8. The same product version is prepared separately for Firefox. Current upload, submission, and public availability must be verified in the publisher dashboard. Historical records below retain their original versions.
+The description and reviewer instructions below are prepared for extension 2.0.10 with matching companion 0.1.8. The same product version is prepared separately for Firefox. Current upload, submission, and public availability must be verified in the publisher dashboard. Historical records below retain their original versions.
 
 ```text
-New in 2.0.9: expanded MCP investigation, richer COMMAND and stream queries, and agent-prepared Server Injection with human approval of the exact Client Message before one send. Companion 0.1.8 supports Chrome and desktop Firefox through one local companion. Both extensions use the same product version.
+New in 2.0.10: clearer privacy information about captured application data, MCP sharing, and usage analytics. Full payload inspection and the existing data-category disclosures are retained. Companion 0.1.8 supports Chrome and desktop Firefox through one local companion. Both extensions use the same product version.
 
 Lightstreamer Workbench adds a Chrome DevTools panel for applications that use the official Lightstreamer Web Client.
 
 It captures clients, Sessions, Subscriptions, listeners, Item Updates, snapshots, and COMMAND key lifecycles. The workspace has Runtime Scope, Ordered Evidence, and Context.
+
+Privacy: the store categories describe data Workbench can handle in the inspected application's payloads. Captured values can contain personal, health, financial, authentication, communication, or location information; every category need not occur in a given Panel Session. Workbench keeps temporary Evidence in the browser and excludes it from analytics. Requested MCP data can reach your configured model provider. Workbench does not request access to the browser's history database or device location.
 
 Key features:
 
@@ -126,26 +128,26 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.9
+2.0.10
 ```
 
 What's new:
 
 ```text
-Expanded MCP investigation and reviewed Client Message sending, paired with companion 0.1.8. Adds matching desktop Firefox support as a separate Mozilla Add-ons release.
+Clarifies why the store lists sensitive-data categories and how captured application data differs from usage analytics.
 
-- Read richer stream, COMMAND, provenance, and bounded Evidence queries.
-- Prepare exact Server Injection Client Messages through MCP; require human panel review and approval before one send.
-- Preserve duplicate receipts, explicit uncertainty, and no automatic retry.
-- Use one companion for Chrome and Firefox with exact Panel Session routing.
-- Firefox requires installation consent for captured-data sharing and starts analytics Off behind optional native consent and the Workbench preference.
-- Store privacy disclosures cover sensitive information that arbitrary captured application fields can contain, including through MCP.
-- Chrome permissions and analytics defaults are unchanged.
+- Explains that sensitive information can occur in inspected Lightstreamer field values, keys, and Client Messages.
+- Describes temporary browser storage, deliberate exports/copies, and requested MCP sharing separately from analytics.
+- Explains that inspected URLs and application location values do not require browser-history or device-location access.
+- Retains full inspection, existing data-category disclosures, permissions, consent controls, and analytics defaults.
+- Continues to support companion 0.1.8.
 ```
 
 ## Privacy Practices Draft
 
 ```text
+The store data categories describe information present in captured application payloads, not a requirement that every Panel Session contain each type. Workbench processes these values for debugging without determining their business meaning. Sensitive application data is excluded from usage analytics; requested MCP Evidence can reach the configured model provider. Workbench does not request browser-history or device-location access.
+
 Lightstreamer Workbench processes inspected-page Lightstreamer event data in the browser extension context. Each Panel Session owns one temporary Event History. IndexedDB can keep 100,000 Evidence records or 256 MiB. The memory fallback can keep 25,000 records or 128 MiB. After bounded journal retries fail, Workbench continues in memory for the rest of the Panel Session and reports the storage change and failure reason. Workbench does not send captured Evidence to maintainers or an analytics service. Agent access separately sends requested Evidence to a local MCP client and may send it to that client's configured model provider. Client Message bodies remain redacted in agent results.
 
 Complete History ends at the current History Interval's Committed Evidence Boundary. Retention removes the oldest accepted prefix while Capture continues and reports a Retention Advance, not an Evidence Gap. An Evidence Gap means captured activity could not be accepted into any canonical Event History segment. Clear makes an exact History Interval cut. A controlled Close tries to erase Event History. An abnormal stop can leave residual data until Chrome runs the extension again. A new Panel Session starts empty and does not load earlier Evidence. Capture, Coverage, History Capacity, and Live or Frozen are independent. The memory fallback does not reduce Coverage by itself.
@@ -158,7 +160,7 @@ Workbench uses host and page access to observe the official Lightstreamer Web Cl
 Privacy questionnaire note:
 
 ```text
-Declare all nine Chrome data categories: personally identifiable information, health information, financial and payment information, authentication information, personal communications, location, web history, user activity, and website content. Arbitrary inspected application fields can contain sensitive categories; recognized credential redaction does not guarantee their absence. These disclosures cover local processing and requested MCP data, as well as usage analytics. Describe the fixed product events, Google Analytics recipient, default-on behavior, and off switch. Captured Evidence, inspected URLs, and typed text are excluded from analytics. Agent access separately sends requested Evidence to the local MCP client and may reach its configured model provider; it is on by default with authentication off. Any local process able to reach the companion can use a connected panel's grant. Explain storage permission for analytics preferences/identity and Google's host access for Measurement Protocol. Keep the dashboard, listing, and policy consistent before publishing.
+Retain the existing nine Chrome data categories for full inspection: personally identifiable information, health information, financial and payment information, authentication information, personal communications, location, web history, user activity, and website content. Arbitrary inspected application fields can contain sensitive categories; recognized credential redaction does not guarantee their absence. Explain that the sensitive categories describe captured application data, while inspected URLs support web-history disclosure and fixed feature events support user-activity disclosure. These are the project's existing disclosures for its current behavior; do not claim Google's general guidance explicitly requires every debugger to select all nine. Google requires disclosure of local processing as well as transmission. Describe the fixed product events, Google Analytics recipient, default-on behavior, and off switch. Captured Evidence, inspected URLs, and typed text are excluded from analytics. Agent access separately sends requested Evidence to the local MCP client and may reach its configured model provider; it is on by default with authentication off. Any local process able to reach the companion can use a connected panel's grant. Explain storage permission for analytics preferences/identity and Google's host access for Measurement Protocol. Keep the dashboard, listing, and policy consistent before publishing.
 ```
 
 Single purpose description:

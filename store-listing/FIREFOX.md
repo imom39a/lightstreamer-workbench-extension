@@ -1,11 +1,19 @@
-# First Firefox release: 2.0.9
+# Firefox listing: 2.0.10 candidate
+
+Version **2.0.10** clarifies the privacy wording while retaining full inspection,
+the existing native data categories, analytics consent, and Agent access controls.
+Build it from the same reviewed `main` revision as Chrome 2.0.10. Submission and
+public availability for this candidate must be recorded separately from 2.0.9.
+
+## First Firefox release: 2.0.9
 
 This is the manual public Mozilla Add-ons submission. Build from the reviewed
 `main` revision used for Chrome 2.0.9. The listed submission completed on
-October 6, 2026 and shows **Awaiting Review**. Its version ID is `6548853`,
-file ID `5092992`, and permanent add-on ID was accepted. The planned public
-URL is <https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/>;
-public availability and signed-install proof remain pending.
+October 6, 2026. Its version ID is `6548853`, file ID `5092992`, and permanent
+add-on ID was accepted. On November 3, 2026, the public listing at
+<https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/>
+offers version **2.0.9** and a package download. Public availability is confirmed;
+this listing check does not add signed-install verification evidence.
 
 ## Publisher and package
 
@@ -18,8 +26,8 @@ public availability and signed-install proof remain pending.
 - License: Apache License 2.0.
 - Platform: desktop Firefox 140+ on Windows, macOS, and Linux; private browsing disabled.
 - Distribution: public listing on addons.mozilla.org, automatic public availability after approval if offered.
-- Extension ZIP: `release/lightstreamer-workbench-firefox-v2.0.9.zip`.
-- Reviewer source ZIP: `release/lightstreamer-workbench-firefox-source-v2.0.9.zip`.
+- Extension ZIP: `release/lightstreamer-workbench-firefox-v2.0.10.zip`.
+- Reviewer source ZIP: `release/lightstreamer-workbench-firefox-source-v2.0.10.zip`.
 - Icon: `public/icons/icon-128.png`.
 - Screenshots: the five shared Workbench panel screenshots in `store-listing/screenshots/`, in the order recorded in [LISTING.md](LISTING.md).
 - Homepage: <https://imom39a.github.io/lightstreamer-workbench-extension/>.
@@ -30,6 +38,10 @@ public availability and signed-install proof remain pending.
 
 ```text
 Lightstreamer Workbench adds a developer-tools panel for applications using the official Lightstreamer Web Client.
+
+New in 2.0.10: clearer privacy information about captured application data, MCP sharing, and usage analytics. Full inspection and the existing data-category disclosures are retained.
+
+The store data categories describe information Workbench can handle inside inspected application payloads. Captured values can contain personal, health, financial, authentication, communication, or location information. Each category may be absent from an individual Panel Session. Workbench does not request access to the browser's history database or device location. Inspected URLs and application location values can still be part of the debugging data.
 
 Inspect clients, Sessions, Subscriptions, listeners, Item Updates, snapshots, COMMAND key lifecycles, and outbound Client Messages. Select Runtime Scope, read Ordered Evidence, and inspect complete Context. Find, Filter, Capture, Coverage, and Live/Frozen investigation work independently.
 

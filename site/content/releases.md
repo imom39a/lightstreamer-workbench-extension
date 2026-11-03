@@ -1,8 +1,14 @@
+## Extension 2.0.10 — privacy wording candidate
+
+Version **2.0.10** is being prepared for Chrome and Firefox. It clarifies why the stores list sensitive-data categories and separates captured application Evidence, requested MCP sharing, and usage analytics. Full inspection, existing data-category disclosures, permissions, consent controls, and analytics defaults are retained. The companion remains **0.1.8**.
+
+Read [Privacy]({{site}}privacy/#why-the-stores-list-sensitive-data) for the explanation. This candidate is not yet a public Store release. Use the published 2.0.9 links below until store availability is confirmed.
+
 ## Extension 2.0.9 for Chrome and Firefox; MCP companion 0.1.8
 
-Both extension **2.0.9** packages were submitted on **October 6, 2026**, from the same reviewed source on `main`. Chrome Web Store shows **Pending review**, with automatic publication after approval; its currently published package is 2.0.8. The first [Firefox Mozilla Add-ons listing](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/) shows **Awaiting Review** in the publisher dashboard and is not publicly available yet. Store approval and signed-install verification remain pending.
+Extension **2.0.9** is available from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf) and [Firefox Mozilla Add-ons](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/). Both public listings were checked on **November 3, 2026**. The packages were submitted on **October 6, 2026**, from the same reviewed source on `main`.
 
-Companion [0.1.8 is published on npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). Its exact artifact passed Chrome checks on Windows, macOS, and Linux, Firefox stable on all three platforms, and Firefox minimum 140.0 plus both supported ESR lines on Linux. The [matching download and checksums](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.8) are available. The bundle contains the tested Chrome extension with analytics disabled; Firefox's signed package will come from Mozilla after approval.
+Companion [0.1.8 is published on npm](https://www.npmjs.com/package/lightstreamer-workbench-agent/v/0.1.8). Its exact artifact passed Chrome checks on Windows, macOS, and Linux, Firefox stable on all three platforms, and Firefox minimum 140.0 plus both supported ESR lines on Linux. The [matching download and checksums](https://github.com/imom39a/lightstreamer-workbench-extension/releases/tag/agent-v0.1.8) are available. The bundle contains the tested Chrome extension with analytics disabled. Install Firefox's signed package from Mozilla Add-ons.
 
 - Adds desktop Firefox 140+ support on Windows, macOS, and Linux, with regular browsing only.
 - Preserves Capture, COMMAND Evidence, Local Injection, Scenarios, reviewed Server Injection, and JSON/offline HTML exports across both browsers.

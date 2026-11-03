@@ -1,3 +1,9 @@
+## Store data categories
+
+Workbench inspects Lightstreamer application values. Those values can contain personal, health, financial, authentication, communication, or location information. The store disclosures cover this captured data, including local processing and requested MCP sharing. Each category may be absent from an individual Panel Session.
+
+Workbench does not request browser-history or device-location access. It can handle the inspected page's URL and location values inside application data. Captured Evidence is excluded from usage analytics and is not sent to the maintainers. Requested MCP data can reach your configured model provider.
+
 ## Export Evidence
 
 1. Select the Scope you want to export.

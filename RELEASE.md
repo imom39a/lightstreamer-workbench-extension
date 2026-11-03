@@ -229,6 +229,44 @@ on September 28, 2026. The old repository-wide `AGENT_NPM_PUBLISH_ENABLED` switc
 is removed; it no longer controls publication. The first Firefox manual route
 and submission record below remain historical guidance.
 
+## Version 2.0.10 privacy wording candidate — November 3, 2026
+
+The maintainer selected full payload inspection with clearer privacy wording.
+This is **Non-UI** release preparation: both browser versions advance to
+**2.0.10**, while the existing data-category declarations, native consent,
+permissions, Capture, redaction, MCP sharing, and analytics behavior remain.
+Companion **0.1.8** remains the matching published companion; this change does
+not request a new npm publication.
+
+The policy and both listing drafts explain that sensitive categories can occur
+inside captured application values. They distinguish temporary browser Evidence,
+deliberate exports/copies, requested MCP sharing, and closed-vocabulary analytics.
+The inspected URL is separate from access to the browser's history database;
+application location values are separate from device-location access. The Chrome
+questionnaire note retains the project's current audit decision without claiming
+Google explicitly prescribes all nine categories for every debugger.
+
+Candidate verification, package provenance, store-copy updates, and per-store
+submission outcomes must be recorded before declaring this version available.
+
+Local preparation passed type checking, documentation checks, all 2,186 unit
+tests in the serialized release plan (four existing skips), both production
+browser builds and their extension audits, all 15 analytics-vocabulary validation
+requests, four site analytics checks, and eight site browser checks. The Chrome
+listing draft was saved with the new explanation; its nine data categories and
+canonical policy URL were verified unchanged. Firefox publisher sign-in requires
+two-step authentication before its live listing can be updated. No 2.0.10 store
+submission is established by these preparation checks.
+
+## Version 2.0.9 public availability — November 3, 2026
+
+The public [Chrome Web Store listing](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf)
+and [Mozilla Add-ons listing](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/)
+both offer **2.0.9**, verified on November 3, 2026. Chrome reports an October 7,
+2026 update; Mozilla reports October 6, 2026 and offers a package download.
+This confirms public availability. It does not add installed-package verification
+evidence. The submission record below preserves the status at submission time.
+
 ## Version 2.0.9 submission record
 
 The maintainer authorized Chrome and the first public Firefox release with the

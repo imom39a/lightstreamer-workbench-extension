@@ -13,6 +13,22 @@ Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extensio
 
 The repository candidate also captures inspected-page Client Messages and implements deliberate Server Injection. This candidate is not a statement that the Chrome Web Store package has been published.
 
+## Why the stores list sensitive data
+
+The store data categories describe information Workbench can handle while debugging an inspected application. The categories do not mean that every Panel Session contains all of those types of information.
+
+Workbench captures application field values, COMMAND keys, and Client Messages. These values can contain personal information, health data, financial or payment data, authentication information, personal communications, or location information. For example, a captured field containing a patient's diagnosis is health information. Workbench displays and temporarily stores the captured value as Evidence without determining its business meaning. Recognized credential redaction cannot detect every sensitive value.
+
+| Data path | Information handled | Destination |
+| --- | --- | --- |
+| Capture and inspection | Lightstreamer application data, runtime details, and server addresses | Temporary Event History in the browser; deliberate local exports or copies |
+| Agent access | Requested Evidence and the inspected page's origin and path, with the redaction limits described below | Local MCP client; requested data may then reach its configured model provider |
+| Extension usage analytics | Fixed Workbench feature names, foreground engagement time, coarse outcomes, version, event time, and a random installation identifier | Google Analytics while analytics is enabled |
+
+The web-history or browsing-activity disclosure includes inspected-page URLs. Workbench does not request access to the browser's history database. It does not request device-location access; location information can occur inside captured application values.
+
+Captured Evidence, application field values, inspected URLs, and typed text are excluded from usage analytics. Workbench does not send captured Evidence to the maintainers. Agent access is a separate sharing path with its own control. See **Usage analytics** and **Agent access** below for defaults, controls, and retention details.
+
 ## Usage analytics
 
 Configured production builds use Google Analytics 4 to understand feature adoption, investigation journeys, foreground engagement time, and coarse failure categories. Chrome analytics is on by default. Firefox analytics starts off and sends only after you grant Firefox's optional technical-and-interaction data permission and enable Workbench's analytics setting. Open **More actions → Help & resources → Usage analytics** to change **Share usage analytics**. Turning it on in Firefox opens a short consent window when needed. Select **Request Firefox permission**, then choose **Allow** in Firefox's native prompt; cancelling or declining leaves analytics off and Workbench fully usable. No sign-in is required.
