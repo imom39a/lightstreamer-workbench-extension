@@ -102,13 +102,30 @@
       "warnings": 3,
       "notices": 0
     },
-    "state": "under-review",
+    "state": "publicly-available",
     "confirmation": "Version Submitted; confirmation email when version is published",
     "observedAt": "2026-11-04T00:14:46.319Z",
     "fileId": 5205456,
     "sourcePresent": true,
     "license": "Apache License 2.0",
     "versionPage": "https://addons.mozilla.org/en-US/developers/addon/lightstreamer-workbench/versions/6661362",
-    "remoteStatus": "Awaiting Review"
+    "remoteStatus": "Awaiting Review",
+    "publicObservation": {
+      "version": "2.0.10",
+      "fileId": 5205456,
+      "status": "public",
+      "url": "https://addons.mozilla.org/firefox/downloads/file/5205456/lightstreamer_workbench-2.0.10.xpi",
+      "size": 596741,
+      "sha256": "23b71584f39f8b39a64c2cf21d054f07ce470aef22ba07d57efad91b18bf36e9",
+      "packagedFiles": 31,
+      "identicalFiles": 30,
+      "manifestSemanticallyEqual": true,
+      "addedFiles": "Five META-INF signature files"
+    },
+    "installedSmoke": {
+      "state": "not-established",
+      "reason": "Owned Firefox 157.0.1 profile did not start its Marionette listener within the startup bound; signed XPI was not installed by this attempt. Only the owned hung browser process was stopped.",
+      "publicPackageVerification": "Published digest, signing metadata and source-content comparison passed."
+    }
   }
 }

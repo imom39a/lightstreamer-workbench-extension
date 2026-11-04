@@ -1,10 +1,13 @@
-# Firefox listing: 2.0.10 submitted for review
+# Firefox listing: 2.0.10 publicly available
 
 Version **2.0.10** clarifies the privacy wording while retaining full inspection,
 the existing native data categories, analytics consent, and Agent access controls.
 Submitted November 3, 2026 (November 4 UTC), from frozen source
 `179a6cf9559324e5418c837397a0b5f32388331e`, the same as Chrome 2.0.10.
-Version `6661362`, file `5205456`: **Awaiting Review**. Paired source is attached;
+Version `6661362`, file `5205456`: **publicly available**, confirmed by the
+public API and XPI download. The downloaded SHA-256 is
+`23b71584f39f8b39a64c2cf21d054f07ce470aef22ba07d57efad91b18bf36e9`.
+Paired source is attached;
 Apache License 2.0 is retained. The live description and hosted policy explain
 the data categories. Public availability remains separate from submission.
 

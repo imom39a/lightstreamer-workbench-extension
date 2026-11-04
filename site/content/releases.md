@@ -1,8 +1,8 @@
-## Extension 2.0.10 — submitted for review
+## Extension 2.0.10 — Firefox available; Chrome in review
 
-Version **2.0.10** has been submitted for Chrome and Firefox store review. It clarifies why the stores list sensitive-data categories and separates captured application Evidence, requested MCP sharing, and usage analytics. Full inspection, existing data-category disclosures, permissions, consent controls, and analytics defaults are retained. The companion remains **0.1.8**.
+Version **2.0.10** is available from [Firefox Mozilla Add-ons](https://addons.mozilla.org/en-US/firefox/addon/lightstreamer-workbench/) and is pending Chrome Web Store review. It clarifies why the stores list sensitive-data categories and separates captured application Evidence, requested MCP sharing, and usage analytics. Full inspection, existing data-category disclosures, permissions, consent controls, and analytics defaults are retained. The companion remains **0.1.8**.
 
-Read [Privacy]({{site}}privacy/#why-the-stores-list-sensitive-data) for the explanation. Both submissions are awaiting review; this is not yet a public Store release. Use the published 2.0.9 links below until store availability is confirmed.
+Read [Privacy]({{site}}privacy/#why-the-stores-list-sensitive-data) for the explanation. Firefox availability is confirmed. Chrome continues to offer 2.0.9 while Google reviews 2.0.10.
 
 ## Extension 2.0.9 for Chrome and Firefox; MCP companion 0.1.8
 

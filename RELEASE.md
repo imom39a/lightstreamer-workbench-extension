@@ -286,7 +286,7 @@ failed on both Playwright attempts waiting for its JSON editor; targeted macOS
 and Linux reproductions passed, and its cause remains unestablished. Attempt 1's
 macOS jobs could not acquire runners because of hosted arm64 capacity.
 
-**Both browser versions are submitted, not publicly available.** Chrome's
+**Chrome is submitted; Firefox is publicly available.** Chrome's
 workflow publisher stopped before upload because the newly saved wording was
 pending review on the old 2.0.9 package. The maintainer-authorized manual path
 inspected that revision and returned it to draft. A scoped API status confirmed
@@ -305,8 +305,17 @@ publication intent. Upload UUID: `6c882eba4a8b46179c3dcb06afb84064`; version ID:
 zero notices: desktop-only Android-version compatibility and two generated React
 DOM `innerHTML` warnings. The version page confirms **Awaiting Review**, existing
 **Apache License 2.0**, the exact release/reviewer notes, and attached source.
-The finish page confirmed “Version Submitted”. Public Firefox remains **2.0.9**;
-signing, public availability and signed-install verification remain pending.
+The finish page confirmed “Version Submitted”. Mozilla subsequently made
+**2.0.10 publicly available**: its public API reports file `5205456` as public
+and the matching version/download. The downloaded XPI is 596,741 bytes, SHA-256
+`23b71584f39f8b39a64c2cf21d054f07ce470aef22ba07d57efad91b18bf36e9`,
+matching Mozilla's published digest. Thirty packaged files match the frozen
+unsigned input byte-for-byte; manifest JSON is semantically identical with
+formatting changes. Five added `META-INF` files contain signing metadata. A separate installed-XPI
+smoke attempt could not reach Firefox 157.0.1's Marionette listener in its owned
+disposable profile within the startup bound, before installation. Only that
+owned hung browser was stopped. Signed-install behavior is not established by
+this attempt; the complete frozen Firefox platform gates remain successful.
 
 The retained [manual publication records](docs/agents/privacy-release-2.0.10.json)
 bind both submissions to the original source, manifest digest, exact unsigned
