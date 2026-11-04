@@ -46,7 +46,7 @@ https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
 ## Detailed Description
 
-The description and reviewer instructions below are prepared for extension 2.0.10 with matching companion 0.1.8. The same product version is prepared separately for Firefox. Current upload, submission, and public availability must be verified in the publisher dashboard. Historical records below retain their original versions.
+The description and reviewer instructions below are prepared for extension 2.0.10 with matching companion 0.1.8. The same product version is prepared separately for Firefox. Chrome accepted the exact frozen 2.0.10 upload and review submission on November 3, 2026 (November 4 UTC); the API confirms PENDING_REVIEW. Firefox 2.0.10 is also awaiting review. Public availability remains pending. See RELEASE.md for source, hashes and receipts. Historical records below retain their original versions.
 
 ```text
 New in 2.0.10: clearer privacy information about captured application data, MCP sharing, and usage analytics. Full payload inspection and the existing data-category disclosures are retained. Companion 0.1.8 supports Chrome and desktop Firefox through one local companion. Both extensions use the same product version.

@@ -1,0 +1,114 @@
+{
+  "verification": {
+    "format": "lightstreamer-workbench-release-verification-v1",
+    "sourceCommit": "179a6cf9559324e5418c837397a0b5f32388331e",
+    "manifestSha256": "b26ff0bb802bc470af4c27102b0e950e037d3fd20358e8c5f022925acf961351",
+    "scope": "release",
+    "runId": "41714611335",
+    "passed": true,
+    "jobs": {
+      "plan": "success",
+      "package": "success",
+      "checks": "success",
+      "portable": "success",
+      "firefox": "success",
+      "fixture": "success",
+      "panel": "success",
+      "site": "success",
+      "release-bundle": "success"
+    }
+  },
+  "chrome": {
+    "format": "lightstreamer-workbench-manual-publication-record-v1",
+    "channel": "chrome",
+    "sourceCommit": "179a6cf9559324e5418c837397a0b5f32388331e",
+    "manifestSha256": "b26ff0bb802bc470af4c27102b0e950e037d3fd20358e8c5f022925acf961351",
+    "runId": "41714611335",
+    "version": "2.0.10",
+    "packageSha256": "b6c337cafc84109e7ebdbc2ba41bec479d7d871a8655c92432f549572b3e2357",
+    "authorization": "Maintainer requested release; manually inspected and cancelled old 2.0.9 listing-only review. Original workflow declined pending/cancelled revision; full frozen verification passed.",
+    "preflight": {
+      "published": {
+        "state": "PUBLISHED",
+        "distributionChannels": [
+          {
+            "deployPercentage": 100,
+            "crxVersion": "2.0.9"
+          }
+        ]
+      },
+      "submitted": {
+        "state": "CANCELLED",
+        "distributionChannels": [
+          {
+            "deployPercentage": 100,
+            "crxVersion": "2.0.9"
+          }
+        ]
+      }
+    },
+    "state": "submitted",
+    "operations": {
+      "upload": "accepted",
+      "publish": "accepted"
+    },
+    "upload": {
+      "name": "publishers/8b03dd2c-89d2-42b5-826e-409e7c296f0a/items/kfpgbhfphbhkebglopimjhfnnmbifocf",
+      "itemId": "kfpgbhfphbhkebglopimjhfnnmbifocf",
+      "crxVersion": "2.0.10",
+      "uploadState": "SUCCEEDED"
+    },
+    "publish": {
+      "name": "publishers/8b03dd2c-89d2-42b5-826e-409e7c296f0a/items/kfpgbhfphbhkebglopimjhfnnmbifocf",
+      "itemId": "kfpgbhfphbhkebglopimjhfnnmbifocf",
+      "state": "PENDING_REVIEW"
+    },
+    "observation": {
+      "published": {
+        "state": "PUBLISHED",
+        "distributionChannels": [
+          {
+            "deployPercentage": 100,
+            "crxVersion": "2.0.9"
+          }
+        ]
+      },
+      "submitted": {
+        "state": "PENDING_REVIEW",
+        "distributionChannels": [
+          {
+            "deployPercentage": 100,
+            "crxVersion": "2.0.10"
+          }
+        ]
+      }
+    },
+    "observedAt": "2026-11-04T00:16:21.811Z"
+  },
+  "firefox": {
+    "format": "lightstreamer-workbench-manual-publication-record-v1",
+    "channel": "firefox",
+    "version": "2.0.10",
+    "sourceCommit": "179a6cf9559324e5418c837397a0b5f32388331e",
+    "manifestSha256": "b26ff0bb802bc470af4c27102b0e950e037d3fd20358e8c5f022925acf961351",
+    "authorization": "Maintainer requested Chrome and Firefox release; authenticated Mozilla manual submission separately from frozen workflow Firefox=false intent.",
+    "route": "authenticated Mozilla Developer Hub",
+    "uploadUuid": "6c882eba4a8b46179c3dcb06afb84064",
+    "versionId": 6661362,
+    "packageSha256": "072d85ddf2fbe152cf9955381b840622b72fdacd6f5f305861331d60d36ebb91",
+    "sourceSha256": "e7d927bfe5567c3df050fe1c95f671e359c5bda9348732c0bb5a7a777bb0f77a",
+    "validation": {
+      "errors": 0,
+      "warnings": 3,
+      "notices": 0
+    },
+    "state": "under-review",
+    "confirmation": "Version Submitted; confirmation email when version is published",
+    "observedAt": "2026-11-04T00:14:46.319Z",
+    "fileId": 5205456,
+    "sourcePresent": true,
+    "license": "Apache License 2.0",
+    "versionPage": "https://addons.mozilla.org/en-US/developers/addon/lightstreamer-workbench/versions/6661362",
+    "remoteStatus": "Awaiting Review"
+  }
+}

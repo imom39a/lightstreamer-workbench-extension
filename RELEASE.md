@@ -229,7 +229,7 @@ on September 28, 2026. The old repository-wide `AGENT_NPM_PUBLISH_ENABLED` switc
 is removed; it no longer controls publication. The first Firefox manual route
 and submission record below remain historical guidance.
 
-## Version 2.0.10 privacy wording candidate — November 3, 2026
+## Version 2.0.10 privacy wording submission — November 3, 2026
 
 The maintainer selected full payload inspection with clearer privacy wording.
 This is **Non-UI** release preparation: both browser versions advance to
@@ -254,9 +254,9 @@ tests in the serialized release plan (four existing skips), both production
 browser builds and their extension audits, all 15 analytics-vocabulary validation
 requests, four site analytics checks, and eight site browser checks. The Chrome
 listing draft was saved with the new explanation; its nine data categories and
-canonical policy URL were verified unchanged. Firefox publisher sign-in requires
-two-step authentication before its live listing can be updated. No 2.0.10 store
-submission is established by these preparation checks.
+canonical policy URL were verified unchanged. The maintainer completed Mozilla
+two-step authentication, and its live description and hosted privacy policy were
+updated and verified. Preparation checks alone do not establish publication.
 
 The reviewed preparation source is
 `179a6cf9559324e5418c837397a0b5f32388331e`. The public policy, export/privacy guide,
@@ -277,37 +277,57 @@ submitted-candidate output files exactly.
 | Firefox `lightstreamer-workbench-firefox-v2.0.10.zip` | 558,722 | `072d85ddf2fbe152cf9955381b840622b72fdacd6f5f305861331d60d36ebb91` |
 | Firefox reviewer source | 950,569 | `e7d927bfe5567c3df050fe1c95f671e359c5bda9348732c0bb5a7a777bb0f77a` |
 
-**Publication is held.** The full release gate failed both CI attempts at the
-compact 563×700 authored COMMAND journey, waiting for the Local Injection JSON
-editor to open. The same frozen package passed two targeted macOS compact runs,
-two isolated Linux compact runs, and three Linux normal/compact pairs with the
-CI Node and Chrome versions. These passes do not resolve the CI failure or
-authorize skipping its assertion. Both macOS jobs were also cancelled without
-acquiring a runner; GitHub's annotations report hosted macOS arm64 capacity
-constraints. The remaining panel gate was still running at this status check.
-Successful Windows/Linux, source/unit, Firefox minimum/ESR, and site checks do
-not replace the incomplete full gate.
+**Full frozen verification passed on workflow attempt 2.** The manifest-bound
+receipt `workbench-release-verification-2` reports all nine required gate groups
+successful. The full panel suite passed in attempt 1. Attempt 2 completed both
+macOS gates and the full official-client/MCP journey without source changes or
+weaker assertions. Attempt 1's compact 563×700 authored COMMAND journey had
+failed on both Playwright attempts waiting for its JSON editor; targeted macOS
+and Linux reproductions passed, and its cause remains unestablished. Attempt 1's
+macOS jobs could not acquire runners because of hosted arm64 capacity.
 
-The Chrome publisher API still confirms **2.0.9 PUBLISHED at 100%**, with no
-submitted revision. The new 2.0.10 listing explanation is a saved draft, not a
-public listing update. Firefox's live listing update and submission still need
-publisher two-step sign-in. No 2.0.10 browser package was uploaded or submitted,
-and no npm publication was requested.
+**Both browser versions are submitted, not publicly available.** Chrome's
+workflow publisher stopped before upload because the newly saved wording was
+pending review on the old 2.0.9 package. The maintainer-authorized manual path
+inspected that revision and returned it to draft. A scoped API status confirmed
+2.0.9 `CANCELLED`, then the exact verified frozen Chrome ZIP was uploaded once:
+`SUCCEEDED`, version **2.0.10**. `DEFAULT_PUBLISH`, warning blocking, review
+required and 100% distribution returned `PENDING_REVIEW`. A separate API read
+confirmed **2.0.10 PENDING_REVIEW** and **2.0.9 PUBLISHED at 100%**. This manual
+submission is recorded separately; the workflow remains failed at its cautious
+pending-revision guard and is not an automated-submission receipt.
 
-The Chrome workflow environment was configured for the `main` branch only,
-with the existing public resource identity and production ingestion settings.
-Its short-lived publisher token was removed after the held attempt; refresh
-that credential for a later verified submission. No account permission or
-global gcloud configuration was changed.
+Mozilla accepted the exact frozen Firefox ZIP and paired reviewer source through
+the authenticated manual Developer Hub path. This separate maintainer-authorized
+submission does not change the frozen manifest's `firefox: false` automatic
+publication intent. Upload UUID: `6c882eba4a8b46179c3dcb06afb84064`; version ID:
+`6661362`; file ID: `5205456`. Validation reported zero errors, three warnings,
+zero notices: desktop-only Android-version compatibility and two generated React
+DOM `innerHTML` warnings. The version page confirms **Awaiting Review**, existing
+**Apache License 2.0**, the exact release/reviewer notes, and attached source.
+The finish page confirmed “Version Submitted”. Public Firefox remains **2.0.9**;
+signing, public availability and signed-install verification remain pending.
+
+The retained [manual publication records](docs/agents/privacy-release-2.0.10.json)
+bind both submissions to the original source, manifest digest, exact unsigned
+package hashes, full verification receipt and separate per-channel outcomes.
+Neither browser package was rebuilt after freezing. Companion **0.1.8** remains
+published; no npm publication was requested.
+
+The Chrome workflow environment is restricted to `main`, with its existing
+public resource identity and production ingestion settings. The ephemeral
+publisher token was removed after the completed workflow attempt. Manual API
+submission used an in-memory scoped token; no account permission or global
+gcloud configuration was changed.
 
 An isolated store-asset regeneration preserved the current source assets.
 Four screenshots reproduce exactly; the Local Injection sample now exposes
 incomplete native-baseline fixture metadata and was not adopted. Generated
 icon, promo, gallery, and social-card byte differences have zero pixel delta.
-Internal follow-ups `privacy-release-20261103-01` (verification and publication)
-and `privacy-release-20261103-02` (screenshot fixture) are **Todo** draft items in
-Project #2. They are not repository Issues. Retry the original preserved run
-if source is unchanged; a source fix requires a deliberate new frozen candidate.
+Internal follow-up `privacy-release-20261103-01` (verification and submission)
+is **Done**; `privacy-release-20261103-02` (screenshot fixture) remains **Todo**
+in Project #2. They are draft items, not repository Issues. Store approval is
+asynchronous; do not rerun publication or reupload these accepted packages.
 
 ## Version 2.0.9 public availability — November 3, 2026
 

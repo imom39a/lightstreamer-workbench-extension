@@ -1,9 +1,12 @@
-# Firefox listing: 2.0.10 candidate
+# Firefox listing: 2.0.10 submitted for review
 
 Version **2.0.10** clarifies the privacy wording while retaining full inspection,
 the existing native data categories, analytics consent, and Agent access controls.
-Build it from the same reviewed `main` revision as Chrome 2.0.10. Submission and
-public availability for this candidate must be recorded separately from 2.0.9.
+Submitted November 3, 2026 (November 4 UTC), from frozen source
+`179a6cf9559324e5418c837397a0b5f32388331e`, the same as Chrome 2.0.10.
+Version `6661362`, file `5205456`: **Awaiting Review**. Paired source is attached;
+Apache License 2.0 is retained. The live description and hosted policy explain
+the data categories. Public availability remains separate from submission.
 
 ## First Firefox release: 2.0.9
 
@@ -39,9 +42,7 @@ this listing check does not add signed-install verification evidence.
 ```text
 Lightstreamer Workbench adds a developer-tools panel for applications using the official Lightstreamer Web Client.
 
-New in 2.0.10: clearer privacy information about captured application data, MCP sharing, and usage analytics. Full inspection and the existing data-category disclosures are retained.
-
-The store data categories describe information Workbench can handle inside inspected application payloads. Captured values can contain personal, health, financial, authentication, communication, or location information. Each category may be absent from an individual Panel Session. Workbench does not request access to the browser's history database or device location. Inspected URLs and application location values can still be part of the debugging data.
+The store data categories describe information Workbench can handle inside inspected application payloads. Captured values can contain personal, health, financial, authentication, communication, or location information. Each category may be absent from an individual Panel Session. Workbench does not request access to the browser's history database or device location. Inspected URLs and application location values can still be part of the debugging data. Captured Evidence is excluded from usage analytics and is not sent to the maintainers. Requested MCP data can reach your configured model provider.
 
 Inspect clients, Sessions, Subscriptions, listeners, Item Updates, snapshots, COMMAND key lifecycles, and outbound Client Messages. Select Runtime Scope, read Ordered Evidence, and inspect complete Context. Find, Filter, Capture, Coverage, and Live/Frozen investigation work independently.
 

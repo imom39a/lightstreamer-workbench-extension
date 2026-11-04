@@ -1,8 +1,8 @@
-## Extension 2.0.10 — privacy wording candidate
+## Extension 2.0.10 — submitted for review
 
-Version **2.0.10** is being prepared for Chrome and Firefox. It clarifies why the stores list sensitive-data categories and separates captured application Evidence, requested MCP sharing, and usage analytics. Full inspection, existing data-category disclosures, permissions, consent controls, and analytics defaults are retained. The companion remains **0.1.8**.
+Version **2.0.10** has been submitted for Chrome and Firefox store review. It clarifies why the stores list sensitive-data categories and separates captured application Evidence, requested MCP sharing, and usage analytics. Full inspection, existing data-category disclosures, permissions, consent controls, and analytics defaults are retained. The companion remains **0.1.8**.
 
-Read [Privacy]({{site}}privacy/#why-the-stores-list-sensitive-data) for the explanation. This candidate is not yet a public Store release. Use the published 2.0.9 links below until store availability is confirmed.
+Read [Privacy]({{site}}privacy/#why-the-stores-list-sensitive-data) for the explanation. Both submissions are awaiting review; this is not yet a public Store release. Use the published 2.0.9 links below until store availability is confirmed.
 
 ## Extension 2.0.9 for Chrome and Firefox; MCP companion 0.1.8
 
