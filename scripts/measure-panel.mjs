@@ -349,7 +349,7 @@ import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { createCaptureMessage } from ${source("src/bridge/messages.ts")};
 import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
-import { offerAndAwaitCommitted, waitForCommittedCount } from ${source("src/extension/panel/performance-harness-history.ts")};
+import { offerAndAwaitCommitted, waitForCommittedCount } from ${source("tests/support/performance-harness-history.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 

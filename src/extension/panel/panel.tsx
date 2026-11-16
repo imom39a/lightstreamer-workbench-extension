@@ -22,7 +22,8 @@ import {
   createWorkbenchRuntime,
   type LocalInjectionExecutor,
   type ServerInjectionExecutor,
-  type WorkbenchRuntime
+  type WorkbenchPanelRuntime,
+  type WorkbenchRuntimeWithDiagnostics
 } from "./workbench-runtime";
 import {
   createStorageHeadroomSampler,
@@ -60,7 +61,7 @@ export function mountWorkbenchPanel(
   let disposed = false;
   let historyClosed = false;
   let history: EventHistory | null = null;
-  let runtime: WorkbenchRuntime | null = null;
+  let runtime: WorkbenchRuntimeWithDiagnostics | null = null;
   let bridge: PanelBridgeConnection | null = null;
   let agentConnection: AgentConnection | null = null;
   let reactRoot: ReturnType<typeof createRoot> | null = null;
@@ -217,7 +218,7 @@ export function mountWorkbenchPanel(
   }
 }
 
-function bindRuntime(runtime: WorkbenchRuntime, analytics: Pick<ReturnType<typeof observeWorkbenchAnalytics>, "command">): WorkbenchRuntime {
+function bindRuntime(runtime: WorkbenchRuntimeWithDiagnostics, analytics: Pick<ReturnType<typeof observeWorkbenchAnalytics>, "command">): WorkbenchPanelRuntime {
   return {
     getSnapshot: runtime.getSnapshot.bind(runtime),
     subscribe: runtime.subscribe.bind(runtime),
@@ -227,11 +228,9 @@ function bindRuntime(runtime: WorkbenchRuntime, analytics: Pick<ReturnType<typeo
     },
     dispose: runtime.dispose.bind(runtime),
     disposeAndWait: runtime.disposeAndWait.bind(runtime),
-    ...(runtime.reportVisibleFrame
-      ? { reportVisibleFrame: runtime.reportVisibleFrame.bind(runtime) }
-      : {}),
-    ...(runtime.reportPanelPerformanceEvent
-      ? { reportPanelPerformanceEvent: runtime.reportPanelPerformanceEvent.bind(runtime) }
-      : {})
+    // Only renderer lifecycle reporting crosses into React; test-only
+    // settlement and performance reads stay on the runtime itself.
+    reportVisibleFrame: runtime.reportVisibleFrame.bind(runtime),
+    reportPanelPerformanceEvent: runtime.reportPanelPerformanceEvent.bind(runtime)
   };
 }

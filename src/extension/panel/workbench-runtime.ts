@@ -851,15 +851,29 @@ export interface WorkbenchRuntime {
   dispatch(command: WorkbenchCommand): void;
   dispose(): void;
   disposeAndWait(): Promise<void>;
-  /** Settles normalized observations queued by the latest runtime state transition. */
-  settleDiagnosticObservations?(): Promise<void>;
-  /** Reports the first animation frame after the named React snapshot rendered. */
-  reportVisibleFrame?(renderedBoundary?: EvidenceRef | null): void;
-  /** Snapshot of identity-only state for the deliberate real-Chrome performance gate. */
-  getPerformanceDiagnostics?(): WorkbenchRuntimePerformanceDiagnostics;
-  /** Records renderer lifecycle facts for timeout diagnosis; never carries Evidence payloads. */
-  reportPanelPerformanceEvent?(event: WorkbenchPanelPerformanceEvent): void;
 }
+
+/**
+ * Observation-only test and performance seam. It never changes investigation
+ * state; production React reports renderer lifecycle facts through it when a
+ * runtime provides it, and tests settle or read identity-only diagnostics.
+ */
+export interface WorkbenchDiagnosticsPort {
+  /** Settles normalized observations queued by the latest runtime state transition. */
+  settleDiagnosticObservations(): Promise<void>;
+  /** Reports the first animation frame after the named React snapshot rendered. */
+  reportVisibleFrame(renderedBoundary?: EvidenceRef | null): void;
+  /** Snapshot of identity-only state for the deliberate real-Chrome performance gate. */
+  getPerformanceDiagnostics(): WorkbenchRuntimePerformanceDiagnostics;
+  /** Records renderer lifecycle facts for timeout diagnosis; never carries Evidence payloads. */
+  reportPanelPerformanceEvent(event: WorkbenchPanelPerformanceEvent): void;
+}
+
+/** What the renderer receives: the runtime seam, optionally paired with the diagnostics port. */
+export type WorkbenchPanelRuntime = WorkbenchRuntime & Partial<WorkbenchDiagnosticsPort>;
+
+/** A concrete runtime always provides the diagnostics port beside the renderer seam. */
+export type WorkbenchRuntimeWithDiagnostics = WorkbenchRuntime & WorkbenchDiagnosticsPort;
 
 export type WorkbenchPanelPerformanceEvent =
   | Readonly<{ type: "root-mounted"; mounted: boolean }>
@@ -1054,11 +1068,11 @@ const emptyInvestigation: WorkbenchEvidenceInvestigationSnapshot = Object.freeze
   problem: null
 });
 
-export function createWorkbenchRuntime(options: WorkbenchRuntimeOptions = {}): WorkbenchRuntime {
+export function createWorkbenchRuntime(options: WorkbenchRuntimeOptions = {}): WorkbenchRuntimeWithDiagnostics {
   return new Runtime(options);
 }
 
-class Runtime implements WorkbenchRuntime {
+class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
   readonly agent: AgentRuntime = {
     status: () => ({ pageEpoch: this.currentPageEpoch, visible: this.visible, captureStatus: this.captureStatus, capture: this.captureSnapshot(), history: this.history.status() }),
     commandState: input => readAgentCommandState(input, {
