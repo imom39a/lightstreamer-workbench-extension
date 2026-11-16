@@ -325,3 +325,55 @@ describe("IndexedDB journal fallback carry", () => {
     }
   });
 });
+
+describe("IndexedDB journal reads", () => {
+  beforeEach(() => {
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("bounds evidence cursors by the latched Retained Range and afterSequence", async () => {
+    const history = await createIndexedDbEventHistory({
+      panelSessionId: `journal-read-ranges-${Date.now()}`,
+      capacity: { maxRetainedCount: 5, maxRetainedBytes: 1_000_000 }
+    });
+    try {
+      for (let index = 1; index <= 6; index += 1) await history.offer(candidate(`ranged-${index}`)).settled;
+      const first = history.status().retainedRange!.first.sequence;
+      expect(first).toBeGreaterThan(1);
+      const ranges: Array<readonly [number, number] | null> = [];
+      const originalOpenCursor = IDBObjectStore.prototype.openCursor;
+      vi.spyOn(IDBObjectStore.prototype, "openCursor").mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore["openCursor"]>) {
+        const [range] = args;
+        if (this.name === AUTHORITATIVE_EVENT_STORE_NAMES.evidence) {
+          ranges.push(range instanceof IDBKeyRange ? [Number(range.lower), Number(range.upper)] as const : null);
+        }
+        return originalOpenCursor.apply(this, args);
+      });
+
+      const after = await history.read({ afterSequence: 4 });
+      expect(after.ok && after.value.evidence.map((entry) => entry.sequence)).toEqual([5, 6]);
+      expect(ranges.at(-1)).toEqual([5, 6]);
+
+      const all = await history.read({});
+      expect(all.ok && all.value.evidence.map((entry) => entry.sequence)).toEqual(
+        Array.from({ length: 7 - first }, (_, index) => first + index)
+      );
+      expect(ranges.at(-1)).toEqual([first, 6]);
+
+      const kindPage = await history.read({ candidateKind: "lightstreamer", limit: 2, order: "desc" });
+      expect(kindPage.ok && kindPage.value.evidence.map((entry) => entry.sequence)).toEqual([6, 5]);
+      expect(ranges.at(-1)).toEqual([first, 6]);
+
+      const count = ranges.length;
+      const empty = await history.read({ afterSequence: 6 });
+      expect(empty.ok && empty.value.evidence).toEqual([]);
+      expect(ranges).toHaveLength(count);
+    } finally {
+      vi.restoreAllMocks();
+      await history.close();
+    }
+  });
+});

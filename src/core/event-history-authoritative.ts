@@ -26,7 +26,8 @@ import {
   journalCandidateSearchText,
   registerJournalOwnedCandidate,
   journalAccountedBytes,
-  serializeJournalEvidenceCandidate
+  serializeJournalEvidenceCandidate,
+  utf8ByteLength
 } from "./event-history-serialization";
 import { type AuthoritativeEventDatabaseRuntime } from "./indexeddb/authoritative-event-db";
 import {
@@ -77,7 +78,7 @@ export const MAX_EVIDENCE_REF_COMPONENT_UTF8_BYTES = 256;
 export const MAX_PANEL_SESSION_ID_UTF8_BYTES = 192;
 
 export function isBoundedEvidenceRefComponent(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && new TextEncoder().encode(value).byteLength <= MAX_EVIDENCE_REF_COMPONENT_UTF8_BYTES;
+  return typeof value === "string" && value.length > 0 && utf8ByteLength(value) <= MAX_EVIDENCE_REF_COMPONENT_UTF8_BYTES;
 }
 
 export function isBoundedEvidenceRef(value: unknown): value is EvidenceRef {
@@ -90,7 +91,7 @@ export function isBoundedEvidenceRef(value: unknown): value is EvidenceRef {
 }
 
 export function assertBoundedPanelSessionId(value: string): void {
-  if (typeof value !== "string" || value.length === 0 || new TextEncoder().encode(value).byteLength > MAX_PANEL_SESSION_ID_UTF8_BYTES) {
+  if (typeof value !== "string" || value.length === 0 || utf8ByteLength(value) > MAX_PANEL_SESSION_ID_UTF8_BYTES) {
     throw new Error(`Panel Session identity must contain 1 to ${MAX_PANEL_SESSION_ID_UTF8_BYTES} UTF-8 bytes.`);
   }
 }

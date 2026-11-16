@@ -4985,7 +4985,14 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
       const pageStop = offset + limit;
       preserveSelectionOrder = true;
       const direction = query.order === "desc" ? "prev" : "next";
-      const request = store.openCursor(undefined, direction);
+      const scanRange = journalScanRange(latch);
+      if (scanRange === null) {
+        cursorDone = true;
+        finishCandidateKind();
+        void completed.catch(fail);
+        return;
+      }
+      const request = store.openCursor(scanRange, direction);
       let matched = 0;
       request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence candidate-kind read failed."));
       request.onsuccess = () => {
@@ -5035,26 +5042,35 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
     }
     if (unfilteredPage) total = latch.retainedCount;
     const direction = query.offsetFromNewest !== undefined || query.order === "desc" ? "prev" : "next";
-    const request = store.openCursor(undefined, direction);
     const records: EvidenceRecord[] = [];
     let matched = 0;
+    const exhausted = (): void => {
+      if (cooperativeRead) {
+        void completed.then(async () => {
+          if (settled) return;
+          try {
+            const result = await materializeJournalRead(records, latch, query);
+            if (settled) return;
+            settled = true;
+            resolve(result);
+          } catch (error) {
+            fail(error);
+          }
+        }, fail);
+      } else finish();
+    };
+    const scanRange = journalScanRange(latch, query.afterSequence);
+    if (scanRange === null) {
+      exhausted();
+      void completed.catch(fail);
+      return;
+    }
+    const request = store.openCursor(scanRange, direction);
     request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence read failed."));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) {
-        if (cooperativeRead) {
-          void completed.then(async () => {
-            if (settled) return;
-            try {
-              const result = await materializeJournalRead(records, latch, query);
-              if (settled) return;
-              settled = true;
-              resolve(result);
-            } catch (error) {
-              fail(error);
-            }
-          }, fail);
-        } else finish();
+        exhausted();
         return;
       }
       const record = cursor.value as EvidenceRecord;
@@ -5079,6 +5095,22 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
     };
     void completed.catch(fail);
   });
+}
+
+/**
+ * Bound a journal scan to the latched Retained Range (and an exclusive
+ * `afterSequence`) so the cursor never visits records outside it. Returns
+ * null for an empty range and undefined when key ranges are unavailable;
+ * callers keep their per-record checks as the authoritative filter.
+ */
+function journalScanRange(latch: ReadLatch, afterSequence?: number): IDBKeyRange | undefined | null {
+  const retained = latch.retainedRange;
+  if (retained === null) return null;
+  const lower = afterSequence === undefined
+    ? retained.first.sequence
+    : Math.max(retained.first.sequence, Math.floor(afterSequence) + 1);
+  if (!Number.isFinite(lower) || lower > retained.last.sequence) return null;
+  return queryBoundRange(lower, retained.last.sequence);
 }
 
 function readMemoryJournal(

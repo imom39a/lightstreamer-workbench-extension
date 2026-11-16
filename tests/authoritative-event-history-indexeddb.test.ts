@@ -487,7 +487,7 @@ describe("IndexedDB authoritative EventHistory", () => {
 
     expect(result).toMatchObject({ ok: true, value: { total: 200 } });
     if (result.ok) expect(result.value.evidence.map((entry) => entry.sequence)).toEqual([200, 199, 198, 197, 196]);
-    expect(openCursor).toHaveBeenCalledWith(undefined, "prev");
+    expect(openCursor).toHaveBeenCalledWith(expect.objectContaining({ lower: 1, upper: 200 }), "prev");
     expect(continueCursor).toHaveBeenCalledTimes(4);
     openCursor.mockRestore();
     continueCursor.mockRestore();
