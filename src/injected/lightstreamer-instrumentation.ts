@@ -95,7 +95,6 @@ type InstrumentationState = {
   subscriptionListenerIds: Map<string, Set<string>>;
   wireTargets: Map<string, WireReinjectionTarget>;
   syntheticWireEvents: WeakSet<object>;
-  originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
   emitCaptureSyncReplayToPanel(kind: CaptureKind, payload: CapturePayload, panelSessionId: PanelSessionId): void;
 };
@@ -272,7 +271,6 @@ export function installLightstreamerInstrumentation(
     subscriptionListenerIds: new Map<string, Set<string>>(),
     wireTargets: new Map<string, WireReinjectionTarget>(),
     syntheticWireEvents: new WeakSet<object>(),
-    originalItemUpdateCallbacks: new WeakMap<object, (update: SyntheticItemUpdate) => unknown>(),
     emit(kind, payload) {
       try {
         const sanitizedPayload = sanitizeCapturePayload(payload);
@@ -3246,19 +3244,16 @@ function getOrCreateSubscriptionListenerProxy(
     return existing;
   }
 
-  const originalItemUpdate = listener.onItemUpdate;
-  if (typeof originalItemUpdate === "function") {
-    state.originalItemUpdateCallbacks.set(
-      listener,
-      originalItemUpdate.bind(listener) as (update: SyntheticItemUpdate) => unknown
-    );
-  }
-
-  const capturedCallbacks = new Map<PropertyKey, (...args: unknown[]) => unknown>();
+  const lifecycleCallbacks = new Map<PropertyKey, (...args: unknown[]) => unknown>();
+  // Wrappers are keyed by the page's current callback, never by property name
+  // alone: an application may reassign a callback after addListener, and the
+  // official client must then reach the new callback exactly as it would
+  // without instrumentation.
+  const capturedCallbacks = new Map<string, WeakMap<Function, (...args: unknown[]) => unknown>>();
   const proxy = new Proxy(listener, {
     get(target, property, receiver) {
       if (property === "onListenStart" || property === "onListenEnd") {
-        const existingCallback = capturedCallbacks.get(property);
+        const existingCallback = lifecycleCallbacks.get(property);
         if (existingCallback) {
           return existingCallback;
         }
@@ -3276,33 +3271,37 @@ function getOrCreateSubscriptionListenerProxy(
           const callback = target[property];
           return typeof callback === "function" ? callback.apply(listener, args) : undefined;
         };
-        capturedCallbacks.set(property, wrappedLifecycleCallback);
+        lifecycleCallbacks.set(property, wrappedLifecycleCallback);
         return wrappedLifecycleCallback;
       }
-      if (typeof property === "string" && isCapturedSubscriptionCallback(property)) {
-        const callback = target[property];
-        if (typeof callback !== "function") {
-          return Reflect.get(target, property, receiver);
-        }
-
-        const existingCallback = capturedCallbacks.get(property);
-        if (existingCallback) {
-          return existingCallback;
-        }
-
-        const wrappedCallback = (...args: unknown[]) => {
-          try {
-            emitSubscriptionListenerCallback(subscription, listener, property, args, state);
-          } catch (_error) {
-            // Capture extraction cannot suppress or replace the page callback.
-          }
-          return callback.apply(listener, args);
-        };
-        capturedCallbacks.set(property, wrappedCallback);
-        return wrappedCallback;
+      const value = Reflect.get(target, property, receiver);
+      if (
+        typeof property !== "string" ||
+        !isCapturedSubscriptionCallback(property) ||
+        typeof value !== "function"
+      ) {
+        return value;
       }
-
-      return Reflect.get(target, property, receiver);
+      const callback = value as (...args: unknown[]) => unknown;
+      let wrappers = capturedCallbacks.get(property);
+      if (!wrappers) {
+        wrappers = new WeakMap<Function, (...args: unknown[]) => unknown>();
+        capturedCallbacks.set(property, wrappers);
+      }
+      const existingCallback = wrappers.get(callback);
+      if (existingCallback) {
+        return existingCallback;
+      }
+      const wrappedCallback = (...args: unknown[]) => {
+        try {
+          emitSubscriptionListenerCallback(subscription, listener, property, args, state);
+        } catch (_error) {
+          // Capture extraction cannot suppress or replace the page callback.
+        }
+        return callback.apply(listener, args);
+      };
+      wrappers.set(callback, wrappedCallback);
+      return wrappedCallback;
     }
   });
 
@@ -3402,8 +3401,7 @@ function registerReinjectionTarget(
   listener: LightstreamerListenerLike,
   state: InstrumentationState
 ): void {
-  const callback = state.originalItemUpdateCallbacks.get(listener);
-  if (!callback) {
+  if (typeof listener.onItemUpdate !== "function") {
     return;
   }
 
@@ -3412,8 +3410,24 @@ function registerReinjectionTarget(
   state.localInjectionTargets.register(subscriptionId, {
     listenerId,
     fieldNames: readSubscriptionFieldNames(subscription),
-    deliver: callback
+    deliver: (update) => deliverToCurrentItemUpdateCallback(listener, update)
   }, subscription);
+}
+
+/**
+ * Local Injection reaches the listener's current onItemUpdate, so a callback
+ * reassigned by the application after addListener receives injected updates
+ * exactly like the next server update.
+ */
+function deliverToCurrentItemUpdateCallback(
+  listener: LightstreamerListenerLike,
+  update: SyntheticItemUpdate
+): unknown {
+  const callback = listener.onItemUpdate;
+  if (typeof callback !== "function") {
+    throw new Error("The target listener no longer has an onItemUpdate callback.");
+  }
+  return (callback as (update: SyntheticItemUpdate) => unknown).call(listener, update);
 }
 
 function registerSubscriptionListener(

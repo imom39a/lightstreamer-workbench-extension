@@ -200,7 +200,7 @@ Capture starts in the inspected page, where the instrumentation script installs 
 - A map of internally named reinjection listener targets keyed by `subscriptionId:listenerId`.
 - A map of internally named active wire reinjection targets keyed by normalized Subscription ID, retaining the captured socket and TLCP Subscription schema.
 - A WeakSet of synthetic WebSocket `MessageEvent` objects, used to prevent Local Injection delivery from being recaptured as Server traffic.
-- A WeakMap of original `onItemUpdate` callbacks available as Local Injection targets.
+- A Subscription-scoped Local Injection target registry whose listener entries call the listener's current `onItemUpdate` at delivery time.
 - A bounded Client Message delivery registry keyed by exact client identity and request correlation, used by Server Injection without a retry path.
 - An `emit()` function that posts validated capture messages to the page.
 
@@ -228,7 +228,7 @@ Wrapped client methods:
 
 Wrapped subscription behavior:
 
-- `addListener(listener)` replaces the listener with a proxy that captures selected callback invocations.
+- `addListener(listener)` replaces the listener with a proxy that captures selected callback invocations. The proxy reads the listener's current callback on every access and caches one wrapper per callback function, so a callback the application reassigns or deletes after `addListener` behaves exactly as it would without instrumentation.
 - `removeListener(listener)` removes the matching proxy and unregisters the corresponding Local Injection target state.
 - The original listener object remains the public identity used for stable listener IDs.
 
