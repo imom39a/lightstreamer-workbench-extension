@@ -291,3 +291,29 @@ describe("per-update subscription metadata", () => {
     expect(updates()[2]?.payload.subscription).toMatchObject({ keyPosition: 2, commandPosition: 1 });
   });
 });
+
+describe("WebSocket fallback isolation", () => {
+  it("never lets frame parsing failures block the application's send or surface from the inbound listener", () => {
+    const messages: CaptureMessage[] = [];
+    const host: Record<string, unknown> = { WebSocket: FallbackWebSocket };
+    installLightstreamerInstrumentation(host as unknown as LightstreamerHost, (message) => messages.push(message as CaptureMessage));
+    const socket = new (host.WebSocket as typeof FallbackWebSocket)("wss://push.example.test/lightstreamer");
+    const applicationListener = vi.fn();
+    socket.addEventListener("message", applicationListener);
+    const split = String.prototype.split;
+    const splitSpy = vi.spyOn(String.prototype, "split").mockImplementation(function (this: string, ...args: unknown[]) {
+      if (this.includes("LSEW-PARSE-FAILURE")) throw new Error("instrumentation parser failure");
+      return Reflect.apply(split, this, args) as string[];
+    });
+    try {
+      expect(() => socket.send("LS_op=add&LS_subId=1&LSEW-PARSE-FAILURE")).not.toThrow();
+      expect(() => socket.emitMessage("U,1,1,LSEW-PARSE-FAILURE")).not.toThrow();
+    } finally {
+      splitSpy.mockRestore();
+    }
+
+    expect(socket.sent).toEqual(["LS_op=add&LS_subId=1&LSEW-PARSE-FAILURE"]);
+    expect(applicationListener).toHaveBeenCalledTimes(1);
+    expect(messages.map(({ kind }) => kind)).toEqual(["client-created"]);
+  });
+});

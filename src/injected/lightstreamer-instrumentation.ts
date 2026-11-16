@@ -1914,10 +1914,13 @@ function installWebSocketFallback(host: LightstreamerHost, state: Instrumentatio
       args,
       new.target ?? InstrumentedWebSocket
     ) as WebSocket;
-    const url = webSocketUrlToString(args[0]);
-
-    if (!host.__LSEW_PRIMARY_ACTIVE__ && isLightstreamerWebSocketUrl(url)) {
-      installWireCaptureForSocket(host, socket, url, state);
+    try {
+      const url = webSocketUrlToString(args[0]);
+      if (!host.__LSEW_PRIMARY_ACTIVE__ && isLightstreamerWebSocketUrl(url)) {
+        installWireCaptureForSocket(host, socket, url, state);
+      }
+    } catch (_error) {
+      // Fallback Capture is best-effort; the page always receives its socket.
     }
 
     return socket;
@@ -1968,17 +1971,25 @@ function installWireCaptureForSocket(
   }
 
   socket.addEventListener("message", (event) => {
-    if (state.syntheticWireEvents.has(event)) {
-      return;
+    try {
+      if (state.syntheticWireEvents.has(event)) {
+        return;
+      }
+      const text = textWirePayload(event.data);
+      if (text === null) {
+        return;
+      }
+      handleWireInboundFrame(text, wire, state);
+    } catch (_error) {
+      // A malformed or unexpected frame cannot surface as a page error.
     }
-    const text = textWirePayload(event.data);
-    if (text === null) {
-      return;
-    }
-    handleWireInboundFrame(text, wire, state);
   });
   socket.addEventListener("close", (event) => {
-    handleWireClose(event, wire, state);
+    try {
+      handleWireClose(event, wire, state);
+    } catch (_error) {
+      // Close Capture is best-effort.
+    }
   });
 }
 
@@ -2030,9 +2041,13 @@ function wrapWireSend(
 
   try {
     socket.send = function wrappedWireSend(this: WebSocket, ...args: Parameters<WebSocket["send"]>) {
-      const text = textWirePayload(args[0]);
-      if (text !== null) {
-        handleWireOutboundFrame(text, wire, state);
+      try {
+        const text = textWirePayload(args[0]);
+        if (text !== null) {
+          handleWireOutboundFrame(text, wire, state);
+        }
+      } catch (_error) {
+        // Outbound Capture can never prevent the application's original send.
       }
       return originalSend.apply(this, args);
     };

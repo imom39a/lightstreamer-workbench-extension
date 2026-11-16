@@ -285,6 +285,8 @@ The fallback maintains per-socket `WireConnectionState`, per-subscription `WireS
 
 Fallback raw diagnostics include `captureSource: "websocket-tlcp"` so normalization marks the event as `captureSource: "wire"`.
 
+Socket wrapping, outbound frame parsing in the wrapped `send()`, and the instrumentation's own `message` and `close` listeners each run inside a `try`/`catch`. A parsing or Capture failure loses only that Evidence: the application's original `send()` still runs and returns its result, and no instrumentation error surfaces as a page error.
+
 ### Capture Flow
 
 ```mermaid
