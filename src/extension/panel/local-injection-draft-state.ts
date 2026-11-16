@@ -357,3 +357,52 @@ export function scenarioReferenceDraft(state: Pick<ScenarioState, "scenario" | "
   if (!first) throw new Error("A Scenario requires at least one Step.");
   return scenarioStepDraft(state.drafts, first.id);
 }
+
+export function rememberExplicitConcreteFields(
+  fields: Set<string>,
+  previous: LocalInjectionDocument | null,
+  next: LocalInjectionDocument | null
+): void {
+  if (!previous || !next) return;
+  const names = new Set([
+    ...Object.keys(previous.fields),
+    ...Object.keys(next.fields)
+  ]);
+  for (const name of names) {
+    const previousHas = Object.prototype.hasOwnProperty.call(previous.fields, name);
+    const nextHas = Object.prototype.hasOwnProperty.call(next.fields, name);
+    if (
+      previousHas !== nextHas ||
+      (previousHas && stableJson(previous.fields[name]) !== stableJson(next.fields[name]))
+    ) {
+      fields.add(name);
+    }
+  }
+}
+
+export function isActiveLocalInjectionDeliveryListener(
+  listener: Readonly<{ active: boolean; callbacks: readonly string[] }>
+): boolean {
+  return listener.active && listener.callbacks.includes("onItemUpdate");
+}
+
+export function hashLocalInjectionValue(value: unknown): string {
+  const text = stableJson(value);
+  let hash = 2_166_136_261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `li-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+export function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}

@@ -8,7 +8,6 @@ import { createFilter, type Filter } from "../../core/filter-algebra";
 import { classifyInjectionSourceFieldExecutability } from "../../core/item-update-value-semantics";
 import { expandJsonStringFields } from "../../core/json-string-fields";
 import { expandLocalInjectionCandidateMatrix } from "../../core/local-injection-candidate-matrix";
-import type { NativeChangeContext, NativeReviewedChangeFacts } from "../../core/local-injection-change-semantics";
 import {
   applyLocalInjectionDocumentToDraft,
   createLocalInjectionDocumentFromDraft,
@@ -48,15 +47,14 @@ import {
   emptyScenarioCaptureWorkspace,
   lightstreamerPayload,
   localInjectionReady,
-  scenarioReferenceDraft,
   scenarioStepDraft,
   type LocalInjectionDraftState,
   type LocalInjectionEntryIntent,
-  type ScenarioNativeChangeStep,
   type ScenarioState,
   type WorkbenchLocalInjectionAnchor
 } from "./local-injection-draft-state";
 import type { LocalInjectionExecutionCoordinator } from "./local-injection-execution-coordinator";
+import type { LocalInjectionTargetValidator } from "./local-injection-target-validator";
 import type { ServerInjectionController } from "./server-injection-controller";
 import { structuralEvidenceScope } from "./structural-evidence-scope";
 import type { TopologyProjection } from "./topology-projection";
@@ -102,6 +100,7 @@ export interface WorkbenchAgentAdapterHost {
   readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   readonly agentLocalSettlements: ReadonlyMap<string, AgentLocalSettlement>;
   readonly serverInjection: ServerInjectionController;
+  readonly localInjectionTargets: LocalInjectionTargetValidator;
 
   localInjectionDraft: LocalInjectionDraftState | null;
   localInjectionBlockedEntry: LocalInjectionEntryIntent | null;
@@ -123,9 +122,6 @@ export interface WorkbenchAgentAdapterHost {
     sourceOverride?: LightstreamerEventEnvelope,
     options?: Readonly<{ id?: string; recordError?: boolean }>
   ): LocalInjectionDraftState | null;
-  refreshLocalInjectionValidation(draft: LocalInjectionDraftState): void;
-  validateLocalInjectionTarget(anchor: WorkbenchLocalInjectionAnchor): LocalInjectionDiagnostic[];
-  localInjectionFingerprint(draft: LocalInjectionDraftState, changeContext?: NativeChangeContext): string;
   setLocalInjectionJson(text: string): void;
   executeLocalInjection(): void;
   finishLocalInjection(): void;
@@ -134,10 +130,6 @@ export interface WorkbenchAgentAdapterHost {
   scenarioDraftInput(draft: LocalInjectionDraftState, ready?: boolean): ScenarioDraftInput;
   scenarioTargetFingerprint(draft: LocalInjectionDraftState): string;
   scenarioCurrentListenerIds(draft: LocalInjectionDraftState): readonly string[];
-  scenarioNativeChanges(
-    steps: readonly ScenarioNativeChangeStep[],
-    drafts: ReadonlyMap<string, LocalInjectionDraftState>
-  ): ReadonlyMap<string, NativeReviewedChangeFacts>;
   activeCommandKeys(anchor: WorkbenchLocalInjectionAnchor): readonly string[];
   reviewCurrentScenario(): void;
   setScenarioStepJson(stepId: string, text: string): void;
@@ -181,7 +173,7 @@ export function createWorkbenchAgentAdapter(host: WorkbenchAgentAdapterHost): Ag
       const candidate = authoredDraftFromScope(target, host.currentPageEpoch);
       return { node, pageEpoch: host.currentPageEpoch, readContext: describeAgentSourceContext(id, target, options), localInjection: candidate ? { anchor: candidate.anchor,
         capabilities: describeAgentInjectionTarget(candidate.anchor, candidate.draft),
-        document: createLocalInjectionDocumentFromDraft(candidate.draft), diagnostics: host.validateLocalInjectionTarget(candidate.anchor) }
+        document: createLocalInjectionDocumentFromDraft(candidate.draft), diagnostics: host.localInjectionTargets.validateTarget(candidate.anchor) }
         : { unavailable: "Source-free authoring requires one live COMMAND, MERGE or DISTINCT item with a declared field list and current delivery context. RAW is unsupported; captured Evidence can describe other supported targets.",
           recovery: {
             evidence: { tool: "query_evidence", arguments: { scopeId: id, where: { kind: ["ITEM-UPDATE"] }, limit: 1, order: "NEWEST_FIRST" } },
@@ -364,7 +356,7 @@ export function createWorkbenchAgentAdapter(host: WorkbenchAgentAdapterHost): Ag
         if (!ordered.ok) valid = false;
         else {
           const keys = [...builtById.values()].map(candidate => ({ item: { name: candidate.anchor.itemName, position: candidate.anchor.itemPosition }, keys: host.activeCommandKeys(candidate.anchor) }));
-          const preflight = reviewScenario(ordered.scenario, { runId: "agent-validation", committedEvidenceSeed: host.committedEvidenceBoundary, targetFingerprint: host.scenarioTargetFingerprint(target!), listenerIds: host.scenarioCurrentListenerIds(target!), historyAccepting: host.historyStatus.phase === "RUNNING" && host.scenarioFollowerPhase === "LIVE" && host.projectionRecovery === null, clearInProgress: host.clearState !== "idle", activeCommandKeysByItem: keys, nativeChangesByStepId: host.scenarioNativeChanges(ordered.scenario.steps, builtById), diagnosticObservationBoundary: host.diagnosticObservations.currentBoundary() });
+          const preflight = reviewScenario(ordered.scenario, { runId: "agent-validation", committedEvidenceSeed: host.committedEvidenceBoundary, targetFingerprint: host.scenarioTargetFingerprint(target!), listenerIds: host.scenarioCurrentListenerIds(target!), historyAccepting: host.historyStatus.phase === "RUNNING" && host.scenarioFollowerPhase === "LIVE" && host.projectionRecovery === null, clearInProgress: host.clearState !== "idle", activeCommandKeysByItem: keys, nativeChangesByStepId: host.localInjectionTargets.scenarioNativeChanges(ordered.scenario.steps, builtById), diagnosticObservationBoundary: host.diagnosticObservations.currentBoundary() });
           if (preflight.ok) {
             for (const reviewed of preflight.run.steps) {
               const step = steps.find(step => step.id === reviewed.id);
@@ -401,7 +393,7 @@ export function createWorkbenchAgentAdapter(host: WorkbenchAgentAdapterHost): Ag
     if (!candidate) throw new Error("TARGET_RETIRED: Local Injection target is unavailable or incompatible with the selected source. Inspect a current target before preparing another document.");
     if (draft.document !== undefined) {
       candidate.rawText = draft.document;
-      host.refreshLocalInjectionValidation(candidate);
+      host.localInjectionTargets.refresh(candidate);
     }
     candidate.relativeDelayMs = draft.delayMs ?? 0;
     const replayability = source?.update
@@ -467,13 +459,13 @@ export function createWorkbenchAgentAdapter(host: WorkbenchAgentAdapterHost): Ag
     const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: host.scenarioDraftInput(scenarioStepDraft(drafts, step.id)) })), { retainedRunBytes: 0 });
     if (!ordered.ok) throw new Error(ordered.reason);
     const commandKeys = [...drafts.values()].map(draft => ({ item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition }, keys: host.activeCommandKeys(draft.anchor) }));
-    const preflight = reviewScenario(ordered.scenario, { runId: "agent-preflight", committedEvidenceSeed: host.committedEvidenceBoundary, targetFingerprint: host.scenarioTargetFingerprint(first), listenerIds: host.scenarioCurrentListenerIds(first), historyAccepting: host.historyStatus.phase === "RUNNING" && host.scenarioFollowerPhase === "LIVE" && host.projectionRecovery === null, clearInProgress: host.clearState !== "idle", activeCommandKeysByItem: commandKeys, nativeChangesByStepId: host.scenarioNativeChanges(ordered.scenario.steps, drafts), diagnosticObservationBoundary: host.diagnosticObservations.currentBoundary() });
+    const preflight = reviewScenario(ordered.scenario, { runId: "agent-preflight", committedEvidenceSeed: host.committedEvidenceBoundary, targetFingerprint: host.scenarioTargetFingerprint(first), listenerIds: host.scenarioCurrentListenerIds(first), historyAccepting: host.historyStatus.phase === "RUNNING" && host.scenarioFollowerPhase === "LIVE" && host.projectionRecovery === null, clearInProgress: host.clearState !== "idle", activeCommandKeysByItem: commandKeys, nativeChangesByStepId: host.localInjectionTargets.scenarioNativeChanges(ordered.scenario.steps, drafts), diagnosticObservationBoundary: host.diagnosticObservations.currentBoundary() });
     if (!preflight.ok) throw new Error(`${preflight.stepId ? `${preflight.stepId}: ` : ""}${preflight.reason}`);
     for (const [index, reviewedStep] of preflight.run.steps.entries()) {
       const draft = scenarioStepDraft(drafts, reviewedStep.id);
       const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, reviewedStep.document, draft.explicitConcreteFields, reviewedStep.nativeChanges?.context);
       const review = host.localInjectionExecutionCoordinator.review({
-        fingerprint: host.localInjectionFingerprint(draft, reviewedStep.nativeChanges?.context), executionTarget: draft.anchor.executionTarget,
+        fingerprint: host.localInjectionTargets.fingerprint(draft, reviewedStep.nativeChanges?.context), executionTarget: draft.anchor.executionTarget,
         document: reviewedStep.document, draft: cloneReinjectionDraft(executionDraft),
         correlation: { scenarioId: preflight.run.scenarioId, runId: preflight.run.id, stepId: reviewedStep.id, ordinal: index + 1, targetId: draft.anchor.subscriptionId }
       });
@@ -510,7 +502,7 @@ export function createWorkbenchAgentAdapter(host: WorkbenchAgentAdapterHost): Ag
       if (input.document !== undefined) {
         candidate.rawText = input.document;
         // Match ordinary editor semantics: only concrete user-supplied replacements become executable.
-        host.refreshLocalInjectionValidation(candidate);
+        host.localInjectionTargets.refresh(candidate);
       }
       candidate.relativeDelayMs = input.delayMs ?? 0;
       candidates.push(candidate);
