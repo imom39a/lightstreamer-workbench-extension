@@ -504,10 +504,25 @@ oldest complete prefix toward a lower target before later Evidence is published.
 
 Each Panel Session owns exactly one Event History coordinator and one Evidence
 sequence. IndexedDB and bounded memory are canonical storage segments behind
-that coordinator, not separate histories. A definitively aborted commit is
-retried at most twice. Persistent storage failure opens a session-local circuit
-and continues acceptance in memory; deterministic corruption does not trigger
-endless probes. Storage fallback changes retention and durability, but does not
+that coordinator, not separate histories. A commit validates its batch before
+opening the transaction and aborts it if any request cannot be issued, so a
+partial batch never commits without its control record. A transient failure is
+retried at most twice with bounded backoff; a deterministic failure
+(`ConstraintError`, `DataError`, or a journal integrity defect) is not retried.
+Persistent storage failure opens a session-local circuit and continues
+acceptance in memory; deterministic corruption does not trigger endless probes.
+
+At that cutover the durable prefix is carried into the memory segment. The
+coordinator plans the carry from cached retention metadata: when the durable
+prefix plus the pending batch would exceed the memory high-water mark, only the
+newest suffix that fits the memory low-water target is read, and the older
+records roll out as an ordinary Retention Advance without being materialized.
+The suffix is read newest-first in bounded sequence-ranged chunks, each in its
+own readonly transaction. If a chunk cannot be read, the readable newer suffix
+is still carried; the unreadable older records are removed from the Retained
+Range (published as a Retention Advance so consumers drop them) and are also
+recorded as an explicit Evidence Gap with dimension `JOURNAL`, so storage loss
+is never presented as routine rollover. Storage fallback changes retention and durability, but does not
 by itself reduce Observation Coverage, alter Capture semantics, or change
 Live/Frozen view state. Only accepted publications drive Topology, COMMAND
 projections, and the Evidence window.

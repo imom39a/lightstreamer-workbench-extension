@@ -132,7 +132,8 @@ export type HistoryAcceptanceGap = Readonly<{
   eventId: string;
   candidateBytes: number;
   occurredAt: number;
-  dimension: "RETAINED_COUNT" | "RETAINED_BYTES" | "PENDING_BYTES" | "EVENT_IDENTITY";
+  /** `JOURNAL`: accepted durable Evidence that could not be carried into memory after a journal failure. */
+  dimension: "RETAINED_COUNT" | "RETAINED_BYTES" | "PENDING_BYTES" | "EVENT_IDENTITY" | "JOURNAL";
   afterEvidence: EvidenceRef | null;
 }>;
 

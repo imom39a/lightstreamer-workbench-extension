@@ -197,8 +197,29 @@ type VolatileEvidence = Readonly<{
   capacityBytes: number;
 }>;
 
+/**
+ * How the durable prefix is carried into memory at a journal cutover, in
+ * ascending sequence order: the oldest `trimmed` entries roll out under the
+ * memory retention budget, the next `lost` entries could not be read back and
+ * become an explicit Evidence Gap, and `carried` is the readable newest suffix.
+ */
+type DurableCarry = Readonly<{
+  trimmed: number;
+  lost: number;
+  carried: readonly VolatileEvidence[];
+}>;
+
+type DurableDetachment = Readonly<{
+  advance: HistoryRetentionAdvance | null;
+  gap: Readonly<{ gap: HistoryAcceptanceGap; problem: HistoryProblem }> | null;
+}>;
+
+/** Records per readonly transaction while carrying the durable prefix. */
+const DURABLE_CARRY_CHUNK_RECORDS = 1_024;
+
 type DurableRetentionEntry = Readonly<{
   evidence: EvidenceRef;
+  captureOrdinal: number;
   replayPayloadBytes: number;
   accountedBytes: number;
   capacityBytes: number;
@@ -254,6 +275,8 @@ export type IndexedDbEventHistoryOptions = Readonly<{
   failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
   commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void>;
   finalizeTerminal?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
+  /** Test seam: overrides applied only to the memory (LOWER) tier after journal fallback. */
+  fallbackCapacity?: HistoryCapacityOptions["capacity"];
 }> & HistoryCapacityOptions;
 
 export async function createIndexedDbEventHistory(
@@ -558,6 +581,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let latestGap: HistoryAcceptanceGap | null = null;
   let gapCount = 0;
   const volatileEvidence: VolatileEvidence[] = [];
+  let volatileCapacityBytes = 0;
   const volatileQueryIndex = new VolatileEvidenceQueryIndex();
   const durableRetentionEntries = [...loaded.durableRetentionEntries];
   const retainedEventIds = new Set(durableRetentionEntries.map((entry) => entry.evidence.eventId));
@@ -923,9 +947,13 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return Math.max(1, Math.floor(maximum * RETENTION_LOW_WATER_RATIO));
   }
 
+  function memoryCapacityLimits(): ReturnType<typeof historyCapacityLimits> {
+    return historyCapacityLimits("LOWER", { ...options.capacity, ...options.fallbackCapacity });
+  }
+
   function adoptMemoryCapacity(): void {
     capacityTier = "LOWER";
-    limits = historyCapacityLimits(capacityTier, options.capacity);
+    limits = memoryCapacityLimits();
   }
 
   function retainedFirstReference(): EvidenceRef | null {
@@ -946,7 +974,6 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
     const targetCount = retentionLowWater(limits.maxRetainedCount);
     const targetBytes = retentionLowWater(limits.maxRetainedBytes);
-    const volatileCapacityBytes = volatileEvidence.reduce((total, entry) => total + entry.capacityBytes, 0);
     const targetDurableCount = Math.max(0, targetCount - volatileEvidence.length);
     const targetDurableBytes = Math.max(0, targetBytes - volatileCapacityBytes);
     let removedCount = 0;
@@ -1013,21 +1040,32 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       }
     }
 
+    // Plan the volatile prefix first, then remove it with one splice rather
+    // than a per-record shift over a large array.
+    let volatileRemoval = 0;
+    let volatileRemovalBytes = 0;
     while (
-      volatileEvidence.length > 0
-      && (retainedCount > targetCount || retainedBytes > targetBytes)
+      volatileRemoval < volatileEvidence.length
+      && (retainedCount - volatileRemoval > targetCount || Math.max(0, retainedBytes - volatileRemovalBytes) > targetBytes)
     ) {
-      const removed = volatileEvidence.shift()!;
-      volatileQueryIndex.remove(removed.evidence.sequence);
-      retainedEventIds.delete(removed.evidence.eventId);
-      retainedCount -= 1;
-      retainedBytes = Math.max(0, retainedBytes - removed.capacityBytes);
-      evictedCount += 1;
-      evictedBytes += removed.capacityBytes;
-      removedCount += 1;
-      removedBytes += removed.capacityBytes;
-      firstRemoved ??= toRef(removed.evidence);
-      lastRemoved = toRef(removed.evidence);
+      volatileRemovalBytes += volatileEvidence[volatileRemoval]!.capacityBytes;
+      volatileRemoval += 1;
+    }
+    if (volatileRemoval > 0) {
+      const removedVolatile = volatileEvidence.splice(0, volatileRemoval);
+      for (const removed of removedVolatile) {
+        volatileQueryIndex.remove(removed.evidence.sequence);
+        retainedEventIds.delete(removed.evidence.eventId);
+      }
+      volatileCapacityBytes = Math.max(0, volatileCapacityBytes - volatileRemovalBytes);
+      retainedCount -= volatileRemoval;
+      retainedBytes = Math.max(0, retainedBytes - volatileRemovalBytes);
+      evictedCount += volatileRemoval;
+      evictedBytes += volatileRemovalBytes;
+      removedCount += volatileRemoval;
+      removedBytes += volatileRemovalBytes;
+      firstRemoved ??= toRef(removedVolatile[0]!.evidence);
+      lastRemoved = toRef(removedVolatile.at(-1)!.evidence);
     }
     refreshRetainedRange();
     if (removedCount === 0 || firstRemoved === null || lastRemoved === null) return null;
@@ -1044,64 +1082,138 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function acceptVolatileBatch(batch: readonly Pending[], prepared: readonly PreparedEvidence[]): void {
     for (const [index, entry] of batch.entries()) {
       volatileEvidence.push({ evidence: prepared[index]!.evidence, capacityBytes: entry.bytes });
+      volatileCapacityBytes += entry.bytes;
       if (prepared[index]!.evidence.candidate.kind !== "topology-checkpoint") volatileQueryIndex.add(deterministicQueryRecord(prepared[index]!.evidence, interval));
     }
   }
 
-  async function snapshotDurablePrefix(): Promise<readonly VolatileEvidence[] | null> {
-    const durableRange = durableRetainedRange;
-    if (durableRange === null) return [];
-    try {
-      const snapshot = await readJournal(database, deepFreeze({
-        interval,
-        generation,
-        committedEvidenceBoundary: durableRange.last,
-        retainedRange: durableRange,
-        retainedCount: durableRetainedCount
-      }), {});
-      if (
-        snapshot.evidence.length !== durableRetainedCount
-        || durableRetentionEntries.length !== durableRetainedCount
-      ) return null;
-      return snapshot.evidence.map((evidence, index) => {
-        const metadata = durableRetentionEntries[index];
-        const capacityBytes = capacityBytesBySequence.get(evidence.sequence);
-        if (
-          metadata === undefined
-          || capacityBytes === undefined
-          || metadata.capacityBytes !== capacityBytes
-          || metadata.evidence.intervalId !== evidence.intervalId
-          || metadata.evidence.sequence !== evidence.sequence
-          || metadata.evidence.eventId !== evidence.eventId
-        ) throw new Error("The durable Event History prefix changed during memory fallback.");
-        return { evidence, capacityBytes };
-      });
-    } catch {
-      return null;
+  /**
+   * Plan and read the durable prefix that a journal cutover carries into
+   * memory. Planning uses cached retention metadata so the oldest records
+   * beyond the memory retention target are never materialized. The carried
+   * suffix is read newest-first in bounded sequence-ranged chunks, each in its
+   * own transaction; the first failed chunk ends the carry so the unreadable
+   * records always form one contiguous older range.
+   */
+  async function snapshotDurablePrefix(pendingCount: number, pendingBytes: number): Promise<DurableCarry> {
+    const entries = durableRetentionEntries;
+    if (durableRetainedRange === null || entries.length === 0) return { trimmed: 0, lost: 0, carried: [] };
+    if (entries.length !== durableRetainedCount) return { trimmed: 0, lost: entries.length, carried: [] };
+    const memoryLimits = memoryCapacityLimits();
+    const totalCount = entries.length + volatileEvidence.length + pendingCount;
+    const totalBytes = durableRetainedCapacityBytes + volatileCapacityBytes + pendingBytes;
+    let keepFrom = 0;
+    if (totalCount > memoryLimits.maxRetainedCount || totalBytes > memoryLimits.maxRetainedBytes) {
+      const budgetCount = Math.max(0, retentionLowWater(memoryLimits.maxRetainedCount) - volatileEvidence.length - pendingCount);
+      const budgetBytes = Math.max(0, retentionLowWater(memoryLimits.maxRetainedBytes) - volatileCapacityBytes - pendingBytes);
+      let keptCount = 0;
+      let keptBytes = 0;
+      keepFrom = entries.length;
+      while (keepFrom > 0) {
+        const candidateBytes = keptBytes + entries[keepFrom - 1]!.capacityBytes;
+        if (keptCount + 1 > budgetCount || candidateBytes > budgetBytes) break;
+        keptCount += 1;
+        keptBytes = candidateBytes;
+        keepFrom -= 1;
+      }
     }
+    const chunks: CommittedEvidence[][] = [];
+    let carriedFrom = entries.length;
+    while (carriedFrom > keepFrom) {
+      const chunkStart = Math.max(keepFrom, carriedFrom - DURABLE_CARRY_CHUNK_RECORDS);
+      try {
+        const chunk = await readReplayChunk(
+          database,
+          interval,
+          entries[chunkStart]!.evidence.sequence,
+          entries[carriedFrom - 1]!.evidence.sequence,
+          carriedFrom - chunkStart
+        );
+        if (chunk.length !== carriedFrom - chunkStart) throw new Error("The durable Event History prefix changed during memory fallback.");
+        for (const [offset, evidence] of chunk.entries()) {
+          const metadata = entries[chunkStart + offset]!;
+          if (
+            capacityBytesBySequence.get(evidence.sequence) !== metadata.capacityBytes
+            || metadata.evidence.intervalId !== evidence.intervalId
+            || metadata.evidence.sequence !== evidence.sequence
+            || metadata.evidence.eventId !== evidence.eventId
+          ) throw new Error("The durable Event History prefix changed during memory fallback.");
+        }
+        chunks.push(chunk);
+        carriedFrom = chunkStart;
+      } catch {
+        break;
+      }
+    }
+    const carried: VolatileEvidence[] = [];
+    for (let index = chunks.length - 1; index >= 0; index -= 1) {
+      for (const evidence of chunks[index]!) {
+        carried.push({ evidence, capacityBytes: entries[carriedFrom + carried.length]!.capacityBytes });
+      }
+    }
+    return { trimmed: keepFrom, lost: carriedFrom - keepFrom, carried };
   }
 
-  function detachDurablePrefix(snapshot: readonly VolatileEvidence[] | null): HistoryRetentionAdvance | null {
+  function detachDurablePrefix(carry: DurableCarry): DurableDetachment {
     const previousRetainedRange = retainedRange;
-    const droppedRange = durableRetainedRange;
-    const droppedCount = durableRetainedCount;
-    const droppedBytes = durableRetainedCapacityBytes;
-    const droppedReplayPayloadBytes = durableRetentionEntries.reduce((total, entry) => total + entry.replayPayloadBytes, 0);
-
-    if (snapshot !== null) {
-      volatileEvidence.unshift(...snapshot);
-      for (const entry of snapshot) if (entry.evidence.candidate.kind !== "topology-checkpoint") volatileQueryIndex.add(deterministicQueryRecord(entry.evidence, interval));
+    const entries = durableRetentionEntries;
+    const removedCount = carry.trimmed + carry.lost;
+    const previousEvicted = lastRetentionAdvance?.interval.id === interval.id ? lastRetentionAdvance.evicted.last : null;
+    let removedBytes = 0;
+    let removedReplayPayloadBytes = 0;
+    for (let index = 0; index < removedCount; index += 1) {
+      const entry = entries[index]!;
+      retainedEventIds.delete(entry.evidence.eventId);
+      removedBytes += entry.capacityBytes;
+      removedReplayPayloadBytes += entry.replayPayloadBytes;
     }
-    else if (droppedCount > 0) {
-      for (const entry of durableRetentionEntries) {
-        retainedEventIds.delete(entry.evidence.eventId);
-      }
-      retainedCount = Math.max(0, retainedCount - droppedCount);
-      retainedBytes = Math.max(0, retainedBytes - droppedBytes);
-      replayPayloadBytes = Math.max(0, replayPayloadBytes - droppedReplayPayloadBytes);
-      evictedCount += droppedCount;
-      evictedBytes += droppedBytes;
+    let gap: DurableDetachment["gap"] = null;
+    if (carry.lost > 0) {
+      const firstLost = entries[carry.trimmed]!;
+      const lastLost = entries[removedCount - 1]!;
+      const occurredAt = clock();
+      const afterEvidence = carry.trimmed > 0 ? entries[carry.trimmed - 1]!.evidence : previousEvicted;
+      const toGap = (entry: DurableRetentionEntry): HistoryAcceptanceGap => deepFreeze({
+        interval,
+        captureOrdinal: entry.captureOrdinal,
+        eventId: entry.evidence.eventId,
+        candidateBytes: entry.capacityBytes,
+        occurredAt,
+        dimension: "JOURNAL" as const,
+        afterEvidence
+      });
+      const first = toGap(firstLost);
+      firstGap ??= first;
+      latestGap = carry.lost === 1 ? first : toGap(lastLost);
+      gapCount += carry.lost;
+      gap = {
+        gap: first,
+        problem: problem(
+          "JOURNAL_COMMIT_FAILED",
+          `${carry.lost} retained Evidence record${carry.lost === 1 ? "" : "s"} (sequences ${firstLost.evidence.sequence}-${lastLost.evidence.sequence}) could not be read back from the failed IndexedDB journal into memory.`,
+          { reason: "JOURNAL_COMMIT_FAILED", dimension: "JOURNAL" }
+        )
+      };
     }
+    if (removedCount > 0) {
+      retainedCount = Math.max(0, retainedCount - removedCount);
+      retainedBytes = Math.max(0, retainedBytes - removedBytes);
+      replayPayloadBytes = Math.max(0, replayPayloadBytes - removedReplayPayloadBytes);
+      evictedCount += removedCount;
+      evictedBytes += removedBytes;
+    }
+    // The carried suffix precedes any existing volatile records. Rebuild in
+    // place with bounded pushes; spreading a large array into unshift can
+    // exceed the engine's argument limit.
+    const existingVolatile = volatileEvidence.splice(0);
+    for (const entry of carry.carried) {
+      volatileEvidence.push(entry);
+      volatileCapacityBytes += entry.capacityBytes;
+      if (entry.evidence.candidate.kind !== "topology-checkpoint") volatileQueryIndex.add(deterministicQueryRecord(entry.evidence, interval));
+    }
+    for (const entry of existingVolatile) volatileEvidence.push(entry);
+    const firstRemoved = removedCount > 0 ? entries[0]!.evidence : null;
+    const lastRemoved = removedCount > 0 ? entries[removedCount - 1]!.evidence : null;
     durableRetainedCount = 0;
     durableRetainedCapacityBytes = 0;
     durableRetainedRange = null;
@@ -1111,25 +1223,30 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     facetAggregateCache.clear();
     refreshRetainedRange();
 
-    if (
-      snapshot !== null
-      || droppedCount === 0
-      || droppedRange === null
-      || previousRetainedRange === null
-    ) return null;
+    if (removedCount === 0 || firstRemoved === null || lastRemoved === null || previousRetainedRange === null) {
+      return { advance: null, gap };
+    }
+    // The Retained Range advances past every removed record so consumers drop
+    // them; an unreadable portion is additionally reported as an Evidence Gap.
     lastRetentionAdvance = deepFreeze({
       interval,
       occurredAt: clock(),
       previousRetainedRange,
       retainedRange,
-      evicted: {
-        count: droppedCount,
-        bytes: droppedBytes,
-        first: droppedRange.first,
-        last: droppedRange.last
-      }
+      evicted: { count: removedCount, bytes: removedBytes, first: firstRemoved, last: lastRemoved }
     });
-    return lastRetentionAdvance;
+    return { advance: lastRetentionAdvance, gap };
+  }
+
+  function publishCarryGap(carryGap: DurableDetachment["gap"]): void {
+    if (carryGap === null) return;
+    publish(deepFreeze({
+      type: "acceptance-gap" as const,
+      interval,
+      gap: carryGap.gap,
+      status: status(carryGap.problem),
+      problem: carryGap.problem
+    }));
   }
 
   function refuseUnretainable(
@@ -1358,7 +1475,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         let durableCommit = false;
         let commitFailure: unknown = null;
         let failuresThisBatch = 0;
-        let durableSnapshot: readonly VolatileEvidence[] | null | undefined;
+        let durableSnapshot: DurableCarry | undefined;
         if (persistenceMode === "INDEXEDDB") {
           for (let attempt = 1; attempt <= JOURNAL_COMMIT_MAX_ATTEMPTS; attempt += 1) {
             journalCommitAttempts += 1;
@@ -1413,7 +1530,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           }
         }
         if (persistenceMode === "INDEXEDDB" && !durableCommit) {
-          durableSnapshot = await snapshotDurablePrefix();
+          durableSnapshot = await snapshotDurablePrefix(batch.length, batchAccountedBytes);
         }
         if (!durableCommit) {
           acceptVolatileBatch(batch, prepared);
@@ -1434,6 +1551,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             capacityBytesBySequence.set(reference.sequence, entry.bytes);
             durableRetentionEntries.push({
               evidence: reference,
+              captureOrdinal: entry.ordinal,
               replayPayloadBytes: entry.serialized.bytes,
               accountedBytes,
               capacityBytes: entry.bytes
@@ -1451,9 +1569,11 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         generation += 1;
         accepted += evidence.length;
         const retentionAdvances: HistoryRetentionAdvance[] = [];
+        let carryGap: DurableDetachment["gap"] = null;
         if (persistenceMode === "INDEXEDDB" && !durableCommit) {
-          const cutoverAdvance = detachDurablePrefix(durableSnapshot ?? null);
-          if (cutoverAdvance) retentionAdvances.push(cutoverAdvance);
+          const detachment = detachDurablePrefix(durableSnapshot ?? { trimmed: 0, lost: 0, carried: [] });
+          if (detachment.advance) retentionAdvances.push(detachment.advance);
+          carryGap = detachment.gap;
           persistenceMode = "MEMORY";
           adoptMemoryCapacity();
           persistenceFailure = describeJournalError(commitFailure);
@@ -1474,9 +1594,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           retentionAdvance = await advanceRetentionIfNeeded();
         } catch (error) {
           if (persistenceMode === "INDEXEDDB") {
-            const snapshot = await snapshotDurablePrefix();
-            const cutoverAdvance = detachDurablePrefix(snapshot);
-            if (cutoverAdvance) retentionAdvances.push(cutoverAdvance);
+            const detachment = detachDurablePrefix(await snapshotDurablePrefix(0, 0));
+            if (detachment.advance) retentionAdvances.push(detachment.advance);
+            carryGap = detachment.gap;
             persistenceMode = "MEMORY";
             adoptMemoryCapacity();
             persistenceFailure = describeJournalError(error);
@@ -1515,6 +1635,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             status: status()
           }));
         }
+        publishCarryGap(carryGap);
         for (const [index, entry] of batch.entries()) {
           const reference = toRef(evidence[index]);
           entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: reference });
@@ -1625,6 +1746,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       durableRetainedRange = null;
       durableRetentionEntries.length = 0;
       volatileEvidence.length = 0;
+      volatileCapacityBytes = 0;
       volatileQueryIndex.clear();
       retainedEventIds.clear();
       capacityBytesBySequence.clear();
@@ -4517,6 +4639,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
         evidenceBySequence.set(record.sequence, record);
         durableRetentionEntries.push({
           evidence: reference,
+          captureOrdinal: record.sequence,
           replayPayloadBytes: record.serializedBytes,
           accountedBytes: record.accountedBytes,
           capacityBytes: record.accountedBytes
