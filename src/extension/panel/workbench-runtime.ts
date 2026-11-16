@@ -260,6 +260,7 @@ import {
 import {
   hashLocalInjectionValue
 } from "./local-injection-draft-state";
+import { BoundedMap, evictOldest } from "../../core/bounded-map";
 
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
@@ -1021,7 +1022,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   readonly serverInjection: ServerInjectionController;
   readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
-  readonly agentLocalSettlements = new Map<string, import("./agent-runtime").AgentLocalSettlement>();
+  readonly agentLocalSettlements = new BoundedMap<string, import("./agent-runtime").AgentLocalSettlement>(256);
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
   private readonly activityProjectionFactory: (input: ActivityProjectionInput) => ActivityProjection;
   readonly evidenceQuery: EvidenceInvestigationQuery;
@@ -4155,7 +4156,6 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
         }
         if (!this.disposed) {
           this.agentLocalSettlements.set(executionId, { ...record, evidence });
-          if (this.agentLocalSettlements.size > 256) this.agentLocalSettlements.delete(this.agentLocalSettlements.keys().next().value!);
           this.setLocalInjectionOutcome(executionId, record.outcome);
         }
       }
@@ -5560,11 +5560,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
   private cacheEvidenceEvent(event: LightstreamerEventEnvelope): void {
     this.evidenceEventCache.delete(event.id);
     this.evidenceEventCache.set(event.id, event);
-    while (this.evidenceEventCache.size > MAX_EVIDENCE_EVENT_CACHE) {
-      const oldest = this.evidenceEventCache.keys().next().value;
-      if (oldest === undefined) break;
-      this.evidenceEventCache.delete(oldest);
-    }
+    evictOldest(this.evidenceEventCache, MAX_EVIDENCE_EVENT_CACHE);
   }
 
   private selectedLookupIdentity(): EvidenceIdentity | null {
