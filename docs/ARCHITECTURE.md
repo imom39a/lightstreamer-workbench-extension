@@ -897,6 +897,8 @@ The production panel is the React **Scoped Evidence Workspace**. `src/extension/
 
 `src/extension/panel/workbench-runtime.ts` is the framework-independent state boundary. React reads its cached immutable snapshots through `useSyncExternalStore` and sends typed `WorkbenchCommand` values through `dispatch()`. Components never subscribe directly to Capture, history, or bridge services.
 
+The runtime composes cohesive modules rather than owning every lifecycle inline. `ServerInjectionController` owns the Server Injection Draft and routes its own command subset; `LocalInjectionTargetValidator` revalidates and fingerprints Local Injection Drafts and Scenario Steps; `createWorkbenchAgentAdapter()` builds the agent interface against an explicit `WorkbenchAgentAdapterHost`. Observation-only test and performance hooks live on a separate `WorkbenchDiagnosticsPort`; `createWorkbenchRuntime()` returns the runtime with that port, and React receives `WorkbenchPanelRuntime`, the seam plus an optional port for renderer lifecycle reporting.
+
 ### Panel State Ownership
 
 The runtime owns:
@@ -962,7 +964,11 @@ The production seams keep domain/runtime state deeper than React presentation:
 | Module | Owns | Boundary |
 | --- | --- | --- |
 | `panel.tsx` | Production mount, storage fallback, bridge wiring, dark-only theme attributes, legacy-storage cleanup, visibility, React root, and teardown | One `WorkbenchRuntime` and one React root per panel session |
-| `workbench-runtime.ts` | Investigation state, history queries, projections, Draft lifecycle, export state, and publication cadence | Cached immutable snapshots plus typed commands |
+| `workbench-runtime.ts` | Investigation state, history queries, projections, Local Injection and Scenario lifecycles, export state, publication cadence, and command routing to the modules below | Cached immutable snapshots plus typed commands; `WorkbenchDiagnosticsPort` for observation-only hooks |
+| `server-injection-controller.ts` | Protected Server Injection Draft, exact-call review fingerprint, agent approval latch, Message Recipes, execute-once, and outcome | Its own command subset and frozen `serverInjection` sub-snapshot over a narrow runtime host |
+| `local-injection-target-validator.ts` | Local Injection document analysis, stale-target detection, native change baselines, and reviewed delivery fingerprints | One validation path for standalone Drafts, Scenario Steps, and agent preparation |
+| `local-injection-draft-state.ts` | Runtime-internal Draft and Scenario state shapes and pure helpers | Shared by the runtime and agent adapter; public snapshot types are re-exported by the runtime |
+| `workbench-agent-adapter.ts` | `AgentRuntime` reads and agent-prepared Local Injection, Scenario, and Server Injection documents | Explicit `WorkbenchAgentAdapterHost` implemented by the runtime |
 | `react/workbench-panel.tsx` | Scoped Evidence Workspace geometry, accessible composites, focus/restoration, and semantic controls | Snapshot rendering and command dispatch only |
 | `react/local-injection-document.tsx` | Promoted Draft, default captured-Source comparison, direct execution action, and outcome presentation | Runtime-owned Draft semantics and target protection |
 | `local-injection-execution-coordinator.ts` | Shared frozen preflight, revalidation, execute-once, Evidence settlement, and outcome mapping | One ordinary Local Injection boundary for standalone Drafts and Scenario Steps |
@@ -976,7 +982,9 @@ The production seams keep domain/runtime state deeper than React presentation:
 
 ### Render Scheduling
 
-Developer commands publish synchronously. Passive Capture updates enter history and projections immediately, then `WorkbenchRuntime` publishes at most one cached snapshot per animation frame with a timeout fallback. Publications stop while the panel is hidden and resume with one consolidated snapshot. React keys semantic objects by stable identities; layout effects restore focus, pane sizes, scroll anchors, and the active Draft without allowing passive Capture to move the investigation.
+Developer commands publish synchronously. Passive Capture updates enter history and projections immediately, then `WorkbenchRuntime` publishes at most one cached snapshot per animation frame with a timeout fallback. Publications stop while the panel is hidden and resume with one consolidated snapshot.
+
+Every runtime state transition first reconciles derived domain state, whether or not the panel is visible: a retired Scope falls back to the page, Draft validation follows the current target, and a reviewed Local or Server Injection Draft whose fingerprint no longer matches returns to Edit. Only snapshot construction waits for visibility, and building a snapshot never changes domain state, so agent reads of a hidden panel observe the same Draft phase a visible panel would. React keys semantic objects by stable identities; layout effects restore focus, pane sizes, scroll anchors, and the active Draft without allowing passive Capture to move the investigation.
 
 ## Remote Data Boundary
 
