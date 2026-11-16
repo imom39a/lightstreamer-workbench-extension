@@ -8,6 +8,11 @@ import { resolveChromeExecutable } from "../support/chrome-extension-cdp";
 import { createBrowserFailureDiagnostics } from "../support/browser-failure-diagnostics.mjs";
 import { CHROME_ANALYTICS_TEST_ARGUMENTS } from "../support/browser-analytics-guard";
 import { ANALYTICS_PREFERENCE_KEY } from "../../src/extension/analytics/events";
+import { CONTENT_BRIDGE_READY } from "../../src/bridge/messages";
+
+declare global {
+  interface Window { __LSEW_TEST_CONTENT_BRIDGE_READY__?: boolean }
+}
 
 // A real extension reload invalidates the old isolated-world Chrome bindings,
 // while the already-loaded page and its application updates remain alive.
@@ -53,8 +58,16 @@ test("extension reload retires the old content bridge without interrupting page 
     const errors: string[] = [];
     cdp.on("Runtime.exceptionThrown", event => errors.push(event.exceptionDetails.exception?.description ?? event.exceptionDetails.text));
     await cdp.send("Runtime.enable");
+    // The content bridge leaves no DOM marker; observe its transient readiness
+    // message from a listener installed before any document script runs.
+    await page.addInitScript(readyType => {
+      window.addEventListener("message", event => {
+        if (event.source === window && event.data?.type === readyType) window.__LSEW_TEST_CONTENT_BRIDGE_READY__ = true;
+      });
+    }, CONTENT_BRIDGE_READY);
+    const contentBridgeReady = () => page.waitForFunction(() => window.__LSEW_TEST_CONTENT_BRIDGE_READY__ === true);
     await page.goto(`http://127.0.0.1:${port}/`);
-    await expect(page.locator("html")).toHaveAttribute("data-lsew-content-bridge-ready", "true");
+    await contentBridgeReady();
     const emitUpdates = async () => page.evaluate(() => new Promise<void>(resolveDelivered => {
       window.addEventListener("message", function delivered(event) {
         if (event.data?.lifecycleTestIndex !== 19) return;
@@ -75,7 +88,6 @@ test("extension reload retires the old content bridge without interrupting page 
     await retired;
     await emitUpdates();
     await expect(page.locator("body")).toHaveAttribute("data-app-updates", "40");
-    await expect(page.locator("html")).not.toHaveAttribute("data-lsew-content-bridge-ready", "true");
     expect(errors).toEqual([]);
     // Worker closure marks invalidation, not completion of the extension reload.
     // Wait until Chrome serves the reloaded extension before refreshing the page.
@@ -86,7 +98,7 @@ test("extension reload retires the old content bridge without interrupting page 
     }).toPass({ timeout: 15_000 });
     await extensionProbe.close();
     await page.reload();
-    await expect(page.locator("html")).toHaveAttribute("data-lsew-content-bridge-ready", "true");
+    await contentBridgeReady();
     await emitUpdates();
     await expect(page.locator("body")).toHaveAttribute("data-app-updates", "20");
     expect(errors).toEqual([]);

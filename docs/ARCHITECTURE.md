@@ -59,7 +59,7 @@ The extension runs in four active JavaScript contexts plus optional test fixture
 | Context | Source | Built Output | Main Responsibility |
 | --- | --- | --- | --- |
 | Page `MAIN` world instrumentation | `src/injected/lightstreamer-instrumentation.ts`, `src/injected/client-message-delivery.ts` | `dist/injected/lightstreamer-instrumentation.js` | Wrap Lightstreamer constructors, client/subscription methods, subscription and Client Message listeners, WebSocket fallback, Local Injection capability, and exact-target Server Injection capability. |
-| Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` Capture events to the extension runtime and retain the internal compatibility relay for Local Injection delivery. |
+| Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` Capture events to the extension runtime while a DevTools panel is attached to the tab, always forward panel-scoped sync replies, and retain the internal compatibility relay for Local Injection delivery. It writes no marker into the inspected document. |
 | Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by `(tabId, PanelSessionId)` and broadcast unscoped live Capture to every panel for the tab while targeting sync and Injection results to one Panel Session; retain compatibility routing for Local Injection when direct inspected-page evaluation is unavailable. |
 | DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Workbench` DevTools panel. |
 | DevTools panel UI | `src/extension/panel/panel.tsx`, `src/extension/panel/workbench-runtime.ts`, `src/extension/panel/react/`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Mount the React Scoped Evidence Workspace, own session history and investigation state, protect one Local or Server Injection Draft or one temporary Scenario, execute the selected delivery boundary, clear retired 0.1.x telemetry state, and expose first-party Help links. |
@@ -200,7 +200,7 @@ Capture starts in the inspected page, where the instrumentation script installs 
 - A map of internally named reinjection listener targets keyed by `subscriptionId:listenerId`.
 - A map of internally named active wire reinjection targets keyed by normalized Subscription ID, retaining the captured socket and TLCP Subscription schema.
 - A WeakSet of synthetic WebSocket `MessageEvent` objects, used to prevent Local Injection delivery from being recaptured as Server traffic.
-- A WeakMap of original `onItemUpdate` callbacks available as Local Injection targets.
+- A Subscription-scoped Local Injection target registry whose listener entries call the listener's current `onItemUpdate` at delivery time.
 - A bounded Client Message delivery registry keyed by exact client identity and request correlation, used by Server Injection without a retry path.
 - An `emit()` function that posts validated capture messages to the page.
 
@@ -213,6 +213,8 @@ It hooks all of these Lightstreamer constructor locations:
 - late assignments to `window.Lightstreamer`
 
 Constructor hooks preserve prototype chains by using `Reflect.construct`, copying the original prototype, and setting the wrapper constructor prototype to the original constructor.
+
+These global names are generic, so a hook wraps only a constructor whose prototype chain exposes the official Web Client shape: at least one `LightstreamerClient` API method (`connect`, `subscribe`, `sendMessage`, `addListener`, and similar) for the client, and `addListener` plus at least one Subscription accessor (`getMode`, `getItems`, `getFields`, `isActive`, and similar) for a Subscription. The check reads data descriptors only and never invokes page getters. Any other value, such as an unrelated page `Subscription` class, passes through untouched, emits no Capture, and does not set `__LSEW_PRIMARY_ACTIVE__`; primary instrumentation is marked active only after a validated constructor creates an instance.
 
 Wrapped client methods:
 
@@ -228,7 +230,7 @@ Wrapped client methods:
 
 Wrapped subscription behavior:
 
-- `addListener(listener)` replaces the listener with a proxy that captures selected callback invocations.
+- `addListener(listener)` replaces the listener with a proxy that captures selected callback invocations. The proxy reads the listener's current callback on every access and caches one wrapper per callback function, so a callback the application reassigns or deletes after `addListener` behaves exactly as it would without instrumentation.
 - `removeListener(listener)` removes the matching proxy and unregisters the corresponding Local Injection target state.
 - The original listener object remains the public identity used for stable listener IDs.
 
@@ -242,6 +244,8 @@ Captured subscription callbacks are listed in `CALLBACKS_TO_CAPTURE`:
 - `onSubscription`
 - `onUnsubscription`
 - `onSubscriptionError`
+
+Each captured callback carries the Subscription's metadata. Per-update callbacks reuse a per-Subscription cache of configuration getters (mode, items, fields, schema, adapters, selector, requested snapshot, buffer size, and frequency) and COMMAND key/command positions. The cache is discarded on `client.subscribe()`, `client.unsubscribe()`, `onSubscription`, `onUnsubscription`, `onSubscriptionError`, and any public configuration setter call. `isActive()`, `isSubscribed()`, and the listener count stay live for every update. `getKeyPosition()` and `getCommandPosition()` are read only for COMMAND or unknown modes, because the official client throws `IllegalStateException` otherwise.
 
 Callback names are mapped to capture kinds by `callbackToKind()`. For `onItemUpdate`, `readItemUpdatePayload()` extracts:
 
@@ -281,6 +285,8 @@ The fallback maintains per-socket `WireConnectionState`, per-subscription `WireS
 
 Fallback raw diagnostics include `captureSource: "websocket-tlcp"` so normalization marks the event as `captureSource: "wire"`.
 
+Socket wrapping, outbound frame parsing in the wrapped `send()`, and the instrumentation's own `message` and `close` listeners each run inside a `try`/`catch`. A parsing or Capture failure loses only that Evidence: the application's original `send()` still runs and returns its result, and no instrumentation error surfaces as a page error.
+
 ### Capture Flow
 
 ```mermaid
@@ -309,6 +315,22 @@ sequenceDiagram
   BG-->>UI: PanelCaptureMessage
 ```
 
+### Panel Attachment Gating
+
+Instrumentation runs on every page, but live Capture is useful only while a DevTools panel is registered for the tab. The service worker therefore tells the tab's content scripts when its first panel registers and when its last panel unregisters, using `CONTENT_PANEL_ATTACHMENT` with a monotonically increasing `revision`. On load, and again when a page is restored from the back/forward cache, the content script asks with `RUNTIME_PANEL_ATTACHMENT_QUERY`. It keeps the newest revision it has seen and ignores older notifications or replies.
+
+| Content script state | Unscoped live Capture | Panel-scoped Capture replay and topology sync frames |
+| --- | --- | --- |
+| `unknown` (before the first reply, or when the query fails) | Forwarded, as before gating existed | Forwarded |
+| `attached` | Forwarded | Forwarded |
+| `detached` | Dropped before validation and before the runtime hop | Forwarded |
+
+A `CONTENT_CAPTURE_SYNC_REQUEST` also marks the content script `attached`. On first registration the service worker sends the attachment notification before the sync request on the same tab channel, so live Capture resumes before the page takes its checkpoint cutoff.
+
+Gating happens only at the content-script forwarding step. MAIN-world instrumentation keeps wrapping clients and Subscriptions and keeps updating its topology shadow, active-Subscription replay set, and COMMAND replay rows for every Capture, whether or not a panel is attached. That page-side bookkeeping is what lets a panel opened later learn existing clients, Subscriptions, and COMMAND rows through Topology sync. Item Updates and other Evidence that occur while no panel is attached are not retained; they were dropped by the service worker before gating existed. If the service worker restarts or misses a detach, the content script errs toward forwarding.
+
+The content script also posts a transient `CONTENT_BRIDGE_READY` page message when it starts. Production code does not read it; browser tests use it as a readiness signal. It leaves no attribute or other state in the inspected document.
+
 ## Message Contracts
 
 All shared message types and validators live in `src/bridge/messages.ts`. They are intentionally used at every boundary where untrusted runtime data crosses contexts.
@@ -323,7 +345,7 @@ Every capture message has:
 | `version` | Must be `1`. |
 | `kind` | One of the known `CAPTURE_KINDS`. |
 | `timestamp` | Finite number. |
-| `payload` | JSON object, recursively validated as finite JSON data with no cycles. |
+| `payload` | JSON object, recursively validated as finite JSON data with no repeated object references and within `JSON_PAYLOAD_LIMITS`: depth 64, 250,000 values, and 16,777,216 UTF-16 code units across keys and strings. Validation of an oversized or hostile value returns `false` without throwing, so the receiving context drops that Capture. |
 
 Known capture kinds are:
 
@@ -357,6 +379,8 @@ client-message-aborted
 | Message | Direction | Purpose |
 | --- | --- | --- |
 | `RUNTIME_CAPTURE_MESSAGE` | content script to service worker | Wrap a page capture message for Chrome runtime messaging. |
+| `RUNTIME_PANEL_ATTACHMENT_QUERY` | content script to service worker | Ask whether any panel is registered for the sender's tab; answered synchronously with a `CONTENT_PANEL_ATTACHMENT` value. |
+| `CONTENT_PANEL_ATTACHMENT` | service worker to content script | Report `attached` and a monotonically increasing `revision` when the tab's first panel registers or its last panel unregisters. See [Panel Attachment Gating](#panel-attachment-gating). |
 | `PANEL_REGISTER_MESSAGE` | panel to service worker | Register one port under `tabId` and its unique Panel Session identity. |
 | `PANEL_STATUS_MESSAGE` | service worker to panel | Report bridge lifecycle status. |
 | `PANEL_CAPTURE_MESSAGE` | service worker to panel | Deliver a capture message to one Panel Session when scoped, or broadcast the live Capture to every registered Panel Session for the inspected tab. |

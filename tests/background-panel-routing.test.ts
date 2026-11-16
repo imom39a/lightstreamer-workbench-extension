@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   PANEL_CAPTURE_MESSAGE,
+  CONTENT_CAPTURE_SYNC_REQUEST,
+  CONTENT_PANEL_ATTACHMENT,
+  RUNTIME_PANEL_ATTACHMENT_QUERY,
   CONTENT_REINJECT_REQUEST,
   PANEL_PORT_NAME,
   PANEL_REGISTER_MESSAGE,
@@ -349,6 +352,62 @@ describe("Panel Session background routing", () => {
     expect(secondMessages).not.toContainEqual(
       expect.objectContaining({ type: "lsew:panel-topology-sync-frame" })
     );
+  });
+});
+
+describe("Panel attachment notifications", () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  it("notifies the tab on first registration and last removal and answers attachment queries", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender, respond?: (value: unknown) => void) => boolean) | undefined;
+    const sendMessage = vi.fn((_tabId: number, _message: unknown, callback?: () => void) => callback?.());
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      (listener) => (onMessage = listener),
+      sendMessage
+    );
+    await import("../src/extension/background");
+    const query = () => {
+      const respond = vi.fn();
+      onMessage?.({ type: RUNTIME_PANEL_ATTACHMENT_QUERY }, { tab: { id: 7 } } as chrome.runtime.MessageSender, respond);
+      return respond.mock.calls[0]?.[0] as { attached: boolean; revision: number };
+    };
+    const tabMessages = (): Array<Record<string, unknown>> => sendMessage.mock.calls.map(([tabId, message]) => ({ tabId, ...(message as Record<string, unknown>) }));
+
+    expect(query()).toMatchObject({ type: CONTENT_PANEL_ATTACHMENT, attached: false });
+    const first = fakePort([]);
+    const second = fakePort([]);
+    onConnect?.(first.port);
+    first.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    onConnect?.(second.port);
+    second.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelB });
+
+    expect(tabMessages().map(({ type }) => type)).toEqual([
+      CONTENT_PANEL_ATTACHMENT,
+      CONTENT_CAPTURE_SYNC_REQUEST,
+      CONTENT_CAPTURE_SYNC_REQUEST
+    ]);
+    const attached = query();
+    expect(attached).toMatchObject({ attached: true });
+
+    first.port.disconnect();
+    expect(tabMessages().filter(({ type }) => type === CONTENT_PANEL_ATTACHMENT)).toHaveLength(1);
+    second.port.disconnect();
+    const notifications = tabMessages().filter(({ type }) => type === CONTENT_PANEL_ATTACHMENT);
+    expect(notifications).toEqual([
+      expect.objectContaining({ tabId: 7, attached: true }),
+      expect.objectContaining({ tabId: 7, attached: false })
+    ]);
+    expect(notifications[1]!.revision).toBeGreaterThan(notifications[0]!.revision as number);
+    const detached = query();
+    expect(detached).toMatchObject({ attached: false });
+    expect(detached.revision).toBeGreaterThanOrEqual(attached.revision);
   });
 });
 

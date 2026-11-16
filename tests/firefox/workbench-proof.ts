@@ -292,7 +292,9 @@ try {
       console.log("Firefox native analytics consent passed: Cancel, Deny, Allow, both gates, erasure, revocation and focus restoration.");
     } else if (extensionOnly) {
       const page = surface("page");
-      await waitForCondition(page, "document.documentElement.dataset.lsewContentBridgeReady === 'true'", "the Firefox isolated content bridge");
+      // The content bridge runs at document_start and leaves no DOM marker, so a
+      // fully loaded inspected document already has its isolated listener.
+      await waitForCondition(page, "document.readyState === 'complete'", "the Firefox isolated content bridge");
       for (const [index, suffix] of ["one", "two", "three", "four"].entries()) {
         await evaluate(page, `window.postMessage(${JSON.stringify({ namespace: "__LSEW_CAPTURE__", version: 1, kind: "item-update", timestamp: 10000 + index,
           payload: { client: { id: "cdp-same-tab-client" }, subscription: { id: "cdp-same-tab-subscription", mode: "MERGE" },
