@@ -7,7 +7,7 @@ import { createActivityProjection } from "../src/core/activity-projection";
 import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 import { diagnosticCodeFacetValue, diagnosticSeverityFacetValue } from "../src/core/diagnostic-observation-index";
 import { createCaptureMessage } from "../src/bridge/messages";
-import { createWorkbenchRuntime, type WorkbenchRuntime, type WorkbenchRuntimeScheduler, type WorkbenchSnapshot } from "../src/extension/panel/workbench-runtime";
+import { createWorkbenchRuntime, type WorkbenchRuntime, type WorkbenchRuntimeScheduler, type WorkbenchServerInjectionSnapshot, type WorkbenchSnapshot } from "../src/extension/panel/workbench-runtime";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { getPanelScenario } from "./support/panel-scenarios";
 import { getWorkbenchScenario } from "./support/workbench-scenarios";
@@ -3063,6 +3063,63 @@ describe("WorkbenchRuntime", () => {
     expect(itemDocument?.overview.itemCount).toBe(1);
     expect(itemDocument?.clients[0]?.sessions[0]?.subscriptions[0]?.items).toHaveLength(1);
     expect(itemDocument?.privacy.credentialsExcluded).toBe(true);
+    runtime.dispose();
+  });
+
+  it("returns a stale reviewed Server Injection Draft to Edit while the panel is hidden", async () => {
+    const history = createAuthoritativeHistory();
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    await flushStoreNotifications();
+    const topology = (kind: LightstreamerEventEnvelope["kind"], sequence: number) => ({
+      version: 1 as const,
+      kind,
+      pageEpoch: "page-hidden-server",
+      captureSequence: sequence,
+      provenance: { instrumentationSource: "official-public-api" as const },
+      coverage: { status: "complete" as const, getters: {} },
+      client: { id: "client-hidden", sessionId: "session-hidden" }
+    });
+    const client = (sessionId: string) => ({
+      id: "client-hidden",
+      status: "CONNECTED:WS-STREAMING",
+      sessionId,
+      instrumentationSource: "public-api" as const
+    });
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("client-created", { client: client("session-hidden") }, 100, topology("client-created", 1))
+    });
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("client-status", { client: client("session-hidden") }, 101, topology("client-status", 2))
+    });
+    await flushStoreNotifications();
+    runtime.agent!.prepareServerInjection!({
+      sourceEventId: null,
+      target: { pageEpoch: "page-hidden-server", clientId: "client-hidden", sessionId: "session-hidden" },
+      message: "body",
+      sequence: "orders",
+      delayTimeout: null,
+      enqueueWhileDisconnected: false
+    }, "hidden-request");
+    runtime.dispatch({ type: "review-server-injection" });
+    expect((runtime.agent!.serverInjection!() as WorkbenchServerInjectionSnapshot).draft?.phase).toBe("review");
+
+    runtime.dispatch({ type: "set-visible", visible: false });
+    const hiddenSnapshot = runtime.getSnapshot();
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("client-status", { client: client("session-replacement") }, 102, {
+        ...topology("client-status", 3),
+        client: { id: "client-hidden", sessionId: "session-replacement" }
+      })
+    });
+    await flushStoreNotifications();
+
+    expect(runtime.getSnapshot()).toBe(hiddenSnapshot);
+    const hiddenDraft = (runtime.agent!.serverInjection!() as WorkbenchServerInjectionSnapshot).draft;
+    expect(hiddenDraft).toMatchObject({ phase: "edit", reviewedFingerprint: null, ready: false });
+    expect(hiddenDraft?.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: "stale-session" })]));
     runtime.dispose();
   });
 

@@ -1278,11 +1278,11 @@ class Runtime implements WorkbenchRuntime {
         !state.agentPreparedFingerprint || state.agentPreparedFingerprint !== this.currentServerInjectionFingerprint(state)) throw new Error("TARGET_CHANGED: Only the unchanged unexecuted agent Server Injection can be aborted.");
       this.serverInjectionDraft = null;
       this.serverInjectionEntryError = null;
-      this.publish();
+      this.commitTransition();
     },
     revokeServerInjectionApproval: () => {
       const state = this.serverInjectionDraft;
-      if (state?.agentRequestId && state.approvalFingerprint) { state.approvalFingerprint = null; this.publish(); }
+      if (state?.agentRequestId && state.approvalFingerprint) { state.approvalFingerprint = null; this.commitTransition(); }
     },
     abortDocument: () => {
       if (this.scenarioState) {
@@ -1295,7 +1295,7 @@ class Runtime implements WorkbenchRuntime {
         this.localInjectionBlockedEntry = null;
         this.localInjectionDiscardConfirmation = false;
         this.localInjectionEntryError = null;
-        this.publish();
+        this.commitTransition();
       }
     }
   };
@@ -1541,7 +1541,7 @@ class Runtime implements WorkbenchRuntime {
       this.reviewCurrentScenario();
     } else {
       this.localInjectionDraft = candidates[0]!;
-      this.publish();
+      this.commitTransition();
     }
   }
   private readonly history: EventHistory;
@@ -1898,7 +1898,7 @@ class Runtime implements WorkbenchRuntime {
         message: result.problem.message,
         removedCriteria: 0
       });
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.filterMutation = Object.freeze({
@@ -1909,7 +1909,7 @@ class Runtime implements WorkbenchRuntime {
       removedCriteria: 0
     });
     if (!result.changed) {
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.canonicalFilter = result.filter;
@@ -1933,7 +1933,7 @@ class Runtime implements WorkbenchRuntime {
         message: "This contextual Filter action is no longer available for the selected Evidence.",
         removedCriteria: 0
       });
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.applyFilterCommand(expectedRevision, filterMutationsForAction(action));
@@ -1954,7 +1954,7 @@ class Runtime implements WorkbenchRuntime {
         message: "The Activity ranking no longer matches the current Filter.",
         removedCriteria: 0
       });
-      this.publish();
+      this.commitTransition();
       return;
     }
     const facet = projection.scope.kind === "SUBSCRIPTION" ? "item" : "subscription";
@@ -1974,7 +1974,7 @@ class Runtime implements WorkbenchRuntime {
         message: "That Activity ranking is no longer available for the current Filter.",
         removedCriteria: 0
       });
-      this.publish();
+      this.commitTransition();
       return;
     }
     const replacedFacets = new Set<string>();
@@ -2000,7 +2000,7 @@ class Runtime implements WorkbenchRuntime {
     const result = applyFilterMutations(this.canonicalFilter, this.canonicalFilter.revision, operations);
     if (!result.ok) {
       this.filterMutation = Object.freeze({ state: "invalid", revision: result.filter.revision, changed: false, message: result.problem.message, removedCriteria: 0 });
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.canonicalFilter = result.filter;
@@ -2208,7 +2208,7 @@ class Runtime implements WorkbenchRuntime {
       case "set-capture-status":
         this.captureStatus = command.status;
         this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot(), true);
-        this.publish();
+        this.commitTransition();
         return;
       case "ingest-capture-message":
         this.ingestCaptureMessage(command.message);
@@ -2228,27 +2228,27 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "set-scope-focus":
         this.scopeFocusedNodeId = command.scopeId;
-        this.publish();
+        this.commitTransition();
         return;
       case "set-storage-state":
         this.storage = { ...command.storage };
-        this.publish();
+        this.commitTransition();
         return;
       case "request-clear-history":
         if (this.scenarioState && !["edit", "complete", "stopped"].includes(this.scenarioState.phase)) {
           this.clearState = "error";
           this.clearError = "Clear is unavailable while a Scenario Run is active or awaiting drift re-review.";
-          this.publish();
+          this.commitTransition();
           return;
         }
         this.clearState = "confirming";
         this.clearError = null;
-        this.publish();
+        this.commitTransition();
         return;
       case "cancel-clear-history":
         this.clearState = "idle";
         this.clearError = null;
-        this.publish();
+        this.commitTransition();
         return;
       case "confirm-clear-history":
         this.clearHistory();
@@ -2260,12 +2260,12 @@ class Runtime implements WorkbenchRuntime {
           )
         );
         this.invalidatePreparedExport();
-        this.publish();
+        this.commitTransition();
         return;
       case "set-export-complete-evidence":
         this.exportCompleteEvidence = command.complete;
         this.invalidatePreparedExport();
-        this.publish();
+        this.commitTransition();
         return;
       case "apply-filter-mutations":
       case "mutate-filter":
@@ -2315,7 +2315,7 @@ class Runtime implements WorkbenchRuntime {
         ) {
           this.contextId = "context:scope";
         }
-        this.publish();
+        this.commitTransition();
         return;
       }
       case "set-find":
@@ -2369,7 +2369,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "clear-scoped-evidence-copy":
         this.invalidateEvidenceCopy();
-        this.publish();
+        this.commitTransition();
         return;
       case "cancel-evidence-operation":
         this.cancelEvidenceOperation();
@@ -2400,7 +2400,7 @@ class Runtime implements WorkbenchRuntime {
         if (!this.localInjectionDraft) return;
         this.localInjectionDraft.compareOpen = command.open;
         this.localInjectionDraft.editorPresentation = Object.freeze({ ...this.localInjectionDraft.editorPresentation, compareOpen: command.open });
-        this.publish();
+        this.commitTransition();
         return;
       case "park-local-injection":
         this.parkLocalInjection();
@@ -2411,12 +2411,12 @@ class Runtime implements WorkbenchRuntime {
       case "request-discard-local-injection":
         if (!this.localInjectionDraft) return;
         this.localInjectionDiscardConfirmation = true;
-        this.publish();
+        this.commitTransition();
         return;
       case "cancel-discard-local-injection":
         if (!this.localInjectionDraft) return;
         this.localInjectionDiscardConfirmation = false;
-        this.publish();
+        this.commitTransition();
         return;
       case "confirm-discard-local-injection":
         this.confirmDiscardLocalInjection();
@@ -2520,7 +2520,7 @@ class Runtime implements WorkbenchRuntime {
         this.scenarioState.captureWorkspace.selected.clear();
         this.scenarioState.captureWorkspace.error = null;
         this.scenarioState.membershipError = null;
-        this.publish();
+        this.commitTransition();
         return;
       case "toggle-scenario-capture":
         this.toggleScenarioCapture(command.identity);
@@ -2536,7 +2536,7 @@ class Runtime implements WorkbenchRuntime {
         if (!undo.ok) {
           state.captureWorkspace.error = undo.reason;
           state.membershipError = undo.reason;
-          this.publish();
+          this.commitTransition();
           return;
         }
         state.scenario = undo.scenario;
@@ -2547,14 +2547,14 @@ class Runtime implements WorkbenchRuntime {
         state.captureWorkspace.error = null;
         state.membershipError = null;
         state.captureWorkspace.feedback = `Undid addition of ${addition.ids.length} captured Steps.`;
-        this.publish();
+        this.commitTransition();
         return;
       }
       case "set-scenario-capture-scroll": {
         const workspace = this.scenarioState?.captureWorkspace;
         if (workspace && Number.isFinite(command.scrollTop) && workspace.scrollTop !== Math.max(0, command.scrollTop)) {
           workspace.scrollTop = Math.max(0, command.scrollTop);
-          this.publish();
+          this.commitTransition();
         }
         return;
       }
@@ -2563,12 +2563,12 @@ class Runtime implements WorkbenchRuntime {
         this.scenarioState.pickerOpen = true;
         if (this.scenarioState.captureWorkspace.queryState === "idle") this.loadScenarioCaptures();
         this.scenarioState.membershipError = null;
-        this.publish();
+        this.commitTransition();
         return;
       case "close-scenario-evidence-picker":
         if (!this.scenarioState) return;
         this.scenarioState.pickerOpen = false;
-        this.publish();
+        this.commitTransition();
         return;
       case "add-selected-evidence-to-scenario":
         this.addSelectedEvidenceToScenario();
@@ -2604,7 +2604,7 @@ class Runtime implements WorkbenchRuntime {
           state.focusedMemberId = checkpoint.id;
           state.membershipError = null;
         }
-        this.publish();
+        this.commitTransition();
         return;
       }
       case "update-scenario-checkpoint": {
@@ -2618,7 +2618,7 @@ class Runtime implements WorkbenchRuntime {
           this.pruneScenarioInvalidPrimitiveAssertions(state);
           state.membershipError = null;
         }
-        this.publish();
+        this.commitTransition();
         return;
       }
       case "move-scenario-member": {
@@ -2631,7 +2631,7 @@ class Runtime implements WorkbenchRuntime {
           state.focusedMemberId = command.memberId;
           state.membershipError = null;
         }
-        this.publish();
+        this.commitTransition();
         return;
       }
       case "remove-scenario-checkpoint": {
@@ -2646,7 +2646,7 @@ class Runtime implements WorkbenchRuntime {
           state.focusedMemberId = removal.scenario.members[Math.min(index, removal.scenario.members.length - 1)]?.id ?? state.focusedStepId;
           state.membershipError = null;
         }
-        this.publish();
+        this.commitTransition();
         return;
       }
       case "show-scenario-checkpoint-evidence": {
@@ -2659,7 +2659,7 @@ class Runtime implements WorkbenchRuntime {
           && command.evidence.sequence <= status.retainedRange.last.sequence;
         if (!retained) {
           state.membershipError = `Evidence ${command.evidence.eventId} is unavailable after Clear or retention.`;
-          this.publish();
+          this.commitTransition();
           return;
         }
         state.membershipError = null;
@@ -2683,11 +2683,11 @@ class Runtime implements WorkbenchRuntime {
             return;
           }
           state.membershipError = `The exact affected ${command.observation.affected.kind} object is unavailable in the current runtime topology; the Scenario Trace was not changed.`;
-          this.publish();
+          this.commitTransition();
           return;
         }
         state.membershipError = `Recovery route ${route.action} is unavailable from Scenario Trace; use the shared diagnostic recovery surface.`;
-        this.publish();
+        this.commitTransition();
         return;
       }
       case "move-scenario-step":
@@ -2706,13 +2706,13 @@ class Runtime implements WorkbenchRuntime {
         if (!this.scenarioState || !this.scenarioState.scenario.members.some(({ id }) => id === command.memberId)) return;
         this.scenarioState.focusedMemberId = command.memberId;
         if (this.scenarioState.scenario.steps.some(({ id }) => id === command.memberId)) this.scenarioState.focusedStepId = command.memberId;
-        this.publish();
+        this.commitTransition();
         return;
       case "focus-scenario-step":
         if (!this.scenarioState || !this.scenarioState.scenario.steps.some(({ id }) => id === command.stepId)) return;
         this.scenarioState.focusedMemberId = command.stepId;
         this.scenarioState.focusedStepId = command.stepId;
-        this.publish();
+        this.commitTransition();
         return;
       case "set-scenario-step-delay":
         this.setScenarioStepDelay(command.stepId, command.delayMs);
@@ -2729,7 +2729,7 @@ class Runtime implements WorkbenchRuntime {
         if (command.valid) state.invalidPrimitiveAssertionIds.delete(command.assertionId);
         else state.invalidPrimitiveAssertionIds.add(command.assertionId);
         if (command.valid) state.membershipError = null;
-        this.publish();
+        this.commitTransition();
         return;
       }
       case "review-scenario":
@@ -2748,7 +2748,7 @@ class Runtime implements WorkbenchRuntime {
         this.scenarioState.runnerSnapshot = null;
         this.scenarioState.reviews.clear();
         if (this.scenarioState.captureWorkspace.queryState === "idle") this.loadScenarioCaptures();
-        this.publish();
+        this.commitTransition();
         return;
       case "play-scenario":
         this.scenarioState?.runner?.play();
@@ -2769,23 +2769,23 @@ class Runtime implements WorkbenchRuntime {
         if (!this.scenarioState || this.scenarioState.phase === "running" || this.scenarioState.discardConfirmation) return;
         this.scenarioState.parked = true;
         this.scenarioState.pickerOpen = false;
-        this.publish();
+        this.commitTransition();
         return;
       case "resume-scenario":
         if (!this.scenarioState || !this.scenarioState.parked || this.scenarioState.discardConfirmation) return;
         this.scenarioState.parked = false;
         this.localInjectionEntryError = null;
-        this.publish();
+        this.commitTransition();
         return;
       case "request-discard-scenario":
         if (!this.scenarioState || this.scenarioState.phase === "running") return;
         this.scenarioState.discardConfirmation = true;
-        this.publish();
+        this.commitTransition();
         return;
       case "cancel-discard-scenario":
         if (!this.scenarioState || !this.scenarioState.discardConfirmation) return;
         this.scenarioState.discardConfirmation = false;
-        this.publish();
+        this.commitTransition();
         return;
       case "confirm-discard-scenario":
         if (!this.scenarioState?.discardConfirmation || this.scenarioState.phase === "running") return;
@@ -2815,7 +2815,7 @@ class Runtime implements WorkbenchRuntime {
         if (command.eventId !== this.clearedSelectionEventId) {
           this.clearedSelectionEventId = null;
         }
-        this.publish();
+        this.commitTransition();
         if (
           !this.selectedEventEnvelope ||
           this.selectedEventEnvelope.id !== command.eventId ||
@@ -2836,7 +2836,7 @@ class Runtime implements WorkbenchRuntime {
         if (command.eventId !== this.clearedSelectionEventId) {
           this.clearedSelectionEventId = null;
         }
-        this.publish();
+        this.commitTransition();
         if (
           !this.selectedEventEnvelope ||
           this.selectedEventEnvelope.id !== command.eventId ||
@@ -2848,19 +2848,19 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "set-evidence-scroll":
         this.evidenceScrollTop = Math.max(0, command.scrollTop);
-        this.publish();
+        this.commitTransition();
         return;
       case "set-context":
         this.contextId = command.contextId;
-        this.publish();
+        this.commitTransition();
         return;
       case "open-context":
         this.contextId = this.selectionEventId ? `context:${this.selectionEventId}` : "context:scope";
-        this.publish();
+        this.commitTransition();
         return;
       case "open-scope":
         this.contextId = "context:scope";
-        this.publish();
+        this.commitTransition();
         return;
       case "open-raw-evidence":
         this.timelineEvidenceOffset = null;
@@ -2869,7 +2869,7 @@ class Runtime implements WorkbenchRuntime {
         this.focusedEventId = command.eventId;
         this.resolveSelectedEvent(command.eventId, true);
         this.contextId = `raw:${command.eventId}`;
-        this.publish();
+        this.commitTransition();
         return;
       case "inspect-diagnostic-evidence": {
         this.recordInvestigationCheckpoint();
@@ -2896,18 +2896,18 @@ class Runtime implements WorkbenchRuntime {
       case "dismiss-diagnostic":
         if (!this.snapshot.diagnostics.some(({ dismissalId }) => dismissalId === command.dismissalId)) return;
         this.dismissedDiagnosticIds.add(command.dismissalId);
-        this.publish();
+        this.commitTransition();
         return;
       case "open-notifications":
         if (this.contextId === "notifications") return;
         this.notificationsReturnContextId = this.contextId;
         this.contextId = "notifications";
-        this.publish();
+        this.commitTransition();
         return;
       case "close-notifications":
         if (this.contextId !== "notifications") return;
         this.contextId = this.notificationsReturnContextId;
-        this.publish();
+        this.commitTransition();
         return;
       case "apply-diagnostic-filter":
         this.applyDiagnosticFilter(command.facet, command.value, command.polarity);
@@ -2917,25 +2917,25 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "reset-diagnostic-filter":
         this.diagnosticFilterCriteria = Object.freeze({});
-        this.publish();
+        this.commitTransition();
         return;
       case "export-scope":
         this.contextId = "context:export";
         this.prepareExport();
-        this.publish();
+        this.commitTransition();
         return;
       case "open-actions":
         if (this.contextId !== "context:actions") {
           this.actionsReturnContextId = this.contextId;
         }
         this.contextId = "context:actions";
-        this.publish();
+        this.commitTransition();
         return;
       case "close-actions":
         if (this.contextId !== "context:actions") return;
         this.contextId = this.actionsReturnContextId;
         this.actionsReturnContextId = null;
-        this.publish();
+        this.commitTransition();
         return;
       case "select-activity-evidence":
         this.selectActivityEvidence(command);
@@ -3059,7 +3059,7 @@ class Runtime implements WorkbenchRuntime {
     this.timelineEvidenceRevealActive = true;
     if (anchor.inspect) this.contextId = `context:${anchor.eventId}`;
     if (anchor.eventId !== this.clearedSelectionEventId) this.clearedSelectionEventId = null;
-    this.publish();
+    this.commitTransition();
     if (
       !this.displayedEvidence().events.some((event) => event.id === anchor.eventId) ||
       !this.selectedEventEnvelope ||
@@ -3199,7 +3199,7 @@ class Runtime implements WorkbenchRuntime {
     } else if (frame.type === "lsew:topology-sync-complete" && !candidate) {
       this.topologySyncGapGenerations.delete(stagingKey);
     }
-    this.publish();
+    this.commitTransition();
   }
 
   private observeCurrentPageEpoch(pageEpoch: string | null): void {
@@ -3343,14 +3343,14 @@ class Runtime implements WorkbenchRuntime {
     this.clearState = "clearing";
     this.clearError = null;
     this.clearedSelectionEventId = this.selectionEventId;
-    this.publish();
+    this.commitTransition();
     void this.evidencePipeline.clear().then(
       (result) => {
         if (this.disposed) return;
         if (!result.ok) {
           this.clearState = "error";
           this.clearError = result.problem.message;
-          this.publish();
+          this.commitTransition();
           return;
         }
         const preservedMode = this.mode;
@@ -3387,7 +3387,7 @@ class Runtime implements WorkbenchRuntime {
         if (this.disposed) return;
         this.clearState = "error";
         this.clearError = errorMessage(error);
-        this.publish();
+        this.commitTransition();
       }
     );
   }
@@ -3489,7 +3489,7 @@ class Runtime implements WorkbenchRuntime {
         this.excludedAfterLatch(null)
       )
     };
-    this.publish();
+    this.commitTransition();
 
     let topologyAtLatch: TopologyState | null = null;
     let topologyStatusAtLatch: TopologyProjectionStatus | null = null;
@@ -3570,7 +3570,7 @@ class Runtime implements WorkbenchRuntime {
               this.excludedAfterLatch(result.readPoint)
             )
           };
-          this.publish();
+          this.commitTransition();
         } catch (error) {
           this.finishExportProblem(generation, error, controller.signal);
         }
@@ -3607,7 +3607,7 @@ class Runtime implements WorkbenchRuntime {
         agentServerDraft.approvalFingerprint = null;
       }
       this.cancelPassivePublication();
-      this.publish(true);
+      this.commitTransition(true);
       this.trackHiddenActivityConditionLifecycle = this.activityAggregationFailureReason !== null ||
         this.dismissedDiagnosticIds.has("activity:aggregation-failed:error");
       return;
@@ -3619,7 +3619,7 @@ class Runtime implements WorkbenchRuntime {
       // Visibility must not cancel an explicit Find and replace it with an
       // unrelated passive read. Publish its pending state, then catch up Live.
       this.passiveRefreshPending = true;
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.refreshEvidence("visibility");
@@ -3684,7 +3684,7 @@ class Runtime implements WorkbenchRuntime {
       this.invalidatePreparedExport(false);
       this.scheduleScenarioBoundaryPublication();
       if (this.visible) this.schedulePassivePublication();
-      else this.hiddenDirty = true;
+      else this.deferHiddenPublication();
       return;
     }
     const event = entry.candidate;
@@ -3751,7 +3751,7 @@ class Runtime implements WorkbenchRuntime {
     this.scheduleScenarioBoundaryPublication();
     this.invalidatePreparedExport(false);
     if (!this.visible) {
-      this.hiddenDirty = true;
+      this.deferHiddenPublication();
       return;
     }
     this.schedulePassivePublication();
@@ -3800,13 +3800,13 @@ class Runtime implements WorkbenchRuntime {
       // false→true transition replaces its LOADING snapshot after replay;
       // later LIVE progress notifications remain on normal passive cadence.
       if (becameCoherent) {
-        if (this.visible) this.publish();
+        if (this.visible) this.commitTransition();
         else {
           if (this.trackHiddenActivityConditionLifecycle) {
             this.activitySnapshot(this.scopeSnapshot());
             this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot(), true);
           }
-          this.hiddenDirty = true;
+          this.deferHiddenPublication();
         }
       }
       return;
@@ -3819,8 +3819,8 @@ class Runtime implements WorkbenchRuntime {
         message: state.problem?.message ?? "Evidence recovery unavailable."
       };
       this.lastEvidenceQueryError = this.investigationProblem.code;
-      if (this.visible) this.publish();
-      else this.hiddenDirty = true;
+      if (this.visible) this.commitTransition();
+      else this.deferHiddenPublication();
       return;
     }
     if (state.progress.phase === "CANCELLED") {
@@ -3932,7 +3932,7 @@ class Runtime implements WorkbenchRuntime {
       publication.type === "persistence-state" ||
       publication.type === "acceptance-gap"
     ) {
-      if (shouldPublish) this.publish();
+      if (shouldPublish) this.commitTransition();
       if (publication.type === "retention-advanced" || publication.type === "acceptance-gap") {
         this.refreshEvidence("passive");
       }
@@ -3946,7 +3946,7 @@ class Runtime implements WorkbenchRuntime {
         : undefined;
     if (publication.type === "status") {
       if (publication.status.phase !== "DRAINING_TO_STOP" && publication.status.phase !== "STOPPED") {
-        if (shouldPublish) this.publish();
+        if (shouldPublish) this.commitTransition();
         return;
       }
       reason = publication.problem?.reason ?? terminal?.reason;
@@ -3969,7 +3969,7 @@ class Runtime implements WorkbenchRuntime {
         });
         shouldPublish = true;
       }
-      if (shouldPublish) this.publish();
+      if (shouldPublish) this.commitTransition();
       if (publication.type === "terminal") this.refreshEvidence("command");
       return;
     }
@@ -3981,7 +3981,7 @@ class Runtime implements WorkbenchRuntime {
       detail: `Capture stopped at the committed Evidence boundary because ${reason}.`,
       recovery: "Reload the inspected page with DevTools open"
     });
-    if (shouldPublish || reason) this.publish();
+    if (shouldPublish || reason) this.commitTransition();
     if (publication.type === "terminal") this.refreshEvidence("command");
   }
 
@@ -4139,7 +4139,7 @@ class Runtime implements WorkbenchRuntime {
       if (this.disposed) return;
       this.storageEstimate = observation;
       this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot(), true);
-      this.publish();
+      this.commitTransition();
     });
   }
 
@@ -4246,7 +4246,7 @@ class Runtime implements WorkbenchRuntime {
         this.excludedAfterLatch(null)
       )
     });
-    this.publish();
+    this.commitTransition();
     void import("./evidence-history-operation")
       .then(({ createScopedEvidenceCopy }) => createScopedEvidenceCopy({
         query: this.evidenceQuery,
@@ -4278,7 +4278,7 @@ class Runtime implements WorkbenchRuntime {
         if (this.disposed || generation !== this.evidenceCopyGeneration) return;
         if (!result.ok) {
           this.finishEvidenceCopyProblem(generation, result.problem, controller.signal, copyStats);
-          this.publish();
+          this.commitTransition();
           return;
         }
         copyStats = { bytes: result.outputBytes, count: result.count };
@@ -4296,12 +4296,12 @@ class Runtime implements WorkbenchRuntime {
             this.excludedAfterLatch(result.readPoint)
           )
         });
-        this.publish();
+        this.commitTransition();
       },
       (error) => {
         if (this.disposed || generation !== this.evidenceCopyGeneration) return;
         this.finishEvidenceCopyProblem(generation, error, controller.signal, copyStats);
-        this.publish();
+        this.commitTransition();
       }
     ).finally(() => {
       if (this.evidenceCopyAbortController === controller) this.evidenceCopyAbortController = null;
@@ -4330,7 +4330,7 @@ class Runtime implements WorkbenchRuntime {
         this.excludedAfterLatch(readPoint)
       )
     });
-    this.publish();
+    this.commitTransition();
   }
 
   private excludedAfterLatch(readPoint: EvidenceSnapshot["readPoint"] | null): number {
@@ -4361,7 +4361,7 @@ class Runtime implements WorkbenchRuntime {
         this.excludedAfterLatch(readPoint)
       )
     };
-    this.publish();
+    this.commitTransition();
   }
 
   private cancelEvidenceOperation(): void {
@@ -4379,7 +4379,7 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Run Copy retained scoped Evidence again when you are ready.",
         progress: operationProgress("CANCELLED", progress.completed, progress.total, progress.outputBytes, readPointFromProgress(progress), this.outputByteLimit, progress.excludedAfterLatch)
       });
-      this.publish();
+      this.commitTransition();
       return;
     }
     if (this.exportOperation?.state === "preparing") {
@@ -4395,7 +4395,7 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Run Export Scope again when you are ready.",
         progress: { ...progress, phase: "CANCELLED" }
       };
-      this.publish();
+      this.commitTransition();
     }
   }
 
@@ -4453,19 +4453,19 @@ class Runtime implements WorkbenchRuntime {
         phase: detail.outcome === "OUTPUT_REFUSED" ? "REFUSED" : detail.outcome === "CANCELLED" ? "CANCELLED" : "FAILED"
       }
     };
-    this.publish();
+    this.commitTransition();
   }
 
   private beginLocalInjectionFromSelection(): void {
     if (this.scenarioState) {
       this.localInjectionEntryError = "Resume or discard the active Local Injection Scenario before creating another Draft.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     const eventId = this.selectionEventId;
     if (!eventId) {
       this.localInjectionEntryError = "Select one captured Item Update before creating a Local Injection draft.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     if (this.selectedPayloadLoadedForEventId !== eventId && this.evidenceQueryPending) {
@@ -4476,7 +4476,7 @@ class Runtime implements WorkbenchRuntime {
         execute: false
       };
       this.localInjectionEntryError = null;
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.enterLocalInjection({ kind: "selected-event", eventId });
@@ -4510,12 +4510,12 @@ class Runtime implements WorkbenchRuntime {
     this.localInjectionEntryError = null;
     if (this.scenarioState) {
       this.localInjectionEntryError = "Resume or discard the active Local Injection Scenario before creating another Draft.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     if (this.serverInjectionDraft) {
       this.localInjectionEntryError = "Finish or discard the active Server Injection Draft before starting Local Injection.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     if (this.localInjectionDraft) {
@@ -4523,19 +4523,19 @@ class Runtime implements WorkbenchRuntime {
       this.localInjectionDiscardConfirmation = false;
       this.localInjectionDraft.open = true;
       this.localInjectionDraft.parked = false;
-      this.publish();
+      this.commitTransition();
       return;
     }
 
     const candidate = this.createLocalInjectionCandidate(intent);
     if (!candidate) {
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.localInjectionDraft = candidate;
     this.localInjectionBlockedEntry = null;
     this.localInjectionDiscardConfirmation = false;
-    this.publish();
+    this.commitTransition();
   }
 
   private createLocalInjectionCandidate(
@@ -4635,7 +4635,7 @@ class Runtime implements WorkbenchRuntime {
     draft.reviewRefusal = null;
     draft.outcome = null;
     this.refreshLocalInjectionValidation(draft);
-    this.publish();
+    this.commitTransition();
   }
 
   private reviewLocalInjection(): void {
@@ -4646,7 +4646,7 @@ class Runtime implements WorkbenchRuntime {
     }
     if (draft.phase !== "edit") return;
     this.prepareLocalInjectionPreflight(draft);
-    this.publish();
+    this.commitTransition();
   }
 
   private prepareLocalInjectionPreflight(draft: LocalInjectionDraftState): boolean {
@@ -4680,7 +4680,7 @@ class Runtime implements WorkbenchRuntime {
     draft.preflightFingerprint = null;
     draft.reviewedExecution = null;
     draft.reviewRefusal = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private executeLocalInjection(): void {
@@ -4690,7 +4690,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     if (draft.phase === "edit" && !this.prepareLocalInjectionPreflight(draft)) {
-      this.publish();
+      this.commitTransition();
       return;
     }
     if (
@@ -4706,7 +4706,7 @@ class Runtime implements WorkbenchRuntime {
         draft.phase = "edit";
         draft.preflightFingerprint = null;
         draft.reviewRefusal = null;
-        this.publish();
+        this.commitTransition();
         return;
       }
     }
@@ -4719,14 +4719,14 @@ class Runtime implements WorkbenchRuntime {
       draft.preflightFingerprint = null;
       draft.reviewedExecution = null;
       draft.reviewRefusal = null;
-      this.publish();
+      this.commitTransition();
       return;
     }
 
     const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
     draft.executionId = executionId;
     draft.phase = "pending";
-    this.publish();
+    this.commitTransition();
 
     void this.localInjectionExecutionCoordinator.execute(reviewedExecution, {
       executionId,
@@ -4751,7 +4751,7 @@ class Runtime implements WorkbenchRuntime {
         current.preflightFingerprint = null;
         current.reviewedExecution = null;
         current.reviewRefusal = null;
-        this.publish();
+        this.commitTransition();
         return;
       }
     });
@@ -4765,7 +4765,7 @@ class Runtime implements WorkbenchRuntime {
     if (!draft || draft.phase !== "pending" || draft.executionId !== executionId || draft.outcome) return;
     draft.outcome = Object.freeze(outcome);
     draft.phase = "outcome";
-    this.publish();
+    this.commitTransition();
   }
 
   private refreshLocalInjectionValidation(draft: LocalInjectionDraftState): void {
@@ -4955,7 +4955,7 @@ class Runtime implements WorkbenchRuntime {
     draft.parked = true;
     this.localInjectionBlockedEntry = null;
     this.localInjectionDiscardConfirmation = false;
-    this.publish();
+    this.commitTransition();
   }
 
   private resumeLocalInjection(): void {
@@ -4965,7 +4965,7 @@ class Runtime implements WorkbenchRuntime {
     draft.parked = false;
     this.localInjectionBlockedEntry = null;
     this.localInjectionDiscardConfirmation = false;
-    this.publish();
+    this.commitTransition();
   }
 
   private confirmDiscardLocalInjection(): void {
@@ -4979,7 +4979,7 @@ class Runtime implements WorkbenchRuntime {
       const candidate = this.createLocalInjectionCandidate(blocked);
       this.localInjectionDraft = candidate;
     }
-    this.publish();
+    this.commitTransition();
   }
 
   private finishLocalInjection(): void {
@@ -4989,7 +4989,7 @@ class Runtime implements WorkbenchRuntime {
     this.localInjectionBlockedEntry = null;
     this.localInjectionDiscardConfirmation = false;
     this.localInjectionEntryError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private convertLocalInjectionToScenario(): void {
@@ -5007,7 +5007,7 @@ class Runtime implements WorkbenchRuntime {
       });
     } catch (error) {
       this.localInjectionEntryError = error instanceof Error ? error.message : "Scenario capacity could not be established.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.scenarioState = {
@@ -5035,7 +5035,7 @@ class Runtime implements WorkbenchRuntime {
     draft.open = false;
     draft.parked = false;
     this.loadScenarioCaptures();
-    this.publish();
+    this.commitTransition();
   }
 
   private scenarioCaptureSnapshot(state: ScenarioState): WorkbenchScenarioCaptureWorkspace {
@@ -5093,7 +5093,7 @@ class Runtime implements WorkbenchRuntime {
       ...this.scenarioCaptureRequest(state), at: workspace.readPoint ?? "LATEST_COMMITTED",
       page: { order: "NEWEST_FIRST", size: 40, ...(cursor ? { cursor } : {}) }, discover: []
     };
-    this.publish();
+    this.commitTransition();
     void this.evidenceQuery.query(request).then(result => {
       if (this.disposed || this.scenarioState !== state || workspace.generation !== generation) return;
       if (!result.ok) {
@@ -5108,14 +5108,14 @@ class Runtime implements WorkbenchRuntime {
         workspace.total = result.value.totals.matching;
         workspace.nextCursor = result.value.page.nextCursor;
       }
-      this.publish();
+      this.commitTransition();
     }, error => {
       if (this.disposed || this.scenarioState !== state || workspace.generation !== generation) return;
       workspace.queryState = "error";
       workspace.error = `${error instanceof Error ? error.message : "Capture read failed."} Refresh captures to recover.`;
       workspace.records = [];
       workspace.nextCursor = null;
-      this.publish();
+      this.commitTransition();
     });
   }
 
@@ -5130,14 +5130,14 @@ class Runtime implements WorkbenchRuntime {
       if (!row || !row.available) return;
       if (workspace.selected.size >= 100 - state.scenario.steps.length) {
         workspace.error = "Scenario admits at most 100 Steps. Remove a Step or a selected Capture before selecting another.";
-        this.publish();
+        this.commitTransition();
         return;
       }
       workspace.selected.set(key, Object.freeze({ ...identity }));
     }
     workspace.error = null;
     workspace.feedback = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private async addScenarioCaptures(): Promise<void> {
@@ -5152,7 +5152,7 @@ class Runtime implements WorkbenchRuntime {
     workspace.adding = true;
     workspace.error = null;
     workspace.feedback = null;
-    this.publish();
+    this.commitTransition();
     try {
       const assertUnchanged = () => {
         if (this.disposed || this.scenarioState !== state || state.phase !== "edit" || state.scenario.revision !== revision) throw new Error("Scenario changed while reading selected Captures. Select and add against the current revision; no Steps were added.");
@@ -5197,7 +5197,7 @@ class Runtime implements WorkbenchRuntime {
       }
     } finally {
       workspace.adding = false;
-      if (!this.disposed && this.scenarioState === state) this.publish();
+      if (!this.disposed && this.scenarioState === state) this.commitTransition();
     }
   }
 
@@ -5207,13 +5207,13 @@ class Runtime implements WorkbenchRuntime {
     const candidate = this.createLocalInjectionCandidate({ kind: "selected-event", eventId: this.selectionEventId });
     if (!candidate) {
       state.membershipError = this.localInjectionEntryError ?? "Selected Evidence is unavailable for this Scenario.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     const addition = addScenarioStep(state.scenario, this.scenarioDraftInput(candidate), { retainedRunBytes: state.retainedRunBytes });
     if (!addition.ok) {
       state.membershipError = addition.reason;
-      this.publish();
+      this.commitTransition();
       return;
     }
     state.scenario = addition.scenario;
@@ -5224,7 +5224,7 @@ class Runtime implements WorkbenchRuntime {
     state.pickerOpen = false;
     state.membershipPreview = null;
     this.localInjectionEntryError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private previewVisibleEvidenceForScenario(): void {
@@ -5260,7 +5260,7 @@ class Runtime implements WorkbenchRuntime {
     state.membershipPreview = previewScenarioMembership(state.scenario, candidates);
     state.membershipError = null;
     this.localInjectionEntryError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private confirmScenarioMembershipPreview(): void {
@@ -5276,13 +5276,13 @@ class Runtime implements WorkbenchRuntime {
       if (!identity || identity.intervalId !== member.evidence.intervalId || identity.sequence !== member.evidence.sequence || identity.eventId !== member.evidence.eventId) {
         state.membershipError = `Evidence ${member.evidence.eventId} is no longer retained at ${member.evidence.intervalId} sequence ${member.evidence.sequence}. Preview membership again; no Steps were added.`;
         state.membershipPreview = null;
-        this.publish();
+        this.commitTransition();
         return;
       }
       const candidate = this.createLocalInjectionCandidate({ kind: "selected-event", eventId: member.evidenceId });
       if (!candidate) {
         state.membershipError = this.localInjectionEntryError ?? `Evidence ${member.evidenceId} is no longer available; no Steps were added.`;
-        this.publish();
+        this.commitTransition();
         return;
       }
       candidates.set(member.evidenceId, candidate);
@@ -5290,7 +5290,7 @@ class Runtime implements WorkbenchRuntime {
     const result = confirmScenarioMembershipPreview(state.scenario, preview, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) {
       state.membershipError = result.reason;
-      this.publish();
+      this.commitTransition();
       return;
     }
     const added = result.scenario.steps.slice(state.scenario.steps.length);
@@ -5305,7 +5305,7 @@ class Runtime implements WorkbenchRuntime {
     state.membershipError = null;
     state.pickerOpen = false;
     this.localInjectionEntryError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private addAuthoredScenarioStep(): void {
@@ -5324,7 +5324,7 @@ class Runtime implements WorkbenchRuntime {
     const addition = addScenarioStep(state.scenario, this.scenarioDraftInput(authored), { retainedRunBytes: state.retainedRunBytes });
     if (!addition.ok) {
       state.membershipError = addition.reason;
-      this.publish();
+      this.commitTransition();
       return;
     }
     state.scenario = addition.scenario;
@@ -5332,19 +5332,19 @@ class Runtime implements WorkbenchRuntime {
     state.focusedMemberId = state.focusedStepId;
     state.drafts.set(state.focusedStepId, authored);
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private moveCurrentScenarioStep(stepId: string, direction: "earlier" | "later"): void {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
     const result = moveScenarioStep(state.scenario, stepId, direction, { retainedRunBytes: state.retainedRunBytes });
-    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    if (!result.ok) { state.membershipError = result.reason; this.commitTransition(); return; }
     state.scenario = result.scenario;
     state.focusedStepId = stepId;
     state.focusedMemberId = stepId;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private duplicateCurrentScenarioStep(stepId: string): void {
@@ -5354,7 +5354,7 @@ class Runtime implements WorkbenchRuntime {
     const source = state.drafts.get(stepId);
     if (!source) return;
     const result = duplicateScenarioStep(state.scenario, stepId, { retainedRunBytes: state.retainedRunBytes });
-    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    if (!result.ok) { state.membershipError = result.reason; this.commitTransition(); return; }
     const duplicateStep = result.scenario.steps[index + 1]!;
     const duplicate = cloneLocalInjectionDraftState(source);
     duplicate.id = duplicateStep.draft.id;
@@ -5363,7 +5363,7 @@ class Runtime implements WorkbenchRuntime {
     state.focusedStepId = duplicateStep.id;
     state.focusedMemberId = duplicateStep.id;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private removeCurrentScenarioStep(stepId: string): void {
@@ -5373,14 +5373,14 @@ class Runtime implements WorkbenchRuntime {
     const draft = state.drafts.get(stepId);
     if (!draft) return;
     const result = removeScenarioStep(state.scenario, stepId, { retainedRunBytes: state.retainedRunBytes });
-    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    if (!result.ok) { state.membershipError = result.reason; this.commitTransition(); return; }
     state.scenario = result.scenario;
     state.drafts.delete(stepId);
     state.removedDrafts.set(stepId, draft);
     state.focusedStepId = result.scenario.steps[Math.min(index, result.scenario.steps.length - 1)]!.id;
     state.focusedMemberId = state.focusedStepId;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private undoCurrentScenarioStepRemoval(): void {
@@ -5389,14 +5389,14 @@ class Runtime implements WorkbenchRuntime {
     const removed = removedStep ? state?.removedDrafts.get(removedStep.id) : null;
     if (!state || state.phase !== "edit" || !removedStep || !removed) return;
     const result = undoScenarioStepRemoval(state.scenario, { retainedRunBytes: state.retainedRunBytes });
-    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    if (!result.ok) { state.membershipError = result.reason; this.commitTransition(); return; }
     state.scenario = result.scenario;
     state.drafts.set(removedStep.id, removed);
     state.removedDrafts.delete(removedStep.id);
     state.focusedStepId = removedStep.id;
     state.focusedMemberId = removedStep.id;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private setScenarioStepDelay(stepId: string, delayMs: number): void {
@@ -5406,11 +5406,11 @@ class Runtime implements WorkbenchRuntime {
     if (!draft) return;
     const nextDelay = Math.max(0, Math.floor(delayMs));
     const result = updateScenarioStepDraft(state.scenario, stepId, { ...this.scenarioDraftInput(draft), relativeDelayMs: nextDelay }, { retainedRunBytes: state.retainedRunBytes });
-    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    if (!result.ok) { state.membershipError = result.reason; this.commitTransition(); return; }
     draft.relativeDelayMs = nextDelay;
     state.scenario = result.scenario;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private setScenarioSpeed(speed: ScenarioSpeed): void {
@@ -5419,12 +5419,12 @@ class Runtime implements WorkbenchRuntime {
     const result = updateScenarioSpeed(state.scenario, speed, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) {
       state.membershipError = result.reason;
-      this.publish();
+      this.commitTransition();
       return;
     }
     state.scenario = result.scenario;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private pruneScenarioInvalidPrimitiveAssertions(state: ScenarioState): void {
@@ -5442,13 +5442,13 @@ class Runtime implements WorkbenchRuntime {
     this.pruneScenarioInvalidPrimitiveAssertions(state);
     if (state.invalidPrimitiveAssertionIds.size > 0) {
       state.membershipError = "Correct the Primitive JSON value before Review. No Injection was attempted.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     const validated = this.scenarioWithOrderedValidation(state);
     if (!validated.ok) {
       state.membershipError = validated.reason;
-      this.publish();
+      this.commitTransition();
       return;
     }
     const scenario = validated.scenario;
@@ -5469,7 +5469,7 @@ class Runtime implements WorkbenchRuntime {
     });
     if (!reviewed.ok) {
       state.membershipError = `${reviewed.stepId ? `${reviewed.stepId}: ` : ""}${reviewed.reason}`;
-      this.publish();
+      this.commitTransition();
       return;
     }
     const reviews = new Map(state.scenario.steps.map((step, index) => {
@@ -5497,7 +5497,7 @@ class Runtime implements WorkbenchRuntime {
     const refused = [...reviews.values()].find((review) => review.kind === "refused");
     if (refused?.kind === "refused") {
       state.membershipError = refused.reason;
-      this.publish();
+      this.commitTransition();
       return;
     }
     state.scenario = scenario;
@@ -5508,7 +5508,7 @@ class Runtime implements WorkbenchRuntime {
     state.membershipError = null;
     state.runner = this.createScenarioRunner(state, reviewed.run);
     state.runnerSnapshot = state.runner.snapshot();
-    this.publish();
+    this.commitTransition();
   }
 
   private createScenarioRunner(state: ScenarioState, run: ScenarioRun): ScenarioRunner {
@@ -5607,7 +5607,7 @@ class Runtime implements WorkbenchRuntime {
             : runnerSnapshot.phase === "paused"
               ? state.run.trace.length === 0 && state.run.controls.length === 0 ? "review" : "paused"
               : "running";
-        if (!this.scenarioVisibilityTransition) this.publish();
+        if (!this.scenarioVisibilityTransition) this.commitTransition();
       }
     });
   }
@@ -5791,7 +5791,7 @@ class Runtime implements WorkbenchRuntime {
       this.focusedEventId = origin.focusedEventId;
       this.contextId = origin.contextId;
     }
-    this.publish();
+    this.commitTransition();
   }
 
   private setScenarioStepJson(stepId: string, text: string): void {
@@ -5809,13 +5809,13 @@ class Runtime implements WorkbenchRuntime {
     const result = updateScenarioStepDraft(state.scenario, stepId, this.scenarioDraftInput(draft), { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) {
       state.membershipError = result.reason;
-      this.publish();
+      this.commitTransition();
       return;
     }
     state.drafts.set(stepId, draft);
     state.scenario = result.scenario;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private setScenarioStepCompare(stepId: string, open: boolean): void {
@@ -5825,12 +5825,12 @@ class Runtime implements WorkbenchRuntime {
     if (!draft || (open && draft.sourceRawText === null)) return;
     const presentation = Object.freeze({ ...draft.editorPresentation, compareOpen: open });
     const result = updateScenarioStepPresentation(state.scenario, stepId, presentation, { retainedRunBytes: state.retainedRunBytes });
-    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    if (!result.ok) { state.membershipError = result.reason; this.commitTransition(); return; }
     draft.compareOpen = open;
     draft.editorPresentation = presentation;
     state.scenario = result.scenario;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private setScenarioStepEditorPresentation(stepId: string, presentation: ScenarioEditorState): void {
@@ -5842,11 +5842,11 @@ class Runtime implements WorkbenchRuntime {
     const next = Object.freeze({ ...presentation, compareOpen: draft.compareOpen });
     if (sameScenarioEditorState(draft.editorPresentation, next)) return;
     const result = updateScenarioStepPresentation(state.scenario, stepId, next, { retainedRunBytes: state.retainedRunBytes });
-    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    if (!result.ok) { state.membershipError = result.reason; this.commitTransition(); return; }
     draft.editorPresentation = next;
     state.scenario = result.scenario;
     state.membershipError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private scenarioMembershipAvailability(event: LightstreamerEventEnvelope): Readonly<{ eventId: string; available: boolean; reason: string | null }> {
@@ -5965,7 +5965,7 @@ class Runtime implements WorkbenchRuntime {
       this.clearFindResults();
     }
     if (source !== "initial" && source !== "passive" && source !== "visibility") {
-      this.publish();
+      this.commitTransition();
     }
 
     void Promise.resolve(this.queryInvestigation(request, effectiveOffset)).then(
@@ -5988,7 +5988,7 @@ class Runtime implements WorkbenchRuntime {
             this.applyFindResult(this.lastCoherentInvestigation.find);
           }
           if (!this.liveInvestigation) this.liveEvidence = emptyEvidence;
-          if (this.visible) this.publish();
+          if (this.visible) this.commitTransition();
           else this.hiddenDirty = true;
           this.drainPassiveRefresh();
           return;
@@ -6045,7 +6045,6 @@ class Runtime implements WorkbenchRuntime {
           this.renderedEvidenceBoundary = evidenceRefFromIdentity(result.value.readPoint.committedEvidenceBoundary);
         }
         if (source === "initial") {
-          this.refreshRuntimeDiagnosticObservations();
           this.snapshot = this.createSnapshot();
           if (this.passiveRefreshPending) {
             this.passiveRefreshPending = false;
@@ -6058,7 +6057,7 @@ class Runtime implements WorkbenchRuntime {
           this.drainPassiveRefresh();
           return;
         }
-        this.publish();
+        this.commitTransition();
         this.drainPassiveRefresh();
       },
       (error: unknown) => {
@@ -6082,7 +6081,7 @@ class Runtime implements WorkbenchRuntime {
           this.applyFindResult(this.lastCoherentInvestigation.find);
         }
         if (!this.liveInvestigation) this.liveEvidence = emptyEvidence;
-        if (this.visible) this.publish();
+        if (this.visible) this.commitTransition();
         else this.hiddenDirty = true;
         this.drainPassiveRefresh();
       }
@@ -6405,15 +6404,37 @@ class Runtime implements WorkbenchRuntime {
     this.invalidateEvidenceCopy();
   }
 
-  private publish(allowHidden = false): void {
+  /**
+   * Completes one runtime state transition. Derived domain state reconciles
+   * here whether or not the panel is visible; only snapshot publication is
+   * deferred while hidden.
+   */
+  private commitTransition(allowHidden = false): void {
     if (this.disposed) {
       return;
     }
-    this.refreshRuntimeDiagnosticObservations();
+    this.reconcileDerivedDomainState();
     if (!this.visible && !allowHidden) {
+      this.refreshRuntimeDiagnosticObservations();
       this.hiddenDirty = true;
       return;
     }
+    this.publishSnapshot();
+  }
+
+  /** Records a hidden passive transition without building a snapshot. */
+  private deferHiddenPublication(): void {
+    this.reconcileDerivedDomainState();
+    this.hiddenDirty = true;
+  }
+
+  /**
+   * Reconciles state derived from Topology, Capture status, page identity,
+   * and COMMAND projections: a retired Scope falls back to the page, Draft
+   * validation follows the current target, and a Draft whose reviewed
+   * fingerprint no longer matches returns from Review to Edit.
+   */
+  private reconcileDerivedDomainState(): void {
     this.reconcileScopeIdentity();
     const localInjectionDraft = this.localInjectionDraft;
     if (localInjectionDraft?.phase === "edit") {
@@ -6443,12 +6464,16 @@ class Runtime implements WorkbenchRuntime {
         this.currentServerInjectionFingerprint(serverInjectionDraft) !==
           serverInjectionDraft.reviewedFingerprint
       ) {
-      serverInjectionDraft.phase = "edit";
-      serverInjectionDraft.reviewedDraft = null;
-      serverInjectionDraft.reviewedFingerprint = null;
-      serverInjectionDraft.approvalFingerprint = null;
+        serverInjectionDraft.phase = "edit";
+        serverInjectionDraft.reviewedDraft = null;
+        serverInjectionDraft.reviewedFingerprint = null;
+        serverInjectionDraft.approvalFingerprint = null;
       }
     }
+  }
+
+  /** Builds and announces one immutable snapshot; never changes domain state. */
+  private publishSnapshot(): void {
     this.version += 1;
     this.snapshot = this.createSnapshot();
     for (const listener of this.listeners) {
@@ -6533,7 +6558,7 @@ class Runtime implements WorkbenchRuntime {
             membershipError: this.scenarioState.membershipError,
             captureWorkspace: this.scenarioCaptureSnapshot(this.scenarioState),
             pickerOpen: this.scenarioState.pickerOpen,
-            membership: Object.freeze(this.displayedEvidence().events.map((event) => this.scenarioMembershipAvailability(event))),
+            membership: Object.freeze(evidence.events.map((event) => this.scenarioMembershipAvailability(event))),
             membershipPreview: this.scenarioState.membershipPreview
               ? Object.freeze({
                   scenarioRevision: this.scenarioState.membershipPreview.scenarioRevision,
@@ -6804,7 +6829,7 @@ class Runtime implements WorkbenchRuntime {
     this.serverInjectionDraft = state;
     this.refreshServerInjectionValidation(state);
     state.agentPreparedFingerprint = this.currentServerInjectionFingerprint(state);
-    this.publish();
+    this.commitTransition();
   }
 
   private beginServerInjection(authored: boolean): void {
@@ -6813,12 +6838,12 @@ class Runtime implements WorkbenchRuntime {
       this.serverInjectionEntryError = this.localInjectionDraft
         ? "Finish or discard the active Local Injection Draft before starting Server Injection."
         : "Finish the active Local Injection Scenario before starting Server Injection.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     if (this.serverInjectionDraft) {
       this.serverInjectionEntryError = "One Server Injection Draft is already active.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     const event = this.selectedEventForServerInjection();
@@ -6831,7 +6856,7 @@ class Runtime implements WorkbenchRuntime {
       this.serverInjectionEntryError = authored
         ? "Select Evidence from a live official Lightstreamer client Session."
         : "Select a Captured Client Message with an available body and Session.";
-      this.publish();
+      this.commitTransition();
       return;
     }
     this.serverInjectionDraft = {
@@ -6856,7 +6881,7 @@ class Runtime implements WorkbenchRuntime {
           )
     };
     this.refreshServerInjectionValidation(this.serverInjectionDraft);
-    this.publish();
+    this.commitTransition();
     if (authored && event) {
       this.resolveServerInjectionRecipes(
         this.serverInjectionDraft.id,
@@ -6891,7 +6916,7 @@ class Runtime implements WorkbenchRuntime {
     const state = this.serverInjectionDraft;
     if (this.disposed || !state || state.id !== draftId || state.phase !== "edit") return;
     state.recipes = recipes;
-    this.publish();
+    this.commitTransition();
   }
 
   private applyServerInjectionRecipe(recipeId: string): void {
@@ -6913,7 +6938,7 @@ class Runtime implements WorkbenchRuntime {
     state.outcome = null;
     state.discardConfirmation = false;
     this.refreshServerInjectionValidation(state);
-    this.publish();
+    this.commitTransition();
   }
 
   private authoredServerInjectionDraftForEvent(
@@ -6940,7 +6965,7 @@ class Runtime implements WorkbenchRuntime {
     state.outcome = null;
     state.discardConfirmation = false;
     this.refreshServerInjectionValidation(state);
-    this.publish();
+    this.commitTransition();
   }
 
   private setServerInjectionDelayTimeout(value: string): void {
@@ -6958,7 +6983,7 @@ class Runtime implements WorkbenchRuntime {
     state.reviewedFingerprint = null;
     state.approvalFingerprint = null;
     this.refreshServerInjectionValidation(state);
-    this.publish();
+    this.commitTransition();
   }
 
   private refreshServerInjectionValidation(state: ServerInjectionDraftState): void {
@@ -7040,14 +7065,14 @@ class Runtime implements WorkbenchRuntime {
     if (!state || state.phase !== "edit") return;
     this.refreshServerInjectionValidation(state);
     if (!this.serverInjectionReady(state)) {
-      this.publish();
+      this.commitTransition();
       return;
     }
     state.reviewedDraft = Object.freeze(cloneServerInjectionDraft(state.draft));
     state.reviewedFingerprint = this.currentServerInjectionFingerprint(state);
     state.approvalFingerprint = null;
     state.phase = "review";
-    this.publish();
+    this.commitTransition();
   }
 
   private editServerInjection(): void {
@@ -7058,7 +7083,7 @@ class Runtime implements WorkbenchRuntime {
     state.reviewedFingerprint = null;
     state.approvalFingerprint = null;
     state.discardConfirmation = false;
-    this.publish();
+    this.commitTransition();
   }
 
   private approveAgentServerInjection(): void {
@@ -7070,13 +7095,13 @@ class Runtime implements WorkbenchRuntime {
       state.reviewedDraft = null;
       state.reviewedFingerprint = null;
       state.approvalFingerprint = null;
-      this.publish();
+      this.commitTransition();
       return;
     }
     // This latch can only be created by the visible, focused human action in
     // this document. Agent calls cannot invoke this command.
     state.approvalFingerprint = state.reviewedFingerprint;
-    this.publish();
+    this.commitTransition();
   }
 
   private executeApprovedAgentServerInjection(requestId: string): Promise<ServerInjectionExecutionResult> {
@@ -7092,7 +7117,7 @@ class Runtime implements WorkbenchRuntime {
         state.reviewedFingerprint = null;
         state.reviewedDraft = null;
         if (state.phase === "review") state.phase = "edit";
-        this.publish();
+        this.commitTransition();
       }
       throw new Error("HUMAN_APPROVAL_REQUIRED: Review and approve this exact Client/Session/message call in the Workbench document.");
     }
@@ -7115,13 +7140,13 @@ class Runtime implements WorkbenchRuntime {
       state.reviewedDraft = null;
       state.reviewedFingerprint = null;
       state.approvalFingerprint = null;
-      this.publish();
+      this.commitTransition();
       return Promise.resolve(null);
     }
     const draftId = state.id;
     const reviewed = cloneServerInjectionDraft(state.reviewedDraft);
     state.phase = "pending";
-    this.publish();
+    this.commitTransition();
     const execution = this.serverInjectionExecutor
       ? this.serverInjectionExecutor.execute(reviewed, requestId)
       : Promise.resolve<ServerInjectionExecutionResult>({
@@ -7155,21 +7180,21 @@ class Runtime implements WorkbenchRuntime {
     if (this.disposed || !state || state.id !== draftId || state.phase !== "pending") return;
     state.outcome = Object.freeze({ ...outcome });
     state.phase = "outcome";
-    this.publish();
+    this.commitTransition();
   }
 
   private requestDiscardServerInjection(): void {
     const state = this.serverInjectionDraft;
     if (!state || state.phase === "pending") return;
     state.discardConfirmation = true;
-    this.publish();
+    this.commitTransition();
   }
 
   private cancelDiscardServerInjection(): void {
     const state = this.serverInjectionDraft;
     if (!state || !state.discardConfirmation) return;
     state.discardConfirmation = false;
-    this.publish();
+    this.commitTransition();
   }
 
   private confirmDiscardServerInjection(): void {
@@ -7177,14 +7202,14 @@ class Runtime implements WorkbenchRuntime {
     if (!state || state.phase === "pending" || !state.discardConfirmation) return;
     this.serverInjectionDraft = null;
     this.serverInjectionEntryError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private finishServerInjection(): void {
     if (this.serverInjectionDraft?.phase !== "outcome") return;
     this.serverInjectionDraft = null;
     this.serverInjectionEntryError = null;
-    this.publish();
+    this.commitTransition();
   }
 
   private prepareServerInjectionRepeat(): void {
@@ -7203,7 +7228,7 @@ class Runtime implements WorkbenchRuntime {
     state.repeatWarning = true;
     state.discardConfirmation = false;
     this.refreshServerInjectionValidation(state);
-    this.publish();
+    this.commitTransition();
   }
 
   private localInjectionAvailability(): WorkbenchLocalInjectionSnapshot["availability"] {
@@ -7741,7 +7766,7 @@ class Runtime implements WorkbenchRuntime {
       ...this.diagnosticFilterCriteria,
       [facet]: Object.freeze({ include: Object.freeze(include), exclude: Object.freeze(exclude) })
     });
-    this.publish();
+    this.commitTransition();
   }
 
   private removeDiagnosticFilter(
@@ -7761,7 +7786,7 @@ class Runtime implements WorkbenchRuntime {
     if (include.length === 0 && exclude.length === 0) delete criteria[facet];
     else criteria[facet] = Object.freeze({ include: Object.freeze(include), exclude: Object.freeze(exclude) });
     this.diagnosticFilterCriteria = Object.freeze(criteria);
-    this.publish();
+    this.commitTransition();
   }
 
   private inspectDiagnosticAffected(affected: DiagnosticAffectedIdentity): void {
