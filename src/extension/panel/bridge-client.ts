@@ -47,7 +47,17 @@ export type PanelBridgeHandlers = {
   onStatusChange(status: CaptureStatus): void;
   onCaptureMessage(message: CaptureMessage): void;
   onTopologySyncFrame?(frame: TopologySyncFrame): void;
+  /**
+   * The bridge can never reconnect from this panel document, for example after
+   * the extension was reloaded or updated. The panel must be reopened.
+   */
+  onBridgeTerminated?(detail: PanelBridgeTermination): void;
 };
+
+export type PanelBridgeTermination = Readonly<{
+  reason: "extension-context-invalidated";
+  message: string;
+}>;
 
 export type PanelBridgeConnection = {
   reinjectDraft(
@@ -61,14 +71,61 @@ export type PanelBridgeConnection = {
   disconnect(): void;
 };
 
-const RECONNECT_DELAY_MS = 500;
+const RECONNECT_INITIAL_DELAY_MS = 500;
+const RECONNECT_MAX_DELAY_MS = 5000;
 const REINJECT_TIMEOUT_MS = 8000;
 const INSPECTED_PAGE_EVAL_TIMEOUT_MS = 5000;
 const SERVER_INJECTION_OUTCOME_TIMEOUT_MS = 30_000;
 
-type PageReinjectionEvaluation =
-  | { bridgeState: "unavailable" }
-  | { bridgeState: "result"; result: unknown };
+/** Capped exponential reconnect delay; the first retry keeps the historical 500ms. */
+export function panelBridgeReconnectDelay(attempt: number): number {
+  return Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_INITIAL_DELAY_MS * 2 ** Math.max(0, Math.min(attempt, 16)));
+}
+
+/**
+ * Request ids awaiting a terminal result. Each entry resolves exactly once:
+ * by settle(), by its own timeout fallback, or by settleAll() on disconnect.
+ * Draining never retries a request; callers choose an Unknown-style result.
+ */
+export class PendingRequests<T> {
+  private readonly entries = new Map<string, { resolve(result: T): void; timer: ReturnType<typeof setTimeout> }>();
+
+  constructor(private readonly disconnectedResult: (requestId: string, reason: string) => T) {}
+
+  add(requestId: string, resolve: (result: T) => void, timeoutMs: number, timedOut: () => T): void {
+    const timer = setTimeout(() => {
+      this.entries.delete(requestId);
+      resolve(timedOut());
+    }, timeoutMs);
+    this.entries.set(requestId, { resolve, timer });
+  }
+
+  has(requestId: string): boolean {
+    return this.entries.has(requestId);
+  }
+
+  settle(requestId: string, result: T): boolean {
+    const pending = this.entries.get(requestId);
+    if (!pending) return false;
+    this.entries.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(result);
+    return true;
+  }
+
+  settleAll(reason: string): void {
+    for (const requestId of [...this.entries.keys()]) {
+      this.settle(requestId, this.disconnectedResult(requestId, reason));
+    }
+  }
+}
+
+function isExtensionContextInvalidated(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/extension context invalidated/i.test(message)) return true;
+  const runtime = typeof chrome === "undefined" ? undefined : chrome.runtime;
+  return !runtime || !runtime.id;
+}
 
 export function connectPanelBridge(
   handlers: PanelBridgeHandlers,
@@ -99,29 +156,59 @@ export function connectPanelBridge(
   let disposed = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let port: chrome.runtime.Port | null = null;
-  const pendingReinjections = new Map<
-    string,
-    {
-      resolve(result: ReinjectionResult): void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
-  const pendingServerInjections = new Map<
-    string,
-    {
-      resolve(result: ServerInjectionExecutionResult): void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
+  let reconnectAttempt = 0;
+  let terminated = false;
+  const pendingReinjections = new PendingRequests<ReinjectionResult>(
+    (requestId, reason) => createAcknowledgementUnknownResult(requestId, reason, panelSessionId)
+  );
+  // Server Injection is never retried: a lost outcome stays Unknown.
+  const pendingServerInjections = new PendingRequests<ServerInjectionExecutionResult>(
+    (requestId, reason) => Object.freeze(createServerUnknownResult(requestId, reason))
+  );
+
+  const scheduleReconnect = () => {
+    if (disposed || terminated) return;
+    reconnectTimer = setTimeout(connect, panelBridgeReconnectDelay(reconnectAttempt));
+    reconnectAttempt += 1;
+  };
+
+  const terminate = (error: unknown) => {
+    terminated = true;
+    port = null;
+    handlers.onStatusChange("bridge disconnected");
+    handlers.onBridgeTerminated?.({
+      reason: "extension-context-invalidated",
+      message: error instanceof Error && error.message
+        ? error.message
+        : "The extension context was invalidated. Close and reopen DevTools to reconnect Workbench."
+    });
+  };
 
   const connect = () => {
-    if (disposed) {
+    reconnectTimer = null;
+    if (disposed || terminated) {
       return;
     }
 
-    port = chrome.runtime.connect({ name: PANEL_PORT_NAME });
+    let connected: chrome.runtime.Port;
+    try {
+      connected = chrome.runtime.connect({ name: PANEL_PORT_NAME });
+    } catch (error) {
+      // A timer-driven reconnect must never throw into the event loop and
+      // silently end reconnection.
+      if (isExtensionContextInvalidated(error)) {
+        terminate(error);
+        return;
+      }
+      if (reconnectAttempt === 0) handlers.onStatusChange("bridge disconnected");
+      scheduleReconnect();
+      return;
+    }
+    port = connected;
 
-    port.onMessage.addListener((message) => {
+    connected.onMessage.addListener((message) => {
+      // Any background reply proves the port is live; restart the backoff.
+      reconnectAttempt = 0;
       if (isPanelStatusMessage(message) && message.panelSessionId === panelSessionId) {
         handlers.onStatusChange(message.status);
         return;
@@ -139,38 +226,35 @@ export function connectPanelBridge(
       }
 
       if (isPanelReinjectResultMessage(message) && message.panelSessionId === panelSessionId) {
-        const pending = pendingReinjections.get(message.result.requestId);
-        if (!pending) {
-          return;
-        }
-        pendingReinjections.delete(message.result.requestId);
-        clearTimeout(pending.timer);
-        pending.resolve(message.result);
+        pendingReinjections.settle(message.result.requestId, message.result);
       }
     });
 
-    port.onDisconnect.addListener(() => {
-      port = null;
-      if (disposed) {
+    connected.onDisconnect.addListener(() => {
+      if (port === connected) port = null;
+      if (disposed || terminated) {
         return;
       }
 
       handlers.onStatusChange("bridge disconnected");
-      resolvePendingWithAcknowledgementUnknown(
-        "Bridge disconnected before reinjection completed."
-      );
-      resolvePendingServerInjectionsUnknown(
-        "Bridge disconnected before the Client Message outcome was observed."
-      );
-      reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+      resolvePendingAfterDisconnect();
+      scheduleReconnect();
     });
 
-    port.postMessage({
-      type: PANEL_REGISTER_MESSAGE,
-      tabId,
-      panelSessionId
-    });
-
+    try {
+      connected.postMessage({
+        type: PANEL_REGISTER_MESSAGE,
+        tabId,
+        panelSessionId
+      });
+    } catch (error) {
+      // The port was lost before registration; its disconnect listener
+      // schedules the retry. Only an invalidated context is terminal.
+      if (isExtensionContextInvalidated(error)) {
+        resolvePendingAfterDisconnect();
+        terminate(error);
+      }
+    }
   };
 
   connect();
@@ -224,15 +308,15 @@ export function connectPanelBridge(
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
       }
-      resolvePendingWithAcknowledgementUnknown(
-        "Bridge disconnected before reinjection completed."
-      );
-      resolvePendingServerInjectionsUnknown(
-        "Bridge disconnected before the Client Message outcome was observed."
-      );
+      resolvePendingAfterDisconnect();
       port?.disconnect();
     }
   };
+
+  function resolvePendingAfterDisconnect(): void {
+    pendingReinjections.settleAll("Bridge disconnected before reinjection completed.");
+    pendingServerInjections.settleAll("Bridge disconnected before the Client Message outcome was observed.");
+  }
 
   function reinjectThroughRuntime(
     requestId: string,
@@ -243,18 +327,13 @@ export function connectPanelBridge(
     }
 
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        pendingReinjections.delete(requestId);
-        resolve(
-          createAcknowledgementUnknownResult(
-            requestId,
-            "Timed out waiting for reinjection result.",
-            panelSessionId
-          )
-        );
-      }, REINJECT_TIMEOUT_MS);
-
-      pendingReinjections.set(requestId, { resolve, timer });
+      pendingReinjections.add(requestId, resolve, REINJECT_TIMEOUT_MS, () =>
+        createAcknowledgementUnknownResult(
+          requestId,
+          "Timed out waiting for reinjection result.",
+          panelSessionId
+        )
+      );
       try {
         port?.postMessage({
           type: PANEL_REINJECT_REQUEST,
@@ -263,9 +342,8 @@ export function connectPanelBridge(
           draft: payload
         });
       } catch (error) {
-        pendingReinjections.delete(requestId);
-        clearTimeout(timer);
-        resolve(
+        pendingReinjections.settle(
+          requestId,
           createBridgeErrorResult(
             requestId,
             error instanceof Error ? error.message : "Could not post the reinjection request.",
@@ -276,37 +354,24 @@ export function connectPanelBridge(
     });
   }
 
-  function resolvePendingWithAcknowledgementUnknown(error: string) {
-    for (const [requestId, pending] of pendingReinjections.entries()) {
-      clearTimeout(pending.timer);
-      pending.resolve(createAcknowledgementUnknownResult(requestId, error, panelSessionId));
-    }
-    pendingReinjections.clear();
-  }
-
   function sendServerInjectionThroughInspectedPage(
     requestId: string,
     draft: ServerInjectionDraftPayload
   ): Promise<ServerInjectionExecutionResult> {
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        pendingServerInjections.delete(requestId);
-        resolve(createServerUnknownResult(
-          requestId,
-          "No terminal ClientMessageListener outcome was observed. Do not repeat automatically."
-        ));
-      }, Math.max(
+      pendingServerInjections.add(requestId, resolve, Math.max(
         SERVER_INJECTION_OUTCOME_TIMEOUT_MS,
         (draft.delayTimeout ?? 0) + INSPECTED_PAGE_EVAL_TIMEOUT_MS
+      ), () => createServerUnknownResult(
+        requestId,
+        "No terminal ClientMessageListener outcome was observed. Do not repeat automatically."
       ));
-      pendingServerInjections.set(requestId, { resolve, timer });
 
       try {
         chrome.devtools.inspectedWindow.eval<unknown>(
           pageServerInjectionExpression(requestId, panelSessionId, draft),
           (value, exceptionInfo) => {
-            const pending = pendingServerInjections.get(requestId);
-            if (!pending) return;
+            if (!pendingServerInjections.has(requestId)) return;
             if (exceptionInfo?.isError || exceptionInfo?.isException) {
               finishServerInjection(createServerUnknownResult(
                 requestId,
@@ -415,17 +480,7 @@ export function connectPanelBridge(
   }
 
   function finishServerInjection(result: ServerInjectionExecutionResult): void {
-    const pending = pendingServerInjections.get(result.requestId);
-    if (!pending) return;
-    pendingServerInjections.delete(result.requestId);
-    clearTimeout(pending.timer);
-    pending.resolve(Object.freeze(result));
-  }
-
-  function resolvePendingServerInjectionsUnknown(error: string): void {
-    for (const requestId of [...pendingServerInjections.keys()]) {
-      finishServerInjection(createServerUnknownResult(requestId, error));
-    }
+    pendingServerInjections.settle(result.requestId, Object.freeze(result));
   }
 
   function resolveClientMessageRecipesThroughInspectedPage(
@@ -487,84 +542,110 @@ export function connectPanelBridge(
   }
 }
 
-type PageClientMessageRecipeEvaluation =
+type PageBridgeEvaluation<K extends string> =
   | { bridgeState: "unavailable" }
   | { bridgeState: "error"; error: string }
-  | { bridgeState: "result"; recipes: unknown };
+  | ({ bridgeState: "result" } & { [key in K]: unknown });
 
-export function pageClientMessageRecipeExpression(
-  context: ClientMessageRecipeContext
-): string {
-  const adapterName = JSON.stringify(PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL);
-  return `(() => {
-    const adapter = globalThis[${adapterName}];
-    if (!adapter) return { bridgeState: "unavailable" };
-    if (
-      adapter.version !== ${PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_VERSION} ||
-      typeof adapter.list !== "function"
-    ) {
-      return { bridgeState: "error", error: "The application exposes an incompatible Message Recipe adapter." };
-    }
-    try {
-      const recipes = adapter.list(${JSON.stringify(context)});
-      if (recipes && typeof recipes.then === "function") {
-        return { bridgeState: "error", error: "Message Recipe adapters must return synchronously." };
+type PageBridgeCall = Readonly<{
+  global: string;
+  version: number;
+  method: string;
+  args: readonly unknown[];
+  resultKey: string;
+  /** Report a present but incompatible bridge as an error instead of unavailable. */
+  incompatibleError?: string;
+  /**
+   * Contain synchronous throws and thenables as error evaluations. Without a
+   * guard a throw propagates as an evaluation exception, which Server
+   * Injection must keep treating as an Unknown outcome.
+   */
+  guard?: Readonly<{ asynchronousError: string; thrownError: string }>;
+}>;
+
+/** Build one versioned inspected-page bridge call. Arguments are JSON literals only. */
+function pageBridgeCallExpression(call: PageBridgeCall): string {
+  const name = JSON.stringify(call.global);
+  const method = JSON.stringify(call.method);
+  const resultKey = JSON.stringify(call.resultKey);
+  const args = call.args.map((value) => JSON.stringify(value)).join(", ");
+  const compatible = `bridge.version === ${call.version} && typeof bridge[${method}] === "function"`;
+  const availability = call.incompatibleError === undefined
+    ? `if (!bridge || !(${compatible})) return { bridgeState: "unavailable" };`
+    : `if (!bridge) return { bridgeState: "unavailable" };
+    if (!(${compatible})) return { bridgeState: "error", error: ${JSON.stringify(call.incompatibleError)} };`;
+  const invoke = call.guard === undefined
+    ? `return { bridgeState: "result", [${resultKey}]: bridge[${method}](${args}) };`
+    : `try {
+      const value = bridge[${method}](${args});
+      if (value && typeof value.then === "function") {
+        return { bridgeState: "error", error: ${JSON.stringify(call.guard.asynchronousError)} };
       }
-      return { bridgeState: "result", recipes };
+      return { bridgeState: "result", [${resultKey}]: value };
     } catch (error) {
-      return {
-        bridgeState: "error",
-        error: error instanceof Error ? error.message : "The application Message Recipe adapter threw."
-      };
-    }
+      return { bridgeState: "error", error: error instanceof Error ? error.message : ${JSON.stringify(call.guard.thrownError)} };
+    }`;
+  return `(() => {
+    const bridge = globalThis[${name}];
+    ${availability}
+    ${invoke}
   })()`;
 }
 
-function readPageClientMessageRecipeEvaluation(
-  value: unknown
-): PageClientMessageRecipeEvaluation | null {
+function readPageBridgeEvaluation<K extends string>(
+  value: unknown,
+  resultKey: K,
+  acceptErrors: boolean
+): PageBridgeEvaluation<K> | null {
   const record = asRecord(value);
   if (!record) return null;
   if (record.bridgeState === "unavailable") return { bridgeState: "unavailable" };
-  if (record.bridgeState === "error" && typeof record.error === "string") {
+  if (acceptErrors && record.bridgeState === "error" && typeof record.error === "string") {
     return { bridgeState: "error", error: record.error };
   }
-  if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, "recipes")) {
-    return { bridgeState: "result", recipes: record.recipes };
+  if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, resultKey)) {
+    return { bridgeState: "result", [resultKey]: record[resultKey] } as PageBridgeEvaluation<K>;
   }
   return null;
 }
 
-type PageServerInjectionEvaluation =
-  | { bridgeState: "unavailable" }
-  | { bridgeState: "result"; result: unknown };
+export function pageClientMessageRecipeExpression(
+  context: ClientMessageRecipeContext
+): string {
+  return pageBridgeCallExpression({
+    global: PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_GLOBAL,
+    version: PAGE_CLIENT_MESSAGE_RECIPE_ADAPTER_VERSION,
+    method: "list",
+    args: [context],
+    resultKey: "recipes",
+    incompatibleError: "The application exposes an incompatible Message Recipe adapter.",
+    guard: {
+      asynchronousError: "Message Recipe adapters must return synchronously.",
+      thrownError: "The application Message Recipe adapter threw."
+    }
+  });
+}
+
+function readPageClientMessageRecipeEvaluation(value: unknown) {
+  return readPageBridgeEvaluation(value, "recipes", true);
+}
 
 export function pageServerInjectionExpression(
   requestId: string,
   panelSessionId: PanelSessionId,
   draft: ServerInjectionDraftPayload
 ): string {
-  const bridgeName = JSON.stringify(PAGE_SERVER_INJECTION_BRIDGE_GLOBAL);
-  return `(() => {
-    const bridge = globalThis[${bridgeName}];
-    if (!bridge || bridge.version !== ${PAGE_SERVER_INJECTION_BRIDGE_VERSION} || typeof bridge.send !== "function") {
-      return { bridgeState: "unavailable" };
-    }
-    return {
-      bridgeState: "result",
-      result: bridge.send(${JSON.stringify(requestId)}, ${JSON.stringify(panelSessionId)}, ${JSON.stringify(draft)})
-    };
-  })()`;
+  return pageBridgeCallExpression({
+    global: PAGE_SERVER_INJECTION_BRIDGE_GLOBAL,
+    version: PAGE_SERVER_INJECTION_BRIDGE_VERSION,
+    method: "send",
+    args: [requestId, panelSessionId, draft],
+    resultKey: "result"
+  });
 }
 
-function readPageServerInjectionEvaluation(value: unknown): PageServerInjectionEvaluation | null {
-  const record = asRecord(value);
-  if (!record) return null;
-  if (record.bridgeState === "unavailable") return { bridgeState: "unavailable" };
-  if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, "result")) {
-    return { bridgeState: "result", result: record.result };
-  }
-  return null;
+function readPageServerInjectionEvaluation(value: unknown) {
+  return readPageBridgeEvaluation(value, "result", false);
 }
 
 function resultFromServerInjectionStart(
@@ -723,41 +804,17 @@ export function pageReinjectionExpression(
   panelSessionId: PanelSessionId,
   draft: ReinjectionDraftPayload
 ): string {
-  const bridgeName = JSON.stringify(PAGE_REINJECTION_BRIDGE_GLOBAL);
-  const serializedRequestId = JSON.stringify(requestId);
-  const serializedPanelSessionId = JSON.stringify(panelSessionId);
-  const serializedDraft = JSON.stringify(draft);
-  return `(() => {
-    const host = globalThis;
-    const bridge = host[${bridgeName}];
-    if (bridge) {
-      if (
-        bridge.version !== ${PAGE_REINJECTION_BRIDGE_VERSION} ||
-        typeof bridge.reinject !== "function"
-      ) {
-        return { bridgeState: "unavailable" };
-      }
-      return {
-        bridgeState: "result",
-        result: bridge.reinject(${serializedRequestId}, ${serializedPanelSessionId}, ${serializedDraft})
-      };
-    }
-    return { bridgeState: "unavailable" };
-  })()`;
+  return pageBridgeCallExpression({
+    global: PAGE_REINJECTION_BRIDGE_GLOBAL,
+    version: PAGE_REINJECTION_BRIDGE_VERSION,
+    method: "reinject",
+    args: [requestId, panelSessionId, draft],
+    resultKey: "result"
+  });
 }
 
-function readPageReinjectionEvaluation(value: unknown): PageReinjectionEvaluation | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  if (record.bridgeState === "unavailable") {
-    return { bridgeState: "unavailable" };
-  }
-  if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, "result")) {
-    return { bridgeState: "result", result: record.result };
-  }
-  return null;
+function readPageReinjectionEvaluation(value: unknown) {
+  return readPageBridgeEvaluation(value, "result", false);
 }
 
 function serializeDraft(

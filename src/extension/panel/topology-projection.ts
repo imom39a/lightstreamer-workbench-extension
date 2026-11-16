@@ -1,3 +1,4 @@
+import { BoundedMap, BoundedSet, evictOldest } from "../../core/bounded-map";
 import {
   TOPOLOGY_SYNC_BEGIN,
   TOPOLOGY_SYNC_CHUNK,
@@ -93,7 +94,7 @@ export function createTopologyProjection(): TopologyProjection {
   const legacyIndex = createTopologyStateIndex();
   const legacyLiveFallbackIndex = createTopologyStateIndex();
   const semanticEvents = new Map<string, LightstreamerEventEnvelope>();
-  const retainedSemanticEvents = new Map<string, LightstreamerEventEnvelope>();
+  const retainedSemanticEvents = new BoundedMap<string, LightstreamerEventEnvelope>(MAX_RETAINED_SEMANTIC_EVENTS);
   const syncAdapter = createPanelTopologySyncAdapter((observation) => {
     const key = semanticEventKey(observation);
     const event = semanticEvents.get(key);
@@ -110,10 +111,10 @@ export function createTopologyProjection(): TopologyProjection {
   let stagedSyncStatus: TopologySyncStatus = { state: "idle", retry: false };
   let semanticActive = false;
   let coverage: TopologyCoverage | null = null;
-  const retiredPageEpochs = new Set<string>();
+  const retiredPageEpochs = new BoundedSet<string>(MAX_RETIRED_PAGE_EPOCHS);
   const preservedHistory = new Map<string, TopologyClient>();
-  const staleSemanticEventIds = new Set<string>();
-  const retainedSemanticEventIds = new Set<string>();
+  const staleSemanticEventIds = new BoundedSet<string>(MAX_RETAINED_SEMANTIC_EVENTS);
+  const retainedSemanticEventIds = new BoundedSet<string>(MAX_RETAINED_SEMANTIC_EVENTS);
   let materializedStateDirty = true;
   let materializedScopeStructureDirty = true;
   let materializedState: TopologyState | null = null;
@@ -137,7 +138,6 @@ export function createTopologyProjection(): TopologyProjection {
       if (semanticActive) {
         rememberHistory(snapshotPanelTopologyState(syncCoordinator.snapshot()));
         retiredPageEpochs.add(syncCoordinator.pageEpoch());
-        trimSet(retiredPageEpochs, MAX_RETIRED_PAGE_EPOCHS);
         legacyLiveFallbackIndex.clear();
       }
       syncCoordinator.retirePageEpoch(pageEpoch);
@@ -166,17 +166,16 @@ export function createTopologyProjection(): TopologyProjection {
     const activation = activatePage(observation.pageEpoch);
     if (!activation.accepted) {
       staleSemanticEventIds.add(event.id);
-      trimSet(staleSemanticEventIds, MAX_RETAINED_SEMANTIC_EVENTS);
       return activation;
     }
     coverage = observation.coverage;
     retainedSemanticEventIds.add(event.id);
-    trimSet(retainedSemanticEventIds, MAX_RETAINED_SEMANTIC_EVENTS);
     const key = semanticEventKey(observation);
     retainedSemanticEvents.set(key, event);
-    trimMap(retainedSemanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
     semanticEvents.set(key, event);
-    trimMap(semanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
+    // Checkpoint replay restores retained events without trimming, so this map
+    // stays a plain Map trimmed only after live insertion.
+    evictOldest(semanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
     if (
       stagedSync &&
       observation.pageEpoch === stagedSync.metadata.pageEpoch &&
@@ -1136,20 +1135,4 @@ function sameKeys(left: ReadonlySet<string>, right: ReadonlySet<string>): boolea
 
 function sameOrderedKeys(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((key, index) => key === right[index]);
-}
-
-function trimMap<K, V>(map: Map<K, V>, limit: number): void {
-  while (map.size > limit) {
-    const oldest = map.keys().next().value as K | undefined;
-    if (oldest === undefined) return;
-    map.delete(oldest);
-  }
-}
-
-function trimSet<T>(set: Set<T>, limit: number): void {
-  while (set.size > limit) {
-    const oldest = set.values().next().value as T | undefined;
-    if (oldest === undefined) return;
-    set.delete(oldest);
-  }
 }

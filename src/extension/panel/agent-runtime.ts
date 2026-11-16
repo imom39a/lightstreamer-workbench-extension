@@ -6,11 +6,16 @@ import type { ScopeSearchNode } from "../../core/scope-search";
 import type { Filter } from "../../core/filter-algebra";
 import type { ScenarioAssertion } from "../../core/local-injection-scenario";
 import type { StructuralEvidenceScope } from "./evidence-investigation-query";
-import type { WorkbenchLocalInjectionSnapshot, WorkbenchScenarioSnapshot } from "./workbench-runtime";
+import type { WorkbenchCaptureSnapshot, WorkbenchLocalInjectionAnchor, WorkbenchLocalInjectionSnapshot, WorkbenchScenarioSnapshot, WorkbenchScopeNode, WorkbenchServerInjectionSnapshot } from "./workbench-runtime";
 import type { LocalInjectionTerminalRecord } from "./local-injection-execution-coordinator";
-import type { LocalInjectionCandidateMatrixInput } from "../../core/local-injection-candidate-matrix";
+import type { LocalInjectionCandidateMatrix, LocalInjectionCandidateMatrixInput } from "../../core/local-injection-candidate-matrix";
 import type { EvidenceFieldPredicate, EvidenceAggregateRequest } from "../../core/evidence-field-analytics";
 import type { ServerInjectionDraft, ServerInjectionExecutionResult } from "../../core/server-injection";
+import type { CaptureStatus } from "../../bridge/messages";
+import type { HistoryStatus } from "../../core/event-history-authoritative";
+import type { LocalInjectionDiagnostic, LocalInjectionDocument } from "../../core/local-injection-document";
+import type { describeAgentSourceContext } from "./agent-source-context";
+import type { describeAgentInjectionTarget } from "./agent-injection-capabilities";
 export type AgentLocalSettlement = Omit<LocalInjectionTerminalRecord, "evidence"> & Readonly<{
   evidence: LocalInjectionTerminalRecord["evidence"] & Readonly<{ identity?: EvidenceIdentity | null; limitation?: string }>;
 }>;
@@ -52,18 +57,47 @@ export type AgentQueryInput = Readonly<{
   fieldPredicates?: readonly EvidenceFieldPredicate[];
   aggregate?: EvidenceAggregateRequest;
 }>;
+/** Operational status read by the agent service; projectAgentStatus selects what crosses the boundary. */
+export type AgentRuntimeStatus = Readonly<{
+  pageEpoch: string | null;
+  visible: boolean;
+  captureStatus: CaptureStatus;
+  capture: WorkbenchCaptureSnapshot;
+  history: HistoryStatus;
+}>;
+export type AgentScopePage = Readonly<{ total: number; offset: number; nodes: readonly (WorkbenchScopeNode | null)[] }>;
+export type AgentToolSuggestion = Readonly<{ tool: string; arguments: Readonly<Record<string, unknown>> }>;
+export type AgentScopeLocalInjection =
+  | Readonly<{ anchor: WorkbenchLocalInjectionAnchor; capabilities: ReturnType<typeof describeAgentInjectionTarget>; document: LocalInjectionDocument; diagnostics: readonly LocalInjectionDiagnostic[] }>
+  | Readonly<{ unavailable: string; recovery: Readonly<{ evidence: AgentToolSuggestion; target: AgentToolSuggestion; preparation: string }> }>;
+export type AgentScopeRead = Readonly<{
+  node: WorkbenchScopeNode;
+  pageEpoch: string | null;
+  readContext: ReturnType<typeof describeAgentSourceContext>;
+  localInjection: AgentScopeLocalInjection;
+}>;
+/** Generated Steps carry parsed typed documents; validation is the ordinary whole-plan verdict. */
+export type AgentCandidateMatrixResult = Omit<LocalInjectionCandidateMatrix, "members"> & Readonly<{
+  members: readonly Readonly<{ kind: "step"; id: string; scopeId?: string; evidence?: EvidenceIdentity; document: unknown; delayMs?: number }>[];
+  /** The runtime's candidate validation result; see validateCandidate. */
+  validation: unknown;
+}>;
 /** Narrow internal seam. Transport validation and grant enforcement live outside the runtime. */
 export interface AgentRuntime {
-  status(): unknown;
+  status(): AgentRuntimeStatus;
   commandState?(input: AgentCommandStateInput): AgentCommandStateResult;
   commandRows?(input: AgentCommandRowsInput): AgentCommandRowsResult;
-  scopes(offset: number, limit: number): unknown;
+  scopes(offset: number, limit: number): AgentScopePage;
   scopeSearchSnapshot(): AgentScopeSearchSnapshot;
-  scope(id: string, options?: AgentScopeOptions): unknown;
+  scope(id: string, options?: AgentScopeOptions): AgentScopeRead;
   queryBoundary(scopeId?: string, useCurrentInvestigation?: boolean): AgentQueryBoundary;
   query(input: AgentQueryInput): Promise<EvidenceSnapshot>;
+  /**
+   * Still `unknown`: the runtime's private validateAgentCandidate() declares
+   * Promise<unknown>. The service only redacts, budgets and summarizes it.
+   */
   validateCandidate(input: AgentCandidateInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<unknown>;
-  generateCandidates?(input: AgentCandidateMatrixInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<unknown>;
+  generateCandidates?(input: AgentCandidateMatrixInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<AgentCandidateMatrixResult>;
   prepareScenarioPlan(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void>;
   subscribeEvidence?(listener: () => void): () => void;
   subscribeOperations?(listener: () => void): () => void;
@@ -80,7 +114,7 @@ export interface AgentRuntime {
   abortDocument?(): void;
   /** Publishes an agent-owned Server Injection draft; this never approves or sends it. */
   prepareServerInjection?(draft: AgentServerInjectionInput, requestId: string): void;
-  serverInjection?(): unknown;
+  serverInjection?(): WorkbenchServerInjectionSnapshot;
   /** Executes only after a separate panel click approved the current exact fingerprint. */
   executeApprovedServerInjection?(requestId: string): Promise<ServerInjectionExecutionResult>;
   abortServerInjection?(requestId: string): void;

@@ -4,6 +4,7 @@ import { preciseAgentSuccess } from "./result-schemas";
 import { SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT, SCENARIO_MAX_MEMBER_ID_LENGTH, SCENARIO_MAX_CHECKPOINT_NAME_LENGTH, SCENARIO_MAX_ASSERTION_ACTIVE_MS, validateScenarioCheckpoint } from "../core/local-injection-scenario-checkpoint";
 import { DIAGNOSTIC_RULE_CODE_MAX_LENGTH } from "../core/diagnostic-observation";
 import { FACET_DESCRIPTORS } from "../core/evidence-facets";
+import type { AgentToolArgumentName, AgentToolArguments } from "./tool-arguments";
 /** Shared, transport-independent agent contract. Application text is untrusted data. */
 export const AGENT_PROTOCOL_VERSION = 1;
 export type Message = Record<string, unknown>;
@@ -195,10 +196,26 @@ export const AGENT_TOOLS = [
   tool("finish_agent_document", "Finish only the unchanged completed agent document; human edits and unfinished operations remain protected.", { token: text }, ["token"], true)
 ] as const;
 
+export type AgentToolName = typeof AGENT_TOOLS[number]["name"];
+type SameKeys<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type AssertTrue<T extends true> = T;
+/** Compile-time proof that every declared tool has exactly one static argument shape. */
+export type AgentToolArgumentsCoverTools = AssertTrue<SameKeys<AgentToolName, AgentToolArgumentName>>;
+export type { AgentToolArguments };
+
+export function isAgentToolName(name: string): name is AgentToolName {
+  return AGENT_TOOLS.some(tool => tool.name === name);
+}
+
+/** Validate one call and narrow its arguments to the tool's static shape. */
+export function validateAgentToolCall<N extends AgentToolName>(name: N, args: unknown): asserts args is AgentToolArguments<N> {
+  validateAgentCall(name, args);
+}
+
 function missingAgentResultSchema(name: string): never {
   throw new Error(`Tool ${name} requires an explicit agent success contract.`);
 }
-function tool(name: string, description: string, properties: Record<string, Schema>, required: string[] = [], mutation = false) {
+function tool<N extends string>(name: N, description: string, properties: Record<string, Schema>, required: string[] = [], mutation = false) {
   const global = ["list_panel_sessions", "get_pairing_requests", "confirm_pairing"].includes(name);
   const successSchema = preciseAgentSuccess(name, identity, readPoint, assertion) ?? (name === "get_status" ? { type: "object", additionalProperties: true, required: ["protocolVersion", "panelSessionId", "permission", "capabilities", "readContract", "responseContract", "pageEpoch", "visible", "capture", "history", "serviceCapacity"], properties: { protocolVersion: { const: AGENT_PROTOCOL_VERSION }, panelSessionId: text, permission: { enum: ["read", "local"] }, capabilities: { type: "array", items: text }, readContract: { type: "object", required: ["version", "defaultMaxBytes", "maxBytes"] }, responseContract: { type: "object", required: ["defaultMaxBytes", "maxBytes"] }, pageEpoch: { oneOf: [text, { type: "null" }] }, visible: { type: "boolean" }, capture: { type: "object", required: ["operation", "coverage"] }, history: { type: "object", required: ["phase", "retained"] }, serviceCapacity: statusServiceCapacity } }
   : name === "abort_server_injection" ? object({ aborted: { type: "boolean", enum: [true] } }, ["aborted"])
