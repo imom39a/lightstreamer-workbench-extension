@@ -17,7 +17,7 @@ import {
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
 import { clearLegacyPanelStorage } from "./legacy-storage";
 import { WorkbenchPanel } from "./react/workbench-panel";
-import { createThemeManager, type ThemeManager } from "./theme";
+import { createThemeManager } from "./theme";
 import {
   createWorkbenchRuntime,
   type LocalInjectionExecutor,
@@ -168,7 +168,6 @@ export function mountWorkbenchPanel(
     runtime = createRuntime({
       history,
       visible,
-      theme: themeManager.preference,
       localInjectionExecutor,
       serverInjectionExecutor,
       clientMessageRecipeProvider,
@@ -177,7 +176,7 @@ export function mountWorkbenchPanel(
       storageHeadroomSampler
     });
     analyticsObserver = observeWorkbenchAnalytics(runtime, analytics, window);
-    const presentationRuntime = bindRuntime(runtime, themeManager, analyticsObserver);
+    const presentationRuntime = bindRuntime(runtime, analyticsObserver);
     agentConnection = createAgentConnection(runtime, panelSessionId);
     reactRoot = createRoot(root);
     reactRoot.render(<WorkbenchPanel runtime={presentationRuntime} analytics={analytics} agentConnection={agentConnection} />);
@@ -218,15 +217,12 @@ export function mountWorkbenchPanel(
   }
 }
 
-function bindRuntime(runtime: WorkbenchRuntime, themeManager: ThemeManager, analytics: Pick<ReturnType<typeof observeWorkbenchAnalytics>, "command">): WorkbenchRuntime {
+function bindRuntime(runtime: WorkbenchRuntime, analytics: Pick<ReturnType<typeof observeWorkbenchAnalytics>, "command">): WorkbenchRuntime {
   return {
     getSnapshot: runtime.getSnapshot.bind(runtime),
     subscribe: runtime.subscribe.bind(runtime),
     dispatch(command) {
       analytics.command(command);
-      if (command.type === "set-theme") {
-        themeManager.setPreference(command.theme);
-      }
       runtime.dispatch(command);
     },
     dispose: runtime.dispose.bind(runtime),

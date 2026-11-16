@@ -240,19 +240,6 @@ function contextFields(runtime: ReturnType<typeof createWorkbenchRuntime>): Reco
 }
 
 describe("WorkbenchRuntime", () => {
-  it("normalizes legacy runtime theme inputs and commands to dark", async () => {
-    const runtime = createWorkbenchRuntime({
-      history: createInMemoryEventHistory(),
-      theme: "light"
-    });
-    expect(runtime.getSnapshot().theme).toBe("dark");
-    runtime.dispatch({ type: "set-theme", theme: "auto" });
-    expect(runtime.getSnapshot().theme).toBe("dark");
-    runtime.dispatch({ type: "set-theme", theme: "light" });
-    expect(runtime.getSnapshot().theme).toBe("dark");
-    await runtime.disposeAndWait();
-  });
-
   it("migrates committed and runtime findings through the normalized Diagnostic Observation journal without changing the footer", async () => {
     const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "runtime-diagnostics" });
     const baseHistory = createAuthoritativeHistory({
@@ -743,7 +730,7 @@ describe("WorkbenchRuntime", () => {
 
     publishReplay({ type: "replay-started", interval: status.interval, after: null, retainedRange: status.retainedRange });
     publishReplay(committed[0]!);
-    runtime.dispatch({ type: "set-theme", theme: "dark" });
+    runtime.dispatch({ type: "set-scope-focus", scopeId: runtime.getSnapshot().scope.focusedNodeId });
     publishReplay(committed[1]!);
     publishReplay({ type: "replay-complete", interval: status.interval, committedEvidenceBoundary: status.committedEvidenceBoundary });
     await flushStoreNotifications();
@@ -1087,7 +1074,7 @@ describe("WorkbenchRuntime", () => {
     });
 
     expect(getSnapshot()).toBe(runtime.getSnapshot());
-    runtime.dispatch({ type: "set-theme", theme: "dark" });
+    runtime.dispatch({ type: "set-scope-focus", scopeId: runtime.getSnapshot().scope.focusedNodeId });
     expect(notifications).toBe(1);
 
     unsubscribe();
@@ -1329,7 +1316,7 @@ describe("WorkbenchRuntime", () => {
     scheduler.flushFrame();
     await flushStoreNotifications();
     expect(pending).toHaveLength(1);
-    runtime.dispatch({ type: "set-theme", theme: "dark" });
+    runtime.dispatch({ type: "set-scope-focus", scopeId: runtime.getSnapshot().scope.focusedNodeId });
     expect(runtime.getSnapshot().evidence.loading).toBe(false);
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(resolvedEventIds);
     pending.shift()?.resolve();
@@ -1683,7 +1670,7 @@ describe("WorkbenchRuntime", () => {
     expect(notifications).toBe(2);
   });
 
-  it("defers hidden theme, Capture status, history, and multi-frame topology publication until one restore", async () => {
+  it("defers hidden scope focus, Capture status, history, and multi-frame topology publication until one restore", async () => {
     const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
     const runtime = createWorkbenchRuntime({ history, scheduler });
@@ -1694,7 +1681,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispatch({ type: "set-visible", visible: false });
     const hiddenSnapshot = runtime.getSnapshot();
     snapshots.length = 0;
-    runtime.dispatch({ type: "set-theme", theme: "dark" });
+    runtime.dispatch({ type: "set-scope-focus", scopeId: runtime.getSnapshot().scope.focusedNodeId });
     runtime.dispatch({ type: "set-capture-status", status: "capturing" });
     for (const frame of getPanelScenario("topology-large").topologySyncFrames ?? []) {
       runtime.dispatch({ type: "apply-topology-sync-frame", frame });
@@ -1713,7 +1700,6 @@ describe("WorkbenchRuntime", () => {
     expect(snapshots).toHaveLength(1);
     expect(runtime.getSnapshot()).toMatchObject({
       visible: true,
-      theme: "dark",
       captureStatus: "capturing"
     });
     expect(runtime.getSnapshot().scope.nodes).toHaveLength(6);
@@ -1780,7 +1766,6 @@ describe("WorkbenchRuntime", () => {
     const runtime = createWorkbenchRuntime({
       history,
       captureStatus: "capturing",
-      theme: "dark",
       capture: {
         coverage: "LIMITED",
         detail: "Earlier Snapshot evidence may be incomplete.",
@@ -1794,7 +1779,6 @@ describe("WorkbenchRuntime", () => {
     const snapshot = runtime.getSnapshot();
 
     expect(snapshot.capture).toMatchObject({ operation: "RUNNING", coverage: "LIMITED" });
-    expect(snapshot.theme).toBe("dark");
     expect(snapshot.scope.nodes).toContainEqual(
       expect.objectContaining({ kind: "client", label: "client-1" })
     );

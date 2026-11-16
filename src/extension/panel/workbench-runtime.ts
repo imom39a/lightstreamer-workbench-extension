@@ -708,7 +708,6 @@ export type WorkbenchSnapshot = Readonly<{
   /** Identity-only boundary represented by this immutable renderer snapshot. */
   renderedEvidenceBoundary: EvidenceRef | null;
   visible: boolean;
-  theme: "auto" | "dark" | "light";
   captureStatus: CaptureStatus;
   capture: WorkbenchCaptureSnapshot;
   scopeId: string | null;
@@ -752,7 +751,6 @@ export type WorkbenchSnapshot = Readonly<{
 
 export type WorkbenchCommand =
   | { type: "set-visible"; visible: boolean }
-  | { type: "set-theme"; theme: "auto" | "dark" | "light" }
   | { type: "set-capture-status"; status: CaptureStatus }
   | { type: "ingest-capture-message"; message: CaptureMessage }
   | { type: "apply-topology-sync-frame"; frame: TopologySyncFrame }
@@ -980,7 +978,6 @@ export type WorkbenchRuntimePerformanceHooks = Readonly<{
 export type WorkbenchRuntimeOptions = {
   history?: EventHistory;
   visible?: boolean;
-  theme?: "auto" | "dark" | "light";
   captureStatus?: CaptureStatus;
   capture?: Partial<WorkbenchCaptureSnapshot>;
   storage?: WorkbenchStorageSnapshot;
@@ -1615,7 +1612,6 @@ class Runtime implements WorkbenchRuntime {
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
   private readonly compactEvidenceEvents = new WeakSet<LightstreamerEventEnvelope>();
   private visible: boolean;
-  private theme: "auto" | "dark" | "light";
   private captureStatus: CaptureStatus;
   private scopeId: string | null = "page";
   private scopeFocusedNodeId: string | null = "page";
@@ -1805,7 +1801,6 @@ class Runtime implements WorkbenchRuntime {
     this.windowSize = normalizeWindowSize(options.windowSize);
     this.outputByteLimit = normalizeOutputByteLimit(options.outputByteLimit);
     this.visible = options.visible ?? true;
-    this.theme = "dark";
     this.captureStatus = options.captureStatus ?? "idle";
     this.captureOverride = options.capture ?? {};
     this.normalizer = options.normalizer ?? createEventNormalizer();
@@ -2209,10 +2204,6 @@ class Runtime implements WorkbenchRuntime {
     switch (command.type) {
       case "set-visible":
         this.setVisible(command.visible);
-        return;
-      case "set-theme":
-        this.theme = "dark";
-        this.publish();
         return;
       case "set-capture-status":
         this.captureStatus = command.status;
@@ -6510,7 +6501,6 @@ class Runtime implements WorkbenchRuntime {
         ? Object.freeze({ ...this.renderedEvidenceBoundary })
         : null,
       visible: this.visible,
-      theme: this.theme,
       captureStatus: this.captureStatus,
       capture: this.captureSnapshot(),
       scopeId: this.scopeId,

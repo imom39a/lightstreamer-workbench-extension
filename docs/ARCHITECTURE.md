@@ -893,7 +893,7 @@ A Processed outcome proves only that Lightstreamer handled the Client Message. W
 
 ## Panel UI Architecture
 
-The production panel is the React **Scoped Evidence Workspace**. `src/extension/panel/bootstrap.ts` mounts one root through `mountWorkbenchPanel()` in `src/extension/panel/panel.tsx`. The mount owns IndexedDB initialization with an in-memory fallback, bridge and visibility wiring, theme state, cleanup of retired 0.1.x telemetry records, the React root, and idempotent teardown.
+The production panel is the React **Scoped Evidence Workspace**. `src/extension/panel/bootstrap.ts` mounts one root through `mountWorkbenchPanel()` in `src/extension/panel/panel.tsx`. The mount owns IndexedDB initialization with an in-memory fallback, bridge and visibility wiring, the dark-only theme attributes, cleanup of retired 0.1.x telemetry records, the React root, and idempotent teardown.
 
 `src/extension/panel/workbench-runtime.ts` is the framework-independent state boundary. React reads its cached immutable snapshots through `useSyncExternalStore` and sends typed `WorkbenchCommand` values through `dispatch()`. Components never subscribe directly to Capture, history, or bridge services.
 
@@ -961,7 +961,7 @@ The production seams keep domain/runtime state deeper than React presentation:
 
 | Module | Owns | Boundary |
 | --- | --- | --- |
-| `panel.tsx` | Production mount, storage fallback, bridge/theme wiring, legacy-storage cleanup, visibility, React root, and teardown | One `WorkbenchRuntime` and one React root per panel session |
+| `panel.tsx` | Production mount, storage fallback, bridge wiring, dark-only theme attributes, legacy-storage cleanup, visibility, React root, and teardown | One `WorkbenchRuntime` and one React root per panel session |
 | `workbench-runtime.ts` | Investigation state, history queries, projections, Draft lifecycle, export state, and publication cadence | Cached immutable snapshots plus typed commands |
 | `react/workbench-panel.tsx` | Scoped Evidence Workspace geometry, accessible composites, focus/restoration, and semantic controls | Snapshot rendering and command dispatch only |
 | `react/local-injection-document.tsx` | Promoted Draft, default captured-Source comparison, direct execution action, and outcome presentation | Runtime-owned Draft semantics and target protection |

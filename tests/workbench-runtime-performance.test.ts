@@ -463,7 +463,7 @@ describe("production React runtime performance boundary seam", () => {
 
     for (let index = 0; index < 1_000; index += 1) {
       await act(async () => {
-        runtime.dispatch({ type: "set-theme", theme: index % 2 === 0 ? "dark" : "light" });
+        runtime.dispatch({ type: "set-scope-focus", scopeId: index % 2 === 0 ? "page" : null });
       });
     }
     expect(requestFrame).toHaveBeenCalledTimes(2);
