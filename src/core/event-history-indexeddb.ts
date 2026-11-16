@@ -1402,7 +1402,13 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
                 describeJournalError(error),
                 { reason, dimension: "JOURNAL" }
               );
-              if (attempt < JOURNAL_COMMIT_MAX_ATTEMPTS) journalRetryCount += 1;
+              // Deterministic failures (constraint, data, or integrity defects)
+              // fail the same way on every attempt: fall back immediately.
+              if (isDeterministicJournalError(error)) break;
+              if (attempt < JOURNAL_COMMIT_MAX_ATTEMPTS) {
+                journalRetryCount += 1;
+                await journalRetryDelay(attempt);
+              }
             }
           }
         }
@@ -4209,26 +4215,24 @@ async function applyJournalRetentionTrim(
 }
 
 async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, preparedBatch: readonly PreparedEvidence[], aggregateCache: FacetAggregateCache, replayPayloadBytes: number, accountedBytes: number, phase: "RUNNING" | "DRAINING_TO_STOP", terminal: HistoryTerminalDiagnostic | null): Promise<void> {
-  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
-  const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
-  const postingStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
-  const projectionStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
-  const aggregateStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates);
+  // Validate everything that can be validated before the transaction exists:
+  // a throw after queued requests would otherwise let the browser auto-commit
+  // a partial batch without its control record.
   let serializedBatchBytes = 0;
   let accountedBatchBytes = 0;
+  for (const prepared of preparedBatch) {
+    serializedBatchBytes += prepared.serialized.bytes;
+    accountedBatchBytes += journalAccountedBytes(prepared.serialized.bytes);
+  }
+  if (replayPayloadBytes < serializedBatchBytes || accountedBytes < accountedBatchBytes) {
+    throw new JournalIntegrityError("The journal commit totals are incoherent.");
+  }
   const aggregateDeltas = new Map<string, {
     record: AuthoritativeFacetAggregateRecord;
     observations: Array<{ sequence: number; eventId: string }>;
   }>();
-  const aggregateCacheUpdates = new Map<string, AuthoritativeFacetAggregateRecord>();
   for (const prepared of preparedBatch) {
-    const serialized = prepared.serialized;
-    const recordAccountedBytes = journalAccountedBytes(serialized.bytes);
-    serializedBatchBytes += serialized.bytes;
-    accountedBatchBytes += recordAccountedBytes;
     const entry = prepared.evidence;
-    store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: recordAccountedBytes, facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
-    projectionStore.add(prepared.projection);
     for (const value of prepared.aggregateValues) {
       const key = JSON.stringify([entry.intervalId, value.facetIdentity]);
       const existing = aggregateDeltas.get(key);
@@ -4239,58 +4243,123 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
       });
     }
   }
-  appendFacetPostingBlocks(postingStore, preparedBatch.flatMap(prepared => prepared.postings));
-  appendSearchIndexBlocks(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks), preparedBatch.map(prepared => prepared.projection));
-  if (replayPayloadBytes < serializedBatchBytes || accountedBytes < accountedBatchBytes) throw new Error("The journal commit totals are incoherent.");
+  for (const update of aggregateDeltas.values()) validateAggregateObservations(update.observations);
   const evidence = preparedBatch.map((prepared) => prepared.evidence);
-  const applyAggregateUpdate = (
-    key: string,
-    update: { record: AuthoritativeFacetAggregateRecord; observations: Array<{ sequence: number; eventId: string }> },
-    current: AuthoritativeFacetAggregateRecord | null | undefined
-  ): void => {
-    try {
-      if (current !== undefined && current !== null) {
-        assertExactKeys(current, ["facet", "facetIdentity", "intervalId", "label", "type", "value"]);
-        if (current.intervalId !== update.record.intervalId || current.facet !== update.record.facet || current.facetIdentity !== update.record.facetIdentity
-          || current.type !== update.record.type || current.value !== update.record.value || current.label !== update.record.label) {
-          throw new Error("The facet aggregate cache entry is corrupt.");
-        }
-      }
-      validateAggregateObservations(update.observations);
-      const next = current ?? update.record;
-      if (current === null || current === undefined) aggregateStore.add(next);
-      aggregateCacheUpdates.set(key, next);
-    } catch {
-      try { transaction.abort(); } catch { /* transaction failure is reported by transactionDone */ }
-    }
-  };
-  for (const [key, update] of aggregateDeltas) {
-    if (aggregateCache.has(key)) {
-      applyAggregateUpdate(key, update, aggregateCache.get(key));
-      continue;
-    }
-    const request = aggregateStore.get([update.record.intervalId, update.record.facetIdentity]);
-    request.onerror = () => { try { transaction.abort(); } catch { /* transaction failure is reported by transactionDone */ } };
-    request.onsuccess = () => applyAggregateUpdate(key, update, (request.result as AuthoritativeFacetAggregateRecord | undefined) ?? null);
-  }
-  const next = evidence.at(-1) ? evidence.at(-1)!.sequence + 1 : nextSequence;
   const last = evidence.at(-1);
+  const next = last ? last.sequence + 1 : nextSequence;
   const boundary = last ? toRef(last) : previousRange?.last ?? null;
   const range = previousRange
     ? { first: previousRange.first, last: last ? toRef(last) : previousRange.last }
-    : evidence.length
-      ? { first: toRef(evidence[0]), last: toRef(last!) }
+    : last
+      ? { first: toRef(evidence[0]!), last: toRef(last) }
       : null;
-  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, phase, terminal, next, boundary, range, previousCount + evidence.length, replayPayloadBytes, accountedBytes));
-  await transactionDone(transaction, "committing Evidence", AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS);
+  const control = createControl(panelSessionId, interval, phase, terminal, next, boundary, range, previousCount + evidence.length, replayPayloadBytes, accountedBytes);
+
+  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
+  const completed = transactionDone(transaction, "committing Evidence", AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS);
+  // The first failure observed inside a request callback is the cause; the
+  // abort it triggers would otherwise surface only as a generic AbortError.
+  let callbackFailure: unknown = null;
+  const abortWith = (error: unknown): void => {
+    callbackFailure ??= error;
+    try { transaction.abort(); } catch { /* transaction failure is reported by transactionDone */ }
+  };
+  const aggregateCacheUpdates = new Map<string, AuthoritativeFacetAggregateRecord>();
+  try {
+    const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+    const postingStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
+    const projectionStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
+    const aggregateStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates);
+    for (const prepared of preparedBatch) {
+      const serialized = prepared.serialized;
+      const entry = prepared.evidence;
+      store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: journalAccountedBytes(serialized.bytes), facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
+      projectionStore.add(prepared.projection);
+    }
+    appendFacetPostingBlocks(postingStore, preparedBatch.flatMap(prepared => prepared.postings));
+    appendSearchIndexBlocks(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks), preparedBatch.map(prepared => prepared.projection));
+    const applyAggregateUpdate = (
+      key: string,
+      update: { record: AuthoritativeFacetAggregateRecord },
+      current: AuthoritativeFacetAggregateRecord | null | undefined
+    ): void => {
+      try {
+        if (current !== undefined && current !== null) {
+          assertExactKeys(current, ["facet", "facetIdentity", "intervalId", "label", "type", "value"]);
+          if (current.intervalId !== update.record.intervalId || current.facet !== update.record.facet || current.facetIdentity !== update.record.facetIdentity
+            || current.type !== update.record.type || current.value !== update.record.value || current.label !== update.record.label) {
+            throw new JournalIntegrityError("The facet aggregate cache entry is corrupt.");
+          }
+        }
+        const nextAggregate = current ?? update.record;
+        if (current === null || current === undefined) aggregateStore.add(nextAggregate);
+        aggregateCacheUpdates.set(key, nextAggregate);
+      } catch (error) {
+        abortWith(error);
+      }
+    };
+    for (const [key, update] of aggregateDeltas) {
+      if (aggregateCache.has(key)) {
+        applyAggregateUpdate(key, update, aggregateCache.get(key));
+        continue;
+      }
+      const request = aggregateStore.get([update.record.intervalId, update.record.facetIdentity]);
+      request.onerror = () => abortWith(request.error ?? new Error("Reading a facet aggregate failed."));
+      request.onsuccess = () => applyAggregateUpdate(key, update, (request.result as AuthoritativeFacetAggregateRecord | undefined) ?? null);
+    }
+    transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(control);
+  } catch (error) {
+    try { transaction.abort(); } catch { /* The transaction may already have aborted. */ }
+    await completed.catch(() => undefined);
+    throw callbackFailure ?? error;
+  }
+  try {
+    await completed;
+  } catch (error) {
+    throw callbackFailure ?? error;
+  }
   for (const [key, aggregate] of aggregateCacheUpdates) aggregateCache.set(key, aggregate);
+}
+
+/** A deterministic journal defect: retrying the same batch cannot succeed. */
+class JournalIntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JournalIntegrityError";
+  }
+}
+
+const DETERMINISTIC_JOURNAL_ERROR_NAMES: ReadonlySet<string> = new Set([
+  "ConstraintError",
+  "DataError",
+  "DataCloneError",
+  "InvalidAccessError",
+  "JournalIntegrityError",
+  "NotFoundError",
+  "SyntaxError",
+  "TypeError"
+]);
+
+/** @internal Exported for retry-classification tests. */
+export function isDeterministicJournalError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = (error as { name?: unknown }).name;
+  return typeof name === "string" && DETERMINISTIC_JOURNAL_ERROR_NAMES.has(name);
+}
+
+const JOURNAL_COMMIT_RETRY_BASE_DELAY_MS = 10;
+const JOURNAL_COMMIT_RETRY_MAX_DELAY_MS = 100;
+
+function journalRetryDelay(failedAttempt: number): Promise<void> {
+  const delay = Math.min(JOURNAL_COMMIT_RETRY_MAX_DELAY_MS, JOURNAL_COMMIT_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, failedAttempt - 1));
+  return new Promise((resolve) => { globalThis.setTimeout(resolve, delay); });
 }
 
 function validateAggregateObservations(additions: readonly Readonly<{ sequence: number; eventId: string }>[]): void {
   let previousSequence = 0;
   for (const observation of additions) {
     if (!Number.isSafeInteger(observation.sequence) || observation.sequence < 1 || typeof observation.eventId !== "string" || observation.eventId.length === 0 || observation.sequence <= previousSequence) {
-      throw new Error("The facet aggregate observations are duplicated or incoherent.");
+      throw new JournalIntegrityError("The facet aggregate observations are duplicated or incoherent.");
     }
     previousSequence = observation.sequence;
   }
