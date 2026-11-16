@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// @ts-nocheck -- measurement runner relies on JSDoc-inferred option and CDP
+// result shapes that do not yet type-check; excluded from typecheck:scripts.
 
 /**
  * Deliberate Event History release gate. Repository browser proofs are

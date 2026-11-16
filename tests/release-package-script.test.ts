@@ -63,10 +63,10 @@ describe("release packaging verification gate", () => {
     expect(testRunner).toContain("discoverTestFiles");
     expect(testRunner).toContain("validatePlan");
     expect(testRunner).toContain('"tests/authoritative-event-history-indexeddb.test.ts"');
-    expect(testRunner).toContain('"tests/filter-impl-09-indexeddb-discovery.test.ts"');
-    expect(testRunner).toContain('"tests/filter-impl-09-indexeddb-parity.test.ts"');
-    expect(testRunner).toContain('"tests/filter-impl-09-indexeddb-workload.test.ts"');
-    expect(testRunner).toContain('"tests/history-impl-09-lifecycle-blockers.test.ts"');
+    expect(testRunner).toContain('"tests/evidence-facet-discovery-indexeddb.test.ts"');
+    expect(testRunner).toContain('"tests/evidence-query-indexeddb-parity.test.ts"');
+    expect(testRunner).toContain('"tests/evidence-facet-discovery-indexeddb-workload.test.ts"');
+    expect(testRunner).toContain('"tests/event-history-frozen-publications.test.ts"');
     expect(testRunner).toContain('["--maxWorkers=2"]');
     expect(testRunner).toContain('"--no-file-parallelism", "--maxWorkers=1"');
     expect(testRunner).toContain("if (ordinaryStatus !== 0) process.exit(ordinaryStatus);");
@@ -86,16 +86,16 @@ describe("release packaging verification gate", () => {
       "tests/authoritative-event-history-contract.test.ts",
       "tests/authoritative-event-history-indexeddb.test.ts",
       "tests/event-history-admission-performance.test.ts",
-      "tests/history-impl-05-capacity.test.ts",
-      "tests/history-impl-08-lifecycle.test.ts",
-      "tests/history-impl-09-lifecycle-blockers.test.ts",
-      "tests/filter-impl-07-failure-cleanup.test.ts",
-      "tests/filter-impl-07-postings.test.ts",
-      "tests/filter-impl-07-schema.test.ts",
-      "tests/filter-impl-09-indexeddb-discovery.test.ts",
-      "tests/filter-impl-09-indexeddb-parity.test.ts",
-      "tests/filter-impl-09-indexeddb-workload.test.ts",
-      "tests/history-100k-02-indexeddb.test.ts"
+      "tests/event-history-capacity-indexeddb.test.ts",
+      "tests/event-history-lifecycle-indexeddb.test.ts",
+      "tests/event-history-frozen-publications.test.ts",
+      "tests/evidence-facet-postings-failure-cleanup.test.ts",
+      "tests/evidence-facet-postings.test.ts",
+      "tests/evidence-facet-postings-schema.test.ts",
+      "tests/evidence-facet-discovery-indexeddb.test.ts",
+      "tests/evidence-query-indexeddb-parity.test.ts",
+      "tests/evidence-facet-discovery-indexeddb-workload.test.ts",
+      "tests/event-history-keyset-query-indexeddb.test.ts"
     ]));
     expect(plan.heavyWork).toEqual([
       "tests/agent-maximum-history-work.test.ts",
@@ -108,9 +108,9 @@ describe("release packaging verification gate", () => {
       "tests/event-history-performance-harness.test.ts",
       "tests/event-history-performance-runner.test.ts",
       "tests/event-history-performance-script.test.ts",
-      "tests/filter-impl-04-memory-performance.test.ts",
-      "tests/filter-impl-05-memory.test.ts",
-      "tests/filter-impl-06-memory-performance.test.ts",
+      "tests/evidence-snapshot-memory-performance.test.ts",
+      "tests/evidence-facet-discovery-memory.test.ts",
+      "tests/evidence-residual-query-memory-performance.test.ts",
       "tests/local-injection-scenario-assertions.test.ts",
       "tests/production-extension-build.test.ts",
       "tests/release-package-script.test.ts",

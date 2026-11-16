@@ -30,7 +30,7 @@ const requiredRoutes = [
 ];
 const failures = [];
 if (!/^G-[A-Z0-9]+$/.test(SITE_GA_MEASUREMENT_ID)) failures.push("Website GA4 measurement ID is not configured");
-if (SITE_GA_MEASUREMENT_ID === "G-SHFQ6R7KZK") failures.push("Website must not use the Chrome extension GA4 stream");
+if (/** @type {string} */ (SITE_GA_MEASUREMENT_ID) === "G-SHFQ6R7KZK") failures.push("Website must not use the Chrome extension GA4 stream");
 const analyticsAsset = await readFile(resolve(outputRoot, "assets/site-analytics.js"), "utf8").catch(() => "");
 if (!analyticsAsset.includes(SITE_GA_MEASUREMENT_ID) || analyticsAsset.includes("__SITE_GA_MEASUREMENT_ID__")) {
   failures.push("Website analytics asset must contain the dedicated measurement ID");

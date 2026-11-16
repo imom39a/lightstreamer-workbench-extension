@@ -88,7 +88,6 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       firstMissingEventId: null,
       committedEvidenceBoundary: null
     },
-    theme: "dark",
     evidence: {
       loading: false,
       total: 2,

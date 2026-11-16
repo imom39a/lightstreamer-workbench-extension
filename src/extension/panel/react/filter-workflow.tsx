@@ -180,7 +180,11 @@ type FilterDraftDocumentProps = Readonly<{
   filterDiscoveryValues: readonly FacetCount[];
   activeFacetDescriptor: (typeof FACET_DESCRIPTORS)[number] | null;
   activeFacetDiscovery: FacetDiscoveryResult | undefined;
-  evidence: WorkbenchSnapshot["evidence"];
+  /** Only the Filter mutation outcome and query state are presented. */
+  evidence: Readonly<{
+    filterMutation: WorkbenchSnapshot["evidence"]["filterMutation"];
+    investigation: Readonly<{ queryState: WorkbenchSnapshot["evidence"]["investigation"]["queryState"] }>;
+  }>;
   filterInput: RefObject<HTMLInputElement | null>;
   structuredCriterionTrigger: RefObject<HTMLButtonElement | null>;
   facetPickerFirst: RefObject<HTMLButtonElement | null>;

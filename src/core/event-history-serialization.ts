@@ -36,8 +36,24 @@ export function serializeJournalEvidenceCandidate(
   const payload = canonicalJson(candidate);
   return Object.freeze({
     payload,
-    bytes: new TextEncoder().encode(payload).byteLength
+    bytes: utf8ByteLength(payload)
   });
+}
+
+const UTF8_ENCODER = new TextEncoder();
+// UTF-8 needs at most three bytes per UTF-16 code unit. Strings whose worst
+// case fits this bound are measured in a reused scratch buffer; larger ones
+// (for example a maximum Topology Checkpoint) take a one-off encode so the
+// module never retains a multi-MiB buffer.
+const UTF8_SCRATCH_MAX_BYTES = 256 * 1_024;
+let utf8Scratch = new Uint8Array(4_096);
+
+/** The exact `TextEncoder` UTF-8 length of a string without a per-call encoded copy. */
+export function utf8ByteLength(value: string): number {
+  const worstCase = value.length * 3;
+  if (worstCase > UTF8_SCRATCH_MAX_BYTES) return UTF8_ENCODER.encode(value).byteLength;
+  if (utf8Scratch.length < worstCase) utf8Scratch = new Uint8Array(Math.min(UTF8_SCRATCH_MAX_BYTES, Math.max(worstCase, utf8Scratch.length * 2)));
+  return UTF8_ENCODER.encodeInto(value, utf8Scratch).written;
 }
 
 export function deserializeJournalEvidenceCandidate(payload: string): EvidenceCandidate {

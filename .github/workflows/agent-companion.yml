@@ -76,7 +76,11 @@ jobs:
       - run: npm ci
       - run: npm run docs:check
       - run: npm run test:scripts
+      - run: npm run lint
+        if: needs.plan.outputs.runtime == 'true'
       - run: npm run typecheck
+        if: needs.plan.outputs.runtime == 'true'
+      - run: npm run typecheck:scripts
         if: needs.plan.outputs.runtime == 'true'
       - run: npm run test:release
         if: needs.plan.outputs.runtime == 'true'

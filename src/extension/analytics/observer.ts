@@ -179,7 +179,6 @@ export function observeWorkbenchAnalytics(runtime: WorkbenchRuntime, client: Ana
     const scenarioAction = scenarioActions[command.type];
     if (scenarioAction) emit({ name: "scenario_action", params: { action: scenarioAction } });
     if (command.type === "execute-local-injection" || command.type === "execute-server-injection") emit({ name: "injection_attempted", params: { injection_type: command.type === "execute-local-injection" ? "local" : "server" } });
-    if (command.type === "set-theme") emit({ name: "feature_used", params: { feature: "theme", action: command.theme } });
     if (command.type === "set-find" || command.type === "clear-find") {
       clearTimeout(findTimer);
       findPending = false;

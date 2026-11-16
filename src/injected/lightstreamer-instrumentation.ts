@@ -85,6 +85,7 @@ type InstrumentationState = {
   listenerProxyOriginals: WeakMap<object, LightstreamerListenerLike>;
   subscriptionClients: WeakMap<object, WeakRef<object>>;
   subscriptionClientIdentities: WeakMap<object, CapturePayload>;
+  subscriptionMetadataCache: WeakMap<object, CachedSubscriptionMetadata>;
   clientMetadata: WeakMap<object, CapturePayload>;
   activeSubscriptions: Map<string, CapturePayload>;
   commandReplayRows: Map<string, Map<string, CapturePayload>>;
@@ -95,12 +96,53 @@ type InstrumentationState = {
   subscriptionListenerIds: Map<string, Set<string>>;
   wireTargets: Map<string, WireReinjectionTarget>;
   syntheticWireEvents: WeakSet<object>;
-  originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
   emitCaptureSyncReplayToPanel(kind: CaptureKind, payload: CapturePayload, panelSessionId: PanelSessionId): void;
 };
 
 type MethodOwner = Record<string, unknown>;
+
+/**
+ * Subscription configuration only changes through public setters or across a
+ * subscribe/unsubscribe lifecycle, so per-update Capture reuses it instead of
+ * calling every configuration getter for each listener delivery.
+ */
+type CachedSubscriptionMetadata = {
+  configuration: SubscriptionConfiguration;
+  configurationErrors: readonly string[];
+  commandPositions?: { values: CapturePayload; errors: readonly string[] };
+};
+
+type SubscriptionConfiguration = {
+  mode?: CapturePayload[string];
+  items?: CapturePayload[string];
+  itemGroup?: CapturePayload[string];
+  fields?: CapturePayload[string];
+  fieldSchema?: CapturePayload[string];
+  dataAdapter?: CapturePayload[string];
+  selector?: CapturePayload[string];
+  requestedSnapshot?: CapturePayload[string];
+  requestedBufferSize?: CapturePayload[string];
+  requestedMaxFrequency?: CapturePayload[string];
+  commandSecondLevelDataAdapter?: CapturePayload[string];
+  commandSecondLevelFields?: CapturePayload[string];
+  commandSecondLevelFieldSchema?: CapturePayload[string];
+};
+
+const SUBSCRIPTION_CONFIGURATION_SETTERS = [
+  "setItems",
+  "setItemGroup",
+  "setFields",
+  "setFieldSchema",
+  "setDataAdapter",
+  "setSelector",
+  "setRequestedSnapshot",
+  "setRequestedBufferSize",
+  "setRequestedMaxFrequency",
+  "setCommandSecondLevelDataAdapter",
+  "setCommandSecondLevelFields",
+  "setCommandSecondLevelFieldSchema"
+] as const;
 type ListenerRegistrationState = {
   addCount: number;
   active: boolean;
@@ -251,6 +293,7 @@ export function installLightstreamerInstrumentation(
     listenerProxyOriginals: new WeakMap<object, LightstreamerListenerLike>(),
     subscriptionClients: new WeakMap<object, WeakRef<object>>(),
     subscriptionClientIdentities: new WeakMap<object, CapturePayload>(),
+    subscriptionMetadataCache: new WeakMap<object, CachedSubscriptionMetadata>(),
     clientMetadata: new WeakMap<object, CapturePayload>(),
     activeSubscriptions,
     commandReplayRows,
@@ -272,7 +315,6 @@ export function installLightstreamerInstrumentation(
     subscriptionListenerIds: new Map<string, Set<string>>(),
     wireTargets: new Map<string, WireReinjectionTarget>(),
     syntheticWireEvents: new WeakSet<object>(),
-    originalItemUpdateCallbacks: new WeakMap<object, (update: SyntheticItemUpdate) => unknown>(),
     emit(kind, payload) {
       try {
         const sanitizedPayload = sanitizeCapturePayload(payload);
@@ -1737,7 +1779,8 @@ function installConstructorHook<K extends "LightstreamerClient" | "Subscription"
     }
     const current = host[property];
     if (typeof current === "function") {
-      if (descriptor?.writable === false) {
+      if (descriptor?.writable === false || !hasOfficialConstructorShape(property, current)) {
+        // An unrelated page global with the same name stays exactly as the page defined it.
         return false;
       }
       return Reflect.set(
@@ -1762,7 +1805,7 @@ function installConstructorHook<K extends "LightstreamerClient" | "Subscription"
         return assigned;
       },
       set(value) {
-        if (typeof value !== "function") {
+        if (typeof value !== "function" || !hasOfficialConstructorShape(property, value)) {
           assigned = value;
           return;
         }
@@ -1777,6 +1820,68 @@ function installConstructorHook<K extends "LightstreamerClient" | "Subscription"
   } catch (_error) {
     return false;
   }
+}
+
+const OFFICIAL_CLIENT_METHODS = [
+  "connect",
+  "disconnect",
+  "subscribe",
+  "unsubscribe",
+  "addListener",
+  "removeListener",
+  "getListeners",
+  "getStatus",
+  "getSubscriptions",
+  "sendMessage"
+] as const;
+
+const OFFICIAL_SUBSCRIPTION_METHODS = [
+  "getMode",
+  "getItems",
+  "getItemGroup",
+  "getFields",
+  "getFieldSchema",
+  "isActive",
+  "isSubscribed",
+  "getRequestedSnapshot",
+  "setRequestedSnapshot",
+  "getValue",
+  "getKeyPosition",
+  "getCommandPosition"
+] as const;
+
+/**
+ * Global names such as `Subscription` are generic, so only constructors whose
+ * prototype exposes the official Web Client API shape are wrapped. The check
+ * reads data descriptors only and never invokes page getters.
+ */
+function hasOfficialConstructorShape(
+  property: "LightstreamerClient" | "Subscription",
+  constructor: unknown
+): boolean {
+  try {
+    if (typeof constructor !== "function") {
+      return false;
+    }
+    const prototype = (constructor as { prototype?: unknown }).prototype;
+    if (!isObject(prototype)) {
+      return false;
+    }
+    if (property === "LightstreamerClient") {
+      return OFFICIAL_CLIENT_METHODS.some((name) => prototypeHasMethod(prototype, name));
+    }
+    return (
+      prototypeHasMethod(prototype, "addListener") &&
+      OFFICIAL_SUBSCRIPTION_METHODS.some((name) => prototypeHasMethod(prototype, name))
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
+function prototypeHasMethod(prototype: object, name: string): boolean {
+  const located = findPropertyDescriptor(prototype, name);
+  return typeof located?.descriptor.value === "function";
 }
 
 function findPropertyDescriptor(
@@ -1809,10 +1914,13 @@ function installWebSocketFallback(host: LightstreamerHost, state: Instrumentatio
       args,
       new.target ?? InstrumentedWebSocket
     ) as WebSocket;
-    const url = webSocketUrlToString(args[0]);
-
-    if (!host.__LSEW_PRIMARY_ACTIVE__ && isLightstreamerWebSocketUrl(url)) {
-      installWireCaptureForSocket(host, socket, url, state);
+    try {
+      const url = webSocketUrlToString(args[0]);
+      if (!host.__LSEW_PRIMARY_ACTIVE__ && isLightstreamerWebSocketUrl(url)) {
+        installWireCaptureForSocket(host, socket, url, state);
+      }
+    } catch (_error) {
+      // Fallback Capture is best-effort; the page always receives its socket.
     }
 
     return socket;
@@ -1863,17 +1971,25 @@ function installWireCaptureForSocket(
   }
 
   socket.addEventListener("message", (event) => {
-    if (state.syntheticWireEvents.has(event)) {
-      return;
+    try {
+      if (state.syntheticWireEvents.has(event)) {
+        return;
+      }
+      const text = textWirePayload(event.data);
+      if (text === null) {
+        return;
+      }
+      handleWireInboundFrame(text, wire, state);
+    } catch (_error) {
+      // A malformed or unexpected frame cannot surface as a page error.
     }
-    const text = textWirePayload(event.data);
-    if (text === null) {
-      return;
-    }
-    handleWireInboundFrame(text, wire, state);
   });
   socket.addEventListener("close", (event) => {
-    handleWireClose(event, wire, state);
+    try {
+      handleWireClose(event, wire, state);
+    } catch (_error) {
+      // Close Capture is best-effort.
+    }
   });
 }
 
@@ -1925,9 +2041,13 @@ function wrapWireSend(
 
   try {
     socket.send = function wrappedWireSend(this: WebSocket, ...args: Parameters<WebSocket["send"]>) {
-      const text = textWirePayload(args[0]);
-      if (text !== null) {
-        handleWireOutboundFrame(text, wire, state);
+      try {
+        const text = textWirePayload(args[0]);
+        if (text !== null) {
+          handleWireOutboundFrame(text, wire, state);
+        }
+      } catch (_error) {
+        // Outbound Capture can never prevent the application's original send.
       }
       return originalSend.apply(this, args);
     };
@@ -2680,6 +2800,7 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
     if (!isObject(subscription)) {
       return;
     }
+    state.subscriptionMetadataCache.delete(subscription);
     const subscriptionMetadataErrors: string[] = [];
     const subscriptionMetadata = readSubscriptionMetadata(
       subscription as LightstreamerSubscriptionLike,
@@ -2721,6 +2842,9 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
 
   wrapMethod(client, "unsubscribe", function afterUnsubscribe(target, args) {
     const subscription = args[0];
+    if (isObject(subscription)) {
+      state.subscriptionMetadataCache.delete(subscription);
+    }
     state.emit("subscription-ended", {
       client: clientPayload(target, state),
       subscription: isObject(subscription)
@@ -2907,7 +3031,37 @@ function wrapSubscription(
   state.wrappedSubscriptions.add(subscription);
   state.subscriptionOwners.register(state.subscriptionIds.getId(subscription), subscription);
 
+  wrapSubscriptionConfigurationSetters(subscription, state);
   wrapSubscriptionListenerMethods(subscription, state);
+}
+
+function wrapSubscriptionConfigurationSetters(
+  subscription: LightstreamerSubscriptionLike,
+  state: InstrumentationState
+): void {
+  for (const name of SUBSCRIPTION_CONFIGURATION_SETTERS) {
+    const original = (subscription as MethodOwner)[name];
+    if (typeof original !== "function") {
+      continue;
+    }
+    try {
+      (subscription as MethodOwner)[name] = function wrappedSubscriptionSetter(
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        try {
+          return Reflect.apply(original, this, args);
+        } finally {
+          if (isObject(this)) {
+            state.subscriptionMetadataCache.delete(this);
+          }
+          state.subscriptionMetadataCache.delete(subscription);
+        }
+      };
+    } catch (_error) {
+      // A non-writable setter stays page-owned; lifecycle refresh still applies.
+    }
+  }
 }
 
 function wrapClientListenerMethods(
@@ -3246,19 +3400,16 @@ function getOrCreateSubscriptionListenerProxy(
     return existing;
   }
 
-  const originalItemUpdate = listener.onItemUpdate;
-  if (typeof originalItemUpdate === "function") {
-    state.originalItemUpdateCallbacks.set(
-      listener,
-      originalItemUpdate.bind(listener) as (update: SyntheticItemUpdate) => unknown
-    );
-  }
-
-  const capturedCallbacks = new Map<PropertyKey, (...args: unknown[]) => unknown>();
+  const lifecycleCallbacks = new Map<PropertyKey, (...args: unknown[]) => unknown>();
+  // Wrappers are keyed by the page's current callback, never by property name
+  // alone: an application may reassign a callback after addListener, and the
+  // official client must then reach the new callback exactly as it would
+  // without instrumentation.
+  const capturedCallbacks = new Map<string, WeakMap<Function, (...args: unknown[]) => unknown>>();
   const proxy = new Proxy(listener, {
     get(target, property, receiver) {
       if (property === "onListenStart" || property === "onListenEnd") {
-        const existingCallback = capturedCallbacks.get(property);
+        const existingCallback = lifecycleCallbacks.get(property);
         if (existingCallback) {
           return existingCallback;
         }
@@ -3276,33 +3427,37 @@ function getOrCreateSubscriptionListenerProxy(
           const callback = target[property];
           return typeof callback === "function" ? callback.apply(listener, args) : undefined;
         };
-        capturedCallbacks.set(property, wrappedLifecycleCallback);
+        lifecycleCallbacks.set(property, wrappedLifecycleCallback);
         return wrappedLifecycleCallback;
       }
-      if (typeof property === "string" && isCapturedSubscriptionCallback(property)) {
-        const callback = target[property];
-        if (typeof callback !== "function") {
-          return Reflect.get(target, property, receiver);
-        }
-
-        const existingCallback = capturedCallbacks.get(property);
-        if (existingCallback) {
-          return existingCallback;
-        }
-
-        const wrappedCallback = (...args: unknown[]) => {
-          try {
-            emitSubscriptionListenerCallback(subscription, listener, property, args, state);
-          } catch (_error) {
-            // Capture extraction cannot suppress or replace the page callback.
-          }
-          return callback.apply(listener, args);
-        };
-        capturedCallbacks.set(property, wrappedCallback);
-        return wrappedCallback;
+      const value = Reflect.get(target, property, receiver);
+      if (
+        typeof property !== "string" ||
+        !isCapturedSubscriptionCallback(property) ||
+        typeof value !== "function"
+      ) {
+        return value;
       }
-
-      return Reflect.get(target, property, receiver);
+      const callback = value as (...args: unknown[]) => unknown;
+      let wrappers = capturedCallbacks.get(property);
+      if (!wrappers) {
+        wrappers = new WeakMap<Function, (...args: unknown[]) => unknown>();
+        capturedCallbacks.set(property, wrappers);
+      }
+      const existingCallback = wrappers.get(callback);
+      if (existingCallback) {
+        return existingCallback;
+      }
+      const wrappedCallback = (...args: unknown[]) => {
+        try {
+          emitSubscriptionListenerCallback(subscription, listener, property, args, state);
+        } catch (_error) {
+          // Capture extraction cannot suppress or replace the page callback.
+        }
+        return callback.apply(listener, args);
+      };
+      wrappers.set(callback, wrappedCallback);
+      return wrappedCallback;
     }
   });
 
@@ -3348,9 +3503,16 @@ function emitSubscriptionListenerCallback(
       : readSubscriptionCallbackPayload(callback, args);
   const itemRaw = isObject(callbackPayload.raw) ? callbackPayload.raw : {};
   const subscriptionMetadataErrors: string[] = [];
-  const subscriptionMetadata = readSubscriptionMetadata(
+  if (
+    callback === "onSubscription" ||
+    callback === "onUnsubscription" ||
+    callback === "onSubscriptionError"
+  ) {
+    state.subscriptionMetadataCache.delete(subscription);
+  }
+  const subscriptionMetadata = readCachedSubscriptionMetadata(
     subscription as LightstreamerSubscriptionLike,
-    [],
+    state,
     subscriptionMetadataErrors
   );
 
@@ -3402,8 +3564,7 @@ function registerReinjectionTarget(
   listener: LightstreamerListenerLike,
   state: InstrumentationState
 ): void {
-  const callback = state.originalItemUpdateCallbacks.get(listener);
-  if (!callback) {
+  if (typeof listener.onItemUpdate !== "function") {
     return;
   }
 
@@ -3412,8 +3573,24 @@ function registerReinjectionTarget(
   state.localInjectionTargets.register(subscriptionId, {
     listenerId,
     fieldNames: readSubscriptionFieldNames(subscription),
-    deliver: callback
+    deliver: (update) => deliverToCurrentItemUpdateCallback(listener, update)
   }, subscription);
+}
+
+/**
+ * Local Injection reaches the listener's current onItemUpdate, so a callback
+ * reassigned by the application after addListener receives injected updates
+ * exactly like the next server update.
+ */
+function deliverToCurrentItemUpdateCallback(
+  listener: LightstreamerListenerLike,
+  update: SyntheticItemUpdate
+): unknown {
+  const callback = listener.onItemUpdate;
+  if (typeof callback !== "function") {
+    throw new Error("The target listener no longer has an onItemUpdate callback.");
+  }
+  return (callback as (update: SyntheticItemUpdate) => unknown).call(listener, update);
 }
 
 function registerSubscriptionListener(
@@ -4643,9 +4820,52 @@ function readSubscriptionMetadata(
   constructorArgs: unknown[] = [],
   metadataErrors?: string[]
 ): CapturePayload {
+  const configuration = readSubscriptionConfiguration(subscription, constructorArgs, metadataErrors);
+  const runtime = readSubscriptionRuntimeState(subscription, metadataErrors);
+  const positions = readCommandPositions(subscription, configuration.mode, metadataErrors);
+  return composeSubscriptionMetadata(configuration, runtime, positions);
+}
+
+/**
+ * Per-update metadata keeps the same shape as readSubscriptionMetadata while
+ * reusing cached configuration and COMMAND positions. Activity state and the
+ * listener count stay live because they are cheap and can change at any time.
+ */
+function readCachedSubscriptionMetadata(
+  subscription: LightstreamerSubscriptionLike,
+  state: InstrumentationState,
+  metadataErrors: string[]
+): CapturePayload {
+  let cached = state.subscriptionMetadataCache.get(subscription);
+  if (!cached) {
+    const configurationErrors: string[] = [];
+    cached = {
+      configuration: readSubscriptionConfiguration(subscription, [], configurationErrors),
+      configurationErrors
+    };
+    state.subscriptionMetadataCache.set(subscription, cached);
+  }
+  metadataErrors.push(...cached.configurationErrors);
+  const runtime = readSubscriptionRuntimeState(subscription, metadataErrors);
+  if (!cached.commandPositions) {
+    const errors: string[] = [];
+    cached.commandPositions = {
+      values: readCommandPositions(subscription, cached.configuration.mode, errors),
+      errors
+    };
+  }
+  metadataErrors.push(...cached.commandPositions.errors);
+  return composeSubscriptionMetadata(cached.configuration, runtime, cached.commandPositions.values);
+}
+
+function readSubscriptionConfiguration(
+  subscription: LightstreamerSubscriptionLike,
+  constructorArgs: unknown[],
+  metadataErrors?: string[]
+): SubscriptionConfiguration {
   const itemDescriptor = constructorArgs[1];
   const fieldDescriptor = constructorArgs[2];
-  return compactJsonObject({
+  return {
     mode: readGetter(subscription, "getMode", metadataErrors) ?? toJsonValue(constructorArgs[0]),
     items:
       readGetter(subscription, "getItems", metadataErrors) ??
@@ -4668,9 +4888,6 @@ function readSubscriptionMetadata(
       "getRequestedMaxFrequency",
       metadataErrors
     ),
-    active: readGetter(subscription, "isActive", metadataErrors),
-    subscribed: readGetter(subscription, "isSubscribed", metadataErrors),
-    listenerCount: readListenerCount(subscription, metadataErrors),
     commandSecondLevelDataAdapter: readGetter(
       subscription,
       "getCommandSecondLevelDataAdapter",
@@ -4685,9 +4902,64 @@ function readSubscriptionMetadata(
       subscription,
       "getCommandSecondLevelFieldSchema",
       metadataErrors
-    ),
+    )
+  };
+}
+
+function readSubscriptionRuntimeState(
+  subscription: LightstreamerSubscriptionLike,
+  metadataErrors?: string[]
+): CapturePayload {
+  return compactJsonObject({
+    active: readGetter(subscription, "isActive", metadataErrors),
+    subscribed: readGetter(subscription, "isSubscribed", metadataErrors),
+    listenerCount: readListenerCount(subscription, metadataErrors)
+  });
+}
+
+/**
+ * The official getKeyPosition/getCommandPosition throw IllegalStateException
+ * outside COMMAND mode, so they are read only when the mode is COMMAND or
+ * cannot be determined.
+ */
+function readCommandPositions(
+  subscription: LightstreamerSubscriptionLike,
+  mode: CapturePayload[string] | undefined,
+  metadataErrors?: string[]
+): CapturePayload {
+  if (typeof mode === "string" && mode.trim() && mode.trim().toUpperCase() !== "COMMAND") {
+    return {};
+  }
+  return compactJsonObject({
     keyPosition: readGetter(subscription, "getKeyPosition", metadataErrors),
     commandPosition: readGetter(subscription, "getCommandPosition", metadataErrors)
+  });
+}
+
+function composeSubscriptionMetadata(
+  configuration: SubscriptionConfiguration,
+  runtime: CapturePayload,
+  positions: CapturePayload
+): CapturePayload {
+  return compactJsonObject({
+    mode: configuration.mode,
+    items: configuration.items,
+    itemGroup: configuration.itemGroup,
+    fields: configuration.fields,
+    fieldSchema: configuration.fieldSchema,
+    dataAdapter: configuration.dataAdapter,
+    selector: configuration.selector,
+    requestedSnapshot: configuration.requestedSnapshot,
+    requestedBufferSize: configuration.requestedBufferSize,
+    requestedMaxFrequency: configuration.requestedMaxFrequency,
+    active: runtime.active,
+    subscribed: runtime.subscribed,
+    listenerCount: runtime.listenerCount,
+    commandSecondLevelDataAdapter: configuration.commandSecondLevelDataAdapter,
+    commandSecondLevelFields: configuration.commandSecondLevelFields,
+    commandSecondLevelFieldSchema: configuration.commandSecondLevelFieldSchema,
+    keyPosition: positions.keyPosition,
+    commandPosition: positions.commandPosition
   });
 }
 

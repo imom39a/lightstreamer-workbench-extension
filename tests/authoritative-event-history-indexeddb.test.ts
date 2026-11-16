@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+  AUTHORITATIVE_EVENT_OWNERSHIP_LOCK_VERSION,
   AUTHORITATIVE_EVENT_DB_NAME_PREFIX,
   AUTHORITATIVE_EVENT_DB_NAME,
   authoritativeEventDatabaseName,
@@ -155,7 +156,7 @@ async function hasLegacyMarker(name: string, markerStore: string, markerValue: s
 }
 
 function legacyOwnerLock(databaseName: string): string {
-  return `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}-${databaseName}`;
+  return `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_OWNERSHIP_LOCK_VERSION}-${databaseName}`;
 }
 
 async function createLegacyV6Journal(panelSessionId: string, count: number): Promise<void> {
@@ -487,7 +488,7 @@ describe("IndexedDB authoritative EventHistory", () => {
 
     expect(result).toMatchObject({ ok: true, value: { total: 200 } });
     if (result.ok) expect(result.value.evidence.map((entry) => entry.sequence)).toEqual([200, 199, 198, 197, 196]);
-    expect(openCursor).toHaveBeenCalledWith(undefined, "prev");
+    expect(openCursor).toHaveBeenCalledWith(expect.objectContaining({ lower: 1, upper: 200 }), "prev");
     expect(continueCursor).toHaveBeenCalledTimes(4);
     openCursor.mockRestore();
     continueCursor.mockRestore();
@@ -1255,7 +1256,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     }
   });
 
-  it("validates startup through a cursor without getAll and hands replay to live Capture exactly once", async () => {
+  it("recreates older-schema residue under its own name instead of recovering it, without getAll", async () => {
     const panelSessionId = "indexed-replay-handoff";
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
@@ -1264,20 +1265,16 @@ describe("IndexedDB authoritative EventHistory", () => {
     const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll");
     const reopened = await openEventHistory({ panelSessionId });
     expect(getAllSpy).not.toHaveBeenCalled();
+    expect(reopened.storage.mode).toBe("indexeddb");
+    expect(reopened.status()).toMatchObject({ retained: 0, committedEvidenceBoundary: null });
 
     const received: string[] = [];
-    let resolveReplay!: () => void;
-    const replayComplete = new Promise<void>((resolve) => { resolveReplay = resolve; });
     const unsubscribe = reopened.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
-      if (publication.type === "committed-evidence") {
-        received.push(...publication.evidence.map((entry) => entry.eventId));
-        if (received.length === 601) resolveReplay();
-      }
+      if (publication.type === "committed-evidence") received.push(...publication.evidence.map((entry) => entry.eventId));
     });
     const live = reopened.offer(candidate("replay-live"));
-    await expect(live.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 601 } });
-    await replayComplete;
-    expect(received).toEqual([...Array.from({ length: 600 }, (_, index) => `event-${index}`), "replay-live"]);
+    await expect(live.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 1 } });
+    await vi.waitFor(() => expect(received).toEqual(["replay-live"]));
 
     unsubscribe();
     getAllSpy.mockRestore();
@@ -2212,14 +2209,16 @@ describe("IndexedDB authoritative EventHistory", () => {
       openEventHistory({ panelSessionId: secondPanelSessionId, runtime })
     ]);
 
-    await expect(first.read({})).resolves.toMatchObject({
-      ok: true,
-      value: { evidence: [{ sequence: 1, eventId: "event-0" }] }
-    });
-    await expect(second.read({})).resolves.toMatchObject({
-      ok: true,
-      value: { evidence: [{ sequence: 1, eventId: "event-0" }] }
-    });
+    // Older-schema residue under each own name is recreated, never recovered.
+    await expect(first.read({})).resolves.toMatchObject({ ok: true, value: { evidence: [] } });
+    await expect(second.read({})).resolves.toMatchObject({ ok: true, value: { evidence: [] } });
+    // Neither startup swept the other's live journal: both still commit durably.
+    await expect(first.offer(candidate("first-live")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 1 } });
+    await expect(second.offer(candidate("second-live")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 1 } });
+    expect(first.status().persistence).toMatchObject({ mode: "JOURNAL", failureCount: 0 });
+    expect(second.status().persistence).toMatchObject({ mode: "JOURNAL", failureCount: 0 });
+    await expect(first.read({})).resolves.toMatchObject({ ok: true, value: { evidence: [{ sequence: 1, eventId: "first-live" }] } });
+    await expect(second.read({})).resolves.toMatchObject({ ok: true, value: { evidence: [{ sequence: 1, eventId: "second-live" }] } });
 
     await Promise.all([first.close(), second.close()]);
   });
@@ -2383,7 +2382,7 @@ describe("IndexedDB authoritative EventHistory", () => {
 
   it("releases in-process ownership locks after a cleanup callback failure", async () => {
     const runtime = authoritativeEventDatabaseRuntime();
-    const lockName = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}-leak`;
+    const lockName = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_OWNERSHIP_LOCK_VERSION}-leak`;
     await expect(
       runtime.requestLock(
         lockName,

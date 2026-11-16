@@ -12,6 +12,18 @@ export const TOPOLOGY_LIMITS = Object.freeze({
   utf8Bytes: 262_144
 });
 
+/**
+ * Bounds for arbitrary JSON crossing a context boundary, such as a Capture
+ * payload or Injection provenance. They are far above normal Lightstreamer
+ * Evidence and exist so a hostile or runaway page value is rejected instead of
+ * exhausting the validator's stack or the receiving context's memory.
+ */
+export const JSON_PAYLOAD_LIMITS = Object.freeze({
+  depth: 64,
+  nodes: 250_000,
+  stringUnits: 16_777_216
+});
+
 export const TOPOLOGY_SYNC_LIMITS = Object.freeze({
   maxChunks: 256,
   maxRecords: 16_384,
@@ -33,6 +45,8 @@ export const PAGE_REINJECT_REQUEST = "lsew:page-reinject-request" as const;
 export const CONTENT_CAPTURE_SYNC_REQUEST = "lsew:content-capture-sync-request" as const;
 export const PAGE_CAPTURE_SYNC_REQUEST = "lsew:page-capture-sync-request" as const;
 export const CONTENT_BRIDGE_READY = "lsew:content-bridge-ready" as const;
+export const CONTENT_PANEL_ATTACHMENT = "lsew:content-panel-attachment" as const;
+export const RUNTIME_PANEL_ATTACHMENT_QUERY = "lsew:runtime-panel-attachment-query" as const;
 export const TOPOLOGY_SYNC_BEGIN = "lsew:topology-sync-begin" as const;
 export const TOPOLOGY_SYNC_CHUNK = "lsew:topology-sync-chunk" as const;
 export const TOPOLOGY_SYNC_COMPLETE = "lsew:topology-sync-complete" as const;
@@ -367,6 +381,22 @@ export type PageReinjectRequestMessage = InjectionCorrelation & {
 export type ContentCaptureSyncRequestMessage = {
   type: typeof CONTENT_CAPTURE_SYNC_REQUEST;
   panelSessionId: PanelSessionId;
+};
+
+/**
+ * Service worker to content script: whether any DevTools panel is registered
+ * for the tab. `revision` increases with every attachment change so a content
+ * script can discard a stale notification or query response.
+ */
+export type ContentPanelAttachmentMessage = {
+  type: typeof CONTENT_PANEL_ATTACHMENT;
+  attached: boolean;
+  revision: number;
+};
+
+/** Content script to service worker; answered with a ContentPanelAttachmentMessage. */
+export type RuntimePanelAttachmentQueryMessage = {
+  type: typeof RUNTIME_PANEL_ATTACHMENT_QUERY;
 };
 
 export type PageCaptureSyncRequestMessage = {
@@ -737,6 +767,24 @@ export function isContentCaptureSyncRequestMessage(
   value: unknown
 ): value is ContentCaptureSyncRequestMessage {
   return isRecord(value) && value.type === CONTENT_CAPTURE_SYNC_REQUEST && isPanelSessionId(value.panelSessionId);
+}
+
+export function isContentPanelAttachmentMessage(
+  value: unknown
+): value is ContentPanelAttachmentMessage {
+  return (
+    isRecord(value) &&
+    value.type === CONTENT_PANEL_ATTACHMENT &&
+    typeof value.attached === "boolean" &&
+    typeof value.revision === "number" &&
+    Number.isFinite(value.revision)
+  );
+}
+
+export function isRuntimePanelAttachmentQueryMessage(
+  value: unknown
+): value is RuntimePanelAttachmentQueryMessage {
+  return isRecord(value) && value.type === RUNTIME_PANEL_ATTACHMENT_QUERY;
 }
 
 export function isPageCaptureSyncRequestMessage(
@@ -1162,18 +1210,40 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isJsonValue(value: unknown, seen = new WeakSet<object>()): value is JsonValue {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return typeof value !== "number" || Number.isFinite(value);
+function isJsonValue(value: unknown): value is JsonValue {
+  try {
+    return isBoundedJsonNode(value, 1, new WeakSet<object>(), { nodes: 0, stringUnits: 0 });
+  } catch {
+    return false;
+  }
+}
+
+function isBoundedJsonNode(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+  budget: { nodes: number; stringUnits: number }
+): boolean {
+  budget.nodes += 1;
+  if (depth > JSON_PAYLOAD_LIMITS.depth || budget.nodes > JSON_PAYLOAD_LIMITS.nodes) {
+    return false;
+  }
+  if (value === null || typeof value === "boolean") {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value === "string") {
+    budget.stringUnits += value.length;
+    return budget.stringUnits <= JSON_PAYLOAD_LIMITS.stringUnits;
   }
 
   if (Array.isArray(value)) {
-    return value.every((entry) => isJsonValue(entry, seen));
+    if (value.length > JSON_PAYLOAD_LIMITS.nodes - budget.nodes) {
+      return false;
+    }
+    return value.every((entry) => isBoundedJsonNode(entry, depth + 1, seen, budget));
   }
 
   if (!isRecord(value)) {
@@ -1185,5 +1255,18 @@ function isJsonValue(value: unknown, seen = new WeakSet<object>()): value is Jso
   }
   seen.add(value);
 
-  return Object.values(value).every((entry) => isJsonValue(entry, seen));
+  const keys = Object.keys(value);
+  if (keys.length > JSON_PAYLOAD_LIMITS.nodes - budget.nodes) {
+    return false;
+  }
+  for (const key of keys) {
+    budget.stringUnits += key.length;
+    if (budget.stringUnits > JSON_PAYLOAD_LIMITS.stringUnits) {
+      return false;
+    }
+    if (!isBoundedJsonNode(value[key], depth + 1, seen, budget)) {
+      return false;
+    }
+  }
+  return true;
 }

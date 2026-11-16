@@ -8,7 +8,7 @@ import {
 import {
   offerAndAwaitCommitted,
   waitForCommittedCount
-} from "../src/extension/panel/performance-harness-history";
+} from "./support/performance-harness-history";
 
 function candidate(id: string) {
   return {

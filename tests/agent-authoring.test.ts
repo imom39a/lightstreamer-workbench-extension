@@ -104,8 +104,8 @@ describe("source-grounded agent authoring", () => {
 
   it("names the source-free capability limitation instead of implying captured truth", async () => {
     const { runtime, pageEpoch } = await fixture();
-    const scopes = runtime.agent!.scopes(0, 100) as { nodes: { id: string; kind: string }[] };
-    const item = scopes.nodes.find(node => node.kind === "item");
+    const scopes = runtime.agent!.scopes(0, 100);
+    const item = scopes.nodes.find(node => node?.kind === "item");
     expect(item).toBeTruthy();
     const result = await runtime.agent!.validateCandidate({ kind: "draft", draft: { scopeId: item!.id } }, pageEpoch, () => true) as any;
     expect(result.candidates[0].replayability).toMatchObject({ source: "source-free", limitation: expect.stringContaining("not evidence of application state") });

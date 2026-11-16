@@ -35,6 +35,7 @@ const pages = [
   page("releases.md", "releases/index.html", "Release notes", "Extension and MCP companion versions, features, and installation links.", "page"),
   page("support.md", "support/index.html", "Support", "Get help, report a bug, request a feature, or ask a question.", "page")
 ];
+/** @type {Array<[string, Array<[string, string]>]>} */
 const documentationGroups = [
   ["Use Workbench", [
     ["Getting started", "docs/getting-started/"],

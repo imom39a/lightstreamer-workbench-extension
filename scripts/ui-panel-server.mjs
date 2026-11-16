@@ -22,7 +22,7 @@ try {
   const port = Number(process.env.LSEW_UI_PORT ?? 4173);
   await new Promise((resolvePromise, rejectPromise) => {
     server.once("error", rejectPromise);
-    server.listen(port, "127.0.0.1", resolvePromise);
+    server.listen(port, "127.0.0.1", () => resolvePromise(undefined));
   });
   console.log(`Workbench panel scenario server listening on http://127.0.0.1:${port}`);
   await new Promise(() => {});
@@ -68,7 +68,6 @@ import { agentConnectionFixture } from ${source("tests/support/agent-connection-
 const params = new URLSearchParams(window.location.search);
 const scenarioId = params.get("scenario") ?? "live-selected";
 if (!isWorkbenchScenarioId(scenarioId)) throw new Error("Unknown Workbench scenario: " + scenarioId);
-const theme = params.get("theme") === "auto" ? "auto" : params.get("theme") === "light" ? "light" : "dark";
 // Visual evidence may render the same deterministic scenario with the
 // advisory estimate omitted as a clean base. This is a test-harness override,
 // not a production storage mode.
@@ -237,7 +236,6 @@ const runtime = createWorkbenchRuntime({
   ...(scenario.activityProjectionFailure ? {
     activityProjectionFactory: () => { throw new Error(scenario.activityProjectionFailure); }
   } : {}),
-  theme,
   ...(localInjectionExecutor ? { localInjectionExecutor } : {}),
   ...(serverInjectionExecutor ? { serverInjectionExecutor } : {}),
   ...(clientMessageRecipeProvider ? { clientMessageRecipeProvider } : {})

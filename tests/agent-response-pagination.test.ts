@@ -12,7 +12,8 @@ const budget = AGENT_RESPONSE_CONTRACT.defaultMaxBytes;
 const runtimes: WorkbenchRuntime[] = [];
 afterEach(async () => { await Promise.all(runtimes.splice(0).map(runtime => runtime.disposeAndWait())); });
 
-function mockService(overrides: Partial<AgentRuntime>) {
+// Mocks supply only the fields each case reads, so their returns are deliberately loose.
+function mockService(overrides: Partial<Record<keyof AgentRuntime, (...args: any[]) => unknown>>) {
   const runtime = {
     status: () => ({ visible: true }), scopes: () => ({ total: 0, offset: 0, nodes: [] }),
     scope: () => ({}), diagnostics: async () => ({ observations: [] }),

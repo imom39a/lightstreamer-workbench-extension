@@ -108,7 +108,7 @@ try {
   browser = await chromium.launch({
     executablePath: chromeExecutable,
     headless: true,
-    args: chromeTestArguments({ headless: true, disableNativeOcclusion: true, exposeGc: true })
+    args: [...chromeTestArguments({ headless: true, disableNativeOcclusion: true, exposeGc: true })]
   });
   const measuredBrowserVersion = await browser.version();
   if (!/\b151\./u.test(measuredBrowserVersion)) {
@@ -315,7 +315,7 @@ async function createHarness(directory) {
   });
   await new Promise((resolvePromise, rejectPromise) => {
     server.once("error", rejectPromise);
-    server.listen(0, "127.0.0.1", resolvePromise);
+    server.listen(0, "127.0.0.1", () => resolvePromise(undefined));
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Unable to resolve harness port.");
@@ -349,7 +349,7 @@ import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { createCaptureMessage } from ${source("src/bridge/messages.ts")};
 import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
-import { offerAndAwaitCommitted, waitForCommittedCount } from ${source("src/extension/panel/performance-harness-history.ts")};
+import { offerAndAwaitCommitted, waitForCommittedCount } from ${source("tests/support/performance-harness-history.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 
@@ -664,7 +664,7 @@ async function writeColdLoadDiagnostics(page, run, directory, telemetry) {
         rect: rootRect ? { x: rootRect.x, y: rootRect.y, width: rootRect.width, height: rootRect.height } : null
       } : null,
       scripts: [...document.scripts].map((script) => script.src || "inline"),
-      stylesheets: [...document.querySelectorAll("link[rel=stylesheet]")].map((link) => link.href),
+      stylesheets: [...document.querySelectorAll("link[rel=stylesheet]")].map((link) => /** @type {HTMLLinkElement} */ (link).href),
       resources: performance.getEntriesByType("resource").map((entry) => entry.name)
     };
   }).catch((error) => ({ evaluationError: String(error) }));

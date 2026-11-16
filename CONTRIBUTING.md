@@ -67,7 +67,9 @@ npm ci
 Run checks:
 
 ```bash
+npm run lint
 npm run typecheck
+npm run typecheck:scripts
 npm test
 npm run build
 ```
@@ -215,7 +217,9 @@ The production visual-regression matrix is part of `npm run test:ui`; it never r
 Before handoff for a Material UI change, run and record the purpose and outcome of:
 
 ```bash
+npm run lint                      # ESLint (errors fail; warnings are tracked debt)
 npm run typecheck                 # Type contracts
+npm run typecheck:scripts         # checkJs over Node release and tooling scripts
 npm test                          # Unit and command-contract tests
 npm run test:ui                   # Chromium behavior and read-only visual baselines
 npm run test:ui:visual            # Committed baseline/current/diff review packet
@@ -270,7 +274,7 @@ Use the fixture for instrumentation, Capture, normalization, and Local Injection
 6. Fill out the pull request template.
 7. Link related issues with `Fixes #123` or `Refs #123` when applicable.
 
-For documentation-only changes, run at least a local review of links, commands, and claims. For source changes, run `npm run typecheck`, `npm test`, and `npm run build` unless the PR explains why a check is not applicable.
+For documentation-only changes, run at least a local review of links, commands, and claims. For source changes, run `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build` unless the PR explains why a check is not applicable.
 
 ## Review Expectations
 

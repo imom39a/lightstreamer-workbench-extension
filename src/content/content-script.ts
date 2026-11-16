@@ -1,14 +1,18 @@
 import {
+  CAPTURE_NAMESPACE,
   CONTENT_REINJECT_RESULT,
   CONTENT_BRIDGE_READY,
   PAGE_CAPTURE_SYNC_REQUEST,
   PAGE_REINJECT_REQUEST,
   RUNTIME_CAPTURE_MESSAGE,
+  RUNTIME_PANEL_ATTACHMENT_QUERY,
   RUNTIME_TOPOLOGY_SYNC_FRAME,
+  type ContentPanelAttachmentMessage,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
   isCaptureMessage,
   isContentCaptureSyncRequestMessage,
+  isContentPanelAttachmentMessage,
   isContentReinjectRequestMessage,
   isRuntimeReinjectResultMessage,
   isTopologySyncFrame
@@ -18,14 +22,21 @@ const PAGE_REINJECT_TIMEOUT_MS = 5000;
 const runtime = typeof chrome === "undefined" ? undefined : chrome.runtime;
 const pendingPageRequests = new Set<() => void>();
 let active = false;
+// Until the service worker answers, behave as before gating existed and
+// forward everything: an early page Capture must not be lost to a slow reply.
+let panelAttachment: "unknown" | "attached" | "detached" = "unknown";
+let panelAttachmentRevision = Number.NEGATIVE_INFINITY;
 
 if (runtime?.sendMessage && runtime.onMessage) {
   active = true;
   try {
     runtime.onMessage.addListener(onRuntimeMessage);
     window.addEventListener("message", onPageMessage);
-    document.documentElement.dataset.lsewContentBridgeReady = "true";
+    window.addEventListener("pageshow", onPageShow);
+    // Transient readiness signal for browser tests; production does not read it
+    // and, unlike a DOM attribute, it leaves no state in the page document.
     window.postMessage({ type: CONTENT_BRIDGE_READY }, "*");
+    queryPanelAttachment();
   } catch (error) {
     handleRuntimeError(error);
   }
@@ -33,6 +44,12 @@ if (runtime?.sendMessage && runtime.onMessage) {
 
 function onPageMessage(event: MessageEvent) {
   if (!active || event.source !== window) {
+    return;
+  }
+
+  if (panelAttachment === "detached" && isUnscopedCaptureCandidate(event.data)) {
+    // No panel can receive live Capture for this tab. Skip validation and the
+    // runtime hop; a later panel learns current topology through sync.
     return;
   }
 
@@ -61,7 +78,14 @@ function onRuntimeMessage(message: unknown): false {
     return false;
   }
 
+  if (isContentPanelAttachmentMessage(message)) {
+    applyPanelAttachment(message);
+    return false;
+  }
+
   if (isContentCaptureSyncRequestMessage(message)) {
+    // A sync request proves a panel is registered for this tab.
+    panelAttachment = "attached";
     window.postMessage({
       type: PAGE_CAPTURE_SYNC_REQUEST,
       panelSessionId: message.panelSessionId
@@ -84,6 +108,64 @@ function onRuntimeMessage(message: unknown): false {
   });
 
   return false;
+}
+
+function isUnscopedCaptureCandidate(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { namespace?: unknown }).namespace === CAPTURE_NAMESPACE &&
+    (value as { panelSessionId?: unknown }).panelSessionId === undefined
+  );
+}
+
+function applyPanelAttachment(message: ContentPanelAttachmentMessage): void {
+  if (message.revision < panelAttachmentRevision) {
+    return;
+  }
+  panelAttachmentRevision = message.revision;
+  panelAttachment = message.attached ? "attached" : "detached";
+}
+
+function queryPanelAttachment(): void {
+  if (!active || !runtime) {
+    return;
+  }
+  try {
+    runtime.sendMessage({ type: RUNTIME_PANEL_ATTACHMENT_QUERY }, (response: unknown) => {
+      try {
+        const error = runtime.lastError;
+        if (isInvalidatedContext(error)) {
+          retireBridge();
+          return;
+        }
+        if (isContentPanelAttachmentMessage(response)) {
+          applyPanelAttachment(response);
+        }
+      } catch (error) {
+        retireIfInvalidated(error);
+      }
+    });
+  } catch (error) {
+    retireIfInvalidated(error);
+  }
+}
+
+// The attachment query is an optimization: any failure other than context
+// invalidation leaves the bridge forwarding as if a panel were attached.
+function retireIfInvalidated(error: unknown): void {
+  if (isInvalidatedContext(error)) {
+    retireBridge();
+  }
+}
+
+function onPageShow(event: PageTransitionEvent): void {
+  if (!active || !event.persisted) {
+    return;
+  }
+  // A page restored from the back/forward cache missed attachment changes.
+  panelAttachment = "unknown";
+  queryPanelAttachment();
 }
 
 function sendRuntimeMessage(message: unknown): void {
@@ -127,7 +209,7 @@ function retireBridge(): void {
   }
   active = false;
   window.removeEventListener("message", onPageMessage);
-  delete document.documentElement.dataset.lsewContentBridgeReady;
+  window.removeEventListener("pageshow", onPageShow);
   try {
     runtime?.onMessage.removeListener?.(onRuntimeMessage);
   } catch {

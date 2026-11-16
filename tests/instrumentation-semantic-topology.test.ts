@@ -339,6 +339,9 @@ describe("semantic topology instrumentation", () => {
           throw new Error("getter-hostile-secret");
         }
       };
+
+      // Official-client prototype shape; unrelated globals stay unwrapped.
+      connect() { return undefined; }
     }
     const messages: CaptureMessage[] = [];
     const host = { LightstreamerClient: ThrowingClient };
@@ -370,6 +373,9 @@ describe("semantic topology instrumentation", () => {
           throw new Error("aggregate-coverage-secret");
         }
       };
+
+      // Official-client prototype shape; unrelated globals stay unwrapped.
+      connect() { return undefined; }
     }
     const messages: CaptureMessage[] = [];
     const messageListeners: Array<(event: MessageEvent) => void> = [];
