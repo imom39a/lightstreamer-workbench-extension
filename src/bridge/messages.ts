@@ -12,6 +12,18 @@ export const TOPOLOGY_LIMITS = Object.freeze({
   utf8Bytes: 262_144
 });
 
+/**
+ * Bounds for arbitrary JSON crossing a context boundary, such as a Capture
+ * payload or Injection provenance. They are far above normal Lightstreamer
+ * Evidence and exist so a hostile or runaway page value is rejected instead of
+ * exhausting the validator's stack or the receiving context's memory.
+ */
+export const JSON_PAYLOAD_LIMITS = Object.freeze({
+  depth: 64,
+  nodes: 250_000,
+  stringUnits: 16_777_216
+});
+
 export const TOPOLOGY_SYNC_LIMITS = Object.freeze({
   maxChunks: 256,
   maxRecords: 16_384,
@@ -1162,18 +1174,40 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isJsonValue(value: unknown, seen = new WeakSet<object>()): value is JsonValue {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return typeof value !== "number" || Number.isFinite(value);
+function isJsonValue(value: unknown): value is JsonValue {
+  try {
+    return isBoundedJsonNode(value, 1, new WeakSet<object>(), { nodes: 0, stringUnits: 0 });
+  } catch {
+    return false;
+  }
+}
+
+function isBoundedJsonNode(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+  budget: { nodes: number; stringUnits: number }
+): boolean {
+  budget.nodes += 1;
+  if (depth > JSON_PAYLOAD_LIMITS.depth || budget.nodes > JSON_PAYLOAD_LIMITS.nodes) {
+    return false;
+  }
+  if (value === null || typeof value === "boolean") {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value === "string") {
+    budget.stringUnits += value.length;
+    return budget.stringUnits <= JSON_PAYLOAD_LIMITS.stringUnits;
   }
 
   if (Array.isArray(value)) {
-    return value.every((entry) => isJsonValue(entry, seen));
+    if (value.length > JSON_PAYLOAD_LIMITS.nodes - budget.nodes) {
+      return false;
+    }
+    return value.every((entry) => isBoundedJsonNode(entry, depth + 1, seen, budget));
   }
 
   if (!isRecord(value)) {
@@ -1185,5 +1219,18 @@ function isJsonValue(value: unknown, seen = new WeakSet<object>()): value is Jso
   }
   seen.add(value);
 
-  return Object.values(value).every((entry) => isJsonValue(entry, seen));
+  const keys = Object.keys(value);
+  if (keys.length > JSON_PAYLOAD_LIMITS.nodes - budget.nodes) {
+    return false;
+  }
+  for (const key of keys) {
+    budget.stringUnits += key.length;
+    if (budget.stringUnits > JSON_PAYLOAD_LIMITS.stringUnits) {
+      return false;
+    }
+    if (!isBoundedJsonNode(value[key], depth + 1, seen, budget)) {
+      return false;
+    }
+  }
+  return true;
 }

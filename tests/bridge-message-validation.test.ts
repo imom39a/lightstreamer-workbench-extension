@@ -11,6 +11,7 @@ import {
   PANEL_CAPTURE_MESSAGE,
   PANEL_VISIBILITY_MESSAGE,
   RUNTIME_REINJECT_RESULT,
+  JSON_PAYLOAD_LIMITS,
   TOPOLOGY_LIMITS,
   TOPOLOGY_OBSERVATION_VERSION,
   TOPOLOGY_SYNC_BEGIN,
@@ -66,6 +67,39 @@ describe("bridge capture message validation", () => {
     expect(isCaptureMessage({ ...valid, kind: "unknown-kind" })).toBe(false);
     expect(isCaptureMessage({ ...valid, payload: undefined })).toBe(false);
     expect(isCaptureMessage({ ...valid, payload: "not-an-object" })).toBe(false);
+  });
+
+  it("bounds payload depth, node count, and string size without overflowing", () => {
+    const capture = (payload: Record<string, unknown>) => ({
+      namespace: CAPTURE_NAMESPACE,
+      version: CAPTURE_VERSION,
+      kind: "item-update",
+      timestamp: 1,
+      payload
+    });
+    const nested = (depth: number) => {
+      let value: unknown = "leaf";
+      for (let index = 0; index < depth; index++) value = { value };
+      return value as Record<string, unknown>;
+    };
+
+    expect(isCaptureMessage(capture(nested(JSON_PAYLOAD_LIMITS.depth - 1)))).toBe(true);
+    expect(isCaptureMessage(capture(nested(JSON_PAYLOAD_LIMITS.depth)))).toBe(false);
+    expect(isCaptureMessage(capture(nested(100_000)))).toBe(false);
+
+    const cyclicArray: unknown[] = [];
+    cyclicArray.push(cyclicArray);
+    expect(isCaptureMessage(capture({ fields: cyclicArray }))).toBe(false);
+
+    expect(isCaptureMessage(capture({ fields: new Array(JSON_PAYLOAD_LIMITS.nodes).fill(0) }))).toBe(false);
+    expect(isCaptureMessage(capture({ fields: new Array(10_000).fill("value") }))).toBe(true);
+
+    const half = "x".repeat(JSON_PAYLOAD_LIMITS.stringUnits / 2);
+    expect(isCaptureMessage(capture({ a: half }))).toBe(true);
+    expect(isCaptureMessage(capture({ a: half, b: half }))).toBe(false);
+
+    const hostile = new Proxy({}, { ownKeys() { throw new Error("hostile"); } });
+    expect(isCaptureMessage(capture({ hostile }))).toBe(false);
   });
 
   it("rejects non-serializable payload content", () => {

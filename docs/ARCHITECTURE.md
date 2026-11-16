@@ -329,7 +329,7 @@ Every capture message has:
 | `version` | Must be `1`. |
 | `kind` | One of the known `CAPTURE_KINDS`. |
 | `timestamp` | Finite number. |
-| `payload` | JSON object, recursively validated as finite JSON data with no cycles. |
+| `payload` | JSON object, recursively validated as finite JSON data with no repeated object references and within `JSON_PAYLOAD_LIMITS`: depth 64, 250,000 values, and 16,777,216 UTF-16 code units across keys and strings. Validation of an oversized or hostile value returns `false` without throwing, so the receiving context drops that Capture. |
 
 Known capture kinds are:
 
