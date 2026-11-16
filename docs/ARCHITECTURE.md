@@ -214,6 +214,8 @@ It hooks all of these Lightstreamer constructor locations:
 
 Constructor hooks preserve prototype chains by using `Reflect.construct`, copying the original prototype, and setting the wrapper constructor prototype to the original constructor.
 
+These global names are generic, so a hook wraps only a constructor whose prototype chain exposes the official Web Client shape: at least one `LightstreamerClient` API method (`connect`, `subscribe`, `sendMessage`, `addListener`, and similar) for the client, and `addListener` plus at least one Subscription accessor (`getMode`, `getItems`, `getFields`, `isActive`, and similar) for a Subscription. The check reads data descriptors only and never invokes page getters. Any other value, such as an unrelated page `Subscription` class, passes through untouched, emits no Capture, and does not set `__LSEW_PRIMARY_ACTIVE__`; primary instrumentation is marked active only after a validated constructor creates an instance.
+
 Wrapped client methods:
 
 | Method | Captured Effect |

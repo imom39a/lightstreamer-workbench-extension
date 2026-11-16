@@ -185,6 +185,8 @@ describe("instrumentation privacy and behavior parity", () => {
     class Subscription {
       listener?: { onItemUpdate(update: unknown): void };
 
+      getMode() { return "MERGE"; }
+
       addListener(listener: { onItemUpdate(update: unknown): void }) {
         this.listener = listener;
       }
@@ -268,6 +270,9 @@ describe("instrumentation privacy and behavior parity", () => {
   ])("masks %s without retaining a raw fallback", (clientIp, expected) => {
     class AddressClient {
       readonly connectionDetails = { getClientIp: () => clientIp };
+
+      // Official-client prototype shape; unrelated globals stay unwrapped.
+      connect() { return undefined; }
     }
     const messages: CaptureMessage[] = [];
     const host = { LightstreamerClient: AddressClient };
@@ -481,6 +486,8 @@ describe("instrumentation privacy and behavior parity", () => {
     class ErrorSubscription {
       private listener: { onItemUpdate?(update: unknown): unknown } | null = null;
 
+      getMode() { return "MERGE"; }
+
       addListener(listener: { onItemUpdate?(update: unknown): unknown }) {
         this.listener = listener;
       }
@@ -525,6 +532,9 @@ describe("instrumentation privacy and behavior parity", () => {
       constructor(_serverAddress: string, adapterSet: unknown) {
         this.connectionDetails = { getAdapterSet: () => adapterSet };
       }
+
+      // Official-client prototype shape; unrelated globals stay unwrapped.
+      connect() { return undefined; }
     }
     const canaries = {
       proxy_authorization: "proxy-secret",

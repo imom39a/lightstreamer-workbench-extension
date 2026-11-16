@@ -142,3 +142,76 @@ describe("subscription listener proxy fidelity", () => {
     expect(messages.find(isRuntimeReinjectResultMessage)?.result).toMatchObject({ ok: true, status: "success" });
   });
 });
+
+class UnrelatedSubscription {
+  // Shaped like a generic reactive Subscription, not the Lightstreamer API.
+  add(_teardown: unknown) { return undefined; }
+  unsubscribe() { return undefined; }
+}
+
+class FallbackWebSocket {
+  static instances: FallbackWebSocket[] = [];
+  readonly sent: unknown[] = [];
+  readonly messageListeners: Array<(event: MessageEvent) => void> = [];
+  constructor(readonly url: string) { FallbackWebSocket.instances.push(this); }
+  send(data: unknown) { this.sent.push(data); }
+  addEventListener(type: string, listener: (event: MessageEvent) => void) {
+    if (type === "message") this.messageListeners.push(listener);
+  }
+  emitMessage(data: string) {
+    for (const listener of this.messageListeners) listener({ type: "message", data } as MessageEvent);
+  }
+}
+
+describe("constructor hook shape validation", () => {
+  it("leaves an unrelated global Subscription untouched and keeps the WebSocket fallback", () => {
+    const messages: CaptureMessage[] = [];
+    const host: Record<string, unknown> = {
+      Subscription: UnrelatedSubscription,
+      WebSocket: FallbackWebSocket
+    };
+    installLightstreamerInstrumentation(host as unknown as LightstreamerHost, (message) => messages.push(message as CaptureMessage));
+
+    expect(host.Subscription).toBe(UnrelatedSubscription);
+    const unrelated = new (host.Subscription as typeof UnrelatedSubscription)();
+    expect(Object.getPrototypeOf(unrelated)).toBe(UnrelatedSubscription.prototype);
+    expect(messages).toEqual([]);
+    expect(host.__LSEW_PRIMARY_ACTIVE__).toBeFalsy();
+
+    new (host.WebSocket as typeof FallbackWebSocket)("wss://push.example.test/lightstreamer");
+    expect(messages.map(({ kind }) => kind)).toEqual(["client-created"]);
+    expect(messages[0]?.payload.raw).toMatchObject({ captureSource: "websocket-tlcp" });
+  });
+
+  it("passes late unrelated assignments through and still wraps a later official constructor", () => {
+    const messages: CaptureMessage[] = [];
+    const host: Record<string, unknown> = {};
+    installLightstreamerInstrumentation(host as unknown as LightstreamerHost, (message) => messages.push(message as CaptureMessage));
+
+    host.Subscription = UnrelatedSubscription;
+    expect(host.Subscription).toBe(UnrelatedSubscription);
+    new (host.Subscription as typeof UnrelatedSubscription)();
+    expect(messages).toEqual([]);
+    expect(host.__LSEW_PRIMARY_ACTIVE__).toBeFalsy();
+
+    host.Subscription = DispatchingSubscription;
+    expect(host.Subscription).not.toBe(DispatchingSubscription);
+    new (host.Subscription as typeof DispatchingSubscription)();
+    expect(messages.map(({ kind }) => kind)).toEqual(["subscription-created"]);
+    expect(host.__LSEW_PRIMARY_ACTIVE__).toBe(true);
+  });
+
+  it("leaves unrelated constructors inside a late Lightstreamer namespace untouched", () => {
+    const messages: CaptureMessage[] = [];
+    const host: Record<string, unknown> = {};
+    installLightstreamerInstrumentation(host as unknown as LightstreamerHost, (message) => messages.push(message as CaptureMessage));
+    const namespace = { Subscription: UnrelatedSubscription, LightstreamerClient: class Unrelated {} };
+
+    host.Lightstreamer = namespace;
+    expect(namespace.Subscription).toBe(UnrelatedSubscription);
+    new namespace.Subscription();
+    new namespace.LightstreamerClient();
+    expect(messages).toEqual([]);
+    expect(host.__LSEW_PRIMARY_ACTIVE__).toBeFalsy();
+  });
+});

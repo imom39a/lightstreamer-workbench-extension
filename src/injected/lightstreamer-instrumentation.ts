@@ -1735,7 +1735,8 @@ function installConstructorHook<K extends "LightstreamerClient" | "Subscription"
     }
     const current = host[property];
     if (typeof current === "function") {
-      if (descriptor?.writable === false) {
+      if (descriptor?.writable === false || !hasOfficialConstructorShape(property, current)) {
+        // An unrelated page global with the same name stays exactly as the page defined it.
         return false;
       }
       return Reflect.set(
@@ -1760,7 +1761,7 @@ function installConstructorHook<K extends "LightstreamerClient" | "Subscription"
         return assigned;
       },
       set(value) {
-        if (typeof value !== "function") {
+        if (typeof value !== "function" || !hasOfficialConstructorShape(property, value)) {
           assigned = value;
           return;
         }
@@ -1775,6 +1776,68 @@ function installConstructorHook<K extends "LightstreamerClient" | "Subscription"
   } catch (_error) {
     return false;
   }
+}
+
+const OFFICIAL_CLIENT_METHODS = [
+  "connect",
+  "disconnect",
+  "subscribe",
+  "unsubscribe",
+  "addListener",
+  "removeListener",
+  "getListeners",
+  "getStatus",
+  "getSubscriptions",
+  "sendMessage"
+] as const;
+
+const OFFICIAL_SUBSCRIPTION_METHODS = [
+  "getMode",
+  "getItems",
+  "getItemGroup",
+  "getFields",
+  "getFieldSchema",
+  "isActive",
+  "isSubscribed",
+  "getRequestedSnapshot",
+  "setRequestedSnapshot",
+  "getValue",
+  "getKeyPosition",
+  "getCommandPosition"
+] as const;
+
+/**
+ * Global names such as `Subscription` are generic, so only constructors whose
+ * prototype exposes the official Web Client API shape are wrapped. The check
+ * reads data descriptors only and never invokes page getters.
+ */
+function hasOfficialConstructorShape(
+  property: "LightstreamerClient" | "Subscription",
+  constructor: unknown
+): boolean {
+  try {
+    if (typeof constructor !== "function") {
+      return false;
+    }
+    const prototype = (constructor as { prototype?: unknown }).prototype;
+    if (!isObject(prototype)) {
+      return false;
+    }
+    if (property === "LightstreamerClient") {
+      return OFFICIAL_CLIENT_METHODS.some((name) => prototypeHasMethod(prototype, name));
+    }
+    return (
+      prototypeHasMethod(prototype, "addListener") &&
+      OFFICIAL_SUBSCRIPTION_METHODS.some((name) => prototypeHasMethod(prototype, name))
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
+function prototypeHasMethod(prototype: object, name: string): boolean {
+  const located = findPropertyDescriptor(prototype, name);
+  return typeof located?.descriptor.value === "function";
 }
 
 function findPropertyDescriptor(
