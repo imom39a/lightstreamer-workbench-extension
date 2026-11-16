@@ -16,7 +16,9 @@ const documents = [
   "docs/agents/ui-visual-qa.md"
 ];
 const requiredCommands = [
+  "lint",
   "typecheck",
+  "typecheck:scripts",
   "test",
   "test:ui",
   "test:ui:update",
