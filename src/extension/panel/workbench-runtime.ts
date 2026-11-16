@@ -15,7 +15,7 @@ import type {
   ScenarioCommittedBoundarySnapshot
 } from "../../core/local-injection-scenario-checkpoint";
 import { validateScenarioCheckpoint } from "../../core/local-injection-scenario-checkpoint";
-import type { AgentScopeSearchSnapshot, AgentRuntime, AgentDraftInput, AgentCandidateInput, AgentScenarioMember, AgentScenarioPlanInput, AgentServerInjectionInput } from "./agent-runtime";
+import type { AgentScopeSearchSnapshot, AgentRuntime, AgentDraftInput, AgentCandidateInput, AgentScenarioMember, AgentScenarioPlanInput } from "./agent-runtime";
 import {
   toBulkShareableEventEnvelope,
   type LightstreamerEventEnvelope
@@ -104,26 +104,8 @@ import {
   type ReinjectionDraft,
   type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
-import {
-  cloneServerInjectionDraft,
-  createAuthoredServerInjectionDraft,
-  createServerInjectionDraftFromEvent,
-  serverInjectionFingerprint,
-  serverInjectionApprovalFingerprint,
-  validateServerInjectionDraft,
-  type ServerInjectionDiagnostic,
-  type ServerInjectionDraft,
-  type ServerInjectionExecutionResult,
-  type ServerInjectionExecutor
-} from "../../core/server-injection";
-import {
-  createClientMessageRecipeContext,
-  errorClientMessageRecipes,
-  loadingClientMessageRecipes,
-  unavailableClientMessageRecipes,
-  type ClientMessageRecipeProvider,
-  type ClientMessageRecipeResolution
-} from "../../core/client-message-recipe";
+import { type ServerInjectionExecutor } from "../../core/server-injection";
+import { type ClientMessageRecipeProvider } from "../../core/client-message-recipe";
 import {
   createTopologyProjection,
   type TopologyCheckpointBasisMetadata,
@@ -159,6 +141,13 @@ import {
   type TopologySubscription
 } from "../../core/topology-state";
 import { type TopologyProjectionStatus } from "./topology-projection";
+import {
+  ServerInjectionController,
+  isServerInjectionCommand,
+  type ServerInjectionCommand,
+  type WorkbenchServerInjectionSnapshot
+} from "./server-injection-controller";
+export type { WorkbenchServerInjectionSnapshot } from "./server-injection-controller";
 import {
   bindCommittedEvidencePipeline,
   type CommittedEvidencePipeline,
@@ -580,31 +569,6 @@ export type WorkbenchLocalInjectionSnapshot = Readonly<{
   }> | null;
 }>;
 
-export type WorkbenchServerInjectionSnapshot = Readonly<{
-  state: "idle" | "active";
-  availability: Readonly<{
-    cloneSelected: Readonly<{ available: boolean; reason: string | null }>;
-    authorSelectedClient: Readonly<{ available: boolean; reason: string | null }>;
-  }>;
-  entryError: string | null;
-  draft: Readonly<{
-    id: string;
-    phase: "edit" | "review" | "pending" | "outcome";
-    value: Readonly<ServerInjectionDraft>;
-    delayTimeoutText: string;
-    diagnostics: readonly ServerInjectionDiagnostic[];
-    ready: boolean;
-    source: Readonly<{ kind: "captured-message" | "authored"; eventId: string | null }>;
-    reviewedFingerprint: string | null;
-    agentRequestId: string | null;
-    agentApproved: boolean;
-    outcome: ServerInjectionExecutionResult | null;
-    repeatWarning: boolean;
-    discardConfirmation: boolean;
-    recipes: ClientMessageRecipeResolution;
-  }> | null;
-}>;
-
 export type WorkbenchScenarioCaptureWorkspace = Readonly<{
   search: string;
   commandFilter: "ALL" | "ADD" | "UPDATE" | "DELETE";
@@ -799,22 +763,7 @@ export type WorkbenchCommand =
   | { type: "confirm-discard-local-injection" }
   | { type: "finish-local-injection" }
   | { type: "convert-local-injection-to-scenario" }
-  | { type: "begin-server-injection-from-selection" }
-  | { type: "begin-server-injection-from-selected-client" }
-  | { type: "set-server-injection-message"; message: string }
-  | { type: "set-server-injection-sequence"; sequence: string }
-  | { type: "set-server-injection-delay-timeout"; value: string }
-  | { type: "set-server-injection-enqueue"; enabled: boolean }
-  | { type: "apply-server-injection-recipe"; recipeId: string }
-  | { type: "review-server-injection" }
-  | { type: "edit-server-injection" }
-  | { type: "execute-server-injection" }
-  | { type: "approve-server-injection-for-agent" }
-  | { type: "request-discard-server-injection" }
-  | { type: "cancel-discard-server-injection" }
-  | { type: "confirm-discard-server-injection" }
-  | { type: "finish-server-injection" }
-  | { type: "prepare-server-injection-repeat" }
+  | ServerInjectionCommand
   | { type: "set-scenario-capture-search"; text: string }
   | { type: "set-scenario-capture-filter"; command: WorkbenchScenarioCaptureWorkspace["commandFilter"] }
   | { type: "show-older-scenario-captures" }
@@ -1038,24 +987,6 @@ type LocalInjectionDraftState = {
   nativeChanges?: NativeReviewedChangeFacts;
 };
 
-type ServerInjectionDraftState = {
-  id: string;
-  phase: "edit" | "review" | "pending" | "outcome";
-  draft: ServerInjectionDraft;
-  delayTimeoutText: string;
-  diagnostics: readonly ServerInjectionDiagnostic[];
-  sourceKind: "captured-message" | "authored";
-  reviewedDraft: ServerInjectionDraft | null;
-  reviewedFingerprint: string | null;
-  agentRequestId: string | null;
-  agentPreparedFingerprint: string | null;
-  approvalFingerprint: string | null;
-  outcome: ServerInjectionExecutionResult | null;
-  repeatWarning: boolean;
-  discardConfirmation: boolean;
-  recipes: ClientMessageRecipeResolution;
-};
-
 type ScenarioState = {
   phase: "edit" | "review" | "running" | "paused" | "complete" | "stopped";
   parked: boolean;
@@ -1269,21 +1200,11 @@ class Runtime implements WorkbenchRuntime {
       this.dispatch({ type: types[action] });
     },
     finish: () => this.scenarioState ? this.finishScenario() : this.finishLocalInjection(),
-    prepareServerInjection: (draft, requestId) => this.prepareAgentServerInjection(draft, requestId),
-    serverInjection: () => this.serverInjectionSnapshot(),
-    executeApprovedServerInjection: requestId => this.executeApprovedAgentServerInjection(requestId),
-    abortServerInjection: requestId => {
-      const state = this.serverInjectionDraft;
-      if (!state || state.agentRequestId !== requestId || state.phase === "pending" || state.phase === "outcome" ||
-        !state.agentPreparedFingerprint || state.agentPreparedFingerprint !== this.currentServerInjectionFingerprint(state)) throw new Error("TARGET_CHANGED: Only the unchanged unexecuted agent Server Injection can be aborted.");
-      this.serverInjectionDraft = null;
-      this.serverInjectionEntryError = null;
-      this.commitTransition();
-    },
-    revokeServerInjectionApproval: () => {
-      const state = this.serverInjectionDraft;
-      if (state?.agentRequestId && state.approvalFingerprint) { state.approvalFingerprint = null; this.commitTransition(); }
-    },
+    prepareServerInjection: (draft, requestId) => this.serverInjection.prepareForAgent(draft, requestId),
+    serverInjection: () => this.serverInjection.snapshot(),
+    executeApprovedServerInjection: requestId => this.serverInjection.executeApprovedForAgent(requestId),
+    abortServerInjection: requestId => this.serverInjection.abortForAgent(requestId),
+    revokeServerInjectionApproval: () => this.serverInjection.revokeAgentApproval(),
     abortDocument: () => {
       if (this.scenarioState) {
         if (!["edit", "review"].includes(this.scenarioState.phase) || (this.scenarioState.run?.trace.length ?? 0) > 0) throw new Error("TARGET_CHANGED: Only an unexecuted Scenario can be aborted.");
@@ -1425,7 +1346,7 @@ class Runtime implements WorkbenchRuntime {
     const available = () => {
       if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Agent access was revoked while preparing the Scenario.");
       if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Page changed or panel is hidden/closed. Inspect the current target again.");
-      if (this.localInjectionDraft || this.serverInjectionDraft) throw new Error("A protected Draft already exists. Finish it in Workbench before creating a Scenario.");
+      if (this.localInjectionDraft || this.serverInjection.active) throw new Error("A protected Draft already exists. Finish it in Workbench before creating a Scenario.");
       if (this.scenarioState) {
         const existing = this.scenarioState;
         const replace = input.replace;
@@ -1497,7 +1418,7 @@ class Runtime implements WorkbenchRuntime {
     const available = () => {
       if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Agent access was revoked while preparing the document.");
       if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Page changed or panel is hidden/closed. Inspect the current target again.");
-      if (this.localInjectionDraft || this.scenarioState || this.serverInjectionDraft) throw new Error("A protected Draft or Scenario already exists. Finish it in Workbench before creating another.");
+      if (this.localInjectionDraft || this.scenarioState || this.serverInjection.active) throw new Error("A protected Draft or Scenario already exists. Finish it in Workbench before creating another.");
     };
     available();
     const candidates: LocalInjectionDraftState[] = [];
@@ -1569,8 +1490,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly dismissedDiagnosticIds = new Set<string>();
   private diagnosticFilterCriteria: DiagnosticFilterCriteria = Object.freeze({});
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
-  private readonly serverInjectionExecutor: ServerInjectionExecutor | null;
-  private readonly clientMessageRecipeProvider: ClientMessageRecipeProvider | null;
+  private readonly serverInjection: ServerInjectionController;
   private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   private readonly agentLocalSettlements = new Map<string, import("./agent-runtime").AgentLocalSettlement>();
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
@@ -1741,9 +1661,6 @@ class Runtime implements WorkbenchRuntime {
   private evidenceCopyGeneration = 0;
   private evidenceCopyAbortController: AbortController | null = null;
   private localInjectionDraft: LocalInjectionDraftState | null = null;
-  private serverInjectionDraft: ServerInjectionDraftState | null = null;
-  private serverInjectionEntryError: string | null = null;
-  private serverInjectionSequence = 0;
   private scenarioState: ScenarioState | null = null;
   private pendingLocalInjectionEntry: {
     intent: LocalInjectionEntryIntent;
@@ -1806,8 +1723,19 @@ class Runtime implements WorkbenchRuntime {
     this.normalizer = options.normalizer ?? createEventNormalizer();
     this.diagnosticObservations = options.diagnosticObservations ?? createMemoryDiagnosticObservationJournal({ panelSessionId: `runtime-${Date.now().toString(36)}` });
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
-    this.serverInjectionExecutor = options.serverInjectionExecutor ?? null;
-    this.clientMessageRecipeProvider = options.clientMessageRecipeProvider ?? null;
+    this.serverInjection = new ServerInjectionController({
+      topology: () => this.topologyProjection.snapshot(),
+      pageEpoch: () => this.currentPageEpoch,
+      captureStatus: () => this.captureStatus,
+      disposed: () => this.disposed,
+      visible: () => this.visible,
+      selectedEvent: () => this.selectedEventForServerInjection(),
+      blockingDocument: () => this.localInjectionDraft ? "local-injection" : this.scenarioState ? "scenario" : null,
+      commitTransition: () => this.commitTransition()
+    }, {
+      executor: options.serverInjectionExecutor ?? null,
+      recipeProvider: options.clientMessageRecipeProvider ?? null
+    });
     this.performanceHooks = options.performanceHooks ?? null;
     this.activityProjectionFactory = options.activityProjectionFactory ?? createActivityProjection;
     this.investigationDiscoveries = Object.freeze([...(options.investigationDiscoveries ?? [])]);
@@ -2200,6 +2128,10 @@ class Runtime implements WorkbenchRuntime {
     if (this.disposed) {
       return;
     }
+    if (isServerInjectionCommand(command)) {
+      this.serverInjection.dispatch(command);
+      return;
+    }
 
     switch (command.type) {
       case "set-visible":
@@ -2426,57 +2358,6 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "convert-local-injection-to-scenario":
         this.convertLocalInjectionToScenario();
-        return;
-      case "begin-server-injection-from-selection":
-        this.beginServerInjection(false);
-        return;
-      case "begin-server-injection-from-selected-client":
-        this.beginServerInjection(true);
-        return;
-      case "set-server-injection-message":
-        this.updateServerInjectionDraft((draft) => ({ ...draft, message: command.message }));
-        return;
-      case "set-server-injection-sequence":
-        this.updateServerInjectionDraft((draft) => ({ ...draft, sequence: command.sequence }));
-        return;
-      case "set-server-injection-delay-timeout":
-        this.setServerInjectionDelayTimeout(command.value);
-        return;
-      case "set-server-injection-enqueue":
-        this.updateServerInjectionDraft((draft) => ({
-          ...draft,
-          enqueueWhileDisconnected: command.enabled
-        }));
-        return;
-      case "apply-server-injection-recipe":
-        this.applyServerInjectionRecipe(command.recipeId);
-        return;
-      case "review-server-injection":
-        this.reviewServerInjection();
-        return;
-      case "edit-server-injection":
-        this.editServerInjection();
-        return;
-      case "execute-server-injection":
-        this.executeServerInjection();
-        return;
-      case "approve-server-injection-for-agent":
-        this.approveAgentServerInjection();
-        return;
-      case "request-discard-server-injection":
-        this.requestDiscardServerInjection();
-        return;
-      case "cancel-discard-server-injection":
-        this.cancelDiscardServerInjection();
-        return;
-      case "confirm-discard-server-injection":
-        this.confirmDiscardServerInjection();
-        return;
-      case "finish-server-injection":
-        this.finishServerInjection();
-        return;
-      case "prepare-server-injection-repeat":
-        this.prepareServerInjectionRepeat();
         return;
       case "set-scenario-capture-search":
       case "set-scenario-capture-filter": {
@@ -3104,7 +2985,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.disposed = true;
-    if (this.serverInjectionDraft?.agentRequestId) this.serverInjectionDraft.approvalFingerprint = null;
+    this.serverInjection.clearAgentApprovalLatch();
     this.scenarioState?.runner?.dispose();
     this.scenarioBoundaryListeners.clear();
     this.cancelPassivePublication();
@@ -3602,10 +3483,7 @@ class Runtime implements WorkbenchRuntime {
     this.visible = visible;
     this.scenarioVisibilityTransition = false;
     if (!visible) {
-      const agentServerDraft = this.serverInjectionDraft;
-      if (agentServerDraft?.agentRequestId && agentServerDraft.approvalFingerprint) {
-        agentServerDraft.approvalFingerprint = null;
-      }
+      this.serverInjection.clearAgentApprovalLatch();
       this.cancelPassivePublication();
       this.commitTransition(true);
       this.trackHiddenActivityConditionLifecycle = this.activityAggregationFailureReason !== null ||
@@ -4513,7 +4391,7 @@ class Runtime implements WorkbenchRuntime {
       this.commitTransition();
       return;
     }
-    if (this.serverInjectionDraft) {
+    if (this.serverInjection.active) {
       this.localInjectionEntryError = "Finish or discard the active Server Injection Draft before starting Local Injection.";
       this.commitTransition();
       return;
@@ -6453,23 +6331,7 @@ class Runtime implements WorkbenchRuntime {
         localInjectionDraft.reviewRefusal = null;
       }
     }
-    const serverInjectionDraft = this.serverInjectionDraft;
-    if (serverInjectionDraft?.phase === "edit") {
-      this.refreshServerInjectionValidation(serverInjectionDraft);
-    } else if (serverInjectionDraft?.phase === "review") {
-      this.refreshServerInjectionValidation(serverInjectionDraft);
-      if (
-        !serverInjectionDraft.reviewedFingerprint ||
-        !this.serverInjectionReady(serverInjectionDraft) ||
-        this.currentServerInjectionFingerprint(serverInjectionDraft) !==
-          serverInjectionDraft.reviewedFingerprint
-      ) {
-        serverInjectionDraft.phase = "edit";
-        serverInjectionDraft.reviewedDraft = null;
-        serverInjectionDraft.reviewedFingerprint = null;
-        serverInjectionDraft.approvalFingerprint = null;
-      }
-    }
+    this.serverInjection.reconcile();
   }
 
   /** Builds and announces one immutable snapshot; never changes domain state. */
@@ -6547,7 +6409,7 @@ class Runtime implements WorkbenchRuntime {
       evidenceCopy: this.evidenceCopy,
       activity,
       localInjection: this.localInjectionSnapshot(),
-      serverInjection: this.serverInjectionSnapshot(),
+      serverInjection: this.serverInjection.snapshot(),
       scenario: this.scenarioState
         ? Object.freeze({
             phase: this.scenarioState.phase,
@@ -6739,496 +6601,10 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  private serverInjectionSnapshot(): WorkbenchServerInjectionSnapshot {
-    const draft = this.serverInjectionDraft;
-    return Object.freeze({
-      state: draft ? "active" as const : "idle" as const,
-      availability: this.serverInjectionAvailability(),
-      entryError: this.serverInjectionEntryError,
-      draft: draft
-        ? Object.freeze({
-            id: draft.id,
-            phase: draft.phase,
-            value: Object.freeze(cloneServerInjectionDraft(draft.draft)),
-            delayTimeoutText: draft.delayTimeoutText,
-            diagnostics: draft.diagnostics,
-            ready: this.serverInjectionReady(draft),
-            source: Object.freeze({
-              kind: draft.sourceKind,
-              eventId: draft.draft.sourceEventId
-            }),
-            reviewedFingerprint: draft.reviewedFingerprint,
-            agentRequestId: draft.agentRequestId,
-            agentApproved: Boolean(draft.agentRequestId && draft.approvalFingerprint && draft.approvalFingerprint === draft.reviewedFingerprint && draft.approvalFingerprint === this.currentServerInjectionFingerprint(draft)),
-            outcome: draft.outcome,
-            repeatWarning: draft.repeatWarning,
-            discardConfirmation: draft.discardConfirmation,
-            recipes: draft.recipes
-          })
-        : null
-    });
-  }
-
-  private serverInjectionAvailability(): WorkbenchServerInjectionSnapshot["availability"] {
-    const event = this.selectedEventForServerInjection();
-    const blocked = this.localInjectionDraft
-      ? "Finish or discard the active Local Injection Draft first."
-      : this.scenarioState
-        ? "Finish the active Local Injection Scenario first."
-        : null;
-    const source = event ? createServerInjectionDraftFromEvent(event) : null;
-    const authored = event ? this.authoredServerInjectionDraftForEvent(event) : null;
-    const cloneReason = blocked ?? (
-      !event
-        ? "Select a captured Client Message."
-        : !source
-          ? "Selected Evidence is not a Captured Client Message with an available body and Session."
-          : this.validateServerInjectionTarget(source)[0]?.message ?? null
-    );
-    const authorReason = blocked ?? (
-      !event
-        ? "Select Evidence from a live official Lightstreamer client Session."
-        : !authored
-          ? "Selected Evidence does not identify a live official client sendMessage target."
-          : this.validateServerInjectionTarget(authored)[0]?.message ?? null
-    );
-    return Object.freeze({
-      cloneSelected: Object.freeze({ available: cloneReason === null, reason: cloneReason }),
-      authorSelectedClient: Object.freeze({ available: authorReason === null, reason: authorReason })
-    });
-  }
-
   private selectedEventForServerInjection(): LightstreamerEventEnvelope | null {
     if (!this.selectionEventId) return null;
     if (this.selectedEventEnvelope?.id === this.selectionEventId) return this.selectedEventEnvelope;
     return this.displayedEvidence().events.find(({ id }) => id === this.selectionEventId) ?? null;
-  }
-
-  private prepareAgentServerInjection(draft: AgentServerInjectionInput, requestId: string): void {
-    if (this.disposed || !this.visible) throw new Error("TARGET_CHANGED: Show Workbench before preparing a Server Injection review.");
-    if (!requestId || requestId.length > 2048) throw new Error("INVALID_ARGUMENT: requestId must be a non-empty bounded value.");
-    if (this.localInjectionDraft || this.scenarioState || this.serverInjectionDraft) throw new Error("REQUEST_CAPACITY: Finish the active protected document before preparing Server Injection.");
-    if (draft.target.pageEpoch !== this.currentPageEpoch) throw new Error("TARGET_CHANGED: The selected page epoch changed before preparation.");
-    const state: ServerInjectionDraftState = {
-      id: `agent-server-injection-${requestId}`,
-      phase: "edit",
-      draft: cloneServerInjectionDraft(draft),
-      delayTimeoutText: draft.delayTimeout === null ? "" : String(draft.delayTimeout),
-      diagnostics: Object.freeze([]),
-      sourceKind: "authored",
-      reviewedDraft: null,
-      reviewedFingerprint: null,
-      agentRequestId: requestId,
-      agentPreparedFingerprint: null,
-      approvalFingerprint: null,
-      outcome: null,
-      repeatWarning: false,
-      discardConfirmation: false,
-      recipes: unavailableClientMessageRecipes("This Client Message was prepared by an agent. Review its exact body and arguments before approving it.")
-    };
-    this.serverInjectionDraft = state;
-    this.refreshServerInjectionValidation(state);
-    state.agentPreparedFingerprint = this.currentServerInjectionFingerprint(state);
-    this.commitTransition();
-  }
-
-  private beginServerInjection(authored: boolean): void {
-    this.serverInjectionEntryError = null;
-    if (this.localInjectionDraft || this.scenarioState) {
-      this.serverInjectionEntryError = this.localInjectionDraft
-        ? "Finish or discard the active Local Injection Draft before starting Server Injection."
-        : "Finish the active Local Injection Scenario before starting Server Injection.";
-      this.commitTransition();
-      return;
-    }
-    if (this.serverInjectionDraft) {
-      this.serverInjectionEntryError = "One Server Injection Draft is already active.";
-      this.commitTransition();
-      return;
-    }
-    const event = this.selectedEventForServerInjection();
-    const candidate = event
-      ? authored
-        ? this.authoredServerInjectionDraftForEvent(event)
-        : createServerInjectionDraftFromEvent(event)
-      : null;
-    if (!candidate) {
-      this.serverInjectionEntryError = authored
-        ? "Select Evidence from a live official Lightstreamer client Session."
-        : "Select a Captured Client Message with an available body and Session.";
-      this.commitTransition();
-      return;
-    }
-    this.serverInjectionDraft = {
-      id: `server-injection-draft-${++this.serverInjectionSequence}`,
-      phase: "edit",
-      draft: cloneServerInjectionDraft(candidate),
-      delayTimeoutText: candidate.delayTimeout === null ? "" : String(candidate.delayTimeout),
-      diagnostics: Object.freeze([]),
-      sourceKind: authored ? "authored" : "captured-message",
-      reviewedDraft: null,
-      reviewedFingerprint: null,
-      agentRequestId: null,
-      agentPreparedFingerprint: null,
-      approvalFingerprint: null,
-      outcome: null,
-      repeatWarning: false,
-      discardConfirmation: false,
-      recipes: authored
-        ? loadingClientMessageRecipes()
-        : unavailableClientMessageRecipes(
-            "Captured Client Messages already provide the exact body accepted by the application."
-          )
-    };
-    this.refreshServerInjectionValidation(this.serverInjectionDraft);
-    this.commitTransition();
-    if (authored && event) {
-      this.resolveServerInjectionRecipes(
-        this.serverInjectionDraft.id,
-        createClientMessageRecipeContext(event, candidate.target)
-      );
-    }
-  }
-
-  private resolveServerInjectionRecipes(
-    draftId: string,
-    context: ReturnType<typeof createClientMessageRecipeContext>
-  ): void {
-    const resolution = this.clientMessageRecipeProvider
-      ? this.clientMessageRecipeProvider.resolve(context)
-      : Promise.resolve(unavailableClientMessageRecipes(
-          "This application does not expose a Workbench Message Recipe adapter."
-        ));
-    void resolution.then(
-      (recipes) => this.setServerInjectionRecipes(draftId, recipes),
-      (error) => this.setServerInjectionRecipes(draftId, errorClientMessageRecipes(
-        error instanceof Error
-          ? error.message
-          : "Workbench could not resolve application Message Recipes."
-      ))
-    );
-  }
-
-  private setServerInjectionRecipes(
-    draftId: string,
-    recipes: ClientMessageRecipeResolution
-  ): void {
-    const state = this.serverInjectionDraft;
-    if (this.disposed || !state || state.id !== draftId || state.phase !== "edit") return;
-    state.recipes = recipes;
-    this.commitTransition();
-  }
-
-  private applyServerInjectionRecipe(recipeId: string): void {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase !== "edit" || state.recipes.status !== "available") return;
-    const recipe = state.recipes.items.find(({ id }) => id === recipeId);
-    if (!recipe) return;
-    state.draft = {
-      ...state.draft,
-      message: recipe.message,
-      sequence: recipe.sequence,
-      delayTimeout: recipe.delayTimeout,
-      enqueueWhileDisconnected: recipe.enqueueWhileDisconnected
-    };
-    state.delayTimeoutText = recipe.delayTimeout === null ? "" : String(recipe.delayTimeout);
-    state.reviewedDraft = null;
-    state.reviewedFingerprint = null;
-    state.approvalFingerprint = null;
-    state.outcome = null;
-    state.discardConfirmation = false;
-    this.refreshServerInjectionValidation(state);
-    this.commitTransition();
-  }
-
-  private authoredServerInjectionDraftForEvent(
-    event: LightstreamerEventEnvelope
-  ): ServerInjectionDraft | null {
-    const clientId = event.client?.id;
-    const sessionId = event.client?.sessionId;
-    const pageEpoch = event.clientMessage?.pageEpoch ?? event.topology?.pageEpoch ?? this.currentPageEpoch;
-    const resolvedTarget = clientId && sessionId && pageEpoch
-      ? { clientId, sessionId, pageEpoch }
-      : null;
-    return createAuthoredServerInjectionDraft(event, resolvedTarget);
-  }
-
-  private updateServerInjectionDraft(
-    update: (draft: ServerInjectionDraft) => ServerInjectionDraft
-  ): void {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase !== "edit") return;
-    state.draft = update(cloneServerInjectionDraft(state.draft));
-    state.reviewedDraft = null;
-    state.reviewedFingerprint = null;
-    state.approvalFingerprint = null;
-    state.outcome = null;
-    state.discardConfirmation = false;
-    this.refreshServerInjectionValidation(state);
-    this.commitTransition();
-  }
-
-  private setServerInjectionDelayTimeout(value: string): void {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase !== "edit") return;
-    state.delayTimeoutText = value;
-    const trimmed = value.trim();
-    if (trimmed === "") {
-      state.draft = { ...state.draft, delayTimeout: null };
-    } else if (/^\d+$/.test(trimmed)) {
-      const parsed = Number(trimmed);
-      if (Number.isSafeInteger(parsed)) state.draft = { ...state.draft, delayTimeout: parsed };
-    }
-    state.reviewedDraft = null;
-    state.reviewedFingerprint = null;
-    state.approvalFingerprint = null;
-    this.refreshServerInjectionValidation(state);
-    this.commitTransition();
-  }
-
-  private refreshServerInjectionValidation(state: ServerInjectionDraftState): void {
-    const diagnostics = [
-      ...validateServerInjectionDraft(state.draft),
-      ...this.validateServerInjectionTarget(state.draft)
-    ];
-    const timeout = state.delayTimeoutText.trim();
-    if (
-      timeout !== "" &&
-      (!/^\d+$/.test(timeout) || !Number.isSafeInteger(Number(timeout)))
-    ) {
-      diagnostics.unshift(Object.freeze({
-        code: "invalid-timeout",
-        severity: "error" as const,
-        message: "Delay timeout must be a non-negative whole number or left blank for Server default."
-      }));
-    }
-    state.diagnostics = Object.freeze(diagnostics);
-  }
-
-  private validateServerInjectionTarget(
-    draft: ServerInjectionDraft
-  ): readonly ServerInjectionDiagnostic[] {
-    const errors: ServerInjectionDiagnostic[] = [];
-    const add = (code: string, message: string) => errors.push(Object.freeze({
-      code,
-      severity: "error" as const,
-      message
-    }));
-    if (this.captureStatus === "bridge disconnected") {
-      add("bridge-disconnected", "The inspected-page bridge is disconnected.");
-    }
-    if (this.currentPageEpoch && draft.target.pageEpoch !== this.currentPageEpoch) {
-      add("stale-page", "The inspected page changed after this Draft was created.");
-      return errors;
-    }
-    const client = this.topologyProjection.snapshot().clients.find(
-      ({ id }) => id === draft.target.clientId
-    );
-    if (!client) {
-      add("stale-client", "The protected Lightstreamer client is no longer available.");
-      return errors;
-    }
-    if (client.instrumentationSource !== "public-api") {
-      add("unsupported-client", "Server Injection requires an official Lightstreamer client API target.");
-    }
-    const session = client.sessions.find(
-      ({ id, active, historical }) => id === draft.target.sessionId && active && !historical
-    );
-    if (!session) {
-      add("stale-session", "The protected Lightstreamer Session is no longer active.");
-    }
-    return errors;
-  }
-
-  private serverInjectionReady(state: ServerInjectionDraftState): boolean {
-    return state.diagnostics.every(({ severity }) => severity !== "error");
-  }
-
-  private currentServerInjectionFingerprint(state: ServerInjectionDraftState): string {
-    const topology = this.topologyProjection.snapshot();
-    const client = topology.clients.find(({ id }) => id === state.draft.target.clientId);
-    const session = client?.sessions.find(({ id }) => id === state.draft.target.sessionId);
-    return JSON.stringify([
-      serverInjectionApprovalFingerprint(state.draft),
-      this.currentPageEpoch,
-      this.captureStatus,
-      client?.id ?? null,
-      client?.instrumentationSource ?? null,
-      session?.id ?? null,
-      session?.active ?? false,
-      session?.historical ?? true
-    ]);
-  }
-
-  private reviewServerInjection(): void {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase !== "edit") return;
-    this.refreshServerInjectionValidation(state);
-    if (!this.serverInjectionReady(state)) {
-      this.commitTransition();
-      return;
-    }
-    state.reviewedDraft = Object.freeze(cloneServerInjectionDraft(state.draft));
-    state.reviewedFingerprint = this.currentServerInjectionFingerprint(state);
-    state.approvalFingerprint = null;
-    state.phase = "review";
-    this.commitTransition();
-  }
-
-  private editServerInjection(): void {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase !== "review") return;
-    state.phase = "edit";
-    state.reviewedDraft = null;
-    state.reviewedFingerprint = null;
-    state.approvalFingerprint = null;
-    state.discardConfirmation = false;
-    this.commitTransition();
-  }
-
-  private approveAgentServerInjection(): void {
-    const state = this.serverInjectionDraft;
-    if (!state?.agentRequestId || state.phase !== "review" || !state.reviewedFingerprint) return;
-    this.refreshServerInjectionValidation(state);
-    if (!this.serverInjectionReady(state) || this.currentServerInjectionFingerprint(state) !== state.reviewedFingerprint) {
-      state.phase = "edit";
-      state.reviewedDraft = null;
-      state.reviewedFingerprint = null;
-      state.approvalFingerprint = null;
-      this.commitTransition();
-      return;
-    }
-    // This latch can only be created by the visible, focused human action in
-    // this document. Agent calls cannot invoke this command.
-    state.approvalFingerprint = state.reviewedFingerprint;
-    this.commitTransition();
-  }
-
-  private executeApprovedAgentServerInjection(requestId: string): Promise<ServerInjectionExecutionResult> {
-    if (this.disposed || !this.visible) {
-      throw new Error("TARGET_CHANGED: Agent-approved Server Injection cannot execute while the panel is hidden or closed.");
-    }
-    const state = this.serverInjectionDraft;
-    if (!state || state.agentRequestId !== requestId || !state.approvalFingerprint ||
-      state.approvalFingerprint !== state.reviewedFingerprint ||
-      state.approvalFingerprint !== this.currentServerInjectionFingerprint(state)) {
-      if (state?.agentRequestId === requestId && state.approvalFingerprint) {
-        state.approvalFingerprint = null;
-        state.reviewedFingerprint = null;
-        state.reviewedDraft = null;
-        if (state.phase === "review") state.phase = "edit";
-        this.commitTransition();
-      }
-      throw new Error("HUMAN_APPROVAL_REQUIRED: Review and approve this exact Client/Session/message call in the Workbench document.");
-    }
-    return this.executeServerInjection(requestId).then(result => {
-      if (!result) throw new Error("TARGET_CHANGED: Approved Server Injection could not be started.");
-      return result;
-    });
-  }
-
-  private executeServerInjection(requestId?: string): Promise<ServerInjectionExecutionResult | null> {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase !== "review" || !state.reviewedDraft || !state.reviewedFingerprint) return Promise.resolve(null);
-    if (state.agentRequestId && (!requestId || !state.approvalFingerprint)) return Promise.resolve(null);
-    this.refreshServerInjectionValidation(state);
-    if (
-      !this.serverInjectionReady(state) ||
-      this.currentServerInjectionFingerprint(state) !== state.reviewedFingerprint
-    ) {
-      state.phase = "edit";
-      state.reviewedDraft = null;
-      state.reviewedFingerprint = null;
-      state.approvalFingerprint = null;
-      this.commitTransition();
-      return Promise.resolve(null);
-    }
-    const draftId = state.id;
-    const reviewed = cloneServerInjectionDraft(state.reviewedDraft);
-    state.phase = "pending";
-    this.commitTransition();
-    const execution = this.serverInjectionExecutor
-      ? this.serverInjectionExecutor.execute(reviewed, requestId)
-      : Promise.resolve<ServerInjectionExecutionResult>({
-          requestId: requestId ?? `server-injection-unavailable-${Date.now()}`,
-          ok: false,
-          status: "bridge-error",
-          timestamp: Date.now(),
-          error: "Server Injection executor is unavailable."
-        });
-    return execution.then(
-      (outcome) => { this.setServerInjectionOutcome(draftId, outcome); return outcome; },
-      (error) => {
-        const outcome: ServerInjectionExecutionResult = {
-        requestId: requestId ?? `server-injection-unknown-${Date.now()}`,
-        ok: false,
-        status: "unknown",
-        timestamp: Date.now(),
-        error: `${error instanceof Error ? error.message : "Server Injection outcome was lost."} Do not repeat automatically.`
-        };
-        this.setServerInjectionOutcome(draftId, outcome);
-        return outcome;
-      }
-    );
-  }
-
-  private setServerInjectionOutcome(
-    draftId: string,
-    outcome: ServerInjectionExecutionResult
-  ): void {
-    const state = this.serverInjectionDraft;
-    if (this.disposed || !state || state.id !== draftId || state.phase !== "pending") return;
-    state.outcome = Object.freeze({ ...outcome });
-    state.phase = "outcome";
-    this.commitTransition();
-  }
-
-  private requestDiscardServerInjection(): void {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase === "pending") return;
-    state.discardConfirmation = true;
-    this.commitTransition();
-  }
-
-  private cancelDiscardServerInjection(): void {
-    const state = this.serverInjectionDraft;
-    if (!state || !state.discardConfirmation) return;
-    state.discardConfirmation = false;
-    this.commitTransition();
-  }
-
-  private confirmDiscardServerInjection(): void {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase === "pending" || !state.discardConfirmation) return;
-    this.serverInjectionDraft = null;
-    this.serverInjectionEntryError = null;
-    this.commitTransition();
-  }
-
-  private finishServerInjection(): void {
-    if (this.serverInjectionDraft?.phase !== "outcome") return;
-    this.serverInjectionDraft = null;
-    this.serverInjectionEntryError = null;
-    this.commitTransition();
-  }
-
-  private prepareServerInjectionRepeat(): void {
-    const state = this.serverInjectionDraft;
-    if (!state || state.phase !== "outcome") return;
-    state.id = `server-injection-draft-${++this.serverInjectionSequence}`;
-    // A deliberate Repeat is a new human-owned message, never a continuation
-    // of an agent's consumed request ID or approval.
-    state.agentRequestId = null;
-    state.agentPreparedFingerprint = null;
-    state.approvalFingerprint = null;
-    state.phase = "edit";
-    state.reviewedDraft = null;
-    state.reviewedFingerprint = null;
-    state.outcome = null;
-    state.repeatWarning = true;
-    state.discardConfirmation = false;
-    this.refreshServerInjectionValidation(state);
-    this.commitTransition();
   }
 
   private localInjectionAvailability(): WorkbenchLocalInjectionSnapshot["availability"] {
