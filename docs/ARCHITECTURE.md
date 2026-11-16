@@ -493,7 +493,10 @@ clear()
 close()
 ```
 
-`createIndexedDbEventHistory()` is the normal session-backed implementation. If
+`createIndexedDbEventHistory()` is the normal session-backed implementation. Both
+implementations share intake, gap, retry, and replay vocabulary from
+`src/core/event-history-shared.ts`, including the stable Evidence identity
+owner token, so durable and volatile segments emit identical identities. If
 IndexedDB startup, ownership coordination, schema validation, or guarded cleanup
 cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the
 same Panel Session. The normal IndexedDB tier retains at most 100,000 Evidence

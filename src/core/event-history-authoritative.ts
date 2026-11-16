@@ -31,6 +31,27 @@ import {
 } from "./event-history-serialization";
 import { type AuthoritativeEventDatabaseRuntime } from "./indexeddb/authoritative-event-db";
 import {
+  EVIDENCE_HISTORY_OWNER_ID,
+  HistoryContinuityLedger,
+  JOURNAL_COMMIT_MAX_ATTEMPTS,
+  candidateIdIfPresent,
+  deepFreeze,
+  gapBarrierFacts,
+  isDeterministicJournalError,
+  isQuotaError,
+  journalRetryDelay,
+  replayChunkSize,
+  retentionLowWater as rollingLowWater,
+  toRef,
+  type HistorySubscriber,
+  type PendingCandidate,
+  type PendingEntry,
+  type PendingGapBarrier,
+  type PendingGapSeed,
+  type PendingReplayRange,
+  type ReceiptResult
+} from "./event-history-shared";
+import {
   defaultHistoryTimer,
   estimateHistoryCandidateBytes,
   historyCapacityLimits,
@@ -381,71 +402,16 @@ type HistoryJournal = {
   close(): Promise<void>;
 };
 
-type PendingCandidate = Readonly<{
-  kind: "candidate";
-  ordinal: number;
-  eventId: string;
-  serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
-  bytes: number;
-  offeredAt: number;
-  settled: CaptureReceipt["settled"];
-  resolve: (result: ReceiptResult) => void;
-}>;
 
-type PendingGapSeed = Readonly<{
-  captureOrdinal: number;
-  eventId: string;
-  candidateBytes: number;
-  occurredAt: number;
-  dimension: HistoryAcceptanceGap["dimension"];
-}>;
 
-type PendingGapBarrier = {
-  kind: "gap-barrier";
-  count: number;
-  first: PendingGapSeed;
-  latest: PendingGapSeed;
-  problem: HistoryProblem;
-  settled: CaptureReceipt["settled"];
-  resolve: (result: ReceiptResult) => void;
-};
 
-type PendingEntry = PendingCandidate | PendingGapBarrier;
-
-type ReceiptResult =
-  | Readonly<{ outcome: "BECAME_EVIDENCE"; evidence: EvidenceRef }>
-  | Readonly<{
-      outcome: "NOT_EVIDENCE";
-      problem: HistoryProblem;
-      committedEvidenceBoundary: EvidenceRef | null;
-  }>;
-
-type PendingReplayRange = Readonly<{
-  type: "committed-range";
+type Subscriber = HistorySubscriber<{
+  nextIndex: number;
+  lastIndex: number;
   interval: HistoryInterval;
-  firstSequence: number;
-  lastSequence: number;
-  committedEvidenceBoundary: EvidenceRef;
+  after: EvidenceRef | null;
+  chunkSize: number;
 }>;
-
-type Subscriber = {
-  observer: (publication: HistoryPublication) => void;
-  replaying: boolean;
-  pending: Array<HistoryPublication | PendingReplayRange>;
-  signalCleanup?: () => void;
-  cooperativeReplay?: {
-    nextIndex: number;
-    lastIndex: number;
-    interval: HistoryInterval;
-    after: EvidenceRef | null;
-    chunkSize: number;
-    signal?: AbortSignal;
-    signalCleanup?: () => void;
-  };
-};
-
-const DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE = 256;
-const MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE = 2_048;
 
 type MemoryEventHistoryOptions = Readonly<{
   panelSessionId?: string;
@@ -613,10 +579,6 @@ function removeMemoryQueryPrefix(index: MemoryQueryIndex, sequences: ReadonlySet
   index.timestampOrder = index.timestampOrder.filter((sequence) => !sequences.has(sequence));
 }
 
-function rollingLowWater(highWater: number): number {
-  if (highWater <= 0) return 0;
-  return Math.max(1, Math.floor(highWater * 0.9));
-}
 
 type MemoryPostingSelection = Readonly<{
   sequences: Set<number> | null;
@@ -883,9 +845,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   let lastRetentionAdvance: HistoryRetentionAdvance | null = null;
   let accepted = 0;
   let notAccepted = 0;
-  let firstGap: HistoryAcceptanceGap | null = null;
-  let latestGap: HistoryAcceptanceGap | null = null;
-  let gapCount = 0;
+  const continuity = new HistoryContinuityLedger();
   let journalEnabled = fallback === null;
   let journalCommitAttempts = 0;
   let journalRetryCount = 0;
@@ -972,12 +932,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   }
 
   function continuityStatus(): HistoryContinuityStatus {
-    return deepFreeze({
-      state: gapCount > 0 ? "GAPPED" : "CONTIGUOUS",
-      gapCount,
-      firstGap,
-      latestGap
-    });
+    return continuity.status();
   }
 
   function retentionStatus(): HistoryRetentionStatus {
@@ -1344,16 +1299,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
 
   function settleGapBarrier(barrier: PendingGapBarrier): void {
     const afterEvidence = committedEvidenceBoundary;
-    const toGap = (seed: PendingGapSeed): HistoryAcceptanceGap => deepFreeze({
-      interval,
-      ...seed,
-      afterEvidence
-    });
-    const first = toGap(barrier.first);
-    const latest = barrier.count === 1 ? first : toGap(barrier.latest);
-    firstGap ??= first;
-    latestGap = latest;
-    gapCount += barrier.count;
+    const { first, latest } = gapBarrierFacts(barrier, interval, afterEvidence);
+    continuity.record(first, latest, barrier.count);
     publish(deepFreeze({
       type: "acceptance-gap" as const,
       interval,
@@ -1458,7 +1405,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   async function commitWithMemoryFallback(candidates: readonly EvidenceCandidate[]): Promise<void> {
     if (!journalEnabled) return;
     let failuresThisBatch = 0;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= JOURNAL_COMMIT_MAX_ATTEMPTS; attempt += 1) {
       journalCommitAttempts += 1;
       try {
         await journal.commitBatch(candidates);
@@ -1482,8 +1429,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
           error instanceof Error ? `${error.name}: ${error.message}` : "The Event History journal commit failed.",
           { reason, dimension: "JOURNAL" }
         );
-        if (attempt < 3) {
+        if (attempt < JOURNAL_COMMIT_MAX_ATTEMPTS && !isDeterministicJournalError(error)) {
           journalRetryCount += 1;
+          await journalRetryDelay(attempt);
           continue;
         }
         journalEnabled = false;
@@ -2060,9 +2008,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         evictedCount = 0;
         evictedBytes = 0;
         lastRetentionAdvance = null;
-        gapCount = 0;
-        firstGap = null;
-        latestGap = null;
+        continuity.reset();
         lastNearLimit = false;
         rejoinPostClearQueue();
         clearInProgress = false;
@@ -2228,11 +2174,6 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     };
   }
 
-  function replayChunkSize(options: HistoryFollowOptions): number {
-    if (options.chunkSize === undefined) return DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE;
-    if (!Number.isSafeInteger(options.chunkSize) || options.chunkSize < 1) return DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE;
-    return Math.min(MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE, options.chunkSize);
-  }
 
   function replayBoundaryProblem(message: string): HistoryProblem {
     return problem("REPLAY_FAILED", message);
@@ -2480,11 +2421,6 @@ function candidateId(candidate: EvidenceCandidate): string {
   return candidate.id;
 }
 
-function candidateIdIfPresent(candidate: unknown): string | null {
-  return candidate && typeof candidate === "object" && "id" in candidate && typeof candidate.id === "string" && candidate.id.length > 0
-    ? candidate.id
-    : null;
-}
 
 export function selectEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
   return evidence.filter((entry) => matchesEvidenceQuery(entry, query));
@@ -2509,13 +2445,6 @@ export function pageEvidence(evidence: readonly CommittedEvidence[], query: Evid
   return query.limit === undefined ? ordered : ordered.slice(0, Math.max(0, query.limit));
 }
 
-function toRef(evidence: CommittedEvidence): EvidenceRef {
-  return deepFreeze({
-    intervalId: evidence.intervalId,
-    sequence: evidence.sequence,
-    eventId: evidence.eventId
-  });
-}
 
 function evidenceReadProblem(code: EvidenceFilterReadProblem["code"], message: string): EvidenceFilterReadProblem {
   return Object.freeze({ code, message });
@@ -2525,7 +2454,7 @@ function evidenceIdentity(ref: EvidenceRef, interval: HistoryInterval): Evidence
   return Object.freeze({
     intervalId: ref.intervalId,
     pageId: interval.id,
-    ownerId: "memory-event-history",
+    ownerId: EVIDENCE_HISTORY_OWNER_ID,
     sequence: ref.sequence,
     eventId: ref.eventId
   });
@@ -2699,22 +2628,7 @@ function nextId(): string {
   return Math.random().toString(36).slice(2);
 }
 
-function isQuotaError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const value = error as { name?: unknown; code?: unknown };
-  return value.name === "QuotaExceededError" || value.code === "QUOTA_EXCEEDED";
-}
 
-function deepFreeze<T>(value: T): T {
-  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  Object.freeze(value);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return value;
-}
 
 /**
  * Materializes a read without recursively walking every retained payload.

@@ -70,6 +70,28 @@ import {
   isBoundedEvidenceRefComponent,
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
+import {
+  EVIDENCE_HISTORY_OWNER_ID,
+  HistoryContinuityLedger,
+  JOURNAL_COMMIT_MAX_ATTEMPTS,
+  JournalIntegrityError,
+  candidateIdIfPresent,
+  deepFreeze,
+  gapBarrierFacts,
+  isDeterministicJournalError,
+  isQuotaError,
+  journalRetryDelay,
+  replayChunkSize,
+  retentionLowWater,
+  toRef,
+  type HistorySubscriber,
+  type PendingCandidate as Pending,
+  type PendingEntry,
+  type PendingGapBarrier,
+  type PendingGapSeed,
+  type PendingReplayRange,
+  type ReceiptResult
+} from "./event-history-shared";
 import { extractEvidenceFacets, canonicalEvidenceSearchText, canonicalEvidenceSearchTextWithExtraction, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
 import { discoverFacet, discoverFacetFromAccounting, discoverFacetFromAggregates, type DiscoveryAccountingEntry, type DiscoveryAggregateEntry } from "./evidence-filter-discovery";
 import { canonicalizeFilter, evaluateFilter, filterValueMatches, type Filter, type FilterRecord } from "./filter-algebra";
@@ -101,8 +123,6 @@ export const AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT = 256;
 export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 2_097_152;
 /** Commit transactions may fan out to Evidence, projection, posting, and aggregate indexes. */
 export const AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS = 30_000;
-const JOURNAL_COMMIT_MAX_ATTEMPTS = 3;
-const RETENTION_LOW_WATER_RATIO = 0.9;
 const EVIDENCE_FACET_COUNT = 12;
 // Controlled close erases a session by deleting its IndexedDB database after
 // the connection is closed. Deletion avoids a giant read/write clear over all
@@ -152,36 +172,6 @@ type QueryProjection = {
 
 export const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = FACET_POSTING_NAMESPACE;
 
-type Pending = {
-  kind: "candidate";
-  ordinal: number;
-  eventId: string;
-  serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
-  bytes: number;
-  offeredAt: number;
-  settled: CaptureReceipt["settled"];
-  resolve: (result: ReceiptResult) => void;
-};
-
-type PendingGapSeed = Readonly<{
-  captureOrdinal: number;
-  eventId: string;
-  candidateBytes: number;
-  occurredAt: number;
-  dimension: HistoryAcceptanceGap["dimension"];
-}>;
-
-type PendingGapBarrier = {
-  kind: "gap-barrier";
-  count: number;
-  first: PendingGapSeed;
-  latest: PendingGapSeed;
-  problem: HistoryProblem;
-  settled: CaptureReceipt["settled"];
-  resolve: (result: ReceiptResult) => void;
-};
-
-type PendingEntry = Pending | PendingGapBarrier;
 
 type PreparedEvidence = Readonly<{
   evidence: CommittedEvidence;
@@ -237,33 +227,15 @@ type RetentionTrimPlan = Readonly<{
 
 type FacetAggregateCache = Map<string, AuthoritativeFacetAggregateRecord | null>;
 
-type ReceiptResult =
-  | Readonly<{ outcome: "BECAME_EVIDENCE"; evidence: EvidenceRef }>
-  | Readonly<{
-      outcome: "NOT_EVIDENCE";
-      problem: HistoryProblem;
-      committedEvidenceBoundary: EvidenceRef | null;
-    }>;
 
-type Subscriber = {
-  observer: (publication: HistoryPublication) => void;
-  replaying: boolean;
-  pending: Array<HistoryPublication | PendingReplayRange>;
-  signalCleanup?: () => void;
-  cooperativeReplay?: {
-    interval: HistoryInterval;
-    generation: number;
-    nextSequence: number;
-    lastSequence: number;
-    chunkSize: number;
-    after: EvidenceRef | null;
-    signal?: AbortSignal;
-    signalCleanup?: () => void;
-  };
-};
-
-const DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE = 256;
-const MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE = 2_048;
+type Subscriber = HistorySubscriber<{
+  interval: HistoryInterval;
+  generation: number;
+  nextSequence: number;
+  lastSequence: number;
+  chunkSize: number;
+  after: EvidenceRef | null;
+}>;
 
 export type IndexedDbEventHistoryOptions = Readonly<{
   panelSessionId?: string;
@@ -536,13 +508,6 @@ type ReadLatch = Readonly<{
   retainedCount: number;
 }>;
 
-type PendingReplayRange = Readonly<{
-  type: "committed-range";
-  interval: HistoryInterval;
-  firstSequence: number;
-  lastSequence: number;
-  committedEvidenceBoundary: EvidenceRef;
-}>;
 
 function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJournal, options: IndexedDbEventHistoryOptions): EventHistory {
   const subscribers = new Set<Subscriber>();
@@ -576,9 +541,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let evictedCount = 0;
   let evictedBytes = 0;
   let lastRetentionAdvance: HistoryRetentionAdvance | null = null;
-  let firstGap: HistoryAcceptanceGap | null = null;
-  let latestGap: HistoryAcceptanceGap | null = null;
-  let gapCount = 0;
+  const continuity = new HistoryContinuityLedger();
   const volatileEvidence: VolatileEvidence[] = [];
   let volatileCapacityBytes = 0;
   const volatileQueryIndex = new VolatileEvidenceQueryIndex();
@@ -664,12 +627,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   }
 
   function continuityStatus(): HistoryContinuityStatus {
-    return deepFreeze({
-      state: gapCount > 0 ? "GAPPED" : "CONTIGUOUS",
-      gapCount,
-      firstGap,
-      latestGap
-    });
+    return continuity.status();
   }
 
   function retentionStatus(): HistoryRetentionStatus {
@@ -941,10 +899,6 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: problem("HISTORY_CLOSED", "Event History is closed."), committedEvidenceBoundary: currentBoundary() }) };
   }
 
-  function retentionLowWater(maximum: number): number {
-    if (maximum <= 0) return 0;
-    return Math.max(1, Math.floor(maximum * RETENTION_LOW_WATER_RATIO));
-  }
 
   function memoryCapacityLimits(): ReturnType<typeof historyCapacityLimits> {
     return historyCapacityLimits("LOWER", { ...options.capacity, ...options.fallbackCapacity });
@@ -1182,9 +1136,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         afterEvidence
       });
       const first = toGap(firstLost);
-      firstGap ??= first;
-      latestGap = carry.lost === 1 ? first : toGap(lastLost);
-      gapCount += carry.lost;
+      continuity.record(first, carry.lost === 1 ? first : toGap(lastLost), carry.lost);
       gap = {
         gap: first,
         problem: problem(
@@ -1301,16 +1253,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
   function settleGapBarrier(barrier: PendingGapBarrier): void {
     const afterEvidence = currentBoundary();
-    const toGap = (seed: PendingGapSeed): HistoryAcceptanceGap => deepFreeze({
-      interval,
-      ...seed,
-      afterEvidence
-    });
-    const first = toGap(barrier.first);
-    const latest = barrier.count === 1 ? first : toGap(barrier.latest);
-    firstGap ??= first;
-    latestGap = latest;
-    gapCount += barrier.count;
+    const { first, latest } = gapBarrierFacts(barrier, interval, afterEvidence);
+    continuity.record(first, latest, barrier.count);
     publish(deepFreeze({
       type: "acceptance-gap" as const,
       interval,
@@ -1752,9 +1696,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       evictedCount = 0;
       evictedBytes = 0;
       lastRetentionAdvance = null;
-      gapCount = 0;
-      firstGap = null;
-      latestGap = null;
+      continuity.reset();
       lastNearLimit = false;
       findCache.entry = null;
       findCache.requestId += 1;
@@ -1884,11 +1826,6 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     try { subscriber.observer(publication); } catch { subscribers.delete(subscriber); subscriber.pending.length = 0; }
   }
 
-  function replayChunkSize(options: HistoryFollowOptions): number {
-    if (options.chunkSize === undefined) return DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE;
-    if (!Number.isSafeInteger(options.chunkSize) || options.chunkSize < 1) return DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE;
-    return Math.min(MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE, options.chunkSize);
-  }
 
   function replayFailure(message: string): HistoryProblem {
     return problem("REPLAY_FAILED", message);
@@ -2415,7 +2352,7 @@ function hybridQueryReadPoint(latch: ReadLatch): EvidenceReadPoint {
   const identity = (reference: EvidenceRef): EvidenceIdentity => Object.freeze({
     intervalId: reference.intervalId,
     pageId: latch.interval.id,
-    ownerId: "memory-event-history",
+    ownerId: EVIDENCE_HISTORY_OWNER_ID,
     sequence: reference.sequence,
     eventId: reference.eventId
   });
@@ -2734,7 +2671,7 @@ async function queryIndexedDb(
     }
     if (pageCursor !== null && (pageCursor.anchor.intervalId !== interval.id
       || pageCursor.anchor.pageId !== interval.id
-      || pageCursor.anchor.ownerId !== "memory-event-history"
+      || pageCursor.anchor.ownerId !== EVIDENCE_HISTORY_OWNER_ID
       || pageCursor.anchor.sequence < firstSequence
       || pageCursor.anchor.sequence > lastSequence)) {
       return queryFailure("QUERY_FAILED", "The page cursor anchor is stale or outside the latched Evidence range.");
@@ -3184,7 +3121,7 @@ function validateAggregateFacetPostings(
 
 function querySelectionRecord(projection: QueryProjection, interval: HistoryInterval): SelectionRecord {
   validateQueryProjection(projection, interval.id, projection.sequence);
-  return Object.freeze({ identity: Object.freeze({ intervalId: projection.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId }), timestamp: projection.timestamp, summary: projection.summary, searchText: projection.searchText, facets: Object.freeze(projection.facets) as SelectionRecord["facets"] });
+  return Object.freeze({ identity: Object.freeze({ intervalId: projection.intervalId, pageId: interval.id, ownerId: EVIDENCE_HISTORY_OWNER_ID, sequence: projection.sequence, eventId: projection.eventId }), timestamp: projection.timestamp, summary: projection.summary, searchText: projection.searchText, facets: Object.freeze(projection.facets) as SelectionRecord["facets"] });
 }
 
 function isTopologyCheckpointProjection(projection: QueryProjection): boolean {
@@ -3401,7 +3338,7 @@ async function readDiscoveryAccounting(
 }
 
 function identityOfProjection(projection: QueryProjection, intervalId: string): EvidenceIdentity {
-  return { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId };
+  return { intervalId, pageId: intervalId, ownerId: EVIDENCE_HISTORY_OWNER_ID, sequence: projection.sequence, eventId: projection.eventId };
 }
 
 async function validateDiscoveryFacetPostings(store: IDBObjectStore, facet: string, intervalId: string, first: number, last: number, projections: readonly QueryProjection[], telemetry: QueryTelemetryMutable, cache: Map<string, Map<number, string>>): Promise<void> {
@@ -3552,7 +3489,7 @@ function readEvaluatedProjectionPage(
     if (!evaluation.matches || (supplemental && !(await supplemental(projection)))) return;
     matching += 1;
     if (!isInAround({
-      identity: { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId },
+      identity: { intervalId, pageId: intervalId, ownerId: EVIDENCE_HISTORY_OWNER_ID, sequence: projection.sequence, eventId: projection.eventId },
       timestamp: projection.timestamp
     }, around)) return;
     inScope += 1;
@@ -3765,7 +3702,7 @@ async function readFindSequenceIndex(
     }
     if (normalized && (!find.scopeToFilter || inScope) && searchBlockStarts.has(indexBlockStart(sequence)) && matchesFindText) {
       matches.push(sequence);
-      if (leadingMatches.length < 1_000) leadingMatches.push(Object.freeze({ intervalId: interval.id, pageId: interval.id, ownerId: "memory-event-history", sequence, eventId }));
+      if (leadingMatches.length < 1_000) leadingMatches.push(Object.freeze({ intervalId: interval.id, pageId: interval.id, ownerId: EVIDENCE_HISTORY_OWNER_ID, sequence, eventId }));
     }
   };
   // Exact row blocks use column dictionaries instead of cloning the same rich
@@ -4012,7 +3949,7 @@ function queryFailure(code: EvidenceFilterReadProblem["code"], message: string):
 }
 
 function queryReadPoint(control: ControlRecord): EvidenceReadPoint {
-  const identity = (ref: EvidenceRef): EvidenceIdentity => ({ intervalId: ref.intervalId, pageId: control.interval.id, ownerId: "memory-event-history", sequence: ref.sequence, eventId: ref.eventId });
+  const identity = (ref: EvidenceRef): EvidenceIdentity => ({ intervalId: ref.intervalId, pageId: control.interval.id, ownerId: EVIDENCE_HISTORY_OWNER_ID, sequence: ref.sequence, eventId: ref.eventId });
   const boundary = control.committedEvidenceBoundary ? identity(control.committedEvidenceBoundary) : null;
   return Object.freeze({
     interval: Object.freeze({ ...control.interval }),
@@ -4022,7 +3959,7 @@ function queryReadPoint(control: ControlRecord): EvidenceReadPoint {
 }
 
 function deterministicQueryRecord(entry: CommittedEvidence, interval: HistoryInterval): SelectionRecord {
-  const identity: EvidenceIdentity = Object.freeze({ intervalId: entry.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: entry.sequence, eventId: entry.eventId });
+  const identity: EvidenceIdentity = Object.freeze({ intervalId: entry.intervalId, pageId: interval.id, ownerId: EVIDENCE_HISTORY_OWNER_ID, sequence: entry.sequence, eventId: entry.eventId });
   if (entry.candidate.kind === "topology-checkpoint") return Object.freeze({ identity, timestamp: 0, summary: "Topology checkpoint", searchText: journalCandidateSearchText(entry.candidate), facets: Object.freeze({}) });
   const context = { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind };
   return Object.freeze({ identity, timestamp: entry.candidate.timestamp, summary: entry.candidate.kind, searchText: canonicalEvidenceSearchText(entry.candidate, context), facets: Object.freeze(extractEvidenceFacets(entry.candidate, context).facets) });
@@ -4039,7 +3976,7 @@ function prepareEvidence(entry: CommittedEvidence, serialized: ReturnType<typeof
     };
   }
   const candidate = entry.candidate as Exclude<EvidenceCandidate, { kind: "topology-checkpoint" }>;
-  const identity: EvidenceIdentity = { intervalId: entry.intervalId, pageId: entry.intervalId, ownerId: "memory-event-history", sequence: entry.sequence, eventId: entry.eventId };
+  const identity: EvidenceIdentity = { intervalId: entry.intervalId, pageId: entry.intervalId, ownerId: EVIDENCE_HISTORY_OWNER_ID, sequence: entry.sequence, eventId: entry.eventId };
   const context = { identity, pageId: entry.intervalId, listenerOwner: identity.ownerId, summary: candidate.kind };
   const extracted = extractEvidenceFacets(candidate, context);
   return {
@@ -4059,7 +3996,7 @@ function prepareEvidence(entry: CommittedEvidence, serialized: ReturnType<typeof
 }
 
 function queryProjection(candidate: EvidenceCandidate, intervalId: string, sequence: number): QueryProjection {
-  const identity: EvidenceIdentity = { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence, eventId: candidate.id };
+  const identity: EvidenceIdentity = { intervalId, pageId: intervalId, ownerId: EVIDENCE_HISTORY_OWNER_ID, sequence, eventId: candidate.id };
   if (candidate.kind === "topology-checkpoint") {
     const searchText = journalCandidateSearchText(candidate);
     return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText, facets: {} };
@@ -4355,39 +4292,6 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
   for (const [key, aggregate] of aggregateCacheUpdates) aggregateCache.set(key, aggregate);
 }
 
-/** A deterministic journal defect: retrying the same batch cannot succeed. */
-class JournalIntegrityError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "JournalIntegrityError";
-  }
-}
-
-const DETERMINISTIC_JOURNAL_ERROR_NAMES: ReadonlySet<string> = new Set([
-  "ConstraintError",
-  "DataError",
-  "DataCloneError",
-  "InvalidAccessError",
-  "JournalIntegrityError",
-  "NotFoundError",
-  "SyntaxError",
-  "TypeError"
-]);
-
-/** @internal Exported for retry-classification tests. */
-export function isDeterministicJournalError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const name = (error as { name?: unknown }).name;
-  return typeof name === "string" && DETERMINISTIC_JOURNAL_ERROR_NAMES.has(name);
-}
-
-const JOURNAL_COMMIT_RETRY_BASE_DELAY_MS = 10;
-const JOURNAL_COMMIT_RETRY_MAX_DELAY_MS = 100;
-
-function journalRetryDelay(failedAttempt: number): Promise<void> {
-  const delay = Math.min(JOURNAL_COMMIT_RETRY_MAX_DELAY_MS, JOURNAL_COMMIT_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, failedAttempt - 1));
-  return new Promise((resolve) => { globalThis.setTimeout(resolve, delay); });
-}
 
 function validateAggregateObservations(additions: readonly Readonly<{ sequence: number; eventId: string }>[]): void {
   let previousSequence = 0;
@@ -4613,7 +4517,7 @@ function validateFacetAggregateRecords(
   for (const evidence of evidenceBySequence.values()) {
     const candidate = deserializeJournalEvidenceCandidate(evidence.replayPayload);
     if (candidate.kind === "topology-checkpoint") continue;
-    for (const value of extractEvidenceFacets(candidate, { pageId: evidence.intervalId, listenerOwner: "memory-event-history" }).selectableValues.slice(0, EVIDENCE_FACET_COUNT)) {
+    for (const value of extractEvidenceFacets(candidate, { pageId: evidence.intervalId, listenerOwner: EVIDENCE_HISTORY_OWNER_ID }).selectableValues.slice(0, EVIDENCE_FACET_COUNT)) {
       const key = JSON.stringify([evidence.intervalId, value.identity]);
       const existing = expected.get(key);
       if (!existing) {
@@ -5278,7 +5182,7 @@ function facetFromIdentity(facetIdentity: string): string | null {
 
 function facetPostings(candidate: EvidenceCandidate, intervalId: string, sequence: number): FacetPostingRecord[] {
   if (candidate.kind === "topology-checkpoint") return [];
-  const context = { pageId: intervalId, listenerOwner: "memory-event-history" };
+  const context = { pageId: intervalId, listenerOwner: EVIDENCE_HISTORY_OWNER_ID };
   return facetPostingsFromExtraction(extractEvidenceFacets(candidate, context), candidate.id, intervalId, sequence);
 }
 
@@ -5312,21 +5216,8 @@ function toCommittedEvidenceFromRecord(record: EvidenceRecord): CommittedEvidenc
   return deepFreeze({ intervalId: record.intervalId, sequence: record.sequence, eventId: record.eventId, candidate });
 }
 
-function toRef(evidence: CommittedEvidence): EvidenceRef {
-  return deepFreeze({ intervalId: evidence.intervalId, sequence: evidence.sequence, eventId: evidence.eventId });
-}
 
-function candidateIdIfPresent(candidate: unknown): string | null {
-  return candidate && typeof candidate === "object" && "id" in candidate && typeof candidate.id === "string" && candidate.id.length > 0
-    ? candidate.id
-    : null;
-}
 
-function isQuotaError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const value = error as { name?: unknown; code?: unknown };
-  return value.name === "QuotaExceededError" || value.code === "QUOTA_EXCEEDED";
-}
 
 function describeJournalError(error: unknown): string {
   if (error instanceof Error) return `Journal cause ${error.name}: ${error.message}`;
@@ -5380,9 +5271,3 @@ export function transactionDone(transaction: IDBTransaction, operation: string, 
   });
 }
 
-function deepFreeze<T>(value: T): T {
-  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
-  Object.freeze(value);
-  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
-  return value;
-}
