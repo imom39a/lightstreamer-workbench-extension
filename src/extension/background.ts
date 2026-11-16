@@ -1,17 +1,20 @@
 import {
   CONTENT_CAPTURE_SYNC_REQUEST,
+  CONTENT_PANEL_ATTACHMENT,
   CONTENT_REINJECT_REQUEST,
   PANEL_CAPTURE_MESSAGE,
   PANEL_PORT_NAME,
   PANEL_REINJECT_RESULT,
   PANEL_STATUS_MESSAGE,
   PANEL_TOPOLOGY_SYNC_FRAME,
+  type ContentPanelAttachmentMessage,
   type PanelSessionId,
   type ReinjectionResult,
   isContentReinjectResultMessage,
   isPanelRegisterMessage,
   isPanelReinjectRequestMessage,
   isRuntimeCaptureMessage,
+  isRuntimePanelAttachmentQueryMessage,
   isRuntimeTopologySyncFrameMessage
 } from "../bridge/messages";
 import { registerAnalyticsService } from "./analytics/background";
@@ -26,6 +29,9 @@ type PanelRegistration = {
 
 const panelPortsByTab = new Map<number, Map<PanelSessionId, PanelRegistration>>();
 const registrationByPort = new WeakMap<chrome.runtime.Port, PanelRegistration>();
+// Seeded from the clock so a restarted service worker still issues revisions
+// newer than any notification a long-lived content script has already seen.
+let panelAttachmentRevision = Date.now();
 const pendingReinjections = new Map<
   string,
   {
@@ -106,7 +112,13 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (isRuntimePanelAttachmentQueryMessage(message)) {
+    const tabId = sender.tab?.id;
+    sendResponse?.(panelAttachmentMessage(tabId !== undefined && panelPortsByTab.has(tabId)));
+    return false;
+  }
+
   if (isContentReinjectResultMessage(message)) {
     const tabId = sender.tab?.id;
     if (tabId === undefined) {
@@ -183,6 +195,7 @@ function registerPanel(
     }
   }
   const registration: PanelRegistration = { tabId, panelSessionId, port };
+  const firstForTab = !panelPortsByTab.has(tabId);
   const registrations = panelPortsByTab.get(tabId) ?? new Map<PanelSessionId, PanelRegistration>();
   registrations.set(panelSessionId, registration);
   panelPortsByTab.set(tabId, registrations);
@@ -192,6 +205,11 @@ function registerPanel(
     panelSessionId,
     status: "bridge connected"
   });
+  if (firstForTab) {
+    // Sent before the sync request on the same channel, so live Capture is
+    // forwarded again before the checkpoint cutoff is taken.
+    notifyPanelAttachment(tabId, true);
+  }
   requestActiveSubscriptionSync(tabId, panelSessionId);
 }
 
@@ -201,6 +219,7 @@ function removeRegistration(registration: PanelRegistration): void {
     registrations.delete(registration.panelSessionId);
     if (registrations.size === 0) {
       panelPortsByTab.delete(registration.tabId);
+      notifyPanelAttachment(registration.tabId, false);
     }
   }
   if (registrationByPort.get(registration.port) === registration) {
@@ -284,6 +303,26 @@ function pendingReinjectionKey(
   requestId: string
 ): string {
   return JSON.stringify([tabId, panelSessionId, requestId]);
+}
+
+function panelAttachmentMessage(attached: boolean): ContentPanelAttachmentMessage {
+  return { type: CONTENT_PANEL_ATTACHMENT, attached, revision: panelAttachmentRevision };
+}
+
+/**
+ * Content scripts forward unscoped live Capture only while at least one panel
+ * is registered for their tab. The page keeps its own topology bookkeeping, so
+ * a panel that attaches later still learns existing state through sync.
+ */
+function notifyPanelAttachment(tabId: number, attached: boolean): void {
+  panelAttachmentRevision += 1;
+  try {
+    chrome.tabs.sendMessage(tabId, panelAttachmentMessage(attached), () => {
+      void chrome.runtime.lastError;
+    });
+  } catch {
+    // A closed tab has no content script left to gate.
+  }
 }
 
 function requestActiveSubscriptionSync(tabId: number, panelSessionId: PanelSessionId): void {

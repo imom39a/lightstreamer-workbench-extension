@@ -45,6 +45,8 @@ export const PAGE_REINJECT_REQUEST = "lsew:page-reinject-request" as const;
 export const CONTENT_CAPTURE_SYNC_REQUEST = "lsew:content-capture-sync-request" as const;
 export const PAGE_CAPTURE_SYNC_REQUEST = "lsew:page-capture-sync-request" as const;
 export const CONTENT_BRIDGE_READY = "lsew:content-bridge-ready" as const;
+export const CONTENT_PANEL_ATTACHMENT = "lsew:content-panel-attachment" as const;
+export const RUNTIME_PANEL_ATTACHMENT_QUERY = "lsew:runtime-panel-attachment-query" as const;
 export const TOPOLOGY_SYNC_BEGIN = "lsew:topology-sync-begin" as const;
 export const TOPOLOGY_SYNC_CHUNK = "lsew:topology-sync-chunk" as const;
 export const TOPOLOGY_SYNC_COMPLETE = "lsew:topology-sync-complete" as const;
@@ -379,6 +381,22 @@ export type PageReinjectRequestMessage = InjectionCorrelation & {
 export type ContentCaptureSyncRequestMessage = {
   type: typeof CONTENT_CAPTURE_SYNC_REQUEST;
   panelSessionId: PanelSessionId;
+};
+
+/**
+ * Service worker to content script: whether any DevTools panel is registered
+ * for the tab. `revision` increases with every attachment change so a content
+ * script can discard a stale notification or query response.
+ */
+export type ContentPanelAttachmentMessage = {
+  type: typeof CONTENT_PANEL_ATTACHMENT;
+  attached: boolean;
+  revision: number;
+};
+
+/** Content script to service worker; answered with a ContentPanelAttachmentMessage. */
+export type RuntimePanelAttachmentQueryMessage = {
+  type: typeof RUNTIME_PANEL_ATTACHMENT_QUERY;
 };
 
 export type PageCaptureSyncRequestMessage = {
@@ -749,6 +767,24 @@ export function isContentCaptureSyncRequestMessage(
   value: unknown
 ): value is ContentCaptureSyncRequestMessage {
   return isRecord(value) && value.type === CONTENT_CAPTURE_SYNC_REQUEST && isPanelSessionId(value.panelSessionId);
+}
+
+export function isContentPanelAttachmentMessage(
+  value: unknown
+): value is ContentPanelAttachmentMessage {
+  return (
+    isRecord(value) &&
+    value.type === CONTENT_PANEL_ATTACHMENT &&
+    typeof value.attached === "boolean" &&
+    typeof value.revision === "number" &&
+    Number.isFinite(value.revision)
+  );
+}
+
+export function isRuntimePanelAttachmentQueryMessage(
+  value: unknown
+): value is RuntimePanelAttachmentQueryMessage {
+  return isRecord(value) && value.type === RUNTIME_PANEL_ATTACHMENT_QUERY;
 }
 
 export function isPageCaptureSyncRequestMessage(

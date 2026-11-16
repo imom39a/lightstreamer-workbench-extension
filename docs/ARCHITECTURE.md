@@ -59,7 +59,7 @@ The extension runs in four active JavaScript contexts plus optional test fixture
 | Context | Source | Built Output | Main Responsibility |
 | --- | --- | --- | --- |
 | Page `MAIN` world instrumentation | `src/injected/lightstreamer-instrumentation.ts`, `src/injected/client-message-delivery.ts` | `dist/injected/lightstreamer-instrumentation.js` | Wrap Lightstreamer constructors, client/subscription methods, subscription and Client Message listeners, WebSocket fallback, Local Injection capability, and exact-target Server Injection capability. |
-| Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` Capture events to the extension runtime and retain the internal compatibility relay for Local Injection delivery. |
+| Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` Capture events to the extension runtime while a DevTools panel is attached to the tab, always forward panel-scoped sync replies, and retain the internal compatibility relay for Local Injection delivery. It writes no marker into the inspected document. |
 | Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by `(tabId, PanelSessionId)` and broadcast unscoped live Capture to every panel for the tab while targeting sync and Injection results to one Panel Session; retain compatibility routing for Local Injection when direct inspected-page evaluation is unavailable. |
 | DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Workbench` DevTools panel. |
 | DevTools panel UI | `src/extension/panel/panel.tsx`, `src/extension/panel/workbench-runtime.ts`, `src/extension/panel/react/`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Mount the React Scoped Evidence Workspace, own session history and investigation state, protect one Local or Server Injection Draft or one temporary Scenario, execute the selected delivery boundary, clear retired 0.1.x telemetry state, and expose first-party Help links. |
@@ -315,6 +315,22 @@ sequenceDiagram
   BG-->>UI: PanelCaptureMessage
 ```
 
+### Panel Attachment Gating
+
+Instrumentation runs on every page, but live Capture is useful only while a DevTools panel is registered for the tab. The service worker therefore tells the tab's content scripts when its first panel registers and when its last panel unregisters, using `CONTENT_PANEL_ATTACHMENT` with a monotonically increasing `revision`. On load, and again when a page is restored from the back/forward cache, the content script asks with `RUNTIME_PANEL_ATTACHMENT_QUERY`. It keeps the newest revision it has seen and ignores older notifications or replies.
+
+| Content script state | Unscoped live Capture | Panel-scoped Capture replay and topology sync frames |
+| --- | --- | --- |
+| `unknown` (before the first reply, or when the query fails) | Forwarded, as before gating existed | Forwarded |
+| `attached` | Forwarded | Forwarded |
+| `detached` | Dropped before validation and before the runtime hop | Forwarded |
+
+A `CONTENT_CAPTURE_SYNC_REQUEST` also marks the content script `attached`. On first registration the service worker sends the attachment notification before the sync request on the same tab channel, so live Capture resumes before the page takes its checkpoint cutoff.
+
+Gating happens only at the content-script forwarding step. MAIN-world instrumentation keeps wrapping clients and Subscriptions and keeps updating its topology shadow, active-Subscription replay set, and COMMAND replay rows for every Capture, whether or not a panel is attached. That page-side bookkeeping is what lets a panel opened later learn existing clients, Subscriptions, and COMMAND rows through Topology sync. Item Updates and other Evidence that occur while no panel is attached are not retained; they were dropped by the service worker before gating existed. If the service worker restarts or misses a detach, the content script errs toward forwarding.
+
+The content script also posts a transient `CONTENT_BRIDGE_READY` page message when it starts. Production code does not read it; browser tests use it as a readiness signal. It leaves no attribute or other state in the inspected document.
+
 ## Message Contracts
 
 All shared message types and validators live in `src/bridge/messages.ts`. They are intentionally used at every boundary where untrusted runtime data crosses contexts.
@@ -363,6 +379,8 @@ client-message-aborted
 | Message | Direction | Purpose |
 | --- | --- | --- |
 | `RUNTIME_CAPTURE_MESSAGE` | content script to service worker | Wrap a page capture message for Chrome runtime messaging. |
+| `RUNTIME_PANEL_ATTACHMENT_QUERY` | content script to service worker | Ask whether any panel is registered for the sender's tab; answered synchronously with a `CONTENT_PANEL_ATTACHMENT` value. |
+| `CONTENT_PANEL_ATTACHMENT` | service worker to content script | Report `attached` and a monotonically increasing `revision` when the tab's first panel registers or its last panel unregisters. See [Panel Attachment Gating](#panel-attachment-gating). |
 | `PANEL_REGISTER_MESSAGE` | panel to service worker | Register one port under `tabId` and its unique Panel Session identity. |
 | `PANEL_STATUS_MESSAGE` | service worker to panel | Report bridge lifecycle status. |
 | `PANEL_CAPTURE_MESSAGE` | service worker to panel | Deliver a capture message to one Panel Session when scoped, or broadcast the live Capture to every registered Panel Session for the inspected tab. |
