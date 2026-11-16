@@ -3,6 +3,7 @@ import { lazy, Suspense, useCallback, useLayoutEffect, useMemo, useRef, useState
 import {
   type WorkbenchCommand,
   type WorkbenchDiagnostic,
+  type WorkbenchPanelRuntime,
   type WorkbenchRuntime,
   type WorkbenchSnapshot
 } from "../workbench-runtime";
@@ -59,7 +60,7 @@ const LazyServerInjectionDocument = lazy(async () => {
   return { default: module.ServerInjectionDocument };
 });
 
-export type WorkbenchPanelProps = { runtime: WorkbenchRuntime; analytics?: AnalyticsClient; agentConnection?: AgentConnection };
+export type WorkbenchPanelProps = { runtime: WorkbenchPanelRuntime; analytics?: AnalyticsClient; agentConnection?: AgentConnection };
 
 const NO_NOTIFICATION_ENTRIES: WorkbenchSnapshot["notifications"]["entries"] = Object.freeze([]);
 

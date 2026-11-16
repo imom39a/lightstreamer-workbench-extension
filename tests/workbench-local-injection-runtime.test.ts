@@ -1728,6 +1728,44 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("returns a stale reviewed Draft to Edit while the panel is hidden", async () => {
+    const history = historyWithCommandTarget();
+    const runtimeScheduler = scheduler();
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler: runtimeScheduler,
+      captureStatus: "capturing"
+    });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "review-local-injection" });
+    expect(runtime.agent!.local().draft).toMatchObject({ phase: "review" });
+
+    runtime.dispatch({ type: "set-visible", visible: false });
+    const hiddenSnapshot = runtime.getSnapshot();
+    history.offer(commandEvent("hidden-stale-listener-21", "listener-removed", {
+      listener: { id: identity.listenerId, callbacks: ["onItemUpdate"] },
+      item: { name: identity.itemName, position: 1 }
+    }));
+    await flushAsync();
+    runtimeScheduler.flush();
+    await flushAsync();
+
+    // The renderer snapshot stays deferred, but the protected Draft itself
+    // has already left Review: hidden ingestion reconciles domain state.
+    expect(runtime.getSnapshot()).toBe(hiddenSnapshot);
+    expect(runtime.agent!.local().draft).toMatchObject({
+      phase: "edit",
+      ready: false,
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: "stale-listener" })])
+    });
+
+    runtime.dispatch({ type: "set-visible", visible: true });
+    await flushAsync();
+    expect(runtime.getSnapshot().localInjection.draft).toMatchObject({ phase: "edit", ready: false });
+    runtime.dispose();
+  });
+
   it("invalidates generated change flags when the same-key committed baseline drifts", async () => {
     const history = historyWithCommandTarget();
     const execute = vi.fn(async (_request: unknown) => result("success"));

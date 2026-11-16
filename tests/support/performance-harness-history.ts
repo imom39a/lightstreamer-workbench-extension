@@ -2,7 +2,7 @@ import {
   type EvidenceCandidate,
   type EventHistory,
   type HistoryPublication
-} from "../../core/event-history-authoritative";
+} from "../../src/core/event-history-authoritative";
 
 type CommittedBoundary = Extract<HistoryPublication, { type: "committed-evidence" }>['committedEvidenceBoundary'];
 type CommittedBoundaryResult = CommittedBoundary | null;
