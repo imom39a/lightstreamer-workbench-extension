@@ -336,3 +336,24 @@ export function lightstreamerPayload(value: unknown): LightstreamerEventEnvelope
     ? candidate as LightstreamerEventEnvelope
     : null;
 }
+
+/**
+ * The protected Draft for one Scenario Step. A missing entry means Scenario
+ * membership and its Draft map diverged; report it by Step identity instead
+ * of failing later on an undefined Draft.
+ */
+export function scenarioStepDraft(
+  drafts: ReadonlyMap<string, LocalInjectionDraftState>,
+  stepId: string
+): LocalInjectionDraftState {
+  const draft = drafts.get(stepId);
+  if (!draft) throw new Error(`Scenario Step ${stepId} has no protected Draft.`);
+  return draft;
+}
+
+/** The first Step's Draft, which anchors the Scenario's single target. */
+export function scenarioReferenceDraft(state: Pick<ScenarioState, "scenario" | "drafts">): LocalInjectionDraftState {
+  const first = state.scenario.steps[0];
+  if (!first) throw new Error("A Scenario requires at least one Step.");
+  return scenarioStepDraft(state.drafts, first.id);
+}

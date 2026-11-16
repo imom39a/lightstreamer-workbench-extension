@@ -48,6 +48,8 @@ import {
   emptyScenarioCaptureWorkspace,
   lightstreamerPayload,
   localInjectionReady,
+  scenarioReferenceDraft,
+  scenarioStepDraft,
   type LocalInjectionDraftState,
   type LocalInjectionEntryIntent,
   type ScenarioNativeChangeStep,
@@ -358,7 +360,7 @@ export function createWorkbenchAgentAdapter(host: WorkbenchAgentAdapterHost): Ag
       if (!steps.length) throw new Error("A Scenario requires at least one explicit Step.");
       const diagnostics = [...builtById.values()].flatMap(candidate => [...candidate.documentDiagnostics, ...candidate.targetDiagnostics]);
       if (definition && valid) {
-        const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: host.scenarioDraftInput(builtById.get(step.id)!) })), { retainedRunBytes: 0 });
+        const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: host.scenarioDraftInput(scenarioStepDraft(builtById, step.id)) })), { retainedRunBytes: 0 });
         if (!ordered.ok) valid = false;
         else {
           const keys = [...builtById.values()].map(candidate => ({ item: { name: candidate.anchor.itemName, position: candidate.anchor.itemPosition }, keys: host.activeCommandKeys(candidate.anchor) }));
@@ -462,13 +464,13 @@ export function createWorkbenchAgentAdapter(host: WorkbenchAgentAdapterHost): Ag
       }
     }
     available();
-    const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: host.scenarioDraftInput(drafts.get(step.id)!) })), { retainedRunBytes: 0 });
+    const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: host.scenarioDraftInput(scenarioStepDraft(drafts, step.id)) })), { retainedRunBytes: 0 });
     if (!ordered.ok) throw new Error(ordered.reason);
     const commandKeys = [...drafts.values()].map(draft => ({ item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition }, keys: host.activeCommandKeys(draft.anchor) }));
     const preflight = reviewScenario(ordered.scenario, { runId: "agent-preflight", committedEvidenceSeed: host.committedEvidenceBoundary, targetFingerprint: host.scenarioTargetFingerprint(first), listenerIds: host.scenarioCurrentListenerIds(first), historyAccepting: host.historyStatus.phase === "RUNNING" && host.scenarioFollowerPhase === "LIVE" && host.projectionRecovery === null, clearInProgress: host.clearState !== "idle", activeCommandKeysByItem: commandKeys, nativeChangesByStepId: host.scenarioNativeChanges(ordered.scenario.steps, drafts), diagnosticObservationBoundary: host.diagnosticObservations.currentBoundary() });
     if (!preflight.ok) throw new Error(`${preflight.stepId ? `${preflight.stepId}: ` : ""}${preflight.reason}`);
     for (const [index, reviewedStep] of preflight.run.steps.entries()) {
-      const draft = drafts.get(reviewedStep.id)!;
+      const draft = scenarioStepDraft(drafts, reviewedStep.id);
       const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, reviewedStep.document, draft.explicitConcreteFields, reviewedStep.nativeChanges?.context);
       const review = host.localInjectionExecutionCoordinator.review({
         fingerprint: host.localInjectionFingerprint(draft, reviewedStep.nativeChanges?.context), executionTarget: draft.anchor.executionTarget,

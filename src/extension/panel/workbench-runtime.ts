@@ -244,6 +244,8 @@ import {
   anchorFromDraft,
   authoredDraftFromScope,
   localInjectionReady,
+  scenarioReferenceDraft,
+  scenarioStepDraft,
   cloneReinjectionDraft,
   lightstreamerPayload
 } from "./local-injection-draft-state";
@@ -3237,7 +3239,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
       intervalId: status.interval.id,
       retainedRange: status.retainedRange,
       history: status.phase === "RUNNING" ? "accepting" as const : status.phase === "CLOSED" ? "closed" as const : "unavailable" as const,
-      temporalCoverage: this.captureSnapshot().operation === "RUNNING" && this.captureSnapshot().coverage === "USEFUL" && Boolean(this.scenarioState?.scenario.target.pageEpoch === this.currentPageEpoch) && !this.validateLocalInjectionTarget(this.scenarioState!.drafts.get(this.scenarioState!.scenario.steps[0]!.id)!.anchor).some(diagnostic => diagnostic.severity === "error") ? "complete" as const : "insufficient" as const,
+      temporalCoverage: this.captureSnapshot().operation === "RUNNING" && this.captureSnapshot().coverage === "USEFUL" && Boolean(this.scenarioState?.scenario.target.pageEpoch === this.currentPageEpoch) && !this.validateLocalInjectionTarget(scenarioReferenceDraft(this.scenarioState!).anchor).some(diagnostic => diagnostic.severity === "error") ? "complete" as const : "insufficient" as const,
       projection: status.continuity?.state === "GAPPED"
         ? "failed" as const
         : this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null
@@ -4284,7 +4286,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
     const baselines = new Map<string, NativeChangeContext>();
     const changes = new Map<string, NativeReviewedChangeFacts>();
     for (const step of steps) {
-      const draft = drafts.get(step.id)!;
+      const draft = scenarioStepDraft(drafts, step.id);
       const document = step.document ?? step.draft?.document ?? draft.document;
       if (!document) continue;
       const identity = JSON.stringify([draft.anchor.subscriptionId, draft.anchor.itemName, draft.anchor.itemPosition, draft.anchor.subscriptionMode === "COMMAND" ? document.key : null]);
@@ -4454,7 +4456,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
       const event = Object.freeze({ ...compact,
         ...(phase === "SNAPSHOT" || phase === "LIVE" ? { update: { ...compact.update, isSnapshot: phase === "SNAPSHOT" } } : {}),
         raw: { summary: record.summary, searchText: record.searchText.slice(0, 240) } });
-      const reference = state.drafts.get(state.scenario.steps[0]!.id)!;
+      const reference = scenarioReferenceDraft(state);
       const reason = expired ? "This Capture read boundary expired. Refresh captures before selecting Sources." : this.validateLocalInjectionTarget(reference.anchor)[0]?.message
         ?? (event.subscription?.mode !== state.scenario.target.mode ? "Different Subscription mode; cannot join this Scenario." : null);
       const availability = { available: reason === null, reason };
@@ -4549,7 +4551,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
     const identities = [...workspace.selected.values()].sort((left, right) => left.sequence - right.sequence);
     if (!identities.length) return;
     const revision = state.scenario.revision;
-    const reference = state.drafts.get(state.scenario.steps[0]!.id)!;
+    const reference = scenarioReferenceDraft(state);
     const fingerprint = this.scenarioTargetFingerprint(reference);
     workspace.adding = true;
     workspace.error = null;
@@ -4857,11 +4859,11 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
     const reviewed = reviewScenario(scenario, {
       runId: `local-injection-run-${++this.localInjectionSequence}`,
       committedEvidenceSeed: this.committedEvidenceBoundary,
-      targetFingerprint: this.scenarioTargetFingerprint(state.drafts.get(state.scenario.steps[0]!.id)!),
-      listenerIds: this.scenarioCurrentListenerIds(state.drafts.get(state.scenario.steps[0]!.id)!),
+      targetFingerprint: this.scenarioTargetFingerprint(scenarioReferenceDraft(state)),
+      listenerIds: this.scenarioCurrentListenerIds(scenarioReferenceDraft(state)),
       historyAccepting: this.historyStatus.phase === "RUNNING" && this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null,
       clearInProgress: this.clearState !== "idle",
-      activeCommandKeysByItem: state.scenario.steps.map(({ id }) => state.drafts.get(id)!).map((draft) => ({
+      activeCommandKeysByItem: state.scenario.steps.map(({ id }) => scenarioStepDraft(state.drafts, id)).map((draft) => ({
         item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
         keys: this.activeCommandKeys(draft.anchor)
       })),
@@ -4875,7 +4877,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
       return;
     }
     const reviews = new Map(state.scenario.steps.map((step, index) => {
-      const draft = state.drafts.get(step.id)!;
+      const draft = scenarioStepDraft(state.drafts, step.id);
       const executionDraft = applyLocalInjectionDocumentToDraft(
         draft.baseDraft,
         reviewed.run.steps[index]!.document,
@@ -5121,7 +5123,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
     const remaining = state.run.steps.slice(state.run.nextOrdinal - 1);
     const nativeChanges = this.scenarioNativeChanges(remaining, state.drafts);
     const reviews = new Map(remaining.map((step) => {
-      const draft = state.drafts.get(step.id)!;
+      const draft = scenarioStepDraft(state.drafts, step.id);
       const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, step.document, draft.explicitConcreteFields, nativeChanges.get(step.id)?.context);
       return [step.id, this.localInjectionExecutionCoordinator.review({
         fingerprint: this.localInjectionFingerprint(draft, nativeChanges.get(step.id)?.context),
@@ -5262,7 +5264,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
     const fieldSchema = localInjectionFieldSchema(event.subscription?.fields, event.update?.fields);
     draft = { ...draft, sourceSubscription: { ...draft.sourceSubscription!, fields: [...fieldSchema] } };
     const anchor = anchorFromDraft(draft, "captured-event", event.topology?.pageEpoch ?? this.currentPageEpoch, fieldSchema);
-    const reference = state.drafts.get(state.scenario.steps[0]!.id)!;
+    const reference = scenarioReferenceDraft(state);
     const candidateTarget = this.scenarioDraftInput({ ...reference, anchor, baseDraft: draft }).target;
     const reason = scenarioTargetIncompatibility(state.scenario.target, candidateTarget)
       ?? this.validateLocalInjectionTarget(anchor)[0]?.message
@@ -5298,7 +5300,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAg
 
   private scenarioWithOrderedValidation(state: ScenarioState): ReturnType<typeof admitScenarioValidation> {
     const steps = state.scenario.steps.map((step) => {
-      const draft = state.drafts.get(step.id)!;
+      const draft = scenarioStepDraft(state.drafts, step.id);
       this.refreshLocalInjectionValidation(draft);
       return Object.freeze({ kind: "step" as const, id: step.id, draft: this.scenarioDraftInput(draft) });
     });
