@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "ticket": "filter-impl-14",
   "classification": "Material UI",
-  "runner": "node scripts/generate-filter-impl-14-visual-packet.mjs",
+  "runner": "node scripts/generate-filter-contextual-actions-visual-packet.mjs",
   "baselinePolicy": "No committed baseline update; references are pre-action captures and require maintainer approval.",
   "states": [
     {
