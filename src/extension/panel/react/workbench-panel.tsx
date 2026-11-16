@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { lazy, Suspense, useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import {
   type WorkbenchCommand,
@@ -7,39 +7,42 @@ import {
   type WorkbenchSnapshot
 } from "../workbench-runtime";
 import {
-  TOPOLOGY_SENSITIVE_CATEGORIES,
   topologySnapshotFilename,
   type TopologySensitiveCategory
 } from "../topology-export";
-import { FACET_DESCRIPTORS, type EvidenceFacetKey } from "../../../core/evidence-facets";
-import {
-  type FacetCount,
-  type TypedFacetValue
-} from "../../../core/evidence-filter-contract";
 import {
   filterSummary,
-  type Filter,
-  type FilterMutation,
   type TypedFilterValue
 } from "../../../core/filter-algebra";
 import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filter-actions";
-import type { LightstreamerEventEnvelope } from "../../../core/event-envelope";
 import { renderTopologyHtmlReport } from "../topology-html-report";
 import { UNAVAILABLE_ANALYTICS, type AnalyticsClient } from "../../analytics/client";
 import { AgentAccessStatus } from "./agent-access";
 import type { AgentConnection } from "../agent-connection";
-import { ActivityContextSummary } from "./activity-context-summary";
 import { ActivityTimeline } from "./activity-timeline";
-import { NotificationsDocument, notificationEntryId, notificationForCondition } from "./notifications-document";
+import { NotificationsDocument } from "./notifications-document";
 import { activityRangeLabel } from "./activity-timeline-format";
 import type { TimelineEvidenceAnchor } from "./activity-timeline-events";
 import type { FilterValueState } from "./filter-value-control";
-import { FilterDraftDocument, SelectedFilterActions, filterValueForDraft, filterValueState, filterValueMutations } from "./filter-workflow";
+import { filterValueMutations } from "./filter-workflow";
 export { filterValueState, filterValueMutations } from "./filter-workflow";
-import { EVIDENCE_CODE_DEFINITIONS, evidenceStreamPresentation } from "../evidence-stream-presentation";
-import { DiagnosticDetails } from "./diagnostic-details";
-import { SessionOperations } from "./session-operations";
 import { ScopeSearch } from "./scope-search";
+import { ScopeTree, type ScopeTreeActions } from "./scope-tree";
+import { EvidenceCodes, EvidenceRow, type EvidencePayloadMode, type EvidenceRowActions } from "./evidence-row";
+import { FindBar } from "./find-bar";
+import { FilterRegion } from "./filter-region";
+import { ContextPane } from "./context-pane";
+import { WorkbenchFooter } from "./workbench-footer";
+import {
+  CONTEXT_MAX_SIZE, EVIDENCE_ROW_HEIGHT, SCOPE_FALLBACK_VIEWPORT_ROWS, SCOPE_MAX_WIDTH, SCOPE_MAX_WINDOW_SIZE,
+  SCOPE_MIN_WIDTH, SCOPE_NODE_HEIGHT, SCOPE_WINDOW_OVERSCAN, clamp
+} from "./workbench-geometry";
+import { usePaneFocusRestoration, usePaneLayout, usePaneResizeLifecycle, useWorkspacePressure } from "./hooks/use-pane-layout";
+import { useFindController, useFindInputFocus, useFindReveal } from "./hooks/use-find-controller";
+import { useFilterComposer, useFilterDraftSync, useFilterInputFocus, useFilterSubmitResult } from "./hooks/use-filter-composer";
+import { useDiagnosticDismissFocus, useDocumentFocusRestoration, useNotificationsFocusRestoration } from "./hooks/use-focus-restoration";
+import { useSessionOperationResults } from "./hooks/use-session-operation-results";
+import { useLatestHandlers, useStructurallyStable } from "./hooks/use-stable-value";
 
 import "./workbench-panel.css";
 
@@ -58,282 +61,7 @@ const LazyServerInjectionDocument = lazy(async () => {
 
 export type WorkbenchPanelProps = { runtime: WorkbenchRuntime; analytics?: AnalyticsClient; agentConnection?: AgentConnection };
 
-type ScopeNode = WorkbenchSnapshot["scope"]["nodes"][number];
-type ScopeTreeEntry = { node: ScopeNode; index: number };
-type ScopeTreeActions = {
-  scroll(scrollTop: number): void;
-  focus(scopeId: string): void;
-  commit(scopeId: string): void;
-  key(event: ReactKeyboardEvent<HTMLButtonElement>, node: ScopeNode): void;
-};
-
-function SelectedUpdateDetails({
-  update
-}: Readonly<{ update: WorkbenchSnapshot["context"]["selectedUpdate"] }>): JSX.Element | null {
-  if (!update) return null;
-  const fieldEntries = update.fields;
-  return <section className="workbench-react__selected-update" aria-label="Selected update">
-    <h3>Selected update</h3>
-    <section aria-label="Fields">
-      <h4>Fields</h4>
-      {fieldEntries.length ? <dl>{fieldEntries.flatMap((entry) => [
-        <dt key={`fields-${entry.name}-term`}>{entry.name}</dt>,
-        <dd key={`fields-${entry.name}-value`}>
-          {entry.jsonString ? <span className="workbench-react__json-string-marker">JSON string</span> : null}
-          <pre>{entry.display}</pre>
-        </dd>
-      ])}</dl> : <p>No captured fields.</p>}
-    </section>
-  </section>;
-}
-
-const ScopeTreeRow = memo(function ScopeTreeRow({
-  node,
-  index,
-  siblingPosition,
-  hasChildren,
-  collapsed,
-  focused,
-  nodeRefs,
-  actionsRef
-}: {
-  node: ScopeNode;
-  index: number;
-  siblingPosition: { position: number; size: number } | undefined;
-  hasChildren: boolean;
-  collapsed: boolean;
-  focused: boolean;
-  nodeRefs: { current: Map<string, HTMLButtonElement> };
-  actionsRef: { current: ScopeTreeActions };
-}): JSX.Element {
-  return (
-    <button
-      className="workbench-react__scope-node workbench-react__scope-node--windowed"
-      role="treeitem"
-      aria-level={node.depth + 1}
-      aria-posinset={siblingPosition?.position}
-      aria-setsize={siblingPosition?.size}
-      aria-selected={node.selected}
-      aria-current={node.selected ? "true" : undefined}
-      data-retired={node.retired || undefined}
-      data-scope-id={node.id}
-      aria-expanded={hasChildren ? !collapsed : undefined}
-      tabIndex={focused ? 0 : -1}
-      style={{
-        top: `${index * SCOPE_NODE_HEIGHT}px`,
-        "--workbench-scope-indent": `${node.depth * 10}px`
-      } as CSSProperties}
-      ref={(element) => {
-        if (element) nodeRefs.current.set(node.id, element);
-        else nodeRefs.current.delete(node.id);
-      }}
-      onClick={() => {
-        actionsRef.current.focus(node.id);
-        actionsRef.current.commit(node.id);
-      }}
-      onFocus={() => actionsRef.current.focus(node.id)}
-      onKeyDown={(event) => actionsRef.current.key(event, node)}
-    >
-      <span className="workbench-react__scope-type">{scopeKindLabel(node.kind)}</span>
-      <strong className="workbench-react__scope-identity" title={node.label}>{node.label}</strong>
-      <em className="workbench-react__scope-state">{lifecycleLabel(node.lifecycle)}</em>
-      {node.detail ? <span className="workbench-react__scope-facts" title={node.detail}>{node.detail}</span> : null}
-    </button>
-  );
-});
-
-const ScopeTree = memo(function ScopeTree({
-  logicalNodeCount,
-  visibleNodeCount,
-  entries,
-  logicalHeight,
-  childrenByParent,
-  siblingPositionById,
-  collapsedIds,
-  focusId,
-  onDomFocusChange,
-  treeRef,
-  nodeRefs,
-  actionsRef
-}: {
-  logicalNodeCount: number;
-  visibleNodeCount: number;
-  entries: readonly ScopeTreeEntry[];
-  logicalHeight: number;
-  childrenByParent: ReadonlyMap<
-    string | null,
-    readonly WorkbenchSnapshot["scope"]["structure"][number][]
-  >;
-  siblingPositionById: ReadonlyMap<string, { position: number; size: number }>;
-  collapsedIds: ReadonlySet<string>;
-  focusId: string | null;
-  onDomFocusChange(hasFocus: boolean): void;
-  treeRef: { current: HTMLDivElement | null };
-  nodeRefs: { current: Map<string, HTMLButtonElement> };
-  actionsRef: { current: ScopeTreeActions };
-}): JSX.Element {
-  return (
-    <div
-      className="workbench-react__scope-tree"
-      role="tree"
-      aria-label={`Runtime Scope tree · ${logicalNodeCount.toLocaleString()} nodes`}
-      data-logical-node-count={logicalNodeCount}
-      data-visible-node-count={visibleNodeCount}
-      data-mounted-node-count={entries.length}
-      ref={treeRef}
-      onScroll={(event) => actionsRef.current.scroll(event.currentTarget.scrollTop)}
-      onFocusCapture={() => onDomFocusChange(true)}
-      onBlurCapture={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) onDomFocusChange(false);
-      }}
-    >
-      <div
-        className="workbench-react__scope-tree-window"
-        role="presentation"
-        style={{ height: `${logicalHeight}px` }}
-      >
-        {entries.map(({ node, index }) => {
-          const siblingPosition = siblingPositionById.get(node.id);
-          const hasChildren = (childrenByParent.get(node.id)?.length ?? 0) > 0;
-          return (
-            <ScopeTreeRow
-              key={node.id}
-              node={node}
-              index={index}
-              siblingPosition={siblingPosition}
-              hasChildren={hasChildren}
-              collapsed={collapsedIds.has(node.id)}
-              focused={node.id === focusId}
-              nodeRefs={nodeRefs}
-              actionsRef={actionsRef}
-            />
-          );
-        })}
-      </div>
-    </div>
-  );
-});
-
-type EvidenceRowActions = { select(eventId: string): void };
-
-type EvidencePayloadMode = "readable" | "raw";
-
-const evidenceCodeDefinitionByCode = new Map(EVIDENCE_CODE_DEFINITIONS.map((definition) => [definition.code, definition]));
-
-function EvidenceCodes({
-  open,
-  onOpenChange
-}: Readonly<{
-  open: boolean;
-  onOpenChange(open: boolean): void;
-}>): JSX.Element {
-  const trigger = useRef<HTMLElement>(null);
-  const close = () => {
-    onOpenChange(false);
-    window.requestAnimationFrame(() => trigger.current?.focus());
-  };
-  const definitionsFor = (family: "tlcp" | "workbench") => EVIDENCE_CODE_DEFINITIONS.filter((definition) => definition.family === family);
-  return <details
-    className="workbench-react__evidence-codes"
-    open={open}
-    onToggle={(event) => onOpenChange(event.currentTarget.open)}
-    onKeyDown={(event) => {
-      if (event.key !== "Escape" || !open) return;
-      event.preventDefault();
-      event.stopPropagation();
-      close();
-    }}
-  >
-    <summary ref={trigger} aria-label="Codes">Codes</summary>
-    <section role="dialog" aria-label="Evidence codes" aria-modal="false">
-      <header><strong>Evidence codes</strong><button type="button" onClick={close}>Close</button></header>
-      <p>Operations shown in the Evidence stream.</p>
-      {(["tlcp", "workbench"] as const).map((family) => <section key={family} aria-label={family === "tlcp" ? "Lightstreamer TLCP" : "Workbench capture lifecycle"}>
-        <h3>{family === "tlcp" ? "Lightstreamer TLCP" : "Workbench capture lifecycle"}</h3>
-        <dl>{definitionsFor(family).map((definition) => <div key={definition.code}>
-          <dt>{definition.code}</dt><dd><strong>{definition.label}</strong> · {definition.description}</dd>
-        </div>)}</dl>
-      </section>)}
-      <p className="workbench-react__evidence-code-notes"><code>U</code> marks an update; <code>ADD</code> and <code>DELETE</code> mark COMMAND operations; <code>S</code> marks a snapshot. <strong>LOCAL</strong> is a Local injection; <code>R</code> is runtime Evidence and <code>W</code> is Workbench Evidence.</p>
-    </section>
-  </details>;
-}
-
-function FindText({ text, query }: { text: string; query: string }): JSX.Element {
-  const words = query.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return <>{text}</>;
-  const expression = words.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
-  const parts = text.split(new RegExp(`(${expression})`, "giu"));
-  return <>{parts.map((part, index) => index % 2 ? <mark className="workbench-react__search-hit" key={index}>{part}</mark> : part)}</>;
-}
-
-const EvidenceRow = memo(function EvidenceRow({
-  event,
-  selected,
-  findPosition,
-  findQuery,
-  rowRefs,
-  actionsRef,
-  payloadMode
-}: {
-  event: WorkbenchSnapshot["evidence"]["events"][number];
-  selected: boolean;
-  findPosition: string | null;
-  findQuery: string;
-  rowRefs: { current: Map<string, HTMLButtonElement> };
-  actionsRef: { current: EvidenceRowActions };
-  payloadMode: EvidencePayloadMode;
-}): JSX.Element {
-  // Retained Evidence is canonical in production. Recovery envelopes can be incomplete;
-  // render those honestly as an unknown operation instead of inventing an Item Update.
-  const presentationEvent = typeof event.raw?.kind === "string"
-    ? event
-    : { ...event, raw: { ...event.raw, kind: "__unknown__" as LightstreamerEventEnvelope["kind"] } };
-  const presentation = evidenceStreamPresentation(presentationEvent, payloadMode);
-  const definition = evidenceCodeDefinitionByCode.get(presentation.code);
-  const identity = presentation.identity ?? event.object;
-  const qualifiers = [
-    event.command === "ADD" || event.command === "DELETE" ? event.command : null,
-    event.phase === "SNAPSHOT" ? "S" : null
-  ].filter((value): value is string => value !== null);
-  const provenance = event.source === "LOCAL" ? "LOCAL" : event.source === "RUNTIME" ? "R" : event.source === "WORKBENCH" ? "W" : null;
-  const sequence = event.sequence === null ? "No retained sequence" : `retained sequence ${event.sequence}`;
-  const dataSummary = presentation.previewTruncated
-    ? "payload preview truncated; complete payload is in Context"
-    : Object.keys(presentation.data.fields).length ? `payload fields ${Object.keys(presentation.data.fields).join(", ")}` : "no payload fields";
-  const ariaLabel = `${event.id}; ${presentation.code}${definition ? ` ${definition.label}` : ""}; ${event.command ?? "no COMMAND operation"}; ${identity}; ${dataSummary}; ${event.source} Evidence; ${event.phase} phase; ${event.time}; ${sequence}.`;
-  return (
-    <button
-      type="button"
-      className="workbench-react__evidence-row"
-      role="row"
-      data-evidence-id={event.id}
-      data-evidence-sequence={event.sequence ?? undefined}
-      data-evidence-source={event.source}
-      data-evidence-code={presentation.code}
-      data-find-current={findPosition ? true : undefined}
-      aria-selected={selected}
-      aria-current={findPosition ? "true" : undefined}
-      aria-label={ariaLabel}
-      title={`${event.id} · ${event.kind} · ${event.source} · ${event.phase} · ${event.time} · ${sequence}`}
-      tabIndex={-1}
-      ref={(element) => {
-        if (element) rowRefs.current.set(event.id, element);
-        else rowRefs.current.delete(event.id);
-      }}
-      onClick={() => actionsRef.current.select(event.id)}
-    >
-      <span className="workbench-react__evidence-op" role="gridcell" title={definition?.description ?? presentation.code}>
-        <b>{presentation.code}</b>{qualifiers.map((qualifier) => <small key={qualifier}>{qualifier}</small>)}{provenance ? <em>{provenance}</em> : null}{findPosition ? <small className="workbench-react__find-match" title={findPosition}>Find</small> : null}
-      </span>
-      <span className="workbench-react__evidence-key" role="gridcell" title={identity}><FindText text={identity} query={findQuery} /></span>
-      <span className="workbench-react__evidence-data" role="gridcell" title={presentation.jsonString}>
-        {presentation.data.decodedJsonFields.length ? <span className="workbench-react__json-string-marker">JSON string</span> : null}
-        <code><FindText text={presentation.jsonString} query={findQuery} /></code>{presentation.previewTruncated ? <small>Preview truncated · complete payload in Context</small> : null}
-      </span>
-    </button>
-  );
-});
+const NO_NOTIFICATION_ENTRIES: WorkbenchSnapshot["notifications"]["entries"] = Object.freeze([]);
 
 function dispatch(runtime: WorkbenchRuntime, command: WorkbenchCommand): void {
   runtime.dispatch(command);
@@ -341,55 +69,6 @@ function dispatch(runtime: WorkbenchRuntime, command: WorkbenchCommand): void {
 
 function uppercase(value: string | undefined, fallback: string): string {
   return (value ?? fallback).replaceAll("-", "_").toUpperCase();
-}
-
-type FilterComposerStep = "composer" | "facets" | "explorer";
-
-function cloneFilterCriteria(criteria: Filter["criteria"]): Filter["criteria"] {
-  return Object.fromEntries(Object.entries(criteria).map(([facet, criterion]) => [facet, {
-    include: [...criterion.include],
-    exclude: [...criterion.exclude]
-  }])) as Filter["criteria"];
-}
-
-function criterionSignature(criterion: Filter["criteria"][string] | undefined): string {
-  if (!criterion) return "";
-  return JSON.stringify({
-    include: criterion.include.map(({ identity }) => identity).sort(),
-    exclude: criterion.exclude.map(({ identity }) => identity).sort()
-  });
-}
-
-function draftFilterOperations(
-  applied: Filter,
-  text: string,
-  criteria: Filter["criteria"]
-): readonly FilterMutation[] {
-  const operations: FilterMutation[] = [];
-  if (applied.text !== text.trim().toLocaleLowerCase()) operations.push({ type: "set-text", text });
-  const facets = new Set([...Object.keys(applied.criteria), ...Object.keys(criteria)]);
-  for (const facet of facets) {
-    const current = applied.criteria[facet];
-    const next = criteria[facet];
-    if (criterionSignature(current) === criterionSignature(next)) continue;
-    operations.push({
-      type: "replace-facet",
-      facet,
-      criterion: next ?? { include: [], exclude: [] }
-    });
-  }
-  return operations;
-}
-
-function sensitiveCategoryLabel(category: TopologySensitiveCategory): string {
-  switch (category) {
-    case "server-addresses": return "Server addresses and URLs";
-    case "client-ips": return "Client IPs";
-    case "item-names": return "Item names and groups";
-    case "command-keys": return "COMMAND keys";
-    case "field-names": return "Configured fields and schemas";
-    case "identifiers": return "Captured identifiers";
-  }
 }
 
 function downloadText(filename: string, text: string, type: string): void {
@@ -401,67 +80,6 @@ function downloadText(filename: string, text: string, type: string): void {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-type WorkbenchGeometry = "wide" | "normal" | "shallow" | "compact";
-
-const SCOPE_MIN_WIDTH = 216;
-const SCOPE_MAX_WIDTH = 420;
-const EVIDENCE_MIN_WIDTH = 520;
-const EVIDENCE_MIN_HEIGHT = 220;
-const EVIDENCE_STACK_BUDGET = 244;
-const CONTEXT_MIN_WIDTH = 320;
-const CONTEXT_MIN_HEIGHT = 210;
-const CONTEXT_MAX_SIZE = 520;
-const SPLITTER_SIZE = 6;
-const PERSISTENT_CHROME_HEIGHT = 90;
-const NORMAL_MIN_WIDTH = 700;
-const NORMAL_MIN_HEIGHT = PERSISTENT_CHROME_HEIGHT + EVIDENCE_MIN_HEIGHT + CONTEXT_MIN_HEIGHT + SPLITTER_SIZE;
-const SHALLOW_MIN_WIDTH = EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE;
-const WIDE_MIN_WIDTH = Math.max(1120, SCOPE_MIN_WIDTH + EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE * 2);
-const GEOMETRY_HYSTERESIS = 32;
-const SCOPE_NODE_HEIGHT = 58;
-const EVIDENCE_ROW_HEIGHT = 30;
-const SCOPE_WINDOW_OVERSCAN = 8;
-const SCOPE_FALLBACK_VIEWPORT_ROWS = 48;
-const SCOPE_MAX_WINDOW_SIZE = 127;
-
-function classifyGeometry(width: number, height: number): WorkbenchGeometry {
-  if (width >= WIDE_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT) return "wide";
-  if (width >= NORMAL_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT) return "normal";
-  if (width >= SHALLOW_MIN_WIDTH) return "shallow";
-  return "compact";
-}
-
-function geometryFits(geometry: WorkbenchGeometry, width: number, height: number): boolean {
-  if (geometry === "wide") return width >= WIDE_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT;
-  if (geometry === "normal") return width >= NORMAL_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT;
-  if (geometry === "shallow") return width >= SHALLOW_MIN_WIDTH;
-  return true;
-}
-
-function decideGeometry(width: number, height: number, previous?: WorkbenchGeometry): WorkbenchGeometry {
-  if (!previous) return classifyGeometry(width, height);
-  if (!geometryFits(previous, width, height)) return classifyGeometry(width, height);
-  if (previous === "wide") return "wide";
-  if (width >= WIDE_MIN_WIDTH + GEOMETRY_HYSTERESIS && height >= NORMAL_MIN_HEIGHT + GEOMETRY_HYSTERESIS) return "wide";
-  if (previous === "normal") return "normal";
-  if (width >= NORMAL_MIN_WIDTH + GEOMETRY_HYSTERESIS && height >= NORMAL_MIN_HEIGHT + GEOMETRY_HYSTERESIS) return "normal";
-  if (previous === "shallow") return "shallow";
-  if (width >= SHALLOW_MIN_WIDTH + GEOMETRY_HYSTERESIS) return "shallow";
-  return "compact";
-}
-
-function lifecycleLabel(lifecycle: WorkbenchSnapshot["scope"]["nodes"][number]["lifecycle"]): string {
-  return `${lifecycle.slice(0, 1).toUpperCase()}${lifecycle.slice(1)}`;
-}
-
-function scopeKindLabel(kind: WorkbenchSnapshot["scope"]["nodes"][number]["kind"]): string {
-  return `${kind.slice(0, 1).toUpperCase()}${kind.slice(1)}`;
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(Math.max(value, minimum), maximum);
 }
 
 /** React presentation for the Slice 1 read-only Scoped Evidence Workspace. */
@@ -534,18 +152,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   const pendingContextFocus = useRef(false);
   const pendingRetainedBoundaryFocus = useRef<"oldest" | "newest" | null>(null);
   const [copyStatus, setCopyStatus] = useState("");
-  const [scopedCopyStatus, setScopedCopyStatus] = useState("");
   const [exportDownloadStatus, setExportDownloadStatus] = useState("");
-  const operationFocusOrigin = useRef<"copy" | "export" | null>(null);
-  const scopedCopyTrigger = useRef<HTMLButtonElement | null>(null);
-  const exportTrigger = useRef<HTMLButtonElement | null>(null);
-  const [findOpen, setFindOpen] = useState(false);
-  const [findDraft, setFindDraft] = useState(snapshot.evidence.findState.query);
-  const findDebounce = useRef<number | null>(null);
-  const completedFindReveal = useRef<number | null>(null);
-  const findOriginScroll = useRef(0);
-  const findParkedContext = useRef<string | null>(null);
-  const findOriginScopePicker = useRef(false);
   const [scopeSearchOpen, setScopeSearchOpen] = useState(false);
   const [scopeSearchFocusRequest, setScopeSearchFocusRequest] = useState(0);
   const scopeSearchTrigger = useRef<HTMLButtonElement | null>(null);
@@ -553,45 +160,38 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   const [evidencePayloadMode, setEvidencePayloadMode] = useState<EvidencePayloadMode>("readable");
   const [evidenceCodesOpen, setEvidenceCodesOpen] = useState(false);
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
-  const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
-  const [geometry, setGeometry] = useState<WorkbenchGeometry>(() => decideGeometry(window.innerWidth, window.innerHeight));
-  const [scopeWidth, setScopeWidth] = useState(228);
-  const [wideContextWidth, setWideContextWidth] = useState(350);
-  const [normalContextHeight, setNormalContextHeight] = useState(260);
-  const workspace = useRef<HTMLElement | null>(null);
-  const pressureChrome = useRef<string | null>(null);
-  const [workspaceHeight, setWorkspaceHeight] = useState(0);
-  const [shallowContextWidth, setShallowContextWidth] = useState(320);
-  const [scopeCollapsed, setScopeCollapsed] = useState(false);
-  const [contextCollapsed, setContextCollapsed] = useState(false);
+  // Pane geometry and Find register no layout effects here; their effects
+  // are called below at the positions the inline effects used to occupy.
+  const layout = usePaneLayout();
+  const {
+    geometry, scopeCollapsed, setScopeCollapsed, contextCollapsed, setContextCollapsed,
+    renderedScopeWidth, contextMinimum, contextMaximum, contextSize,
+    isCompactGeometry, isNormalGeometry, collapsePane, restorePane, handleSeparatorKey, startResize,
+    workspace, scopeSplitter, contextSplitter, scopeRestore, contextRestore, scopeCollapse, contextCollapse
+  } = layout;
+  const find = useFindController({
+    runtime,
+    findState: snapshot.evidence.findState,
+    contextId: snapshot.contextId,
+    compact: geometry === "compact",
+    scopePickerOpen,
+    setScopePickerOpen,
+    evidenceLedger
+  });
+  const { findOpen, findDraft, findTrigger, openFind, clearFind, closeFind } = find;
   const [activitySummaryOpen, setActivitySummaryOpen] = useState(false);
   const [selectedFilterActionsOpen, setSelectedFilterActionsOpen] = useState(false);
   const [selectedEvidenceMetadataOpen, setSelectedEvidenceMetadataOpen] = useState(false);
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [filterDraft, setFilterDraft] = useState("");
-  const [filterDraftCriteria, setFilterDraftCriteria] = useState<Filter["criteria"]>({});
-  const [filterStep, setFilterStep] = useState<FilterComposerStep>("composer");
-  const [filterFacet, setFilterFacet] = useState<EvidenceFacetKey | null>(null);
-  const [filterDiscoverySearch, setFilterDiscoverySearch] = useState("");
-  const [filterDiscoveryCursor, setFilterDiscoveryCursor] = useState<string | null>(null);
-  const [filterDiscoveryValues, setFilterDiscoveryValues] = useState<readonly FacetCount[]>([]);
-  const [filterDraftRevision, setFilterDraftRevision] = useState<number | null>(null);
-  const [filterSubmitVersion, setFilterSubmitVersion] = useState<number | null>(null);
+  // Registers the facet-discovery layout effect, the first after the
+  // performance-reporting effects above, as before.
+  const filter = useFilterComposer({ runtime, evidence: snapshot.evidence, snapshotVersion: snapshot.version });
+  const { filterOpen, filterTrigger, openFilter, closeFilter } = filter;
   const [collapsedScopeIds, setCollapsedScopeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [scopeWindowStart, setScopeWindowStart] = useState(0);
   const [scopeTreeHeight, setScopeTreeHeight] = useState(SCOPE_NODE_HEIGHT * SCOPE_FALLBACK_VIEWPORT_ROWS);
   const [scopeTreeHasDomFocus, setScopeTreeHasDomFocus] = useState(false);
   const scopeTypeahead = useRef("");
   const scopeTypeaheadReset = useRef<number | null>(null);
-  const findInput = useRef<HTMLInputElement | null>(null);
-  const findTrigger = useRef<HTMLButtonElement | null>(null);
-  const filterInput = useRef<HTMLInputElement | null>(null);
-  const filterTrigger = useRef<HTMLButtonElement | null>(null);
-  const structuredCriterionTrigger = useRef<HTMLButtonElement | null>(null);
-  const facetPickerFirst = useRef<HTMLButtonElement | null>(null);
-  const facetButtons = useRef(new Map<EvidenceFacetKey, HTMLButtonElement>());
-  const facetReturnKey = useRef<EvidenceFacetKey | null>(null);
-  const facetSearchInput = useRef<HTMLInputElement | null>(null);
   const moreActionsTrigger = useRef<HTMLButtonElement | null>(null);
   const actionsReturnTrigger = useRef<HTMLButtonElement | null>(null);
   const agentAccessDetails = useRef<HTMLDetailsElement | null>(null);
@@ -599,43 +199,14 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   const actionsFocusAgent = useRef(false);
   const notificationsTrigger = useRef<HTMLButtonElement | null>(null);
   const evidenceModeTrigger = useRef<HTMLButtonElement | null>(null);
-  const diagnosticDismissButtons = useRef(new Map<string, HTMLButtonElement>());
-  const focusedDiagnosticDismiss = useRef<Readonly<{ dismissalId: string; index: number }> | null>(null);
-  const pendingDiagnosticDismissFocus = useRef<number | null>(null);
-  const notificationsOrigin = useRef({ evidenceScrollTop: 0, contextScrollTop: 0, scopeScrollTop: 0 });
-  const previousNotificationsOpen = useRef(false);
-  const inspectingNotification = useRef(false);
   const scopeTrigger = useRef<HTMLButtonElement | null>(null);
   const contextLens = useRef<HTMLElement | null>(null);
   const workbenchRoot = useRef<HTMLElement | null>(null);
-  const scopeSplitter = useRef<HTMLDivElement | null>(null);
-  const contextSplitter = useRef<HTMLDivElement | null>(null);
-  const scopeRestore = useRef<HTMLButtonElement | null>(null);
-  const contextRestore = useRef<HTMLButtonElement | null>(null);
-  const resumeLocalInjection = useRef<HTMLButtonElement | null>(null);
-  const parkedDiscardTrigger = useRef<HTMLButtonElement | null>(null);
-  const parkedDiscardDialog = useRef<HTMLElement | null>(null);
-  const restoreParkedDiscardFocus = useRef(false);
-  const previousLocalInjectionDraft = useRef<WorkbenchSnapshot["localInjection"]["draft"]>(null);
   const serverInjectionTrigger = useRef<HTMLButtonElement | null>(null);
-  const previousServerInjectionDraft = useRef<NonNullable<WorkbenchSnapshot["serverInjection"]>["draft"]>(null);
-  const previousScenario = useRef<WorkbenchSnapshot["scenario"]>(null);
-  const previousParkedDiscardConfirmation = useRef(false);
-  const parkedScenarioDiscardTrigger = useRef<HTMLButtonElement | null>(null);
-  const parkedScenarioDiscardDialog = useRef<HTMLElement | null>(null);
-  const restoreParkedScenarioDiscardFocus = useRef(false);
-  const previousParkedScenarioDiscardConfirmation = useRef(false);
-  const scopeCollapse = useRef<HTMLButtonElement | null>(null);
-  const contextCollapse = useRef<HTMLButtonElement | null>(null);
-  const paneRestoreDestination = useRef<{ scope: "splitter" | "collapse"; context: "splitter" | "collapse" }>({ scope: "splitter", context: "splitter" });
-  const pendingPaneFocus = useRef<{ pane: "scope" | "context"; target: "restore" | "splitter" | "collapse" } | null>(null);
-  const findOrigin = useRef<HTMLElement | null>(null);
-  const filterOrigin = useRef<HTMLElement | null>(null);
   const actionsEvidenceScrollTop = useRef(0);
   const actionsContextScrollTop = useRef(0);
   const pendingActionsRestoration = useRef(false);
   const pendingActionsFocus = useRef(false);
-  const resizeCleanup = useRef<(() => void) | null>(null);
   const evidence = snapshot.evidence;
   const events = evidence.events;
   const selectedEventId = snapshot.selectionEventId;
@@ -650,7 +221,6 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   const scopeStatus = snapshot.scope.status;
   const findState = evidence.findState;
   const hiddenSelection = evidence.hiddenSelection;
-  const contextFields = snapshot.context.fields;
   const scopeNodes = snapshot.scope.structure;
   const {
     scopeNodeById,
@@ -690,7 +260,10 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
       visibleScopeNodes: visibleNodes,
       visibleScopeIndexById: new Map(visibleNodes.map((node, index) => [node.id, index]))
     };
-  }, [collapsedScopeIds, snapshot.scope.structureRevision]);
+    // The runtime caches `scope.structure` per `structureRevision`, so its
+    // identity changes exactly when the revision does; depending on the array
+    // itself is equivalent in production and honest for every caller.
+  }, [collapsedScopeIds, scopeNodes]);
   const requestedFocusedNode = snapshot.scope.focusedNodeId
     ? scopeNodeById.get(snapshot.scope.focusedNodeId)
     : undefined;
@@ -722,6 +295,9 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   const scopeTabStopId = scopeOwnsFocus || focusedScopeIsMounted
     ? renderedFocusId
     : visibleScopeNodes[renderedScopeWindowStart]?.id ?? null;
+  // `snapshot.scope` is rebuilt on every publication, so the window entries
+  // recompute each time; rows stay memoized through the runtime's stable
+  // per-revision node presentations.
   const renderedScopeEntries = useMemo(() => {
     const entries = visibleScopeNodes
       .slice(renderedScopeWindowStart, renderedScopeWindowStart + scopeWindowSize)
@@ -740,11 +316,8 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     return entries;
   }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes, snapshot.scope, scopeOwnsFocus]);
   const canAuthorCommandUpdate = snapshot.localInjection.availability.commandScope.available;
-  const canCreateLocalInjectionDraft = snapshot.localInjection.availability.selectedUpdate.available;
   const serverInjection = snapshot.serverInjection;
   const serverInjectionDraft = serverInjection?.draft ?? null;
-  const canCloneClientMessage = serverInjection?.availability.cloneSelected.available ?? false;
-  const canAuthorClientMessage = serverInjection?.availability.authorSelectedClient.available ?? false;
   const total = evidence.total;
   const filterCounts = evidence.investigation.counts;
   const shown = filterCounts.shown;
@@ -775,22 +348,6 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     }
     dispatch(runtime, { type: "apply-filter-mutations", expectedRevision: appliedFilter.revision, operations: filterValueMutations(value, state) });
   };
-  const activeFacetDescriptor = filterFacet
-    ? FACET_DESCRIPTORS.find((descriptor) => descriptor.key === filterFacet) ?? null
-    : null;
-  const activeFacetDiscovery = filterFacet
-    ? evidence.investigation.discoveries.get(filterFacet)
-    : undefined;
-
-  useLayoutEffect(() => {
-    if (activeFacetDiscovery?.state !== "AVAILABLE" || evidence.investigation.queryState === "loading") return;
-    setFilterDiscoveryValues((previous) => {
-      if (!filterDiscoveryCursor) return activeFacetDiscovery.values;
-      const identities = new Set(previous.map((entry) => entry.value.identity));
-      return Object.freeze([...previous, ...activeFacetDiscovery.values.filter((entry) => !identities.has(entry.value.identity))]);
-    });
-  }, [activeFacetDiscovery, evidence.investigation.queryState, filterDiscoveryCursor]);
-
   const compactSurface = snapshot.contextId === "context:scope" ? "scope" : snapshot.contextId ? "context" : undefined;
   const rawEvidence = snapshot.contextId?.startsWith("raw:") ? selected : null;
   const notificationsOpen = snapshot.contextId === "notifications";
@@ -819,109 +376,36 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     : contextCollapsed
       ? "Restore selected Context"
       : "Focus selected Context";
-  const wideSideBudget = Math.max(SCOPE_MIN_WIDTH + CONTEXT_MIN_WIDTH, viewport.width - EVIDENCE_MIN_WIDTH - SPLITTER_SIZE * 2);
-  const renderedScopeWidth = geometry === "wide"
-    ? clamp(scopeWidth, SCOPE_MIN_WIDTH, wideSideBudget - CONTEXT_MIN_WIDTH)
-    : scopeWidth;
   const chromeLayoutKey = JSON.stringify([findOpen, snapshot.diagnostics.map(diagnostic => [
     diagnostic.severity, diagnostic.title, diagnostic.affected, diagnostic.detail,
     diagnostic.limitation, diagnostic.consequence, diagnostic.recovery, diagnostic.route?.label
   ])]);
-  const availableWorkspaceHeight = workspaceHeight || viewport.height - PERSISTENT_CHROME_HEIGHT;
-  const contextMaximum = geometry === "normal"
-    ? Math.max(CONTEXT_MIN_HEIGHT, availableWorkspaceHeight - EVIDENCE_STACK_BUDGET - SPLITTER_SIZE)
-    : geometry === "shallow"
-      ? Math.max(CONTEXT_MIN_WIDTH, viewport.width - EVIDENCE_MIN_WIDTH - SPLITTER_SIZE)
-      : geometry === "wide"
-        ? Math.max(CONTEXT_MIN_WIDTH, wideSideBudget - renderedScopeWidth)
-        : CONTEXT_MAX_SIZE;
-  const contextMinimum = geometry === "normal" ? CONTEXT_MIN_HEIGHT : CONTEXT_MIN_WIDTH;
-  const contextPreference = geometry === "normal" ? normalContextHeight : geometry === "shallow" ? shallowContextWidth : wideContextWidth;
-  const contextSize = clamp(contextPreference, contextMinimum, Math.min(CONTEXT_MAX_SIZE, contextMaximum));
 
-  useLayoutEffect(() => {
-    const element = workspace.current;
-    if (!element) return;
-    const measure = () => {
-      const height = element.getBoundingClientRect().height;
-      if (height <= 0) return;
-      setWorkspaceHeight(height);
-      if (geometry === "normal") {
-        if (!contextCollapsed && height < EVIDENCE_STACK_BUDGET + CONTEXT_MIN_HEIGHT + SPLITTER_SIZE) {
-          pressureChrome.current = chromeLayoutKey;
-          setGeometry(previous => previous === "normal" ? classifyGeometry(window.innerWidth, 0) : previous);
-        } else pressureChrome.current = null;
-      } else if (pressureChrome.current !== null && pressureChrome.current !== chromeLayoutKey) {
-        // Retry after real chrome changes, never merely because Shallow rendered
-        // a shorter footer. A failed retry records these inputs before demoting.
-        pressureChrome.current = null;
-        setGeometry(decideGeometry(window.innerWidth, window.innerHeight, "normal"));
-      }
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [workspaceAvailable, geometry, contextCollapsed, chromeLayoutKey]);
+  useWorkspacePressure(layout, workspaceAvailable, chromeLayoutKey);
 
-  useLayoutEffect(() => {
-    if (["error", "refused", "cancelled"].includes(snapshot.evidenceCopy.state)) {
-      setScopedCopyStatus(snapshot.evidenceCopy.error ?? "Retained scoped Evidence was not copied.");
-      dispatch(runtime, { type: "clear-scoped-evidence-copy" });
-      return;
-    }
-    if (snapshot.evidenceCopy.state !== "ready" || !snapshot.evidenceCopy.text) return;
-    if (!navigator.clipboard?.writeText) {
-      setScopedCopyStatus("Could not copy retained scoped Evidence.");
-      analytics.track({ name: "export_result", params: { format: "clipboard", outcome: "unavailable" } });
-      dispatch(runtime, { type: "clear-scoped-evidence-copy" });
-      return;
-    }
-    void navigator.clipboard.writeText(snapshot.evidenceCopy.text).then(
-      () => { setScopedCopyStatus(`Copied retained scoped Evidence (${snapshot.evidenceCopy.eventCount.toLocaleString()} events).`); analytics.track({ name: "export_result", params: { format: "clipboard", outcome: "success" } }); },
-      () => { setScopedCopyStatus("Could not copy retained scoped Evidence."); analytics.track({ name: "export_result", params: { format: "clipboard", outcome: "failed" } }); }
-    ).finally(() => dispatch(runtime, { type: "clear-scoped-evidence-copy" }));
-  }, [snapshot.evidenceCopy, analytics]);
+  const { scopedCopyStatus, operationFocusOrigin, scopedCopyTrigger, exportTrigger } = useSessionOperationResults({
+    runtime,
+    analytics,
+    evidenceCopy: snapshot.evidenceCopy,
+    exportState: snapshot.export.operation?.state,
+    contextLens
+  });
 
-  useLayoutEffect(() => {
-    const copyFinished = snapshot.evidenceCopy.state !== "preparing" && operationFocusOrigin.current === "copy";
-    const exportFinished = snapshot.export.operation?.state !== "preparing" && operationFocusOrigin.current === "export";
-    if (!copyFinished && !exportFinished) return;
-    const origin = operationFocusOrigin.current;
-    operationFocusOrigin.current = null;
-    window.requestAnimationFrame(() => {
-      const target = origin === "copy" ? scopedCopyTrigger.current : exportTrigger.current ?? contextLens.current;
-      if (target?.isConnected) target.focus();
-      else if (contextLens.current?.isConnected) contextLens.current.focus();
-    });
-  }, [snapshot.evidenceCopy.state, snapshot.export.operation?.state]);
+  usePaneResizeLifecycle(layout);
 
-  useLayoutEffect(() => () => resizeCleanup.current?.(), []);
-
-  useLayoutEffect(() => {
-    const updateGeometry = () => {
-      pressureChrome.current = null;
-      const nextViewport = { width: window.innerWidth, height: window.innerHeight };
-      setViewport(nextViewport);
-      setGeometry((previous) => decideGeometry(nextViewport.width, nextViewport.height, previous));
-    };
-    window.addEventListener("resize", updateGeometry);
-    return () => window.removeEventListener("resize", updateGeometry);
+  // Both read only refs, so they are identity-stable.
+  const preserveEvidenceHorizontalScroll = useCallback(() => {
+    preservedEvidenceScrollLeft.current = evidenceLedger.current?.scrollLeft ?? null;
   }, []);
 
-  const preserveEvidenceHorizontalScroll = () => {
-    preservedEvidenceScrollLeft.current = evidenceLedger.current?.scrollLeft ?? null;
-  };
-
-  const restoreEvidenceHorizontalScroll = () => {
+  const restoreEvidenceHorizontalScroll = useCallback(() => {
     const horizontalOffset = preservedEvidenceScrollLeft.current;
     if (horizontalOffset === null || !evidenceLedger.current) return;
     evidenceLedger.current.scrollLeft = horizontalOffset;
     window.requestAnimationFrame(() => {
       if (evidenceLedger.current) evidenceLedger.current.scrollLeft = horizontalOffset;
     });
-  };
+  }, []);
 
   const moveEvidence = (offset: number) => {
     preserveEvidenceHorizontalScroll();
@@ -1003,79 +487,6 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     pendingContextFocus.current = true;
     if (contextCollapsed) setContextCollapsed(false);
     dispatch(runtime, { type: "set-context", contextId: "context:scope-dossier" });
-  };
-
-  const isCompactGeometry = () => geometry === "compact";
-  const isNormalGeometry = () => geometry === "normal";
-  const isShallowGeometry = () => geometry === "shallow";
-  const adjustPane = (pane: "scope" | "context", delta: number) => {
-    if (pane === "scope") setScopeWidth((size) => clamp(size + delta, SCOPE_MIN_WIDTH, SCOPE_MAX_WIDTH));
-    else if (isNormalGeometry()) setNormalContextHeight((size) => clamp(size + delta, CONTEXT_MIN_HEIGHT, CONTEXT_MAX_SIZE));
-    else if (isShallowGeometry()) setShallowContextWidth((size) => clamp(size + delta, CONTEXT_MIN_WIDTH, CONTEXT_MAX_SIZE));
-    else setWideContextWidth((size) => clamp(size + delta, CONTEXT_MIN_WIDTH, CONTEXT_MAX_SIZE));
-  };
-  const setPaneBoundary = (pane: "scope" | "context", boundary: "start" | "end") => {
-    if (pane === "scope") setScopeWidth(boundary === "start" ? SCOPE_MIN_WIDTH : SCOPE_MAX_WIDTH);
-    else {
-      const size = boundary === "start" ? CONTEXT_MAX_SIZE : isNormalGeometry() ? CONTEXT_MIN_HEIGHT : CONTEXT_MIN_WIDTH;
-      if (isNormalGeometry()) setNormalContextHeight(size);
-      else if (isShallowGeometry()) setShallowContextWidth(size);
-      else setWideContextWidth(size);
-    }
-  };
-  const collapsePane = (pane: "scope" | "context", restoreDestination: "splitter" | "collapse" = "splitter") => {
-    paneRestoreDestination.current[pane] = restoreDestination;
-    pendingPaneFocus.current = { pane, target: "restore" };
-    if (pane === "scope") setScopeCollapsed(true);
-    else setContextCollapsed(true);
-  };
-  const restorePane = (pane: "scope" | "context") => {
-    pendingPaneFocus.current = { pane, target: paneRestoreDestination.current[pane] };
-    if (pane === "scope") setScopeCollapsed(false);
-    else setContextCollapsed(false);
-  };
-  const handleSeparatorKey = (pane: "scope" | "context", keyEvent: ReactKeyboardEvent<HTMLDivElement>) => {
-    const horizontal = pane === "context" && isNormalGeometry();
-    const increment = keyEvent.shiftKey ? 72 : 24;
-    if (keyEvent.key === "Enter" || keyEvent.key === " ") {
-      keyEvent.preventDefault();
-      collapsePane(pane);
-      return;
-    }
-    if (keyEvent.key === "Home" || keyEvent.key === "End") {
-      keyEvent.preventDefault();
-      setPaneBoundary(pane, keyEvent.key === "Home" ? "start" : "end");
-      return;
-    }
-    const decrease = horizontal ? "ArrowUp" : "ArrowLeft";
-    const increase = horizontal ? "ArrowDown" : "ArrowRight";
-    if (keyEvent.key === decrease || keyEvent.key === increase) {
-      keyEvent.preventDefault();
-      const splitterMovement = keyEvent.key === increase ? increment : -increment;
-      adjustPane(pane, pane === "context" ? -splitterMovement : splitterMovement);
-    }
-  };
-  const startResize = (pane: "scope" | "context", pointerEvent: React.PointerEvent<HTMLDivElement>) => {
-    if (isCompactGeometry() || (pane === "scope" && geometry !== "wide")) return;
-    pointerEvent.preventDefault();
-    resizeCleanup.current?.();
-    let previous = pane === "context" && isNormalGeometry() ? pointerEvent.clientY : pointerEvent.clientX;
-    const move = (event: PointerEvent) => {
-      const current = pane === "context" && isNormalGeometry() ? event.clientY : event.clientX;
-      const splitterMovement = current - previous;
-      adjustPane(pane, pane === "context" ? -splitterMovement : splitterMovement);
-      previous = current;
-    };
-    const end = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", end);
-      window.removeEventListener("pointercancel", end);
-      resizeCleanup.current = null;
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", end, { once: true });
-    window.addEventListener("pointercancel", end, { once: true });
-    resizeCleanup.current = end;
   };
 
   const openScope = (origin: HTMLButtonElement) => {
@@ -1337,174 +748,29 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     }
   };
 
-  const openFind = (origin: HTMLElement) => {
-    if (findOpen) { findInput.current?.focus(); return; }
-    findOrigin.current = origin;
-    findOriginScopePicker.current = scopePickerOpen;
-    if (scopePickerOpen) setScopePickerOpen(false);
-    findParkedContext.current = isCompactGeometry() ? snapshot.contextId : null;
-    if (findParkedContext.current) dispatch(runtime, { type: "set-context", contextId: null });
-    findOriginScroll.current = evidenceLedger.current?.scrollTop ?? 0;
-    setFindDraft(findState.query);
-    setFindOpen(true);
-  };
+  useFilterSubmitResult(filter, evidence.filterMutation, snapshot.version);
 
-  const cancelFindDebounce = () => {
-    if (findDebounce.current !== null) window.clearTimeout(findDebounce.current);
-    findDebounce.current = null;
-  };
+  const { notificationsOrigin, inspectingNotification } = useNotificationsFocusRestoration({
+    notificationsOpen,
+    notificationsTrigger,
+    evidenceLedger,
+    contextBody,
+    scopeTree
+  });
 
-  const submitFind = (value: string) => {
-    cancelFindDebounce();
-    dispatch(runtime, { type: "set-find", value });
-  };
+  const dismissFocus = useDiagnosticDismissFocus({
+    diagnostics: snapshot.diagnostics,
+    notificationsTrigger,
+    evidenceModeTrigger
+  });
 
-  const clearFind = () => {
-    cancelFindDebounce();
-    setFindDraft("");
-    dispatch(runtime, { type: "clear-find" });
-  };
-
-  const closeFind = () => {
-    clearFind();
-    setFindOpen(false);
-    if (findParkedContext.current && runtime.getSnapshot().contextId === null) {
-      dispatch(runtime, { type: "set-context", contextId: findParkedContext.current });
-    }
-    if (findOriginScopePicker.current) setScopePickerOpen(true);
-    window.requestAnimationFrame(() => {
-      if (evidenceLedger.current) evidenceLedger.current.scrollTop = findOriginScroll.current;
-      (findOrigin.current?.isConnected ? findOrigin.current : findTrigger.current)?.focus();
-    });
-  };
-
-  const openFilter = (origin: HTMLElement) => {
-    clearFilterDiscovery();
-    filterOrigin.current = origin;
-    setFilterDraft(appliedFilter.text);
-    setFilterDraftCriteria(cloneFilterCriteria(appliedFilter.criteria));
-    setFilterStep("composer");
-    setFilterFacet(null);
-    setFilterDiscoverySearch("");
-    setFilterDiscoveryCursor(null);
-    setFilterDiscoveryValues([]);
-    facetReturnKey.current = null;
-    setFilterDraftRevision(appliedFilter.revision);
-    setFilterOpen(true);
-  };
-
-  const clearFilterDiscovery = () => {
-    runtime.dispatch({ type: "request-filter-discovery", request: null });
-  };
-
-  const closeFilter = () => {
-    clearFilterDiscovery();
-    setFilterDraft(appliedFilter.text);
-    setFilterDraftCriteria(cloneFilterCriteria(appliedFilter.criteria));
-    setFilterStep("composer");
-    setFilterFacet(null);
-    setFilterDiscoverySearch("");
-    setFilterDiscoveryCursor(null);
-    setFilterDiscoveryValues([]);
-    facetReturnKey.current = null;
-    setFilterDraftRevision(null);
-    setFilterOpen(false);
-    window.requestAnimationFrame(() => {
-      (filterOrigin.current?.isConnected ? filterOrigin.current : filterTrigger.current)?.focus();
-    });
-  };
-
-  const openStructuredCriteria = () => {
-    setFilterStep("facets");
-    window.requestAnimationFrame(() => facetPickerFirst.current?.focus());
-  };
-
-  const openFacetExplorer = (facet: EvidenceFacetKey) => {
-    facetReturnKey.current = facet;
-    setFilterFacet(facet);
-    setFilterStep("explorer");
-    setFilterDiscoverySearch("");
-    setFilterDiscoveryCursor(null);
-    setFilterDiscoveryValues([]);
-    runtime.dispatch({ type: "request-filter-discovery", request: { facet, size: 12 } });
-    window.requestAnimationFrame(() => facetSearchInput.current?.focus());
-  };
-
-  const requestFacetDiscovery = (search: string, cursor: string | null = null) => {
-    if (!filterFacet) return;
-    runtime.dispatch({
-      type: "request-filter-discovery",
-      request: {
-        facet: filterFacet,
-        size: 12,
-        ...(search ? { search } : {}),
-        ...(cursor ? { cursor } : {})
-      }
-    });
-  };
-
-  const chooseFacetValue = (value: TypedFacetValue, state: FilterValueState) => {
-    const draftValue = filterValueForDraft(value);
-    setFilterDraftCriteria((previous) => {
-      const current = previous[value.facet] ?? { include: [], exclude: [] };
-      const include = current.include.filter((candidate) => candidate.identity !== draftValue.identity);
-      const exclude = current.exclude.filter((candidate) => candidate.identity !== draftValue.identity);
-      if (state === "include") include.push(draftValue);
-      if (state === "exclude") exclude.push(draftValue);
-      return {
-        ...previous,
-        [value.facet]: { include, exclude }
-      };
-    });
-  };
-
-  const handleFilterEscape = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (filterStep === "explorer") {
-      clearFilterDiscovery();
-      setFilterStep("facets");
-      setFilterFacet(null);
-      setFilterDiscoveryCursor(null);
-      window.requestAnimationFrame(() => {
-        const target = (facetReturnKey.current ? facetButtons.current.get(facetReturnKey.current) : null) ?? facetPickerFirst.current;
-        target?.focus();
-      });
-      return;
-    }
-    if (filterStep === "facets") {
-      setFilterStep("composer");
-      window.requestAnimationFrame(() => structuredCriterionTrigger.current?.focus());
-      return;
-    }
-    closeFilter();
-  };
-
-  useLayoutEffect(() => {
-    if (filterSubmitVersion === null || snapshot.version <= filterSubmitVersion) return;
-    const mutation = evidence.filterMutation;
-    if (mutation.state === "stale") {
-      setFilterDraftRevision(mutation.revision);
-      setFilterSubmitVersion(null);
-      return;
-    }
-    if (mutation.state === "invalid") {
-      setFilterSubmitVersion(null);
-      return;
-    }
-    if (mutation.state === "applied" || mutation.state === "no-op") {
-      setFilterSubmitVersion(null);
-      closeFilter();
-    }
-  }, [evidence.filterMutation, filterSubmitVersion, snapshot.version]);
-
-  const focusActions = () => {
+  // Reads only refs, so it is identity-stable.
+  const focusActions = useCallback(() => {
     if (actionsFocusAgent.current && agentAccessDetails.current) {
       agentAccessDetails.current.open = true;
       agentAccessControl.current?.focus();
     } else contextLens.current?.focus();
-  };
+  }, []);
 
   const openActions = (trigger: HTMLButtonElement, agent = false) => {
     actionsReturnTrigger.current = trigger;
@@ -1549,49 +815,6 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
   };
 
   useLayoutEffect(() => {
-    if (previousNotificationsOpen.current && !notificationsOpen) {
-      if (!inspectingNotification.current) {
-        const restore = () => {
-          notificationsTrigger.current?.focus({ preventScroll: true });
-          if (evidenceLedger.current) evidenceLedger.current.scrollTop = notificationsOrigin.current.evidenceScrollTop;
-          if (contextBody.current) contextBody.current.scrollTop = notificationsOrigin.current.contextScrollTop;
-          if (scopeTree.current) scopeTree.current.scrollTop = notificationsOrigin.current.scopeScrollTop;
-        };
-        restore();
-        window.requestAnimationFrame(restore);
-      }
-      inspectingNotification.current = false;
-    }
-    previousNotificationsOpen.current = notificationsOpen;
-  }, [notificationsOpen]);
-
-  useLayoutEffect(() => {
-    const focused = focusedDiagnosticDismiss.current;
-    if (
-      pendingDiagnosticDismissFocus.current === null &&
-      focused &&
-      !snapshot.diagnostics.some(({ dismissalId }) => dismissalId === focused.dismissalId)
-    ) {
-      pendingDiagnosticDismissFocus.current = focused.index;
-    }
-    const dismissedIndex = pendingDiagnosticDismissFocus.current;
-    if (dismissedIndex !== null) {
-      const dismissible = snapshot.diagnostics.filter(({ dismissalId }) => dismissalId !== undefined);
-      const next = dismissible[dismissedIndex] ?? dismissible[dismissedIndex - 1];
-      if (next?.dismissalId) {
-        diagnosticDismissButtons.current.get(next.dismissalId)?.focus({ preventScroll: true });
-      } else if (notificationsTrigger.current && !notificationsTrigger.current.disabled) {
-        focusedDiagnosticDismiss.current = null;
-        notificationsTrigger.current.focus({ preventScroll: true });
-      } else {
-        focusedDiagnosticDismiss.current = null;
-        evidenceModeTrigger.current?.focus({ preventScroll: true });
-      }
-      pendingDiagnosticDismissFocus.current = null;
-    }
-  }, [snapshot.diagnostics]);
-
-  useLayoutEffect(() => {
     const tree = scopeTree.current;
     if (!tree) return;
     const measure = () => setScopeTreeHeight(Math.max(SCOPE_NODE_HEIGHT, tree.clientHeight));
@@ -1600,13 +823,15 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     const observer = new ResizeObserver(measure);
     observer.observe(tree);
     return () => observer.disconnect();
+    // Geometry, collapse, picker, and Context changes remount the tree host.
   }, [geometry, scopeCollapsed, scopePickerOpen, snapshot.contextId]);
 
+  const effectiveFocusedNodeId = effectiveFocusedNode?.id;
   useLayoutEffect(() => {
-    if (!effectiveFocusedNode || effectiveFocusedNode.id === snapshot.scope.focusedNodeId) return;
-    if (scopeTree.current?.contains(document.activeElement)) pendingScopeFocus.current = effectiveFocusedNode.id;
-    dispatch(runtime, { type: "set-scope-focus", scopeId: effectiveFocusedNode.id });
-  }, [effectiveFocusedNode?.id, snapshot.scope.focusedNodeId]);
+    if (effectiveFocusedNodeId === undefined || effectiveFocusedNodeId === snapshot.scope.focusedNodeId) return;
+    if (scopeTree.current?.contains(document.activeElement)) pendingScopeFocus.current = effectiveFocusedNodeId;
+    dispatch(runtime, { type: "set-scope-focus", scopeId: effectiveFocusedNodeId });
+  }, [runtime, effectiveFocusedNodeId, snapshot.scope.focusedNodeId]);
 
   useLayoutEffect(() => {
     if (scopeWindowStart <= maximumScopeWindowStart) return;
@@ -1628,10 +853,12 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     window.requestAnimationFrame(() => {
       if (pendingEvidenceFocus.current === eventId) restore();
     });
+    // Focus, publication, and picker changes are deliberate retry triggers.
   }, [focusedEventId, snapshot.contextId, snapshot.version, scopePickerOpen]);
 
+  const hiddenSelectionEventId = hiddenSelection?.eventId;
   useLayoutEffect(() => {
-    if (!hiddenSelection || !focusedEventId || focusedEventId === hiddenSelection.eventId) return;
+    if (hiddenSelectionEventId === undefined || !focusedEventId || focusedEventId === hiddenSelectionEventId) return;
     if (pendingScopeFocus.current || scopeTree.current?.contains(document.activeElement)) return;
     if (isCompactGeometry() && snapshot.contextId) {
       pendingEvidenceFocus.current = focusedEventId;
@@ -1639,12 +866,16 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     }
     const row = evidenceRows.current.get(focusedEventId);
     if (row?.isConnected && row.getClientRects().length > 0) row.focus({ preventScroll: true });
-  }, [focusedEventId, hiddenSelection?.eventId, snapshot.contextId, snapshot.version]);
+    // Geometry is read at the publication that hid the selection; a later
+    // geometry change alone must not move focus to the Evidence row.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedEventId, hiddenSelectionEventId, snapshot.contextId, snapshot.version]);
 
   useLayoutEffect(() => {
     if (evidence.filterMutation.state !== "revealed" || snapshot.contextId || !focusedEventId) return;
     const row = evidenceRows.current.get(focusedEventId);
     if (row?.isConnected && row.getClientRects().length > 0) row.focus({ preventScroll: true });
+    // Each publication is a deliberate retry trigger.
   }, [evidence.filterMutation.state, focusedEventId, snapshot.contextId, snapshot.version]);
 
   useLayoutEffect(() => {
@@ -1656,7 +887,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     pendingRetainedBoundaryFocus.current = null;
     pendingEvidenceFocus.current = target.id;
     dispatch(runtime, { type: "select-evidence", eventId: target.id });
-  }, [events, evidence.visibleStart, evidence.visibleEnd, total]);
+  }, [runtime, events, evidence.visibleStart, evidence.visibleEnd, total]);
 
   const revealEvidenceRowWithoutHorizontalJump = useCallback((row: HTMLButtonElement) => {
     const ledger = evidenceLedger.current;
@@ -1667,23 +898,10 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
 
   useLayoutEffect(() => {
     restoreEvidenceHorizontalScroll();
-  }, [focusedEventId, evidencePayloadMode]);
+    // Focus and payload-mode changes are the triggers; the callback is stable.
+  }, [restoreEvidenceHorizontalScroll, focusedEventId, evidencePayloadMode]);
 
-  useLayoutEffect(() => {
-    const eventId = findState.currentEventId;
-    if (!eventId || findState.loading || completedFindReveal.current === findState.revealRevision) return;
-    const row = evidenceRows.current.get(eventId);
-    const ledger = evidenceLedger.current;
-    if (!row || !ledger || ledger.clientHeight === 0) return;
-    // Scroll only this ledger, and account for its sticky header. Passive
-    // publications never repeat an already completed deliberate reveal.
-    const bounds = ledger.getBoundingClientRect();
-    const rowBounds = row.getBoundingClientRect();
-    const headerHeight = ledger.querySelector(".workbench-react__ledger-header")?.getBoundingClientRect().height ?? 0;
-    const usableHeight = Math.max(rowBounds.height, ledger.clientHeight - headerHeight);
-    ledger.scrollTop += rowBounds.top - bounds.top - headerHeight - Math.max(0, (usableHeight - rowBounds.height) / 2);
-    completedFindReveal.current = findState.revealRevision;
-  }, [findState.currentEventId, findState.revealRevision, findState.loading, events, geometry, scopePickerOpen]);
+  useFindReveal({ find, findState, evidenceRows, evidenceLedger, events, geometry, scopePickerOpen });
 
   useLayoutEffect(() => {
     const eventId = pendingTimelineReveal.current;
@@ -1706,6 +924,9 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     node.focus();
     pendingScopeFocus.current = null;
     pendingScopeSearchReveal.current = null;
+    // `revealScopeNode` is rebuilt every render from the window values that
+    // are already listed; the listed values are the intended triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot.scope.focusedNodeId, renderedScopeWindowStart, scopeWindowSize, scopeSearchOpen, visibleScopeNodes]);
 
   useLayoutEffect(() => {
@@ -1717,11 +938,14 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     if (!node) return;
     node.focus();
     pendingScopeEntryFocus.current = false;
+    // `revealScopeNode` is rebuilt every render from the window values that
+    // are already listed; the listed values are the intended triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeIsPresented, renderedFocusId, renderedScopeWindowStart, scopeWindowSize, scopeSearchOpen]);
 
   useLayoutEffect(() => {
     if (!pendingContextFocus.current) return;
-    if (isCompactGeometry() && !snapshot.contextId) return;
+    if (geometry === "compact" && !snapshot.contextId) return;
     contextLens.current?.focus();
     pendingContextFocus.current = false;
   }, [contextCollapsed, geometry, snapshot.contextId]);
@@ -1730,22 +954,12 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
     if (!pendingActionsFocus.current || contextMode !== "actions") return;
     focusActions();
     pendingActionsFocus.current = false;
-  }, [contextMode, contextCollapsed, snapshot.contextId]);
+    // Collapse and Context changes are deliberate retry triggers.
+  }, [focusActions, contextMode, contextCollapsed, snapshot.contextId]);
 
-  useLayoutEffect(() => {
-    if (findOpen) findInput.current?.focus();
-  }, [findOpen]);
+  useFindInputFocus(find);
 
-  useEffect(() => { setFindDraft(findState.query); }, [findState.query]);
-  useEffect(() => () => {
-    if (findDebounce.current !== null) window.clearTimeout(findDebounce.current);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!filterOpen) return;
-    if (filterStep === "composer") filterInput.current?.focus();
-    if (filterStep === "explorer") facetSearchInput.current?.focus();
-  }, [filterOpen, filterStep]);
+  useFilterInputFocus(filter);
 
   useLayoutEffect(() => {
     if (!pendingActionsRestoration.current || contextMode === "actions") return;
@@ -1755,119 +969,67 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
       if (contextBody.current) contextBody.current.scrollTop = actionsContextScrollTop.current;
       (actionsReturnTrigger.current ?? moreActionsTrigger.current)?.focus();
     });
+    // Context changes are a deliberate retry trigger.
   }, [contextMode, snapshot.contextId]);
 
-  useLayoutEffect(() => {
-    if (!filterOpen) {
-      setFilterDraft(appliedFilter.text);
-      setFilterDraftCriteria(cloneFilterCriteria(appliedFilter.criteria));
-    }
-  }, [appliedFilter.criteria, appliedFilter.text, filterOpen]);
+  useFilterDraftSync(filter, appliedFilter);
+
+  usePaneFocusRestoration(layout);
+
+  const {
+    resumeLocalInjection, parkedDiscardTrigger, parkedDiscardDialog, restoreParkedDiscardFocus,
+    parkedScenarioDiscardTrigger, parkedScenarioDiscardDialog, restoreParkedScenarioDiscardFocus
+  } = useDocumentFocusRestoration({
+    geometry,
+    localInjection,
+    serverInjectionDraft,
+    scenario: snapshot.scenario,
+    focusedEventId: snapshot.evidence.focusedEventId,
+    selectionEventId: snapshot.selectionEventId,
+    contextId: snapshot.contextId,
+    evidenceRows,
+    scopeNodesById,
+    scopeTrigger,
+    contextLens,
+    serverInjectionTrigger
+  });
 
   useLayoutEffect(() => {
-    const pending = pendingPaneFocus.current;
-    if (!pending) return;
-    const collapsed = pending.pane === "scope" ? scopeCollapsed : contextCollapsed;
-    if ((pending.target === "restore") !== collapsed) return;
-    const target = pending.target === "restore"
-      ? pending.pane === "scope" ? scopeRestore.current : contextRestore.current
-      : pending.target === "collapse"
-        ? pending.pane === "scope" ? scopeCollapse.current : contextCollapse.current
-        : pending.pane === "scope" ? scopeSplitter.current : contextSplitter.current;
-    target?.focus();
-    pendingPaneFocus.current = null;
-  }, [scopeCollapsed, contextCollapsed]);
-
-  useLayoutEffect(() => {
-    const previous = previousLocalInjectionDraft.current;
-    const current = localInjectionDraft;
-    if (previous?.open && current?.parked) {
-      resumeLocalInjection.current?.focus();
-    } else if (previous && !current) {
-      const restoration = previous.restorationOrigin;
-      const focus = (target: HTMLElement | null | undefined): boolean => {
-        if (!target?.isConnected) return false;
-        target.focus();
-        return document.activeElement === target;
-      };
-      if (previous.source.kind === "authored") {
-        if (!(geometry === "wide" && restoration.scopeId && focus(scopeNodesById.current.get(restoration.scopeId)))) {
-          focus(scopeTrigger.current);
-        }
-      } else {
-        const eventId = restoration.focusedEventId ?? restoration.selectionEventId;
-        if (!(eventId && focus(evidenceRows.current.get(eventId)))) {
-          if (!(restoration.contextId && focus(contextLens.current))) focus(scopeTrigger.current);
-        }
-      }
-    }
-    previousLocalInjectionDraft.current = current;
-  }, [geometry, localInjectionDraft]);
-
-  useLayoutEffect(() => {
-    const previous = previousServerInjectionDraft.current;
-    const current = serverInjectionDraft;
-    if (previous && !current) {
-      window.requestAnimationFrame(() => {
-        if (serverInjectionTrigger.current?.isConnected) {
-          serverInjectionTrigger.current.focus({ preventScroll: true });
-          return;
-        }
-        const source = previous.source.eventId
-          ? evidenceRows.current.get(previous.source.eventId)
-          : null;
-        if (source?.isConnected) source.focus({ preventScroll: true });
-        else contextLens.current?.focus({ preventScroll: true });
-      });
-    }
-    previousServerInjectionDraft.current = current;
-  }, [serverInjectionDraft]);
-
-  useLayoutEffect(() => {
-    const previous = previousScenario.current;
-    const current = snapshot.scenario;
-    if (previous && (!current || (!previous.parked && current.parked))) {
-      const origin = previous.scenario.restorationOrigin;
-      const keepCurrentInvestigation = previous.parked && !current;
-      const eventId = keepCurrentInvestigation
-        ? snapshot.evidence.focusedEventId ?? snapshot.selectionEventId
-        : origin.focusedEventId ?? origin.selectionEventId;
-      const contextId = keepCurrentInvestigation ? snapshot.contextId : origin.contextId;
-      window.requestAnimationFrame(() => {
-        const target = eventId ? evidenceRows.current.get(eventId) : null;
-        if (target?.isConnected) target.focus({ preventScroll: true });
-        else if (contextId) contextLens.current?.focus({ preventScroll: true });
-        else scopeTrigger.current?.focus({ preventScroll: true });
-      });
-    }
-    previousScenario.current = current;
-  }, [snapshot.scenario]);
-
-  useLayoutEffect(() => {
-    const confirmation = Boolean(snapshot.scenario?.parked && snapshot.scenario.discardConfirmation);
-    if (!previousParkedScenarioDiscardConfirmation.current && confirmation) {
-      parkedScenarioDiscardDialog.current?.focus();
-    } else if (previousParkedScenarioDiscardConfirmation.current && !confirmation && restoreParkedScenarioDiscardFocus.current) {
-      restoreParkedScenarioDiscardFocus.current = false;
-      parkedScenarioDiscardTrigger.current?.focus();
-    }
-    previousParkedScenarioDiscardConfirmation.current = confirmation;
-  }, [snapshot.scenario?.parked, snapshot.scenario?.discardConfirmation]);
-
-  useLayoutEffect(() => {
-    const confirmation = !!localInjectionDraft?.parked && localInjection.discardConfirmation;
-    if (!previousParkedDiscardConfirmation.current && confirmation) {
-      parkedDiscardDialog.current?.focus();
-    } else if (previousParkedDiscardConfirmation.current && !confirmation && restoreParkedDiscardFocus.current) {
-      restoreParkedDiscardFocus.current = false;
-      parkedDiscardTrigger.current?.focus();
-    }
-    previousParkedDiscardConfirmation.current = confirmation;
-  }, [localInjection.discardConfirmation, localInjectionDraft?.parked]);
-
-  useLayoutEffect(() => () => {
-    if (scopeTypeaheadReset.current !== null) window.clearTimeout(scopeTypeaheadReset.current);
+    // Clear whichever typeahead reset is pending at unmount.
+    const pendingTypeaheadReset = scopeTypeaheadReset;
+    return () => {
+      if (pendingTypeaheadReset.current !== null) window.clearTimeout(pendingTypeaheadReset.current);
+    };
   }, []);
+
+  // The runtime rebuilds these sub-objects on every publication; restore
+  // identity while their content is unchanged so the memoized panes skip.
+  const stableContext = useStructurallyStable(snapshot.context);
+  const stableExport = useStructurallyStable(snapshot.export);
+  const stableAppliedFilter = useStructurallyStable(appliedFilter);
+  const stableLocalInjectionSelectedUpdate = useStructurallyStable(snapshot.localInjection.availability.selectedUpdate);
+  const stableServerInjectionAvailability = useStructurallyStable(serverInjection?.availability ?? null);
+  const stableDiagnostics = useStructurallyStable(snapshot.diagnostics);
+  const stableNotificationEntries = useStructurallyStable(snapshot.notifications.entries);
+  const contextActions = useLatestHandlers({
+    dispatch: (command: WorkbenchCommand) => dispatch(runtime, command),
+    collapseContext: () => collapsePane("context", "collapse"),
+    closeActions: () => closeActions(),
+    restoreEvidenceFocus: () => restoreEvidenceFocus(),
+    copyScopedEvidence: () => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); },
+    exportScope: () => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); },
+    toggleExportRedaction,
+    setCompleteEvidence,
+    downloadExport,
+    applySelectedFilterAction,
+    applySelectedFilterValue,
+    applyActivityRankingFilter: (expectedRevision: number, rankingId: string) => dispatch(runtime, { type: "apply-activity-ranking-filter", expectedRevision, rankingId }),
+    resetFilter: () => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })
+  });
+  const footerActions = useLatestHandlers({
+    dispatch: (command: WorkbenchCommand) => dispatch(runtime, command),
+    openNotifications
+  });
 
   return (
     <section
@@ -1928,43 +1090,11 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
           <button ref={moreActionsTrigger} type="button" disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-context" : undefined} aria-expanded={workspaceAvailable && contextMode === "actions"} onClick={event => openActions(event.currentTarget)}>More actions</button>
         </div>
       </header>
-      {findOpen && !notificationsOpen ? <div className="workbench-react__find" role="search" aria-label="Find in ordered Evidence">
-            <label className="workbench-react__eyebrow" htmlFor="workbench-find">Find in Evidence</label>
-            <input
-              id="workbench-find"
-              ref={findInput}
-              aria-label="Find in ordered Evidence"
-              value={findDraft}
-              aria-describedby="workbench-find-domain"
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                setFindDraft(value);
-                cancelFindDebounce();
-                findDebounce.current = window.setTimeout(() => submitFind(value), 150);
-              }}
-              onKeyDown={(keyEvent) => {
-                if (keyEvent.key === "Enter" && !keyEvent.nativeEvent.isComposing) {
-                  keyEvent.preventDefault();
-                  if (findDraft !== findState.query) submitFind(findDraft);
-                  else if (!findState.loading) dispatch(runtime, { type: keyEvent.shiftKey ? "find-previous" : "find-next" });
-                }
-              }}
-            />
-            <span aria-live="polite">{findState.loading || findDraft !== findState.query ? "Searching…" : findState.expired ? "Results expired" : findState.matchCount ? `${findState.currentIndex + 1} of ${findState.matchCount} matches` : "0 matches"}{findState.wrapped ? " · Wrapped" : ""}</span>
-            <button type="button" disabled={findState.loading || findDraft !== findState.query || !findState.matchCount || findState.expired} onClick={() => dispatch(runtime, { type: "find-previous" })}>Previous</button>
-            <button type="button" disabled={findState.loading || findDraft !== findState.query || !findState.matchCount || findState.expired} onClick={() => dispatch(runtime, { type: "find-next" })}>Next</button>
-            <button type="button" disabled={findState.loading || findDraft !== findState.query || !findState.currentEventId || findState.expired} onClick={() => {
-              pendingContextFocus.current = true;
-              if (contextCollapsed) setContextCollapsed(false);
-              dispatch(runtime, { type: "inspect-find-match" });
-            }}>Inspect match</button>
-            <button type="button" onClick={closeFind}>Close Find</button>
-            <div className="workbench-react__find-detail" role="region" aria-label="Find match detail">
-              <span id="workbench-find-domain">Current Scope + Filter · matching events</span>
-              {findState.expired ? <span>The retained results changed. Refresh to search available Evidence.</span> : findState.snippet ? <span className="workbench-react__find-excerpt" title={`${findState.snippet.field}: ${findState.snippet.text}`}><b>{findState.snippet.field}</b>: <FindText text={findState.snippet.text} query={findState.query} /></span> : null}
-              {findState.newerCount > 0 || findState.expired ? <button type="button" disabled={findState.loading} onClick={() => dispatch(runtime, { type: "refresh-find" })}>Refresh results{findState.newerCount > 0 ? ` · ${findState.newerCount.toLocaleString()} newer events` : ""}</button> : null}
-            </div>
-          </div> : null}
+      {findOpen && !notificationsOpen ? <FindBar runtime={runtime} find={find} findState={findState} onInspectMatch={() => {
+        pendingContextFocus.current = true;
+        if (contextCollapsed) setContextCollapsed(false);
+        dispatch(runtime, { type: "inspect-find-match" });
+      }} /> : null}
       <nav className="workbench-react__scope-strip" aria-label="Current runtime scope">
         <button type="button" ref={scopeTrigger} disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-runtime-scope" : undefined} aria-expanded={workspaceAvailable && scopeIsPresented} onClick={(event) => openScope(event.currentTarget)}>Scope</button>
         {scopeCollapsed ? <button ref={scopeRestore} className="workbench-react__restore-pane workbench-react__restore-pane--scope" type="button" onClick={() => restorePane("scope")}>Restore Scope</button> : null}
@@ -2063,7 +1193,7 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
           {snapshot.activity ? <ActivityTimeline projection={snapshot.activity.projection} filter={appliedFilter} frozen={evidence.mode === "frozen"} selectedEventId={selectedEventId} onSelect={selectTimelineEvidence} onShowEvidence={() => evidenceLedger.current?.focus()} onFilter={(expectedRevision, operations) => dispatch(runtime, { type: "apply-filter-mutations", expectedRevision, operations })} /> : null}
           <header className="workbench-react__pane-header"><div><strong>Ordered Evidence</strong></div><div className="workbench-react__evidence-summary">{!activeTimelineRange && shown === matching && matching === inScope ? <span title="All matching Evidence in the current Scope is shown">{shown.toLocaleString()} Evidence</span> : <><span>Shown {shown.toLocaleString()}</span>{!activeTimelineRange && matching === inScope ? <span>Matching {matching.toLocaleString()} in Scope</span> : <>{activeTimelineRange || matching !== shown ? <span>{activeTimelineRange ? "Before range" : "Matching"} {matching.toLocaleString()}</span> : null}<span>{activeTimelineRange ? "In range" : "In Scope"} {inScope.toLocaleString()}</span></>}</>}{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : <button type="button" aria-controls="workbench-context" onClick={openScopeContext}>Open Scope Context</button>}</div></header>
-          {filterOpen ? <FilterDraftDocument filterStep={filterStep} filterDraft={filterDraft} filterDraftCriteria={filterDraftCriteria} filterDiscoverySearch={filterDiscoverySearch} filterDiscoveryValues={filterDiscoveryValues} activeFacetDescriptor={activeFacetDescriptor} activeFacetDiscovery={activeFacetDiscovery} evidence={evidence} filterInput={filterInput} structuredCriterionTrigger={structuredCriterionTrigger} facetPickerFirst={facetPickerFirst} facetButtons={facetButtons} facetSearchInput={facetSearchInput} setFilterDraft={setFilterDraft} setFilterStep={setFilterStep} setFilterFacet={setFilterFacet} setFilterDiscoveryCursor={setFilterDiscoveryCursor} setFilterDiscoverySearch={setFilterDiscoverySearch} clearFilterDiscovery={clearFilterDiscovery} closeFilter={closeFilter} openStructuredCriteria={openStructuredCriteria} openFacetExplorer={openFacetExplorer} requestFacetDiscovery={requestFacetDiscovery} chooseFacetValue={chooseFacetValue} onEscape={handleFilterEscape} onApply={() => { setFilterSubmitVersion(snapshot.version); dispatch(runtime, { type: "apply-filter-mutations", expectedRevision: filterDraftRevision ?? appliedFilter.revision, operations: draftFilterOperations(appliedFilter, filterDraft, filterDraftCriteria) }); }} /> : null}
+          {filterOpen ? <FilterRegion {...filter.documentProps} /> : null}
           {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : <button type="button" disabled aria-label="Reveal selected Evidence unavailable">Reveal selected Evidence · Unavailable</button>}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div>{hiddenSelection.revealUnavailableReason ? <small>{hiddenSelection.revealUnavailableReason}</small> : null}</div> : null}
           <div className="workbench-react__evidence-window" data-complete-window={!evidence.hasOlder && !evidence.hasNewer || undefined} aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}
@@ -2086,147 +1216,59 @@ export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, age
           </div></> : <div className="workbench-react__empty"><strong>No Evidence in the current Scope.</strong><span>Capture {captureOperation.toLowerCase()} with Coverage {coverage.toLowerCase()}.</span><button type="button" onClick={(event) => openScope(event.currentTarget)}>Change Scope</button></div>}
         </section>
         <div ref={contextSplitter} className="workbench-react__splitter workbench-react__splitter--context" role="separator" aria-label="Resize Context" aria-orientation={isNormalGeometry() ? "horizontal" : "vertical"} aria-valuemin={contextMinimum} aria-valuemax={Math.min(CONTEXT_MAX_SIZE, contextMaximum)} aria-valuenow={contextSize} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("context", event)} onPointerDown={(event) => startResize("context", event)} />
-        <aside className="workbench-react__pane workbench-react__context" id="workbench-context" aria-label="Context">
-          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? `Selected Evidence · ${selected.source}` : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div>{contextMode !== "actions" ? <button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button> : null}{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
-          <div className="workbench-react__context-body" ref={contextBody}>
-            {contextMode === "actions" ? <SessionOperations snapshot={snapshot} shown={shown} analytics={analytics} agentConnection={agentConnection} agentAccessDetails={agentAccessDetails} agentAccessControl={agentAccessControl} scopedCopyTrigger={scopedCopyTrigger} exportTrigger={exportTrigger} onCommand={command => dispatch(runtime, command)} onCopy={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }} onExport={() => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); }} /> : contextMode === "export" ? <section className="workbench-react__export" aria-label="Scoped export options">
-              <p>Download the current Scope as versioned JSON or offline HTML. Credentials are always excluded.</p>
-              {snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing retained-Evidence export: {snapshot.export.operation.progress.completed.toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : null}
-              {snapshot.export.operation && snapshot.export.operation.state !== "preparing" && snapshot.export.operation.error ? <p className="workbench-react__copy-status" role="status">{snapshot.export.operation.error} {snapshot.export.operation.recovery ?? ""}</p> : null}
-              <fieldset><legend>Redact sensitive categories</legend>{TOPOLOGY_SENSITIVE_CATEGORIES.map((category) => <label key={category}><input type="checkbox" checked={snapshot.export.redactions.includes(category)} onChange={(event) => toggleExportRedaction(category, event.currentTarget.checked)} />{sensitiveCategoryLabel(category)} ({snapshot.export.sensitiveCounts[category].toLocaleString()})</label>)}</fieldset>
-              <label><input type="checkbox" checked={snapshot.export.completeEvidence} onChange={(event) => setCompleteEvidence(event.currentTarget.checked)} />Include complete establishment and COMMAND generation evidence</label>
-              <div className="workbench-react__context-actions"><button type="button" disabled={!snapshot.export.json} onClick={() => downloadExport("json")}>Download JSON</button><button type="button" disabled={!snapshot.export.document} onClick={() => downloadExport("html")}>Download HTML</button></div>
-              {exportDownloadStatus ? <p className="workbench-react__copy-status" role="status" aria-live="polite">{exportDownloadStatus}</p> : null}
-            </section> : <>
-              {snapshot.activity ? <ActivityContextSummary projection={snapshot.activity.projection} filterSummary={appliedFilterSummary} hasActiveFilter={hasActiveFilter} frozen={evidence.mode === "frozen"} open={activitySummaryOpen} onOpenChange={setActivitySummaryOpen} onRankingFilter={(expectedRevision, rankingId) => dispatch(runtime, { type: "apply-activity-ranking-filter", expectedRevision, rankingId })} onResetFilter={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })} /> : null}
-              {selected ? <SelectedFilterActions
-                actions={snapshot.context.filterActions ?? []}
-                filter={appliedFilter}
-                open={selectedFilterActionsOpen}
-                onOpenChange={setSelectedFilterActionsOpen}
-                onAction={applySelectedFilterAction}
-                onValueChange={applySelectedFilterValue}
-              /> : null}
-              {selected ? <details className="workbench-react__evidence-metadata workbench-context-disclosure" aria-label="Evidence metadata" open={selectedEvidenceMetadataOpen} onToggle={event => setSelectedEvidenceMetadataOpen(event.currentTarget.open)}>
-                <summary>Evidence metadata</summary>
-                <dl className="workbench-react__context-fields">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
-              </details> : <dl className="workbench-react__context-fields" aria-label="Runtime metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>}
-              {snapshot.context.groups?.map(group => <details key={group.title} className="workbench-context-disclosure" aria-label={group.title}><summary>{group.title}</summary><dl className="workbench-react__context-fields">{group.fields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl></details>)}
-              <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
-              <div className="workbench-react__context-actions">
-                {selected ? <>
-                  <button
-                    type="button"
-                    className={!canCreateLocalInjectionDraft ? "workbench-react__context-action--unavailable" : undefined}
-                    disabled={!canCreateLocalInjectionDraft}
-                    aria-describedby={!canCreateLocalInjectionDraft ? "workbench-local-injection-unavailable-reason" : undefined}
-                    onClick={() => dispatch(runtime, { type: "begin-local-injection-from-selection" })}
-                  >Create Local Injection Draft{!canCreateLocalInjectionDraft ? " · Unavailable" : ""}</button>
-                  {!canCreateLocalInjectionDraft && snapshot.localInjection.availability.selectedUpdate.reason
-                    ? <span className="workbench-react__action-reason" id="workbench-local-injection-unavailable-reason">{snapshot.localInjection.availability.selectedUpdate.reason}</span>
-                    : null}
-                  {serverInjection ? selected.raw.clientMessage ? <>
-                    <button
-                      ref={serverInjectionTrigger}
-                      type="button"
-                      className={!canCloneClientMessage ? "workbench-react__context-action--unavailable" : undefined}
-                      disabled={!canCloneClientMessage}
-                      aria-describedby={!canCloneClientMessage ? "workbench-server-injection-unavailable-reason" : undefined}
-                      onClick={() => dispatch(runtime, { type: "begin-server-injection-from-selection" })}
-                    >Create Server Injection Draft{!canCloneClientMessage ? " · Unavailable" : ""}</button>
-                    {!canCloneClientMessage && serverInjection.availability.cloneSelected.reason
-                      ? <span className="workbench-react__action-reason" id="workbench-server-injection-unavailable-reason">{serverInjection.availability.cloneSelected.reason}</span>
-                      : null}
-                  </> : <>
-                    <button
-                      ref={serverInjectionTrigger}
-                      type="button"
-                      className={!canAuthorClientMessage ? "workbench-react__context-action--unavailable" : undefined}
-                      disabled={!canAuthorClientMessage}
-                      aria-describedby={!canAuthorClientMessage ? "workbench-server-author-unavailable-reason" : undefined}
-                      onClick={() => dispatch(runtime, { type: "begin-server-injection-from-selected-client" })}
-                    >Author Client Message{!canAuthorClientMessage ? " · Unavailable" : ""}</button>
-                    {!canAuthorClientMessage && serverInjection.availability.authorSelectedClient.reason
-                      ? <span className="workbench-react__action-reason" id="workbench-server-author-unavailable-reason">{serverInjection.availability.authorSelectedClient.reason}</span>
-                      : null}
-                  </> : null}
-                  <button type="button" onClick={() => dispatch(runtime, { type: "open-raw-evidence", eventId: selected.id })}>Open complete raw</button>
-                </> : <button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button>}
-              </div>
-            </>}
-          </div>
-        </aside>
+        <ContextPane
+          contextMode={contextMode}
+          selected={selected}
+          context={stableContext}
+          appliedFilter={stableAppliedFilter}
+          appliedFilterSummary={appliedFilterSummary}
+          hasActiveFilter={hasActiveFilter}
+          frozen={evidence.mode === "frozen"}
+          activityProjection={snapshot.activity?.projection}
+          localInjectionSelectedUpdate={stableLocalInjectionSelectedUpdate}
+          serverInjectionAvailability={stableServerInjectionAvailability}
+          exportSnapshot={stableExport}
+          exportDownloadStatus={exportDownloadStatus}
+          activitySummaryOpen={activitySummaryOpen}
+          setActivitySummaryOpen={setActivitySummaryOpen}
+          selectedFilterActionsOpen={selectedFilterActionsOpen}
+          setSelectedFilterActionsOpen={setSelectedFilterActionsOpen}
+          selectedEvidenceMetadataOpen={selectedEvidenceMetadataOpen}
+          setSelectedEvidenceMetadataOpen={setSelectedEvidenceMetadataOpen}
+          sessionSnapshot={contextMode === "actions" ? snapshot : null}
+          shown={contextMode === "actions" ? shown : 0}
+          analytics={analytics}
+          agentConnection={agentConnection}
+          contextLens={contextLens}
+          contextCollapse={contextCollapse}
+          contextBody={contextBody}
+          serverInjectionTrigger={serverInjectionTrigger}
+          scopedCopyTrigger={scopedCopyTrigger}
+          exportTrigger={exportTrigger}
+          agentAccessDetails={agentAccessDetails}
+          agentAccessControl={agentAccessControl}
+          actions={contextActions}
+        />
       </main>}
-      <footer className="workbench-react__status" role="region" aria-label="Workbench diagnostics" tabIndex={snapshot.diagnostics.length ? 0 : -1}>
-        <div className="workbench-react__history-live-region" aria-live="polite" aria-atomic="true">{snapshot.historyAnnouncement}</div>
-        {snapshot.diagnostics.length ? <div className="workbench-react__status-diagnostics" tabIndex={0} aria-label="Workbench diagnostic entries" onKeyDown={(event) => {
-          if (event.key !== "Home" && event.key !== "End") return;
-          event.preventDefault();
-          event.currentTarget.scrollTop = event.key === "Home" ? 0 : event.currentTarget.scrollHeight;
-        }}>
-          {snapshot.diagnostics.length > 1 ? <span className="workbench-react__status-diagnostics-summary">{snapshot.diagnostics.length} diagnostics · Scroll to review all</span> : null}
-          {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-category={diagnostic.category} data-history-condition={diagnostic.category === "history" ? "true" : undefined} data-severity={diagnostic.severity.toLowerCase()} key={diagnostic.dismissalId ?? (diagnostic.id ? `${diagnostic.code ?? diagnostic.title}:${diagnostic.id}` : `${diagnostic.title}-${index}`)}>
-            <strong>{diagnostic.severity} · {diagnostic.title}</strong>
-            <span className="workbench-react__status-affected">Affected: {diagnostic.affected}</span>
-            {diagnostic.dismissalId ? <button
-              className="workbench-react__status-dismiss"
-              type="button"
-              aria-label={`Dismiss ${diagnostic.title}`}
-              data-diagnostic-dismissal-id={diagnostic.dismissalId}
-              onFocus={() => {
-                focusedDiagnosticDismiss.current = {
-                  dismissalId: diagnostic.dismissalId!,
-                  index: snapshot.diagnostics
-                    .slice(0, index)
-                    .filter(({ dismissalId }) => dismissalId !== undefined)
-                    .length
-                };
-              }}
-              onBlur={(event) => {
-                const clear = () => {
-                  if (focusedDiagnosticDismiss.current?.dismissalId === diagnostic.dismissalId) {
-                    focusedDiagnosticDismiss.current = null;
-                  }
-                };
-                if (event.relatedTarget) clear();
-                else queueMicrotask(clear);
-              }}
-              ref={(element) => {
-                if (element) diagnosticDismissButtons.current.set(diagnostic.dismissalId!, element);
-                else diagnosticDismissButtons.current.delete(diagnostic.dismissalId!);
-              }}
-              onClick={() => {
-                pendingDiagnosticDismissFocus.current = snapshot.diagnostics
-                  .slice(0, index)
-                  .filter(({ dismissalId }) => dismissalId !== undefined)
-                  .length;
-                dispatch(runtime, { type: "dismiss-diagnostic", dismissalId: diagnostic.dismissalId! });
-              }}
-            >Dismiss</button> : null}
-            {notificationsPresented && notificationForCondition(snapshot.notifications.entries, diagnostic) ? <button type="button" aria-label={`View ${diagnostic.title} for ${diagnostic.affected} in Notifications`} onClick={() => {
-              const notification = notificationForCondition(snapshot.notifications.entries, diagnostic);
-              const entry = notification ? document.getElementById(notificationEntryId(notification)) : null;
-              entry?.focus({ preventScroll: true });
-              entry?.scrollIntoView({ block: "nearest" });
-            }}>View in Notifications</button> : <DiagnosticDetails diagnostic={diagnostic} compact={notificationsPresented || geometry === "shallow"} onInspect={() => {
-              if (!diagnostic.route) return;
-              dispatch(runtime, diagnostic.route.kind === "inspect-evidence" ? { type: "inspect-diagnostic-evidence", evidence: diagnostic.route.evidence } : { type: "inspect-diagnostic-affected", affected: diagnostic.route.affected });
-            }} />}
-          </section>)}
-        </div> : null}
-        <div className="workbench-react__status-line"><span
-          data-history-status
-          aria-label={`${historyStatus.retained.toLocaleString()} retained Evidence of ${historyStatus.accepted.toLocaleString()} accepted`}
-          title={`${historyStatus.retained.toLocaleString()} retained Evidence of ${historyStatus.accepted.toLocaleString()} accepted · ${snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}`}
-        >{historyStatus.retained.toLocaleString()}/{historyStatus.accepted.toLocaleString()} Evidence · {snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "Memory"}</span><button
-              ref={notificationsTrigger}
-              type="button"
-              disabled={Boolean(localInjectionDraft?.open || scenarioOpen || serverInjectionDraft || rawEvidence)}
-              aria-expanded={notificationsPresented}
-              aria-controls={notificationsPresented ? "workbench-notifications" : undefined}
-              onClick={() => notificationsOpen ? dispatch(runtime, { type: "close-notifications" }) : openNotifications()}
-            >Notifications ({snapshot.notifications.total}){notificationSeverity ? ` · ${notificationSeverity}` : ""}</button><button ref={evidenceModeTrigger} type="button" onClick={() => dispatch(runtime, { type: evidenceMode === "FROZEN" ? "follow-live" : "freeze-evidence" })}>{evidenceMode === "FROZEN" ? "Follow Live" : "Freeze Evidence"}</button></div>
-      </footer>
+      <WorkbenchFooter
+        diagnostics={stableDiagnostics}
+        historyAnnouncement={snapshot.historyAnnouncement}
+        retained={historyStatus.retained}
+        accepted={historyStatus.accepted}
+        storageMode={snapshot.storage.mode}
+        notificationsTotal={snapshot.notifications.total}
+        notificationSeverity={notificationSeverity}
+        notificationEntries={notificationsPresented ? stableNotificationEntries : NO_NOTIFICATION_ENTRIES}
+        notificationsOpen={notificationsOpen}
+        notificationsPresented={notificationsPresented}
+        notificationsDisabled={Boolean(localInjectionDraft?.open || scenarioOpen || serverInjectionDraft || rawEvidence)}
+        frozen={evidenceMode === "FROZEN"}
+        compactDiagnostics={notificationsPresented || geometry === "shallow"}
+        notificationsTrigger={notificationsTrigger}
+        evidenceModeTrigger={evidenceModeTrigger}
+        dismissFocus={dismissFocus}
+        actions={footerActions}
+      />
     </section>
   );
 }
