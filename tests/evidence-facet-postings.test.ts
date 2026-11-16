@@ -98,7 +98,7 @@ describe("filter-impl-07 bounded facet postings", () => {
     }
   });
 
-  it("preserves populated v2 Evidence while rebuilding collision-safe v3 postings", async () => {
+  it("recreates an older-schema journal under the same name instead of migrating its Evidence", async () => {
     const session = `filter-impl-07-migration-${Date.now()}-${Math.random()}`;
     const name = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v2-${session.replace(/[^A-Za-z0-9_-]/g, "-")}`;
     const currentName = authoritativeEventDatabaseName(session);
@@ -125,19 +125,20 @@ describe("filter-impl-07 bounded facet postings", () => {
       database = undefined;
 
       history = await createIndexedDbEventHistory({ panelSessionId: session });
-      await expect(history.read({})).resolves.toMatchObject({
-        ok: true,
-        value: { evidence: [{ eventId: candidate.id, sequence: 1 }] }
-      });
+      expect(history.storage.mode).toBe("indexeddb");
+      await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { evidence: [], total: 0 } });
+      await expect(history.offer(candidate).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 1 } });
 
       const upgraded = await (await import("../src/core/indexeddb/authoritative-event-db")).openAuthoritativeEventDatabase(name);
       database = upgraded.db;
+      expect(database.version).toBe(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
       const transaction = database.transaction(["evidence", "facetPostings"], "readonly");
       const evidence = await requestValue(transaction.objectStore("evidence").get(1));
       const postings = await requestValue(transaction.objectStore("facetPostings").getAll()) as Array<{ token: string; facetIdentity: string }>;
       const expected = extractEvidenceFacets(candidate).selectableValues.map((facet) => ({ token: JSON.stringify([AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE, facet.identity]), facetIdentity: facet.identity }));
-      expect(evidence).toMatchObject({ eventId: candidate.id, replayPayload: serialized.payload });
-      expect(postings.map(({ token, facetIdentity }) => ({ token, facetIdentity })).sort((a, b) => a.token.localeCompare(b.token))).toEqual(expected.sort((a, b) => a.token.localeCompare(b.token)));
+      // Only the freshly committed record exists; the residue was not migrated.
+      expect(evidence).toMatchObject({ eventId: candidate.id, intervalId: `${storedSession}:interval-1`, replayPayload: serialized.payload });
+      expect(new Set(postings.map(({ token }) => token))).toEqual(new Set(expected.map(({ token }) => token)));
     } finally {
       await history?.close();
       database?.close();

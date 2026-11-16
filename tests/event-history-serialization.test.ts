@@ -5,12 +5,37 @@ import {
   JOURNAL_LOGICAL_FRAME_BYTES,
   JOURNAL_LOGICAL_FRAME_VERSION,
   journalAccountedBytes,
-  serializeJournalEvidenceCandidate
+  serializeJournalEvidenceCandidate,
+  utf8ByteLength
 } from "../src/core/event-history-serialization";
 import { estimateHistoryCandidateBytes } from "../src/core/event-history-capacity";
 import { type EvidenceCandidate } from "../src/core/event-history-authoritative";
 
 describe("journal replay serialization", () => {
+  it("computes UTF-8 byte length matching TextEncoder for every code-unit class and size", () => {
+    const samples = [
+      "",
+      "ascii only",
+      "caf\u00e9 \u00df",
+      "\u20ac \u4e2d\u6587 \uffff",
+      "\ud83d\ude00 emoji pair",
+      "lone high \ud800 surrogate",
+      "lone low \udc00 surrogate",
+      "trailing high \udbff",
+      "\udc00\ud800 reversed pair",
+      "\u007f\u0080\u07ff\u0800"
+    ];
+    for (const sample of samples) {
+      expect(utf8ByteLength(sample)).toBe(new TextEncoder().encode(sample).byteLength);
+    }
+    let random = "";
+    for (let index = 0; index < 2_000; index += 1) random += String.fromCharCode((index * 7_919) % 0x10000);
+    expect(utf8ByteLength(random)).toBe(new TextEncoder().encode(random).byteLength);
+    const large = `${"\u00e9\ud83d\ude00x".repeat(60_000)}\ud800`;
+    expect(utf8ByteLength(large)).toBe(new TextEncoder().encode(large).byteLength);
+    expect(utf8ByteLength("short again \u4e2d")).toBe(new TextEncoder().encode("short again \u4e2d").byteLength);
+  });
+
   it("round-trips undefined and supported unknown primitive values without invalid JSON", () => {
     const candidate: EvidenceCandidate = {
       id: "unknown-values",

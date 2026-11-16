@@ -1,18 +1,17 @@
-import { extractEvidenceFacets } from "../evidence-facets";
-import { deserializeJournalEvidenceCandidate } from "../event-history-serialization";
-import { facetPostingToken, groupFacetPostings, indexBlockStart, type FacetPosting } from "./event-index-blocks";
-
-export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 7;
+// Each Panel Session opens a database named after its own random identity and
+// never recovers another session's journal, so an existing database at an
+// older schema can only be residue. It is deleted and recreated rather than
+// migrated (v8 dropped the unused searchTokens projection index).
+export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 8;
+// The ownership lock name predates schema v8 and stays stable across schema
+// bumps so the guarded sweep and a running panel always contend on one lock.
+export const AUTHORITATIVE_EVENT_OWNERSHIP_LOCK_VERSION = 7;
 // The application identity predates the posting-store schema. Keep this
 // logical name stable so schema upgrades happen in the deployed database.
 export const AUTHORITATIVE_EVENT_DB_IDENTITY_VERSION = 2;
 export const AUTHORITATIVE_EVENT_DB_NAME_PREFIX = "lsew-events-panel";
 export const AUTHORITATIVE_EVENT_DB_NAME = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-session`;
-export const AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION = 1;
 export const AUTHORITATIVE_EVENT_CONTROL_KEY = "control";
-// Reserved outside the positive Evidence sequence space. Its removal commits
-// atomically with the populated query indexes, so an interrupted open retries.
-export const AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY = 0;
 
 const FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_PREFIX = "session";
 const FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v${AUTHORITATIVE_EVENT_DB_IDENTITY_VERSION}-${FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_PREFIX}`;
@@ -26,8 +25,6 @@ export const AUTHORITATIVE_EVENT_STORE_NAMES = {
   facetAggregates: "facetAggregates",
   searchBlocks: "searchBlocks"
 } as const;
-
-const AUTHORITATIVE_EVENT_FACET_COUNT = 12;
 
 type IndexedDatabaseDescriptor = Readonly<{ name?: string; version?: number }>;
 
@@ -62,7 +59,6 @@ function sanitizePanelSessionId(panelSessionId: string): string {
 export type AuthoritativeEventDatabase = Readonly<{
   db: IDBDatabase;
   name: string;
-  queryProjectionMigrationRequired: boolean;
 }>;
 
 /** Compact facet identity catalog; exact observations remain in facetPostings. */
@@ -267,7 +263,6 @@ function inspectDatabaseVersion(name: string): Promise<number> {
 function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    let queryProjectionMigrationRequired = false;
     const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
     const timeout = globalThis.setTimeout(() => {
       settleReject(new AuthoritativeDatabaseOpenError("OPEN_FAILED", `Opening ${name} timed out.`));
@@ -289,9 +284,7 @@ function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> 
 
     request.onupgradeneeded = (event) => {
       try {
-        const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
-        queryProjectionMigrationRequired = oldVersion > 0 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION;
-        upgradeAuthoritativeDatabase(request.result, request.transaction, oldVersion);
+        upgradeAuthoritativeDatabase(request.result, (event as IDBVersionChangeEvent).oldVersion);
       } catch (error) {
         request.transaction?.abort();
         settleReject(new AuthoritativeDatabaseOpenError("OPEN_FAILED", `Failed to upgrade ${name}.`, error));
@@ -315,7 +308,7 @@ function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> 
       database.onversionchange = () => database.close();
       try {
         validateAuthoritativeDatabaseShape(database);
-        settleResolve({ db: database, name, queryProjectionMigrationRequired });
+        settleResolve({ db: database, name });
       } catch (error) {
         database.close();
         settleReject(new AuthoritativeDatabaseOpenError("OPEN_FAILED", `Database ${name} has an unsupported shape.`, error));
@@ -365,17 +358,12 @@ function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   }
   const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
   if (projections.keyPath !== "sequence") throw new Error("The query projection store must be keyed by sequence.");
-  const projectionIndexes = [...projections.indexNames].sort();
-  if (projectionIndexes.length !== 2 || projectionIndexes[0] !== "searchTokens" || projectionIndexes[1] !== "timestamp") {
-    throw new Error("The query projection indexes are incomplete.");
+  if (projections.indexNames.length !== 1 || !projections.indexNames.contains("timestamp")) {
+    throw new Error("The query projection store must have exactly the timestamp index.");
   }
   const timestamp = projections.index("timestamp");
-  const searchTokens = projections.index("searchTokens");
   if (timestamp.keyPath !== "timestamp" || timestamp.unique || timestamp.multiEntry) {
     throw new Error("The timestamp projection index does not match the authoritative schema.");
-  }
-  if (searchTokens.keyPath !== "searchTokens" || searchTokens.unique || !searchTokens.multiEntry) {
-    throw new Error("The search-token projection index does not match the authoritative schema.");
   }
   const aggregates = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates);
   const searchBlocks = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks);
@@ -392,158 +380,26 @@ function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   }
 }
 
-function upgradeAuthoritativeDatabase(
-  database: IDBDatabase,
-  transaction: IDBTransaction | null,
-  oldVersion: number
-): void {
-  if (oldVersion > 0 && oldVersion < 2) {
-    for (const name of [...database.objectStoreNames]) {
-      database.deleteObjectStore(name);
-    }
+/**
+ * Create the current schema. A database left at any older version is residue
+ * (no Panel Session reopens another session's journal), so its stores are
+ * deleted and recreated instead of migrated.
+ */
+function upgradeAuthoritativeDatabase(database: IDBDatabase, oldVersion: number): void {
+  if (oldVersion > 0) {
+    for (const name of [...database.objectStoreNames]) database.deleteObjectStore(name);
   }
-  if (!database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl)) {
-    database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, { keyPath: "key" });
-  }
-  const evidence = database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.evidence)
-    ? transaction?.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence)
-    : database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, { keyPath: "sequence" });
-  if (!evidence) {
-    throw new Error("Authoritative evidence store is unavailable during upgrade.");
-  }
-  if (!evidence.indexNames.contains("eventIdentity")) {
-    evidence.createIndex("eventIdentity", "eventId", { unique: true });
-  }
-  if (!evidence.indexNames.contains("facets")) {
-    evidence.createIndex("facets", "facets", { multiEntry: true });
-  }
-  const postings = database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings)
-    ? transaction?.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings)
-    : database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, { keyPath: ["token", "sequence"] });
-  if (!postings) {
-    throw new Error("The facet posting store is unavailable during upgrade.");
-  }
-  if (!postings.indexNames.contains("token")) postings.createIndex("token", "token", { unique: false });
-  if (!postings.indexNames.contains("facet")) postings.createIndex("facet", "facet", { unique: false });
-  if (!postings.indexNames.contains("sequence")) postings.createIndex("sequence", "sequence", { unique: false });
-  if (oldVersion >= 2 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
-    postings.clear();
-    rebuildFacetPostingsFromEvidence(transaction!, postings);
-  }
-  if (!database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections)) {
-    const projections = database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections, { keyPath: "sequence" });
-    projections.createIndex("timestamp", "timestamp", { unique: false });
-    projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
-  } else {
-    const projections = transaction!.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
-    if (!projections.indexNames.contains("timestamp")) projections.createIndex("timestamp", "timestamp", { unique: false });
-    if (!projections.indexNames.contains("searchTokens")) projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
-  }
-  if (!database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates)) {
-    const aggregates = database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates, { keyPath: ["intervalId", "facetIdentity"] });
-    aggregates.createIndex("intervalFacet", ["intervalId", "facet"], { unique: false });
-  } else {
-    const aggregates = transaction!.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates);
-    if (!aggregates.indexNames.contains("intervalFacet")) aggregates.createIndex("intervalFacet", ["intervalId", "facet"], { unique: false });
-  }
-  if (oldVersion >= 2 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
-    rebuildFacetAggregatesFromEvidence(transaction!);
-  }
-  if (!database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks)) {
-    database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks, { keyPath: "sequence" });
-  }
-  if (oldVersion >= 2 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
-    transaction!.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).put({
-      sequence: AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY,
-      migrationVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION
-    });
-  }
-}
-
-type MigrationEvidenceRecord = Readonly<{
-  intervalId: string;
-  sequence: number;
-  eventId: string;
-  replayPayload: string;
-}>;
-
-function rebuildFacetPostingsFromEvidence(transaction: IDBTransaction, postings: IDBObjectStore): void {
-  const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
-  let pending: FacetPosting[] = [];
-  let blockStart: number | null = null;
-  const flush = () => {
-    for (const block of groupFacetPostings(pending)) postings.add(block);
-    pending = [];
-  };
-  const request = evidence.openCursor();
-  request.onerror = () => transaction.abort();
-  request.onsuccess = () => {
-    const cursor = request.result;
-    if (!cursor) { flush(); return; }
-    try {
-      const record = cursor.value as MigrationEvidenceRecord;
-      const nextBlockStart = indexBlockStart(record.sequence);
-      if (blockStart !== null && blockStart !== nextBlockStart) flush();
-      blockStart = nextBlockStart;
-      const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
-      if (candidate.kind !== "topology-checkpoint") {
-        for (const value of extractEvidenceFacets(candidate, { pageId: record.intervalId, listenerOwner: "memory-event-history" }).selectableValues.slice(0, AUTHORITATIVE_EVENT_FACET_COUNT)) {
-          pending.push({
-            token: facetPostingToken(value.identity),
-            sequence: record.sequence,
-            intervalId: record.intervalId,
-            eventId: record.eventId,
-            facet: value.facet,
-            facetIdentity: value.identity
-          });
-        }
-      }
-      cursor.continue();
-    } catch {
-      transaction.abort();
-    }
-  };
-}
-
-function rebuildFacetAggregatesFromEvidence(transaction: IDBTransaction): void {
-  const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
-  const aggregates = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates);
-  aggregates.clear();
-  const values = new Map<string, AuthoritativeFacetAggregateRecord>();
-  const request = evidence.openCursor();
-  request.onerror = () => transaction.abort();
-  request.onsuccess = () => {
-    const cursor = request.result;
-    if (!cursor) {
-      try {
-        for (const aggregate of values.values()) aggregates.put(aggregate);
-      } catch {
-        transaction.abort();
-      }
-      return;
-    }
-    try {
-      const record = cursor.value as MigrationEvidenceRecord;
-      const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
-      if (candidate.kind !== "topology-checkpoint") {
-        for (const value of extractEvidenceFacets(candidate, { pageId: record.intervalId, listenerOwner: "memory-event-history" }).selectableValues.slice(0, AUTHORITATIVE_EVENT_FACET_COUNT)) {
-          const key = JSON.stringify([record.intervalId, value.identity]);
-          const existing = values.get(key);
-          if (!existing) {
-            values.set(key, {
-              intervalId: record.intervalId,
-              facet: value.facet,
-              facetIdentity: value.identity,
-              type: value.type,
-              value: value.value,
-              label: value.label
-            });
-          }
-        }
-      }
-      cursor.continue();
-    } catch {
-      transaction.abort();
-    }
-  };
+  database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, { keyPath: "key" });
+  const evidence = database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, { keyPath: "sequence" });
+  evidence.createIndex("eventIdentity", "eventId", { unique: true });
+  evidence.createIndex("facets", "facets", { multiEntry: true });
+  const postings = database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, { keyPath: ["token", "sequence"] });
+  postings.createIndex("token", "token", { unique: false });
+  postings.createIndex("facet", "facet", { unique: false });
+  postings.createIndex("sequence", "sequence", { unique: false });
+  const projections = database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections, { keyPath: "sequence" });
+  projections.createIndex("timestamp", "timestamp", { unique: false });
+  const aggregates = database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates, { keyPath: ["intervalId", "facetIdentity"] });
+  aggregates.createIndex("intervalFacet", ["intervalId", "facet"], { unique: false });
+  database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks, { keyPath: "sequence" });
 }

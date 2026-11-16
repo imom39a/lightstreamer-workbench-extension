@@ -13,7 +13,7 @@ Object.assign(globalThis, { indexedDB: new IDBFactory() });
 
 describe("filter-impl-07 IndexedDB schema", () => {
   it("opens the versioned posting layout with an isolated token namespace", async () => {
-    expect(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION).toBe(7);
+    expect(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION).toBe(8);
     expect(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings).toBe("facetPostings");
 
     const panelSessionId = `filter-impl-07-schema-${Date.now()}-${Math.random()}`;
@@ -32,6 +32,8 @@ describe("filter-impl-07 IndexedDB schema", () => {
       const aggregates = database.db.transaction("facetAggregates", "readonly").objectStore("facetAggregates");
       expect(aggregates.keyPath).toEqual(["intervalId", "facetIdentity"]);
       expect([...aggregates.indexNames]).toEqual(["intervalFacet"]);
+      const projections = database.db.transaction("queryProjections", "readonly").objectStore("queryProjections");
+      expect([...projections.indexNames]).toEqual(["timestamp"]);
     } finally {
       database?.db.close();
       await deleteAuthoritativeEventDatabase(name);

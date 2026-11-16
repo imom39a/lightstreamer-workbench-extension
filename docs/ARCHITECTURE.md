@@ -517,7 +517,10 @@ clear()
 close()
 ```
 
-`createIndexedDbEventHistory()` is the normal session-backed implementation. If
+`createIndexedDbEventHistory()` is the normal session-backed implementation. Both
+implementations share intake, gap, retry, and replay vocabulary from
+`src/core/event-history-shared.ts`, including the stable Evidence identity
+owner token, so durable and volatile segments emit identical identities. If
 IndexedDB startup, ownership coordination, schema validation, or guarded cleanup
 cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the
 same Panel Session. The normal IndexedDB tier retains at most 100,000 Evidence
@@ -528,10 +531,25 @@ oldest complete prefix toward a lower target before later Evidence is published.
 
 Each Panel Session owns exactly one Event History coordinator and one Evidence
 sequence. IndexedDB and bounded memory are canonical storage segments behind
-that coordinator, not separate histories. A definitively aborted commit is
-retried at most twice. Persistent storage failure opens a session-local circuit
-and continues acceptance in memory; deterministic corruption does not trigger
-endless probes. Storage fallback changes retention and durability, but does not
+that coordinator, not separate histories. A commit validates its batch before
+opening the transaction and aborts it if any request cannot be issued, so a
+partial batch never commits without its control record. A transient failure is
+retried at most twice with bounded backoff; a deterministic failure
+(`ConstraintError`, `DataError`, or a journal integrity defect) is not retried.
+Persistent storage failure opens a session-local circuit and continues
+acceptance in memory; deterministic corruption does not trigger endless probes.
+
+At that cutover the durable prefix is carried into the memory segment. The
+coordinator plans the carry from cached retention metadata: when the durable
+prefix plus the pending batch would exceed the memory high-water mark, only the
+newest suffix that fits the memory low-water target is read, and the older
+records roll out as an ordinary Retention Advance without being materialized.
+The suffix is read newest-first in bounded sequence-ranged chunks, each in its
+own readonly transaction. If a chunk cannot be read, the readable newer suffix
+is still carried; the unreadable older records are removed from the Retained
+Range (published as a Retention Advance so consumers drop them) and are also
+recorded as an explicit Evidence Gap with dimension `JOURNAL`, so storage loss
+is never presented as routine rollover. Storage fallback changes retention and durability, but does not
 by itself reduce Observation Coverage, alter Capture semantics, or change
 Live/Frozen view state. Only accepted publications drive Topology, COMMAND
 projections, and the Evidence window.
@@ -567,6 +585,13 @@ a later guarded sweep. The sweep acquires the orphan's ownership guard, skips an
 active owner, preserves unknown newer schemas, and never reads, exports,
 projects, or replays abandoned Evidence. A new Panel Session starts with a new
 empty Event History; there is no cross-session recovery.
+
+Because each journal database is named after its own random Panel Session
+identity, the journal schema has no in-place migrations: opening a database
+left at an older schema version deletes and recreates its stores (schema v8
+dropped the unused `searchTokens` projection index), and only v3 exact search
+rows are written or read. The ownership lock name keeps a fixed version so a
+schema bump never changes which lock the guarded sweep contends on.
 
 Each successful `clear()` is an exact History Interval cut. Already accepted
 work settles before the prior interval is erased; post-cut offers belong only to
