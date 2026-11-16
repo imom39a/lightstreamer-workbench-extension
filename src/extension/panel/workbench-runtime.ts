@@ -1,11 +1,6 @@
 import { activityScopeFor, compactActivityEvidence, activityProjectionCacheKey } from "./activity-evidence-index";
 export { activityScopeFor } from "./activity-evidence-index";
 import { runtimeObjectDossier } from "./runtime-context-dossier";
-import { readAgentCommandState } from "./agent-command-state";
-import { readAgentCommandRows } from "./agent-command-rows";
-import { agentNativeChangePreview, describeAgentInjectionTarget } from "./agent-injection-capabilities";
-import { describeAgentSourceContext } from "./agent-source-context";
-import { expandLocalInjectionCandidateMatrix } from "../../core/local-injection-candidate-matrix";
 import { type CaptureMessage, type CaptureStatus, type TopologySyncFrame } from "../../bridge/messages";
 import { createCommandStateProjections, findCommandItem, type CommandStateProjections } from "../../core/command-state";
 import type {
@@ -14,8 +9,7 @@ import type {
   ScenarioCommittedBoundaryFeed,
   ScenarioCommittedBoundarySnapshot
 } from "../../core/local-injection-scenario-checkpoint";
-import { validateScenarioCheckpoint } from "../../core/local-injection-scenario-checkpoint";
-import type { AgentScopeSearchSnapshot, AgentRuntime, AgentDraftInput, AgentCandidateInput, AgentScenarioMember, AgentScenarioPlanInput } from "./agent-runtime";
+import type { AgentScopeSearchSnapshot, AgentRuntime } from "./agent-runtime";
 import {
   toBulkShareableEventEnvelope,
   type LightstreamerEventEnvelope
@@ -85,7 +79,6 @@ import {
   type TypedFacetValue
 } from "../../core/evidence-filter-contract";
 import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
-import { classifyInjectionSourceFieldExecutability } from "../../core/item-update-value-semantics";
 import { nativeBaselineFromDraft, type NativeChangeContext, type NativeReviewedChangeFacts } from "../../core/local-injection-change-semantics";
 import { createNativeItemBaselineIndex } from "../../core/local-injection-item-baseline";
 import {
@@ -99,10 +92,7 @@ import {
 } from "../../core/local-injection-document";
 import {
   createDraftFromEvent,
-  createNewCommandDraftFromContext,
-  createNewItemDraftFromContext,
-  type ReinjectionDraft,
-  type ReinjectionExecutionTarget
+  type ReinjectionDraft
 } from "../../core/reinjection-draft";
 import { type ServerInjectionExecutor } from "../../core/server-injection";
 import { type ClientMessageRecipeProvider } from "../../core/client-message-recipe";
@@ -141,6 +131,7 @@ import {
   type TopologySubscription
 } from "../../core/topology-state";
 import { type TopologyProjectionStatus } from "./topology-projection";
+import { createWorkbenchAgentAdapter, type WorkbenchAgentAdapterHost } from "./workbench-agent-adapter";
 import {
   ServerInjectionController,
   isServerInjectionCommand,
@@ -191,9 +182,7 @@ import {
   type LocalInjectionCoordinatorExecution,
   type LocalInjectionExecutionRequest,
   type LocalInjectionExecutionResult,
-  type LocalInjectionExecutor,
-  type LocalInjectionOutcome,
-  type LocalInjectionReview
+  type LocalInjectionExecutor
 } from "./local-injection-execution-coordinator";
 import {
   addScenarioCheckpoint,
@@ -222,7 +211,6 @@ import {
   type ScenarioCheckpoint,
   type ReviewedScenarioCheckpoint,
   type ScenarioEditorState,
-  type ScenarioMembershipPreview,
   type ScenarioRun,
   type ScenarioSpeed
 } from "../../core/local-injection-scenario";
@@ -242,6 +230,32 @@ export type {
   ServerInjectionExecutionResult,
   ServerInjectionExecutor
 } from "../../core/server-injection";
+import {
+  WorkbenchLocalInjectionAnchor,
+  WorkbenchLocalInjectionOutcome,
+  WorkbenchLocalInjectionRestorationOrigin,
+  WorkbenchScenarioCaptureWorkspace,
+  LocalInjectionEntryIntent,
+  LocalInjectionDraftState,
+  type ScenarioNativeChangeStep,
+  ScenarioState,
+  emptyScenarioCaptureWorkspace,
+  localInjectionFieldSchema,
+  anchorFromDraft,
+  authoredDraftFromScope,
+  localInjectionReady,
+  cloneReinjectionDraft,
+  lightstreamerPayload
+} from "./local-injection-draft-state";
+export type {
+  WorkbenchLocalInjectionAnchor,
+  WorkbenchLocalInjectionOutcome,
+  WorkbenchLocalInjectionRestorationOrigin,
+  WorkbenchScenarioCaptureWorkspace
+} from "./local-injection-draft-state";
+import {
+  structuralEvidenceScope
+} from "./structural-evidence-scope";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 export const DEFAULT_EVIDENCE_OUTPUT_BYTE_LIMIT = 32 * 1024 * 1024;
@@ -513,31 +527,6 @@ export type WorkbenchActivitySnapshot = Readonly<{
   readPoint: ActivityReadPoint;
 }>;
 
-export type WorkbenchLocalInjectionAnchor = Readonly<{
-  sourceKind: "captured-event" | "authored";
-  sourceEventId: string | null;
-  pageEpoch: string | null;
-  clientId: string | null;
-  sessionId: string | null;
-  subscriptionId: string;
-  subscriptionMode: string | null;
-  itemName: string | null;
-  itemPosition: number | null;
-  listenerId: string | null;
-  captureSource: "listener" | "wire";
-  executionTarget: ReinjectionExecutionTarget;
-  fieldSchema: readonly string[];
-}>;
-
-export type WorkbenchLocalInjectionOutcome = LocalInjectionOutcome;
-
-export type WorkbenchLocalInjectionRestorationOrigin = Readonly<{
-  scopeId: string | null;
-  selectionEventId: string | null;
-  focusedEventId: string | null;
-  contextId: string | null;
-}>;
-
 export type WorkbenchLocalInjectionSnapshot = Readonly<{
   state: "idle" | "active";
   availability: Readonly<{
@@ -568,49 +557,6 @@ export type WorkbenchLocalInjectionSnapshot = Readonly<{
     outcome: WorkbenchLocalInjectionOutcome | null;
   }> | null;
 }>;
-
-export type WorkbenchScenarioCaptureWorkspace = Readonly<{
-  search: string;
-  commandFilter: "ALL" | "ADD" | "UPDATE" | "DELETE";
-  queryState: "idle" | "loading" | "ready" | "error";
-  expired: boolean;
-  newerAcceptedEvidenceCount: number;
-  remainingStepCapacity: number;
-  readPoint: EvidenceReadPoint | null;
-  rows: readonly Readonly<{ identity: EvidenceIdentity; event: LightstreamerEventEnvelope; preview: string; available: boolean; reason: string | null; alreadyUsed: boolean; selected: boolean }>[];
-  selected: readonly EvidenceIdentity[];
-  total: number;
-  pageOffset: number;
-  pageSize: number;
-  canShowOlder: boolean;
-  canShowNewer: boolean;
-  error: string | null;
-  feedback: string | null;
-  adding: boolean;
-  scrollTop: number;
-}>;
-
-type ScenarioCaptureWorkspaceState = {
-  search: string;
-  commandFilter: WorkbenchScenarioCaptureWorkspace["commandFilter"];
-  queryState: WorkbenchScenarioCaptureWorkspace["queryState"];
-  readPoint: EvidenceReadPoint | null;
-  records: readonly DeterministicEvidenceRecord[];
-  selected: Map<string, EvidenceIdentity>;
-  total: number;
-  pageOffset: number;
-  cursors: Array<string | undefined>;
-  nextCursor: string | null;
-  error: string | null;
-  feedback: string | null;
-  adding: boolean;
-  scrollTop: number;
-  generation: number;
-};
-
-function emptyScenarioCaptureWorkspace(): ScenarioCaptureWorkspaceState {
-  return { search: "", commandFilter: "ALL", queryState: "idle", readPoint: null, records: [], selected: new Map(), total: 0, pageOffset: 0, cursors: [undefined], nextCursor: null, error: null, feedback: null, adding: false, scrollTop: 0, generation: 0 };
-}
 
 function scenarioCaptureIdentityKey(identity: EvidenceIdentity): string {
   return JSON.stringify([identity.intervalId, identity.pageId, identity.ownerId, identity.sequence, identity.eventId]);
@@ -971,61 +917,6 @@ type EvidenceData = {
   records: readonly DeterministicEvidenceRecord[];
 };
 
-type LocalInjectionEntryIntent =
-  | { kind: "selected-event"; eventId: string }
-  | { kind: "scope-author"; scopeId: string };
-
-type LocalInjectionDraftState = {
-  id: string;
-  baseDraft: ReinjectionDraft;
-  anchor: WorkbenchLocalInjectionAnchor;
-  rawText: string;
-  document: LocalInjectionDocument | null;
-  documentDiagnostics: readonly LocalInjectionDiagnostic[];
-  targetDiagnostics: readonly LocalInjectionDiagnostic[];
-  sourceDocument: LocalInjectionDocument | null;
-  sourceRawText: string | null;
-  explicitConcreteFields: Set<string>;
-  phase: "edit" | "review" | "pending" | "outcome";
-  compareOpen: boolean;
-  editorPresentation: ScenarioEditorState;
-  parked: boolean;
-  open: boolean;
-  restorationOrigin: WorkbenchLocalInjectionRestorationOrigin;
-  executionId: string | null;
-  preflightFingerprint: string | null;
-  outcome: WorkbenchLocalInjectionOutcome | null;
-  reviewedExecution: LocalInjectionReview | null;
-  reviewRefusal: string | null;
-  relativeDelayMs: number;
-  nativeChanges?: NativeReviewedChangeFacts;
-};
-
-type ScenarioState = {
-  phase: "edit" | "review" | "running" | "paused" | "complete" | "stopped";
-  parked: boolean;
-  discardConfirmation: boolean;
-  scenario: LocalInjectionScenario;
-  drafts: Map<string, LocalInjectionDraftState>;
-  run: ScenarioRun | null;
-  reviews: Map<string, LocalInjectionReview>;
-  membershipError: string | null;
-  /** Invalid partial primitive authoring belongs to this Scenario until corrected or removed. */
-  invalidPrimitiveAssertionIds: Set<string>;
-  pickerOpen: boolean;
-  captureWorkspace: ScenarioCaptureWorkspaceState;
-  lastCaptureAddition?: { revision: number; ids: readonly string[] };
-  membershipPreview: ScenarioMembershipPreview | null;
-  focusedMemberId: string;
-  focusedStepId: string;
-  removedDrafts: Map<string, LocalInjectionDraftState>;
-  priorRuns: ScenarioRun[];
-  retainedRunBytes: number;
-  runner: ScenarioRunner | null;
-  runnerSnapshot: ScenarioRunnerSnapshot | null;
-  serverInterleaves: EvidenceRef[];
-};
-
 type InvestigationCheckpoint = Readonly<{
   scopeId: string | null;
   filter: Filter;
@@ -1072,414 +963,33 @@ export function createWorkbenchRuntime(options: WorkbenchRuntimeOptions = {}): W
   return new Runtime(options);
 }
 
-class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
-  readonly agent: AgentRuntime = {
-    status: () => ({ pageEpoch: this.currentPageEpoch, visible: this.visible, captureStatus: this.captureStatus, capture: this.captureSnapshot(), history: this.history.status() }),
-    commandState: input => readAgentCommandState(input, {
-      pageEpoch: this.currentPageEpoch,
-      disposed: this.disposed,
-      scope: findTopologySelection(this.topologyProjection.snapshot(), input.scopeId),
-      history: this.history.status(),
-      projectionBoundary: this.commandProjectionEvidenceBoundary,
-      projectionReady: this.projectionRecovery === null && this.scenarioFollowerPhase === "LIVE",
-      readKey: (projection, target) => this.commandStateProjections.readKey(projection, target)
-    }),
-    commandRows: input => readAgentCommandRows(input, {
-      pageEpoch: this.currentPageEpoch, disposed: this.disposed, scope: findTopologySelection(this.topologyProjection.snapshot(), input.scopeId),
-      history: this.history.status(), projectionBoundary: this.commandProjectionEvidenceBoundary,
-      projectionReady: this.projectionRecovery === null && this.scenarioFollowerPhase === "LIVE",
-      readRows: (projection, target) => this.commandStateProjections.readRows(projection, target),
-      readKey: (projection, target) => this.commandStateProjections.readKey(projection, target)
-    }),
-    scopes: (offset, limit) => {
-      const scope = this.scopeSnapshot();
-      return { total: scope.structure.length, offset, nodes: scope.structure.slice(offset, offset + limit).map(node => scope.resolveNode(node.id)) };
-    },
-    scope: (id, options) => {
-      const scope = this.scopeSnapshot();
-      const node = scope.resolveNode(id);
-      if (!node) throw new Error("TARGET_RETIRED: Scope is unavailable in this Panel Session. Locate a current Scope before reading it.");
-      const target = findTopologySelection(this.topologyProjection.snapshot(), id);
-      const candidate = authoredDraftFromScope(target, this.currentPageEpoch);
-      return { node, pageEpoch: this.currentPageEpoch, readContext: describeAgentSourceContext(id, target, options), localInjection: candidate ? { anchor: candidate.anchor,
-        capabilities: describeAgentInjectionTarget(candidate.anchor, candidate.draft),
-        document: createLocalInjectionDocumentFromDraft(candidate.draft), diagnostics: this.validateLocalInjectionTarget(candidate.anchor) }
-        : { unavailable: "Source-free authoring requires one live COMMAND, MERGE or DISTINCT item with a declared field list and current delivery context. RAW is unsupported; captured Evidence can describe other supported targets.",
-          recovery: {
-            evidence: { tool: "query_evidence", arguments: { scopeId: id, where: { kind: ["ITEM-UPDATE"] }, limit: 1, order: "NEWEST_FIRST" } },
-            target: node.kind === "subscription"
-              ? { tool: "search_scope", arguments: { kind: "item", parentScopeId: id, text: node.label } }
-              : { tool: "list_scope", arguments: { offset: 0, limit: 25 } },
-            preparation: "Use a matching retained evidence.identity with prepare_local_injection and the current pageEpoch. Preparation copies the exact editable field schema; inspect target diagnostics before execution."
-          } } };
-    },
-    scopeSearchSnapshot: () => {
-      const topology = this.topologyProjection.snapshot();
-      const structure = this.currentScopeStructure(topology);
-      let cached = this.agentScopeSearchNodesCache;
-      // Structural revisions track membership. Lifecycle/detail presentation can
-      // also change within one revision; topology identity invalidates those
-      // search fields without rebuilding on every fresh query.
-      if (!cached || cached.pageEpoch !== this.currentPageEpoch || cached.structureRevision !== structure.revision
-        || cached.topology !== topology || cached.captureStatus !== this.captureStatus) {
-        const nodes = Object.freeze(structure.descriptors.map(descriptor => {
-          const node = resolveScopeNode(topology, descriptor, null, this.captureStatus);
-          return Object.freeze({ id: node.id, kind: node.kind, label: node.label, parentId: node.parentId,
-            lifecycle: node.lifecycle, retired: node.retired, detail: node.detail });
-        }));
-        cached = this.agentScopeSearchNodesCache = { pageEpoch: this.currentPageEpoch, structureRevision: structure.revision,
-          topology, captureStatus: this.captureStatus, nodes };
-      }
-      const history = this.history.status();
-      return { pageEpoch: this.currentPageEpoch, structureRevision: structure.revision, nodes: cached.nodes,
-        history: { intervalId: history.interval.id, committedSequence: history.committedEvidenceBoundary?.sequence ?? null, retainedFirstSequence: history.retainedRange?.first.sequence ?? null } };
-    },
-    queryBoundary: (scopeId, useCurrentInvestigation = false) => {
-      const id = useCurrentInvestigation ? this.scopeId : scopeId;
-      const target = id ? findTopologySelection(this.topologyProjection.snapshot(), id) : null;
-      if (id && !target) throw new Error("TARGET_RETIRED: Scope is unavailable. Locate a current Scope before reading it.");
-      return { scope: structuralEvidenceScope(target), filter: useCurrentInvestigation ? this.canonicalFilter : createFilter() };
-    },
-    query: async (input) => {
-      const target = input.scopeId ? findTopologySelection(this.topologyProjection.snapshot(), input.scopeId) : null;
-      if (input.scopeId && !target) throw new Error("TARGET_RETIRED: Scope is unavailable. Locate a current Scope before reading it.");
-      const result = await this.evidenceQuery.query({
-        at: input.at, scope: input.scope ?? (input.scopeId ? structuralEvidenceScope(target) : { kind: "PAGE" }),
-        filter: input.filter ?? { ...createFilter(), text: input.text ?? "" },
-        ...(input.find ? { find: input.find } : {}),
-        page: { order: input.order ?? "OLDEST_FIRST", size: input.size, ...(input.cursor ? { cursor: input.cursor } : {}), ...(input.adaptivePage ? { adaptiveSize: true } : {}) },
-        discover: input.discover ?? [], includePayload: input.includePayload, signal: input.signal, workBudget: input.workBudget, sequenceWindow: input.sequenceWindow,
-        fieldPredicates: input.fieldPredicates, aggregate: input.aggregate,
-        ...(input.lookup ? { lookup: input.lookup } : {})
-      });
-      if (!result.ok) throw new Error(`${result.problem.code}: ${result.problem.message}`);
-      return result.value;
-    },
-    subscribeOperations: listener => this.subscribe(listener),
-    subscribeEvidence: listener => {
-      // History notification is independent of UI publication/visibility. Runtime
-      // publication also wakes waits when the inspected page identity changes.
-      const history = this.history.follow({ from: "NOW" }, () => listener());
-      const runtime = this.subscribe(listener);
-      return () => { history(); runtime(); };
-    },
-    diagnostics: async (after, signal) => {
-      const assertCurrent = () => { if (signal?.aborted) throw new Error("QUERY_CANCELLED: Diagnostic read was cancelled."); };
-      assertCurrent();
-      await this.diagnosticObservationSettlement;
-      assertCurrent();
-      const result = await this.diagnosticObservations.query({ after, through: this.diagnosticObservations.currentBoundary() });
-      assertCurrent();
-      return result;
-    },
-    validateCandidate: (input, pageEpoch, stillAuthorized) => this.validateAgentCandidate(input, pageEpoch, stillAuthorized),
-    generateCandidates: async (input, pageEpoch, stillAuthorized) => {
-      const available = () => {
-        if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Candidate generation was cancelled or access revoked.");
-        if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Candidate generation requires the current visible page.");
-      };
-      available();
-      const { candidate } = await this.resolveAgentCandidate("matrix", input.base, available);
-      if (!candidate.document) throw new Error("INVALID_CANDIDATE_MATRIX: The base document is not valid.");
-      const matrix = expandLocalInjectionCandidateMatrix({ ...input, target: this.scenarioDraftInput(candidate).target,
-        document: candidate.document, fieldValueStates: candidate.nativeChanges?.fieldValueStates ?? candidate.baseDraft.fieldValueStates,
-        jsonStringFields: expandJsonStringFields(candidate.baseDraft.fields).encodedFieldNames });
-      const members: Extract<AgentScenarioMember, { kind: "step" }>[] = matrix.members.map(member => ({ kind: "step", id: member.id,
-        ...(input.base.evidence ? { evidence: input.base.evidence } : { scopeId: input.base.scopeId }),
-        document: JSON.stringify(member.document), delayMs: member.delayMs }));
-      const validation = await this.validateAgentCandidate({ kind: "scenario", plan: { members } }, pageEpoch, stillAuthorized);
-      available();
-      return { ...matrix, members: members.map(member => ({ ...member, document: JSON.parse(member.document!) })), validation };
-    },
-    prepareScenarioPlan: (input, pageEpoch, stillAuthorized) => this.prepareAgentScenarioPlan(input, pageEpoch, stillAuthorized),
-    prepare: (steps, scenario, pageEpoch, stillAuthorized) => this.prepareAgentDrafts(steps, scenario, pageEpoch, stillAuthorized),
-    edit: (document, stepId) => {
-      if (this.scenarioState) {
-        if (!stepId || !this.scenarioState.scenario.steps.some(step => step.id === stepId)) throw new Error("Choose an exact Scenario Step.");
-        this.dispatch({ type: "edit-scenario" });
-        this.setScenarioStepJson(stepId, document);
-        this.reviewCurrentScenario();
-      } else this.setLocalInjectionJson(document);
-    },
-    local: () => this.localInjectionSnapshot(),
-    scenario: () => this.scenarioState ? {
-      phase: this.scenarioState.phase, scenario: this.scenarioState.scenario,
-      run: this.scenarioState.run, runner: this.scenarioState.runnerSnapshot,
-      membershipError: this.scenarioState.membershipError
-    } : null,
-    execute: () => this.executeLocalInjection(),
-    localSettlement: executionId => this.agentLocalSettlements.get(executionId) ?? null,
-    control: (action) => {
-      const types = { step: "step-next-scenario", play: "play-scenario", pause: "pause-scenario", stop: "stop-scenario", "re-review": "re-review-scenario" } as const;
-      this.dispatch({ type: types[action] });
-    },
-    finish: () => this.scenarioState ? this.finishScenario() : this.finishLocalInjection(),
-    prepareServerInjection: (draft, requestId) => this.serverInjection.prepareForAgent(draft, requestId),
-    serverInjection: () => this.serverInjection.snapshot(),
-    executeApprovedServerInjection: requestId => this.serverInjection.executeApprovedForAgent(requestId),
-    abortServerInjection: requestId => this.serverInjection.abortForAgent(requestId),
-    revokeServerInjectionApproval: () => this.serverInjection.revokeAgentApproval(),
-    abortDocument: () => {
-      if (this.scenarioState) {
-        if (!["edit", "review"].includes(this.scenarioState.phase) || (this.scenarioState.run?.trace.length ?? 0) > 0) throw new Error("TARGET_CHANGED: Only an unexecuted Scenario can be aborted.");
-        this.finishScenario();
-      } else {
-        const draft = this.localInjectionDraft;
-        if (!draft || !["edit", "review"].includes(draft.phase) || draft.outcome || draft.executionId) throw new Error("TARGET_CHANGED: Only an unexecuted Draft can be aborted.");
-        this.localInjectionDraft = null;
-        this.localInjectionBlockedEntry = null;
-        this.localInjectionDiscardConfirmation = false;
-        this.localInjectionEntryError = null;
-        this.commitTransition();
-      }
-    }
-  };
+class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort, WorkbenchAgentAdapterHost {
+  readonly agent: AgentRuntime = createWorkbenchAgentAdapter(this);
 
-  private async validateAgentCandidate(input: AgentCandidateInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<unknown> {
-    const available = () => {
-      if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Agent access was revoked while validating the candidate.");
-      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Page changed or panel is hidden/closed. Inspect the current target again.");
-    };
-    const validate = async (id: string, draft: AgentDraftInput) => {
-      available();
-      return this.resolveAgentCandidate(id, draft, available);
-    };
-    available();
-      if (input.kind === "draft") {
-        const built = await validate("candidate", input.draft);
-        const candidate = built.candidate;
-        const diagnostics = [...candidate.documentDiagnostics, ...candidate.targetDiagnostics];
-        const replayability = candidateReplayability(candidate, built.replayability);
-        const valid = localInjectionReady(candidate) && !candidate.nativeChanges?.semantics.refusal && replayability.replayable;
-        const reason = candidate.nativeChanges?.semantics.refusal
-          ?? diagnostics.find(diagnostic => diagnostic.severity === "error")?.message
-          ?? (!replayability.replayable ? "One or more captured fields require an explicit concrete Draft value." : "Draft is not ready for Local Injection.");
-        return Object.freeze({ valid, ...(!valid ? { reason } : {}), pageEpoch, target: agentTarget(candidate), candidates: [{ id: "candidate", kind: "step", valid, diagnostics, replayability, nativeChanges: agentNativeChangePreview(candidate.nativeChanges) }], checkpoints: [], limitations: ["Validation does not inspect arbitrary page state or DOM."] });
-      }
-      const members: unknown[] = [];
-      const builtById = new Map<string, LocalInjectionDraftState>();
-      const steps: Array<{ id: string; valid: boolean; diagnostics: readonly LocalInjectionDiagnostic[]; nativeChanges: ReturnType<typeof agentNativeChangePreview> }> = [];
-      const checkpoints: Array<{ id: string; valid: boolean; reason?: string }> = [];
-      const earlierStepIds: string[] = [];
-      const seen = new Set<string>();
-      let target: LocalInjectionDraftState | null = null;
-      let definition: LocalInjectionScenario | null = null;
-      let valid = true;
-      for (const member of input.plan.members) {
-        if (!member.id || member.id.length > 256 || seen.has(member.id)) throw new Error("Scenario member identities must be unique and contain 1 to 256 characters.");
-        seen.add(member.id);
-        if (member.kind === "step") {
-          const built = await validate(member.id, member);
-          const candidate = built.candidate;
-          const incompatibility = target ? scenarioTargetIncompatibility(this.scenarioDraftInput(target).target, this.scenarioDraftInput(candidate).target) : null;
-          if (incompatibility) throw new Error(incompatibility);
-          target ??= candidate;
-          builtById.set(member.id, candidate);
-          if (!definition) definition = createScenarioFromDraft(this.scenarioDraftInput(candidate), { scenarioId: "agent-validation", stepId: member.id });
-          else {
-            const added = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: 0 }, member.id);
-            if (!added.ok) throw new Error(added.reason);
-            definition = added.scenario;
-          }
-          const diagnostics = [...candidate.documentDiagnostics, ...candidate.targetDiagnostics];
-          const replayability = candidateReplayability(candidate, built.replayability);
-          const independentlyInvalid = diagnostics.some(diagnostic => diagnostic.severity === "error" && !["unknown-key-update", "unknown-key-delete"].includes(diagnostic.code));
-          const step = { kind: "step", id: member.id, valid: replayability.replayable && !independentlyInvalid, diagnostics, replayability, nativeChanges: agentNativeChangePreview(candidate.nativeChanges) };
-          steps.push(step); members.push(step); earlierStepIds.push(member.id); valid &&= step.valid;
-        } else {
-          if (!target) throw new Error("A Scenario Checkpoint must follow at least one explicit Step.");
-          const checkpoint = { id: member.id, kind: "checkpoint" as const, name: member.name, assertions: member.assertions };
-          const checked = validateScenarioCheckpoint(checkpoint, { targetMode: target.anchor.subscriptionMode, deliveryPath: target.anchor.executionTarget === "captured-listener" ? "listener" : "wire", earlierStepIds });
-          const result = { id: member.id, kind: "checkpoint", valid: checked.ok, reason: checked.ok ? undefined : checked.reason };
-          if (checked.ok && definition) {
-            const added = addScenarioCheckpoint(definition, checkpoint, { retainedRunBytes: 0 });
-            if (!added.ok) throw new Error(added.reason);
-            definition = added.scenario;
-          }
-          checkpoints.push(result); members.push(result); valid &&= checked.ok;
-        }
-      }
-      if (!steps.length) throw new Error("A Scenario requires at least one explicit Step.");
-      const diagnostics = [...builtById.values()].flatMap(candidate => [...candidate.documentDiagnostics, ...candidate.targetDiagnostics]);
-      if (definition && valid) {
-        const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: this.scenarioDraftInput(builtById.get(step.id)!) })), { retainedRunBytes: 0 });
-        if (!ordered.ok) valid = false;
-        else {
-          const keys = [...builtById.values()].map(candidate => ({ item: { name: candidate.anchor.itemName, position: candidate.anchor.itemPosition }, keys: this.activeCommandKeys(candidate.anchor) }));
-          const preflight = reviewScenario(ordered.scenario, { runId: "agent-validation", committedEvidenceSeed: this.committedEvidenceBoundary, targetFingerprint: this.scenarioTargetFingerprint(target!), listenerIds: this.scenarioCurrentListenerIds(target!), historyAccepting: this.historyStatus.phase === "RUNNING" && this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null, clearInProgress: this.clearState !== "idle", activeCommandKeysByItem: keys, nativeChangesByStepId: this.scenarioNativeChanges(ordered.scenario.steps, builtById), diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary() });
-          if (preflight.ok) {
-            for (const reviewed of preflight.run.steps) {
-              const step = steps.find(step => step.id === reviewed.id);
-              if (step) step.nativeChanges = agentNativeChangePreview(reviewed.nativeChanges);
-            }
-          }
-          if (!preflight.ok) {
-            valid = false;
-            return Object.freeze({ valid, reason: `${preflight.stepId ? `${preflight.stepId}: ` : ""}${preflight.reason}`, pageEpoch, target: target ? agentTarget(target) : null, members, steps, checkpoints, limitations: ["Validation does not inspect arbitrary page state or DOM.", "Checkpoint assertions observe only Workbench-owned Injection, Evidence, COMMAND projection, or diagnostic facts."] });
-          }
-        }
-      }
-      const refusal = !valid
-        ? checkpoints.find(checkpoint => !checkpoint.valid)?.reason
-          ?? steps.find(step => !step.valid)?.diagnostics.find(diagnostic => diagnostic.severity === "error")?.message
-          ?? "One or more Steps have invalid Source replayability or an ordered Scenario preflight failure."
-        : undefined;
-      return Object.freeze({ valid, ...(refusal ? { reason: refusal } : {}), pageEpoch, target: target ? agentTarget(target) : null, members, steps, checkpoints, limitations: ["Validation does not inspect arbitrary page state or DOM.", "Checkpoint assertions observe only Workbench-owned Injection, Evidence, COMMAND projection, or diagnostic facts."] });
+  /** Search-ready Scope nodes, cached by page, structure revision, Topology identity, and Capture status. */
+  agentScopeSearchSnapshot(): AgentScopeSearchSnapshot {
+    const topology = this.topologyProjection.snapshot();
+    const structure = this.currentScopeStructure(topology);
+    let cached = this.agentScopeSearchNodesCache;
+    // Structural revisions track membership. Lifecycle/detail presentation can
+    // also change within one revision; topology identity invalidates those
+    // search fields without rebuilding on every fresh query.
+    if (!cached || cached.pageEpoch !== this.currentPageEpoch || cached.structureRevision !== structure.revision
+      || cached.topology !== topology || cached.captureStatus !== this.captureStatus) {
+      const nodes = Object.freeze(structure.descriptors.map(descriptor => {
+        const node = resolveScopeNode(topology, descriptor, null, this.captureStatus);
+        return Object.freeze({ id: node.id, kind: node.kind, label: node.label, parentId: node.parentId,
+          lifecycle: node.lifecycle, retired: node.retired, detail: node.detail });
+      }));
+      cached = this.agentScopeSearchNodesCache = { pageEpoch: this.currentPageEpoch, structureRevision: structure.revision,
+        topology, captureStatus: this.captureStatus, nodes };
+    }
+    const history = this.history.status();
+    return { pageEpoch: this.currentPageEpoch, structureRevision: structure.revision, nodes: cached.nodes,
+      history: { intervalId: history.interval.id, committedSequence: history.committedEvidenceBoundary?.sequence ?? null, retainedFirstSequence: history.retainedRange?.first.sequence ?? null } };
   }
 
-  private async resolveAgentCandidate(id: string, draft: AgentDraftInput, available: () => void) {
-    if (Boolean(draft.scopeId) === Boolean(draft.evidence)) throw new Error("Choose exactly one Scope or Evidence source for each Step.");
-    let source: LightstreamerEventEnvelope | undefined;
-    if (draft.evidence) {
-      const result = await this.agent.query({ at: "LATEST_COMMITTED", size: 1, includePayload: true, lookup: draft.evidence });
-      if (result.lookup?.state !== "RETAINED") throw new Error("Source Evidence is no longer retained.");
-      source = lightstreamerPayload(result.lookup.evidence.payload) ?? undefined;
-      if (!source) throw new Error("Source has no complete Item Update payload.");
-    }
-    available();
-    const candidate = this.createLocalInjectionCandidate(draft.evidence
-      ? { kind: "selected-event", eventId: draft.evidence.eventId }
-      : { kind: "scope-author", scopeId: draft.scopeId! }, source, { id: `agent-draft-${id}`, recordError: false });
-    if (!candidate) throw new Error("TARGET_RETIRED: Local Injection target is unavailable or incompatible with the selected source. Inspect a current target before preparing another document.");
-    if (draft.document !== undefined) {
-      candidate.rawText = draft.document;
-      this.refreshLocalInjectionValidation(candidate);
-    }
-    candidate.relativeDelayMs = draft.delayMs ?? 0;
-    const replayability = source?.update
-      ? classifyInjectionSourceFieldExecutability(source.update).map(field => ({ field: field.field, classification: field.classification, reason: "reason" in field ? field.reason : undefined }))
-      : [];
-    return { id, candidate, replayability };
-  }
-
-  private async prepareAgentScenarioPlan(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
-    await this.prepareAgentScenarioPlanInternal(input, pageEpoch, stillAuthorized);
-  }
-
-  private async prepareAgentScenarioPlanInternal(input: AgentScenarioPlanInput, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
-    const available = () => {
-      if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Agent access was revoked while preparing the Scenario.");
-      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Page changed or panel is hidden/closed. Inspect the current target again.");
-      if (this.localInjectionDraft || this.serverInjection.active) throw new Error("A protected Draft already exists. Finish it in Workbench before creating a Scenario.");
-      if (this.scenarioState) {
-        const existing = this.scenarioState;
-        const replace = input.replace;
-        if (!replace || replace.scenarioId !== existing.scenario.id || replace.revision !== existing.scenario.revision || !["edit", "review"].includes(existing.phase) || (existing.run?.trace.length ?? 0) > 0) {
-          throw new Error("A protected Scenario already exists. Replace only the exact unexecuted agent-owned Scenario revision or finish it in Workbench.");
-        }
-      } else if (input.replace) throw new Error("The Scenario selected for replacement is no longer available.");
-    };
-    available();
-    if (input.members[0]?.kind !== "step") throw new Error("A Scenario must begin with an explicit Injection Step.");
-    const built: Array<{ member: AgentScenarioMember; draft?: LocalInjectionDraftState }> = [];
-    for (const member of input.members) {
-      available();
-      if (member.kind === "step") {
-        const resolved = await this.resolveAgentCandidate(member.id, member, available);
-        const candidate = resolved.candidate;
-        if (!candidateReplayability(candidate, resolved.replayability).replayable) throw new Error(`${member.id}: captured Source fields require concrete replacement or permitted removal.`);
-        built.push({ member, draft: candidate });
-      } else built.push({ member });
-    }
-    available();
-    const first = built[0]?.draft;
-    if (!first) throw new Error("A Scenario requires at least one explicit Step.");
-    let definition = createScenarioFromDraft(this.scenarioDraftInput(first), { scenarioId: `local-injection-scenario-${crypto.randomUUID()}`, stepId: built[0]!.member.id });
-    const drafts = new Map<string, LocalInjectionDraftState>([[definition.steps[0]!.id, first]]);
-    let earlier: string[] = [definition.steps[0]!.id];
-    for (const entry of built.slice(1)) {
-      available();
-      if (entry.member.kind === "step") {
-        const candidate = entry.draft!;
-        const addition = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: 0 }, entry.member.id);
-        if (!addition.ok) throw new Error(addition.reason);
-        definition = addition.scenario;
-        drafts.set(entry.member.id, candidate);
-        earlier.push(entry.member.id);
-      } else {
-        const checkpoint = { kind: "checkpoint" as const, id: entry.member.id, name: entry.member.name, assertions: entry.member.assertions };
-        const checked = validateScenarioCheckpoint(checkpoint, { targetMode: definition.target.mode, deliveryPath: definition.target.deliveryPath, earlierStepIds: earlier });
-        if (!checked.ok) throw new Error(checked.reason);
-        const added = addScenarioCheckpoint(definition, checkpoint, { retainedRunBytes: 0 });
-        if (!added.ok) throw new Error(added.reason);
-        definition = added.scenario;
-      }
-    }
-    available();
-    const ordered = admitScenarioValidation(definition, definition.steps.map(step => ({ ...step, draft: this.scenarioDraftInput(drafts.get(step.id)!) })), { retainedRunBytes: 0 });
-    if (!ordered.ok) throw new Error(ordered.reason);
-    const commandKeys = [...drafts.values()].map(draft => ({ item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition }, keys: this.activeCommandKeys(draft.anchor) }));
-    const preflight = reviewScenario(ordered.scenario, { runId: "agent-preflight", committedEvidenceSeed: this.committedEvidenceBoundary, targetFingerprint: this.scenarioTargetFingerprint(first), listenerIds: this.scenarioCurrentListenerIds(first), historyAccepting: this.historyStatus.phase === "RUNNING" && this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null, clearInProgress: this.clearState !== "idle", activeCommandKeysByItem: commandKeys, nativeChangesByStepId: this.scenarioNativeChanges(ordered.scenario.steps, drafts), diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary() });
-    if (!preflight.ok) throw new Error(`${preflight.stepId ? `${preflight.stepId}: ` : ""}${preflight.reason}`);
-    for (const [index, reviewedStep] of preflight.run.steps.entries()) {
-      const draft = drafts.get(reviewedStep.id)!;
-      const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, reviewedStep.document, draft.explicitConcreteFields, reviewedStep.nativeChanges?.context);
-      const review = this.localInjectionExecutionCoordinator.review({
-        fingerprint: this.localInjectionFingerprint(draft, reviewedStep.nativeChanges?.context), executionTarget: draft.anchor.executionTarget,
-        document: reviewedStep.document, draft: cloneReinjectionDraft(executionDraft),
-        correlation: { scenarioId: preflight.run.scenarioId, runId: preflight.run.id, stepId: reviewedStep.id, ordinal: index + 1, targetId: draft.anchor.subscriptionId }
-      });
-      if (review.kind === "refused") throw new Error(`${reviewedStep.id}: ${review.reason}`);
-    }
-    available();
-    this.scenarioState = { phase: "edit", parked: false, discardConfirmation: false, scenario: ordered.scenario, drafts, run: null, reviews: new Map(), membershipError: null, invalidPrimitiveAssertionIds: new Set(), pickerOpen: false, captureWorkspace: emptyScenarioCaptureWorkspace(), membershipPreview: null, focusedMemberId: ordered.scenario.members[0]!.id, focusedStepId: ordered.scenario.steps[0]!.id, removedDrafts: new Map(), priorRuns: [], retainedRunBytes: 0, runner: null, runnerSnapshot: null, serverInterleaves: [] };
-    this.localInjectionDraft = null;
-    this.reviewCurrentScenario();
-    if (this.scenarioState?.phase !== "review") throw new Error(this.scenarioState?.membershipError ?? "Scenario Review could not be completed.");
-  }
-
-  private async prepareAgentDrafts(inputs: AgentDraftInput[], scenario: boolean, pageEpoch: string, stillAuthorized: () => boolean): Promise<void> {
-    const available = () => {
-      if (!stillAuthorized()) throw new Error("ACCESS_REVOKED: Agent access was revoked while preparing the document.");
-      if (this.disposed || !this.visible || this.currentPageEpoch !== pageEpoch) throw new Error("TARGET_CHANGED: Page changed or panel is hidden/closed. Inspect the current target again.");
-      if (this.localInjectionDraft || this.scenarioState || this.serverInjection.active) throw new Error("A protected Draft or Scenario already exists. Finish it in Workbench before creating another.");
-    };
-    available();
-    const candidates: LocalInjectionDraftState[] = [];
-    for (const input of inputs) {
-      if (Boolean(input.scopeId) === Boolean(input.evidence)) throw new Error("Choose exactly one Scope or Evidence source for each Step.");
-      let source: LightstreamerEventEnvelope | undefined;
-      if (input.evidence) {
-        const identity = input.evidence;
-        const result = await this.agent.query({ at: "LATEST_COMMITTED", size: 1, includePayload: true, lookup: identity });
-        if (result.lookup?.state !== "RETAINED") throw new Error("Source Evidence is no longer retained.");
-        source = lightstreamerPayload(result.lookup.evidence.payload) ?? undefined;
-        if (!source) throw new Error("Source has no complete Item Update payload.");
-      }
-      available();
-      const candidate = this.createLocalInjectionCandidate(input.evidence ? { kind: "selected-event", eventId: input.evidence.eventId } : { kind: "scope-author", scopeId: input.scopeId! }, source);
-      if (!candidate) throw new Error(this.localInjectionEntryError ?? "Local Injection target is unavailable.");
-      if (input.document !== undefined) {
-        candidate.rawText = input.document;
-        // Match ordinary editor semantics: only concrete user-supplied replacements become executable.
-        this.refreshLocalInjectionValidation(candidate);
-      }
-      candidate.relativeDelayMs = input.delayMs ?? 0;
-      candidates.push(candidate);
-    }
-    available();
-    if (scenario) {
-      // Validate membership and capacity before publishing any document.
-      let definition = createScenarioFromDraft(this.scenarioDraftInput(candidates[0]!), { scenarioId: `local-injection-scenario-${++this.localInjectionSequence}` });
-      for (const candidate of candidates.slice(1)) {
-        const added = addScenarioStep(definition, this.scenarioDraftInput(candidate), { retainedRunBytes: 0 });
-        if (!added.ok) throw new Error(added.reason);
-        definition = added.scenario;
-      }
-      this.localInjectionDraft = candidates[0]!;
-      this.convertLocalInjectionToScenario();
-      const state = this.scenarioState!;
-      state.scenario = definition;
-      state.drafts = new Map(definition.steps.map((step, index) => [step.id, candidates[index]!]));
-      state.focusedStepId = definition.steps[0]!.id;
-      state.focusedMemberId = state.focusedStepId;
-      this.reviewCurrentScenario();
-    } else {
-      this.localInjectionDraft = candidates[0]!;
-      this.commitTransition();
-    }
-  }
-  private readonly history: EventHistory;
+  readonly history: EventHistory;
   private readonly evidencePipeline: CommittedEvidencePipeline;
   private readonly scheduler: WorkbenchRuntimeScheduler;
   private readonly scenarioClock: ScenarioClock;
@@ -1487,7 +997,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
   private readonly outputByteLimit: number;
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
   private readonly normalizer: EventNormalizer;
-  private readonly diagnosticObservations: DiagnosticObservationJournal;
+  readonly diagnosticObservations: DiagnosticObservationJournal;
   private subscriptionDiagnosticProducer: SubscriptionDiagnosticProducer = createSubscriptionDiagnosticProducer();
   private committedTopologyDiagnostics: CommittedTopologyDiagnosticCoordinator = createCommittedTopologyDiagnosticCoordinator();
   private readonly activeRuntimeDiagnosticConditions = new Map<string, Readonly<{
@@ -1497,25 +1007,25 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     dismissalId: string;
     fingerprint: string;
   }>>();
-  private diagnosticObservationSettlement: Promise<void> = Promise.resolve();
+  diagnosticObservationSettlement: Promise<void> = Promise.resolve();
   private readonly diagnosticEvidenceSequences = new Map<string, number>();
   private readonly committedDiagnosticPresentations = new Map<string, WorkbenchDiagnostic>();
   private readonly committedDiagnosticObservations = new Map<string, DiagnosticObservationInput>();
   private readonly dismissedDiagnosticIds = new Set<string>();
   private diagnosticFilterCriteria: DiagnosticFilterCriteria = Object.freeze({});
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
-  private readonly serverInjection: ServerInjectionController;
-  private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
-  private readonly agentLocalSettlements = new Map<string, import("./agent-runtime").AgentLocalSettlement>();
+  readonly serverInjection: ServerInjectionController;
+  readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
+  readonly agentLocalSettlements = new Map<string, import("./agent-runtime").AgentLocalSettlement>();
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
   private readonly activityProjectionFactory: (input: ActivityProjectionInput) => ActivityProjection;
-  private readonly evidenceQuery: EvidenceInvestigationQuery;
+  readonly evidenceQuery: EvidenceInvestigationQuery;
   private readonly investigationDiscoveries: readonly FacetDiscoveryRequest[];
   private filterDiscovery: FacetDiscoveryRequest | null = null;
   private readonly activeTopologyStagingSyncIds = new Set<string>();
   private readonly topologySyncGapGenerations = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
-  private commandStateProjections: CommandStateProjections = createCommandStateProjections();
+  commandStateProjections: CommandStateProjections = createCommandStateProjections();
   private readonly nativeItemBaselines = createNativeItemBaselineIndex();
   private readonly retainedLocalEvidenceIds = new Set<string>();
   private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
@@ -1541,13 +1051,13 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
   private timelineEvidenceRevealActive = false;
   private activityEvidenceReadPointCache: Readonly<{ intervalId: string; through: number; evidence: readonly ActivityEvidence[] }> | null = null;
   private activityEvidenceCoherent = false;
-  private topologyProjection: TopologyProjection = createTopologyProjection();
+  topologyProjection: TopologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
   private readonly compactEvidenceEvents = new WeakSet<LightstreamerEventEnvelope>();
-  private visible: boolean;
-  private captureStatus: CaptureStatus;
-  private scopeId: string | null = "page";
+  visible: boolean;
+  captureStatus: CaptureStatus;
+  scopeId: string | null = "page";
   private scopeFocusedNodeId: string | null = "page";
   private selectionEventId: string | null = null;
   private selectedEventEnvelope: LightstreamerEventEnvelope | null = null;
@@ -1558,7 +1068,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
   private contextId: string | null = null;
   private notificationsReturnContextId: string | null = null;
   private actionsReturnContextId: string | null = null;
-  private canonicalFilter: Filter = createFilter(1);
+  canonicalFilter: Filter = createFilter(1);
   private filterMutation: WorkbenchFilterMutationSnapshot = Object.freeze({
     state: "idle", revision: 1, changed: false, message: null, removedCriteria: 0
   });
@@ -1604,7 +1114,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
   private evidenceLoading = false;
   private snapshot: WorkbenchSnapshot;
   private version = 0;
-  private disposed = false;
+  disposed = false;
   private disposePromise: Promise<void> = Promise.resolve();
   private queryGeneration = 0;
   private evidenceQueryAbortController: AbortController | null = null;
@@ -1623,9 +1133,9 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     checkpoint: TopologyCheckpointBasisMetadata;
     evidence: EvidenceRef;
   }> | null = null;
-  private committedEvidenceBoundary: EvidenceRef | null = null;
-  private commandProjectionEvidenceBoundary: EvidenceIdentity | null = null;
-  private scenarioFollowerPhase: CommittedEvidencePipelineFollowerState["progress"]["phase"] = "IDLE";
+  committedEvidenceBoundary: EvidenceRef | null = null;
+  commandProjectionEvidenceBoundary: EvidenceIdentity | null = null;
+  scenarioFollowerPhase: CommittedEvidencePipelineFollowerState["progress"]["phase"] = "IDLE";
   private readonly scenarioBoundaryListeners = new Set<(snapshot: ScenarioCommittedBoundarySnapshot) => void>();
   private scenarioBoundaryPublicationPending = false;
   private renderedEvidenceBoundary: EvidenceRef | null = null;
@@ -1646,7 +1156,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     animationFrameCancelCount: 0
   };
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
-  private projectionRecovery: {
+  projectionRecovery: {
     intervalId: string | null;
     topology: TopologyProjection;
     command: CommandStateProjections;
@@ -1661,8 +1171,8 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
   private storageEstimate: StorageEstimateObservation | null;
   private readonly storageHeadroomSampler: StorageHeadroomSampler | null;
   private readonly storageEstimateThresholdsSampled = new Set<StorageEstimateThreshold>();
-  private historyStatus: HistoryStatus;
-  private clearState: WorkbenchRetentionSnapshot["clearState"] = "idle";
+  historyStatus: HistoryStatus;
+  clearState: WorkbenchRetentionSnapshot["clearState"] = "idle";
   private clearError: string | null = null;
   private clearedSelectionEventId: string | null = null;
   private exportRedactions = new Set<TopologySensitiveCategory>();
@@ -1674,20 +1184,20 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
   });
   private evidenceCopyGeneration = 0;
   private evidenceCopyAbortController: AbortController | null = null;
-  private localInjectionDraft: LocalInjectionDraftState | null = null;
-  private scenarioState: ScenarioState | null = null;
+  localInjectionDraft: LocalInjectionDraftState | null = null;
+  scenarioState: ScenarioState | null = null;
   private pendingLocalInjectionEntry: {
     intent: LocalInjectionEntryIntent;
     rawText: string | null;
     review: boolean;
     execute: boolean;
   } | null = null;
-  private localInjectionBlockedEntry: LocalInjectionEntryIntent | null = null;
-  private localInjectionDiscardConfirmation = false;
-  private localInjectionEntryError: string | null = null;
-  private localInjectionSequence = 0;
+  localInjectionBlockedEntry: LocalInjectionEntryIntent | null = null;
+  localInjectionDiscardConfirmation = false;
+  localInjectionEntryError: string | null = null;
+  localInjectionSequence = 0;
   private scenarioVisibilityTransition = false;
-  private currentPageEpoch: string | null = null;
+  currentPageEpoch: string | null = null;
   private scopeStructureCache: {
     revision: number;
     descriptors: readonly ScopeNodeDescriptor[];
@@ -4430,7 +3940,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     this.commitTransition();
   }
 
-  private createLocalInjectionCandidate(
+  createLocalInjectionCandidate(
     intent: LocalInjectionEntryIntent,
     sourceOverride?: LightstreamerEventEnvelope,
     options: Readonly<{ id?: string; recordError?: boolean }> = {}
@@ -4514,7 +4024,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     return state;
   }
 
-  private setLocalInjectionJson(text: string): void {
+  setLocalInjectionJson(text: string): void {
     const draft = this.localInjectionDraft;
     if (!draft) {
       if (this.pendingLocalInjectionEntry) this.pendingLocalInjectionEntry.rawText = text;
@@ -4575,7 +4085,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     this.commitTransition();
   }
 
-  private executeLocalInjection(): void {
+  executeLocalInjection(): void {
     const draft = this.localInjectionDraft;
     if (!draft) {
       if (this.pendingLocalInjectionEntry) this.pendingLocalInjectionEntry.execute = true;
@@ -4660,7 +4170,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     this.commitTransition();
   }
 
-  private refreshLocalInjectionValidation(draft: LocalInjectionDraftState): void {
+  refreshLocalInjectionValidation(draft: LocalInjectionDraftState): void {
     const previousDocument = draft.document;
     const analysis = analyzeLocalInjectionDocument(draft.rawText, {
       mode: draft.anchor.subscriptionMode,
@@ -4690,7 +4200,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     draft.targetDiagnostics = Object.freeze(this.validateLocalInjectionTarget(draft.anchor));
   }
 
-  private validateLocalInjectionTarget(
+  validateLocalInjectionTarget(
     anchor: WorkbenchLocalInjectionAnchor
   ): LocalInjectionDiagnostic[] {
     const diagnostics: LocalInjectionDiagnostic[] = [];
@@ -4770,7 +4280,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     return row ? { baseline: { fields: { ...row.fields }, fieldValueStates: { ...row.fieldValueStates }, basis: `Local Effective COMMAND State ${row.latest.eventId}` } } : {};
   }
 
-  private scenarioNativeChanges(steps: readonly Readonly<{ id: string; document?: Readonly<LocalInjectionDocument>; draft?: { document: Readonly<LocalInjectionDocument> | null } }>[], drafts: ReadonlyMap<string, LocalInjectionDraftState>): ReadonlyMap<string, NativeReviewedChangeFacts> {
+  scenarioNativeChanges(steps: readonly ScenarioNativeChangeStep[], drafts: ReadonlyMap<string, LocalInjectionDraftState>): ReadonlyMap<string, NativeReviewedChangeFacts> {
     const baselines = new Map<string, NativeChangeContext>();
     const changes = new Map<string, NativeReviewedChangeFacts>();
     for (const step of steps) {
@@ -4791,7 +4301,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     return changes;
   }
 
-  private localInjectionFingerprint(draft: LocalInjectionDraftState, changeContext?: NativeChangeContext): string {
+  localInjectionFingerprint(draft: LocalInjectionDraftState, changeContext?: NativeChangeContext): string {
     const target = this.validateLocalInjectionTarget(draft.anchor).map(({ code }) => code);
     const context = changeContext ?? this.localInjectionNativeChangeContext(draft);
     const effective = draft.document ? applyLocalInjectionDocumentToDraft(draft.baseDraft, draft.document, draft.explicitConcreteFields, context) : null;
@@ -4874,7 +4384,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     this.commitTransition();
   }
 
-  private finishLocalInjection(): void {
+  finishLocalInjection(): void {
     const draft = this.localInjectionDraft;
     if (!draft || draft.phase !== "outcome") return;
     this.localInjectionDraft = null;
@@ -4884,7 +4394,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     this.commitTransition();
   }
 
-  private convertLocalInjectionToScenario(): void {
+  convertLocalInjectionToScenario(): void {
     const draft = this.localInjectionDraft;
     if (!draft || draft.phase === "pending" || this.scenarioState) return;
     if (draft.phase !== "edit") this.editLocalInjection();
@@ -5328,7 +4838,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     }
   }
 
-  private reviewCurrentScenario(): void {
+  reviewCurrentScenario(): void {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit" || state.captureWorkspace.adding) return;
     this.pruneScenarioInvalidPrimitiveAssertions(state);
@@ -5669,7 +5179,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     this.reviewCurrentScenario();
   }
 
-  private finishScenario(): void {
+  finishScenario(): void {
     const state = this.scenarioState;
     if (!state || state.phase === "running") return;
     state.runner?.dispose();
@@ -5686,7 +5196,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     this.commitTransition();
   }
 
-  private setScenarioStepJson(stepId: string, text: string): void {
+  setScenarioStepJson(stepId: string, text: string): void {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
     const current = state.drafts.get(stepId);
@@ -5760,7 +5270,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     return Object.freeze({ eventId: event.id, available: reason === null, reason });
   }
 
-  private scenarioDraftInput(draft: LocalInjectionDraftState, ready = localInjectionReady(draft)): ScenarioDraftInput {
+  scenarioDraftInput(draft: LocalInjectionDraftState, ready = localInjectionReady(draft)): ScenarioDraftInput {
     return Object.freeze({
       id: draft.id,
       sourceEventId: draft.anchor.sourceEventId,
@@ -5795,16 +5305,16 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     return admitScenarioValidation(state.scenario, Object.freeze(steps), { retainedRunBytes: state.retainedRunBytes });
   }
 
-  private activeCommandKeys(anchor: WorkbenchLocalInjectionAnchor): readonly string[] {
+  activeCommandKeys(anchor: WorkbenchLocalInjectionAnchor): readonly string[] {
     const item = findCommandItem(this.commandStateProjections.snapshot("local-effective"), anchor);
     return Object.freeze(item?.activeRows.map(({ key }) => key) ?? []);
   }
 
-  private scenarioTargetFingerprint(draft: LocalInjectionDraftState): string {
+  scenarioTargetFingerprint(draft: LocalInjectionDraftState): string {
     return hashLocalInjectionValue({ anchor: draft.anchor, deliveryIdentity: this.localInjectionDeliveryIdentity(draft.anchor) });
   }
 
-  private scenarioCurrentListenerIds(draft: LocalInjectionDraftState): readonly string[] {
+  scenarioCurrentListenerIds(draft: LocalInjectionDraftState): readonly string[] {
     const identity = this.localInjectionDeliveryIdentity(draft.anchor) as { deliveryListenerIds?: readonly string[] };
     return Object.freeze([...(identity.deliveryListenerIds ?? [])].sort());
   }
@@ -6301,7 +5811,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
    * here whether or not the panel is visible; only snapshot publication is
    * deferred while hidden.
    */
-  private commitTransition(allowHidden = false): void {
+  commitTransition(allowHidden = false): void {
     if (this.disposed) {
       return;
     }
@@ -6536,7 +6046,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     return presentation;
   }
 
-  private captureSnapshot(): WorkbenchCaptureSnapshot {
+  captureSnapshot(): WorkbenchCaptureSnapshot {
     const boundary = this.captureBoundary;
     const operation =
       this.captureStatus === "capturing"
@@ -6564,7 +6074,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     });
   }
 
-  private localInjectionSnapshot(): WorkbenchLocalInjectionSnapshot {
+  localInjectionSnapshot(): WorkbenchLocalInjectionSnapshot {
     const draft = this.localInjectionDraft;
     return Object.freeze({
       state: draft ? "active" as const : "idle" as const,
@@ -6683,7 +6193,7 @@ class Runtime implements WorkbenchRuntime, WorkbenchDiagnosticsPort {
     });
   }
 
-  private scopeSnapshot(): WorkbenchSnapshot["scope"] {
+  scopeSnapshot(): WorkbenchSnapshot["scope"] {
     const state = this.topologyProjection.snapshot();
     const projectionStatus = this.topologyProjection.status();
     const structure = this.currentScopeStructure(state);
@@ -7905,133 +7415,11 @@ function isCompatibleLocalInjectionSource(event: LightstreamerEventEnvelope): bo
   );
 }
 
-function localInjectionFieldSchema(
-  captured: readonly string[] | null | undefined,
-  observed: Readonly<Record<string, unknown>> | undefined
-): string[] {
-  const fields: string[] = [];
-  for (const field of captured ?? Object.keys(observed ?? {})) {
-    if (field.trim() && !fields.includes(field)) fields.push(field);
-  }
-  return fields;
-}
-
-function anchorFromDraft(
-  draft: ReinjectionDraft,
-  sourceKind: WorkbenchLocalInjectionAnchor["sourceKind"],
-  pageEpoch: string | null,
-  fieldSchema: readonly string[]
-): WorkbenchLocalInjectionAnchor {
-  const executionTarget: ReinjectionExecutionTarget =
-    draft.target.listenerId || draft.captureSource !== "wire"
-      ? "captured-listener"
-      : "captured-wire";
-  return Object.freeze({
-    sourceKind,
-    sourceEventId: sourceKind === "captured-event" ? draft.sourceEventId : null,
-    pageEpoch,
-    clientId: draft.sourceClient?.id ?? null,
-    sessionId: draft.sourceClient?.sessionId ?? null,
-    subscriptionId: draft.target.subscriptionId!,
-    subscriptionMode: draft.subscriptionMode ?? null,
-    itemName: draft.item.name ?? null,
-    itemPosition: draft.item.position ?? null,
-    listenerId: draft.target.listenerId,
-    captureSource: draft.captureSource ?? "listener",
-    executionTarget,
-    fieldSchema: Object.freeze([...fieldSchema])
-  });
-}
-
-function authoredDraftFromScope(
-  target: TopologySelectionTarget | null,
-  pageEpoch: string | null
-): { draft: ReinjectionDraft; anchor: WorkbenchLocalInjectionAnchor } | null {
-  if (!target || (target.kind !== "subscription" && target.kind !== "item" && target.kind !== "listener")) return null;
-  if (!target.client || !target.session || target.session.historical || !target.session.active) return null;
-  const subscription = target.subscription;
-  const item = target.kind === "subscription"
-    ? subscription.items.length === 1 ? subscription.items[0] ?? null : null
-    : target.item;
-  if (!item || !["COMMAND", "MERGE", "DISTINCT"].includes(subscription.mode ?? "") || subscription.historical || !subscription.active) return null;
-  const listener = target.kind === "listener"
-    ? target.listener
-    : subscription.listeners.find(
-        (candidate) => candidate.active && item.listenerIds.includes(candidate.id)
-      ) ?? null;
-  if (!listener?.active) return null;
-  const fieldSchema = localInjectionFieldSchema(subscription.fields, undefined);
-  if (fieldSchema.length === 0 || (subscription.mode === "COMMAND" && (!fieldSchema.includes("command") || !fieldSchema.includes("key")))) return null;
-  const sourceClient = {
-    id: target.client.id,
-    status: target.client.status,
-    sessionId: target.session.id,
-    transport: target.session.transport
-  };
-  const sourceSubscription = {
-    id: subscription.id,
-    mode: subscription.mode,
-    fields: [...fieldSchema],
-    items: subscription.configuredItems ? [...subscription.configuredItems] : undefined,
-    active: subscription.active,
-    subscribed: subscription.serverEstablished
-  };
-  const draft = createNewItemDraftFromContext({
-    subscriptionId: subscription.id,
-    mode: subscription.mode,
-    listenerId: listener.id,
-    captureSource: "listener",
-    itemName: item.name,
-    itemPosition: item.position,
-    fields: [...fieldSchema]
-  });
-  if (!draft) return null;
-  const protectedDraft: ReinjectionDraft = {
-    ...draft,
-    sourceClient,
-    sourceSubscription
-  };
-  return {
-    draft: protectedDraft,
-    anchor: anchorFromDraft(protectedDraft, "authored", pageEpoch, fieldSchema)
-  };
-}
-
 function historyStorageSnapshot(status: HistoryStatus, adapter: WorkbenchStorageSnapshot): WorkbenchStorageSnapshot {
   if (status.persistence?.mode === "MEMORY_ONLY" || status.fallback !== null) {
     return Object.freeze({ mode: "memory", reason: status.persistence?.lastProblem?.message ?? adapter.reason ?? status.fallback ?? "IndexedDB journal unavailable" });
   }
   return Object.freeze({ ...adapter });
-}
-
-function localInjectionReady(draft: LocalInjectionDraftState): boolean {
-  return Boolean(draft.document) &&
-    draft.documentDiagnostics.every(({ severity }) => severity !== "error") &&
-    draft.targetDiagnostics.every(({ severity }) => severity !== "error");
-}
-
-function agentTarget(draft: LocalInjectionDraftState) {
-  return Object.freeze({
-    pageEpoch: draft.anchor.pageEpoch,
-    clientId: draft.anchor.clientId,
-    sessionId: draft.anchor.sessionId,
-    subscriptionId: draft.anchor.subscriptionId,
-    deliveryPath: draft.anchor.executionTarget === "captured-listener" ? "listener" as const : "wire" as const,
-    mode: draft.anchor.subscriptionMode
-  });
-}
-
-function candidateReplayability(
-  draft: LocalInjectionDraftState,
-  fields: readonly Readonly<{ field: string; classification: string; reason?: string }>[]
-) {
-  if (!draft.sourceRawText) return Object.freeze({ source: "source-free" as const, replayable: true, fields: Object.freeze([]), limitation: "No captured Injection Source exists; field values are authored and are not evidence of application state." });
-  const states = fields.map(field => {
-    const removedWhereOptional = Boolean(draft.document) && !Object.prototype.hasOwnProperty.call(draft.document!.fields, field.field) && !draft.anchor.fieldSchema.includes(field.field);
-    const resolved = field.classification === "executable" || draft.explicitConcreteFields.has(field.field) || removedWhereOptional;
-    return Object.freeze({ ...field, resolved, limitation: resolved ? null : "Replace this captured value with a concrete Draft value or remove it where the target schema permits." });
-  });
-  return Object.freeze({ source: "captured" as const, replayable: states.every(field => field.resolved), fields: Object.freeze(states), limitation: null });
 }
 
 function rememberExplicitConcreteFields(
@@ -8079,31 +7467,6 @@ function deepFreezeLocalInjectionFields(
   return Object.freeze(Object.fromEntries(
     Object.entries(fields).map(([name, value]) => [name, cloneAndFreezeJsonValue(value)])
   ));
-}
-
-function cloneReinjectionDraft(draft: ReinjectionDraft): ReinjectionDraft {
-  return {
-    ...draft,
-    ...(draft.sourceClient ? { sourceClient: { ...draft.sourceClient } } : {}),
-    ...(draft.sourceSubscription
-      ? {
-          sourceSubscription: {
-            ...draft.sourceSubscription,
-            ...(draft.sourceSubscription.items ? { items: [...draft.sourceSubscription.items] } : {}),
-            ...(draft.sourceSubscription.fields ? { fields: [...draft.sourceSubscription.fields] } : {})
-          }
-        }
-      : {}),
-    target: { ...draft.target },
-    item: { ...draft.item },
-    fields: { ...draft.fields },
-    sourceFields: { ...draft.sourceFields },
-    fieldValueStates: { ...draft.fieldValueStates },
-    sourceFieldValueStates: { ...draft.sourceFieldValueStates },
-    changedFields: { ...draft.changedFields },
-    originalChangedFields: { ...draft.originalChangedFields },
-    provenance: { ...draft.provenance }
-  };
 }
 
 function cloneLocalInjectionDraftState(draft: LocalInjectionDraftState): LocalInjectionDraftState {
@@ -8658,57 +8021,6 @@ function evidenceRefFromIdentity(identity: EvidenceIdentity | null): EvidenceRef
       });
 }
 
-function structuralEvidenceScope(target: TopologySelectionTarget | null): StructuralEvidenceScope {
-  if (!target || target.kind === "page") return Object.freeze({ kind: "PAGE" });
-  switch (target.kind) {
-    case "client":
-      return Object.freeze({ kind: "CLIENT", clientId: target.client.id });
-    case "session":
-      return Object.freeze({
-        kind: "SESSION",
-        clientId: target.client.id,
-        sessionId: target.session.id
-      });
-    case "subscription":
-      return Object.freeze({
-        kind: "SUBSCRIPTION",
-        clientId: target.client?.id ?? null,
-        sessionId: target.session?.id ?? null,
-        subscriptionId: target.subscription.id
-      });
-    case "item":
-      return Object.freeze({
-        kind: "ITEM",
-        clientId: target.client?.id ?? null,
-        sessionId: target.session?.id ?? null,
-        subscriptionId: target.subscription.id,
-        ...(target.item.name === null ? {} : { item: target.item.name }),
-        itemPosition: target.item.position ?? undefined
-      });
-    case "listener":
-      return Object.freeze({
-        kind: "LISTENER",
-        clientId: target.client?.id ?? null,
-        sessionId: target.session?.id ?? null,
-        subscriptionId: target.subscription.id,
-        ...(target.item?.name == null ? {} : { item: target.item.name }),
-        itemPosition: target.item?.position ?? undefined,
-        listenerId: target.listener.id
-      });
-    case "generation":
-    case "inferred-child":
-      // Generation rows remain a Subscription structural scope in the
-      // storage-neutral contract. Their generation-specific semantics stay in
-      // the existing topology projection until a later domain seam owns them.
-      return Object.freeze({
-        kind: "SUBSCRIPTION",
-        clientId: target.client?.id ?? null,
-        sessionId: target.session?.id ?? null,
-        subscriptionId: target.subscription.id
-      });
-  }
-}
-
 function eventFromDeterministicRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
   const payload = lightstreamerPayload(record.payload);
   if (payload) return payload;
@@ -8757,22 +8069,6 @@ function eventFromDeterministicRecord(record: DeterministicEvidenceRecord): Ligh
 
 function candidateFromDeterministicRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
   return eventFromDeterministicRecord(record);
-}
-
-function lightstreamerPayload(value: unknown): LightstreamerEventEnvelope | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const candidate = value as Partial<LightstreamerEventEnvelope>;
-  return typeof candidate.id === "string" &&
-      typeof candidate.timestamp === "number" &&
-      (candidate.direction === "inbound" || candidate.direction === "outbound") &&
-      (candidate.source === "server" ||
-        candidate.source === "synthetic" ||
-        candidate.source === "application" ||
-        candidate.source === "workbench") &&
-      typeof candidate.synthetic === "boolean" &&
-      typeof candidate.kind === "string"
-    ? candidate as LightstreamerEventEnvelope
-    : null;
 }
 
 function nearestVisibleRecordId(
