@@ -17,6 +17,7 @@ import { reanchorEvidenceQueryCursor } from "../../core/evidence-filter-cursor";
 import { reanchorFacetDiscoveryCursor } from "../../core/evidence-filter-discovery";
 import { waitForAgentScenario } from "./agent-scenario-wait";
 import { agentNativeChangePreview, describeAgentDocument } from "./agent-injection-capabilities";
+import { BoundedMap } from "../../core/bounded-map";
 
 const SEARCH_CURSOR_LIFETIME_MS = 5 * 60 * 1000;
 const DEFAULT_QUERY_WORK = Object.freeze({ maxProjectionReads: 250000, maxPayloadHydrations: 1000, deadlineMs: 15000 });
@@ -160,13 +161,13 @@ type EvidenceSearch = { at: EvidenceReadPoint; after: EvidenceIdentity; boundary
 type ScopeSearch = { index: ScopeSearchIndex; snapshot: Omit<AgentScopeSearchSnapshot, "nodes">; text: string; size: number; maxBytes: number; kind?: string; parentScopeId?: string; expiresAt: number };
 
 export function createAgentService(runtime: AgentRuntime, panelSessionId: string, permission: () => AgentPermission) {
-  const cursors = new Map<string, { at: EvidenceReadPoint; cursor: string; query?: Omit<AgentQueryInput, "cursor" | "at">; fields?: string[]; maxBytes?: number; pageEpoch?: unknown }>();
-  const evidenceSearches = new Map<string, EvidenceSearch>();
-  const summaries = new Map<string, { query: AgentQueryInput; facet: string; cursor: string; limit: number; maxBytes: number; at: EvidenceReadPoint; pageEpoch: unknown }>();
+  const cursors = new BoundedMap<string, { at: EvidenceReadPoint; cursor: string; query?: Omit<AgentQueryInput, "cursor" | "at">; fields?: string[]; maxBytes?: number; pageEpoch?: unknown }>(128);
+  const evidenceSearches = new BoundedMap<string, EvidenceSearch>(128);
+  const summaries = new BoundedMap<string, { query: AgentQueryInput; facet: string; cursor: string; limit: number; maxBytes: number; at: EvidenceReadPoint; pageEpoch: unknown }>(128);
   // Multiple page cursors share one bounded Topology snapshot rather than copying it.
-  const scopeSearches = new Map<string, ScopeSearch>();
-  const scopeCursors = new Map<string, { searchId: string; offset: number }>();
-  const commandRowCursors = new Map<string, { input: AgentCommandRowsInput; pageEpoch: string; maxBytes: number }>();
+  const scopeSearches = new BoundedMap<string, ScopeSearch>(8);
+  const scopeCursors = new BoundedMap<string, { searchId: string; offset: number }>(128);
+  const commandRowCursors = new BoundedMap<string, { input: AgentCommandRowsInput; pageEpoch: string; maxBytes: number }>(128);
   const requests = new Map<string, { signature: string; kind: "local" | "scenario"; draftId?: string; value: unknown }>();
   const documentRequests = new Map<string, { signature: string; promise: Promise<unknown>; token?: string; fingerprint?: string }>();
   const serverRequests = new Map<string, { signature: string; token: string; state: "prepared" | "approved" | "pending" | "complete" | "aborted"; outcome?: unknown; promise?: Promise<unknown> }>();
@@ -186,7 +187,6 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
     const opaque = crypto.randomUUID();
     const { at: _at, cursor: _cursor, ...boundQuery } = query;
     cursors.set(opaque, { query: boundQuery, at: readPoint, cursor, fields, maxBytes, pageEpoch: (runtime.status() as { pageEpoch: unknown }).pageEpoch });
-    if (cursors.size > 128) cursors.delete(cursors.keys().next().value!);
     return opaque;
   };
   const fingerprint = (scenario: boolean) => {
@@ -393,10 +393,8 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         let nextCursor: string | null = null;
         if (result.hasNext) {
           scopeSearches.set(searchId, search!);
-          if (scopeSearches.size > 8) scopeSearches.delete(scopeSearches.keys().next().value!);
           nextCursor = crypto.randomUUID();
           scopeCursors.set(nextCursor, { searchId, offset: result.offset + result.matches.length });
-          if (scopeCursors.size > 128) scopeCursors.delete(scopeCursors.keys().next().value!);
         }
         return { ...response(), nextCursor };
       }
@@ -478,7 +476,6 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         if ((count < rows.length || result.nextKey) && count > 0) {
           nextCursor = crypto.randomUUID();
           commandRowCursors.set(nextCursor, { input: { ...input, revision: result.revision, afterKey: result.rows[count - 1]!.target.key }, pageEpoch: input.pageEpoch, maxBytes: budget });
-          if (commandRowCursors.size > 128) commandRowCursors.delete(commandRowCursors.keys().next().value!);
         }
         return { ...response(count), nextCursor };
       }
@@ -540,7 +537,6 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
         if (hasMore(count) && count > 0) {
           nextCursor = crypto.randomUUID();
           evidenceSearches.set(nextCursor, { boundary: searchBoundary, queryOptions, within, scopeId: saved?.scopeId ?? args.scopeId as string | undefined, text, size, includePayload, fields, maxBytes, pageEpoch, at: result.readPoint, after: records[count - 1]!.identity, expiresAt: saved?.expiresAt ?? Date.now() + SEARCH_CURSOR_LIFETIME_MS });
-          if (evidenceSearches.size > 128) evidenceSearches.delete(evidenceSearches.keys().next().value!);
         }
         return { ...response(count), nextCursor };
       }
@@ -597,7 +593,6 @@ export function createAgentService(runtime: AgentRuntime, panelSessionId: string
             if (continuation) {
               fitted.nextCursor = crypto.randomUUID();
               summaries.set(fitted.nextCursor, { query: effective, facet: facet!, cursor: continuation, limit: size, maxBytes, at: result.readPoint, pageEpoch: (runtime.status() as { pageEpoch: unknown }).pageEpoch });
-              if (summaries.size > 128) summaries.delete(summaries.keys().next().value!);
             }
             return fitted;
       }
