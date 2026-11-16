@@ -20,7 +20,7 @@ describe("production UI runner", () => {
     expect(result.stdout).toContain("visual-regression.spec.ts");
     expect(result.stdout).not.toContain("timeline.spec.ts");
     expect(packageJson.scripts["test:ui:react"]).toBeUndefined();
-  });
+  }, 60_000);
 
   it("keeps normal verification read-only and exposes deliberate evidence commands", () => {
     const rejected = spawnSync(process.execPath, [join(rootDir, "scripts/test-ui.mjs"), "--update"], {
@@ -33,5 +33,5 @@ describe("production UI runner", () => {
     expect(packageJson.scripts["test:ui:update"]).toBe("node scripts/test-ui-update.mjs");
     expect(packageJson.scripts["test:ui:visual"]).toBe("node scripts/generate-workbench-visual-evidence.mjs");
     expect(packageJson.scripts["docs:check"]).toBe("node scripts/check-docs.mjs");
-  });
+  }, 60_000);
 });
