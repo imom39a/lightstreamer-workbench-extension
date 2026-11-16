@@ -85,6 +85,7 @@ type InstrumentationState = {
   listenerProxyOriginals: WeakMap<object, LightstreamerListenerLike>;
   subscriptionClients: WeakMap<object, WeakRef<object>>;
   subscriptionClientIdentities: WeakMap<object, CapturePayload>;
+  subscriptionMetadataCache: WeakMap<object, CachedSubscriptionMetadata>;
   clientMetadata: WeakMap<object, CapturePayload>;
   activeSubscriptions: Map<string, CapturePayload>;
   commandReplayRows: Map<string, Map<string, CapturePayload>>;
@@ -100,6 +101,48 @@ type InstrumentationState = {
 };
 
 type MethodOwner = Record<string, unknown>;
+
+/**
+ * Subscription configuration only changes through public setters or across a
+ * subscribe/unsubscribe lifecycle, so per-update Capture reuses it instead of
+ * calling every configuration getter for each listener delivery.
+ */
+type CachedSubscriptionMetadata = {
+  configuration: SubscriptionConfiguration;
+  configurationErrors: readonly string[];
+  commandPositions?: { values: CapturePayload; errors: readonly string[] };
+};
+
+type SubscriptionConfiguration = {
+  mode?: CapturePayload[string];
+  items?: CapturePayload[string];
+  itemGroup?: CapturePayload[string];
+  fields?: CapturePayload[string];
+  fieldSchema?: CapturePayload[string];
+  dataAdapter?: CapturePayload[string];
+  selector?: CapturePayload[string];
+  requestedSnapshot?: CapturePayload[string];
+  requestedBufferSize?: CapturePayload[string];
+  requestedMaxFrequency?: CapturePayload[string];
+  commandSecondLevelDataAdapter?: CapturePayload[string];
+  commandSecondLevelFields?: CapturePayload[string];
+  commandSecondLevelFieldSchema?: CapturePayload[string];
+};
+
+const SUBSCRIPTION_CONFIGURATION_SETTERS = [
+  "setItems",
+  "setItemGroup",
+  "setFields",
+  "setFieldSchema",
+  "setDataAdapter",
+  "setSelector",
+  "setRequestedSnapshot",
+  "setRequestedBufferSize",
+  "setRequestedMaxFrequency",
+  "setCommandSecondLevelDataAdapter",
+  "setCommandSecondLevelFields",
+  "setCommandSecondLevelFieldSchema"
+] as const;
 type ListenerRegistrationState = {
   addCount: number;
   active: boolean;
@@ -250,6 +293,7 @@ export function installLightstreamerInstrumentation(
     listenerProxyOriginals: new WeakMap<object, LightstreamerListenerLike>(),
     subscriptionClients: new WeakMap<object, WeakRef<object>>(),
     subscriptionClientIdentities: new WeakMap<object, CapturePayload>(),
+    subscriptionMetadataCache: new WeakMap<object, CachedSubscriptionMetadata>(),
     clientMetadata: new WeakMap<object, CapturePayload>(),
     activeSubscriptions,
     commandReplayRows,
@@ -2741,6 +2785,7 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
     if (!isObject(subscription)) {
       return;
     }
+    state.subscriptionMetadataCache.delete(subscription);
     const subscriptionMetadataErrors: string[] = [];
     const subscriptionMetadata = readSubscriptionMetadata(
       subscription as LightstreamerSubscriptionLike,
@@ -2782,6 +2827,9 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
 
   wrapMethod(client, "unsubscribe", function afterUnsubscribe(target, args) {
     const subscription = args[0];
+    if (isObject(subscription)) {
+      state.subscriptionMetadataCache.delete(subscription);
+    }
     state.emit("subscription-ended", {
       client: clientPayload(target, state),
       subscription: isObject(subscription)
@@ -2968,7 +3016,37 @@ function wrapSubscription(
   state.wrappedSubscriptions.add(subscription);
   state.subscriptionOwners.register(state.subscriptionIds.getId(subscription), subscription);
 
+  wrapSubscriptionConfigurationSetters(subscription, state);
   wrapSubscriptionListenerMethods(subscription, state);
+}
+
+function wrapSubscriptionConfigurationSetters(
+  subscription: LightstreamerSubscriptionLike,
+  state: InstrumentationState
+): void {
+  for (const name of SUBSCRIPTION_CONFIGURATION_SETTERS) {
+    const original = (subscription as MethodOwner)[name];
+    if (typeof original !== "function") {
+      continue;
+    }
+    try {
+      (subscription as MethodOwner)[name] = function wrappedSubscriptionSetter(
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        try {
+          return Reflect.apply(original, this, args);
+        } finally {
+          if (isObject(this)) {
+            state.subscriptionMetadataCache.delete(this);
+          }
+          state.subscriptionMetadataCache.delete(subscription);
+        }
+      };
+    } catch (_error) {
+      // A non-writable setter stays page-owned; lifecycle refresh still applies.
+    }
+  }
 }
 
 function wrapClientListenerMethods(
@@ -3410,9 +3488,16 @@ function emitSubscriptionListenerCallback(
       : readSubscriptionCallbackPayload(callback, args);
   const itemRaw = isObject(callbackPayload.raw) ? callbackPayload.raw : {};
   const subscriptionMetadataErrors: string[] = [];
-  const subscriptionMetadata = readSubscriptionMetadata(
+  if (
+    callback === "onSubscription" ||
+    callback === "onUnsubscription" ||
+    callback === "onSubscriptionError"
+  ) {
+    state.subscriptionMetadataCache.delete(subscription);
+  }
+  const subscriptionMetadata = readCachedSubscriptionMetadata(
     subscription as LightstreamerSubscriptionLike,
-    [],
+    state,
     subscriptionMetadataErrors
   );
 
@@ -4720,9 +4805,52 @@ function readSubscriptionMetadata(
   constructorArgs: unknown[] = [],
   metadataErrors?: string[]
 ): CapturePayload {
+  const configuration = readSubscriptionConfiguration(subscription, constructorArgs, metadataErrors);
+  const runtime = readSubscriptionRuntimeState(subscription, metadataErrors);
+  const positions = readCommandPositions(subscription, configuration.mode, metadataErrors);
+  return composeSubscriptionMetadata(configuration, runtime, positions);
+}
+
+/**
+ * Per-update metadata keeps the same shape as readSubscriptionMetadata while
+ * reusing cached configuration and COMMAND positions. Activity state and the
+ * listener count stay live because they are cheap and can change at any time.
+ */
+function readCachedSubscriptionMetadata(
+  subscription: LightstreamerSubscriptionLike,
+  state: InstrumentationState,
+  metadataErrors: string[]
+): CapturePayload {
+  let cached = state.subscriptionMetadataCache.get(subscription);
+  if (!cached) {
+    const configurationErrors: string[] = [];
+    cached = {
+      configuration: readSubscriptionConfiguration(subscription, [], configurationErrors),
+      configurationErrors
+    };
+    state.subscriptionMetadataCache.set(subscription, cached);
+  }
+  metadataErrors.push(...cached.configurationErrors);
+  const runtime = readSubscriptionRuntimeState(subscription, metadataErrors);
+  if (!cached.commandPositions) {
+    const errors: string[] = [];
+    cached.commandPositions = {
+      values: readCommandPositions(subscription, cached.configuration.mode, errors),
+      errors
+    };
+  }
+  metadataErrors.push(...cached.commandPositions.errors);
+  return composeSubscriptionMetadata(cached.configuration, runtime, cached.commandPositions.values);
+}
+
+function readSubscriptionConfiguration(
+  subscription: LightstreamerSubscriptionLike,
+  constructorArgs: unknown[],
+  metadataErrors?: string[]
+): SubscriptionConfiguration {
   const itemDescriptor = constructorArgs[1];
   const fieldDescriptor = constructorArgs[2];
-  return compactJsonObject({
+  return {
     mode: readGetter(subscription, "getMode", metadataErrors) ?? toJsonValue(constructorArgs[0]),
     items:
       readGetter(subscription, "getItems", metadataErrors) ??
@@ -4745,9 +4873,6 @@ function readSubscriptionMetadata(
       "getRequestedMaxFrequency",
       metadataErrors
     ),
-    active: readGetter(subscription, "isActive", metadataErrors),
-    subscribed: readGetter(subscription, "isSubscribed", metadataErrors),
-    listenerCount: readListenerCount(subscription, metadataErrors),
     commandSecondLevelDataAdapter: readGetter(
       subscription,
       "getCommandSecondLevelDataAdapter",
@@ -4762,9 +4887,64 @@ function readSubscriptionMetadata(
       subscription,
       "getCommandSecondLevelFieldSchema",
       metadataErrors
-    ),
+    )
+  };
+}
+
+function readSubscriptionRuntimeState(
+  subscription: LightstreamerSubscriptionLike,
+  metadataErrors?: string[]
+): CapturePayload {
+  return compactJsonObject({
+    active: readGetter(subscription, "isActive", metadataErrors),
+    subscribed: readGetter(subscription, "isSubscribed", metadataErrors),
+    listenerCount: readListenerCount(subscription, metadataErrors)
+  });
+}
+
+/**
+ * The official getKeyPosition/getCommandPosition throw IllegalStateException
+ * outside COMMAND mode, so they are read only when the mode is COMMAND or
+ * cannot be determined.
+ */
+function readCommandPositions(
+  subscription: LightstreamerSubscriptionLike,
+  mode: CapturePayload[string] | undefined,
+  metadataErrors?: string[]
+): CapturePayload {
+  if (typeof mode === "string" && mode.trim() && mode.trim().toUpperCase() !== "COMMAND") {
+    return {};
+  }
+  return compactJsonObject({
     keyPosition: readGetter(subscription, "getKeyPosition", metadataErrors),
     commandPosition: readGetter(subscription, "getCommandPosition", metadataErrors)
+  });
+}
+
+function composeSubscriptionMetadata(
+  configuration: SubscriptionConfiguration,
+  runtime: CapturePayload,
+  positions: CapturePayload
+): CapturePayload {
+  return compactJsonObject({
+    mode: configuration.mode,
+    items: configuration.items,
+    itemGroup: configuration.itemGroup,
+    fields: configuration.fields,
+    fieldSchema: configuration.fieldSchema,
+    dataAdapter: configuration.dataAdapter,
+    selector: configuration.selector,
+    requestedSnapshot: configuration.requestedSnapshot,
+    requestedBufferSize: configuration.requestedBufferSize,
+    requestedMaxFrequency: configuration.requestedMaxFrequency,
+    active: runtime.active,
+    subscribed: runtime.subscribed,
+    listenerCount: runtime.listenerCount,
+    commandSecondLevelDataAdapter: configuration.commandSecondLevelDataAdapter,
+    commandSecondLevelFields: configuration.commandSecondLevelFields,
+    commandSecondLevelFieldSchema: configuration.commandSecondLevelFieldSchema,
+    keyPosition: positions.keyPosition,
+    commandPosition: positions.commandPosition
   });
 }
 

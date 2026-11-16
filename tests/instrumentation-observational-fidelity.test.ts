@@ -215,3 +215,79 @@ describe("constructor hook shape validation", () => {
     expect(host.__LSEW_PRIMARY_ACTIVE__).toBeFalsy();
   });
 });
+
+class CountingSubscription extends DispatchingSubscription {
+  readonly calls: Record<string, number> = {};
+  maxFrequency = "unlimited";
+  constructor(mode = "MERGE", items = ["orders"], fields = ["price"]) { super(mode, items, fields); }
+  private count(name: string) { this.calls[name] = (this.calls[name] ?? 0) + 1; }
+  override getMode() { this.count("getMode"); return super.getMode(); }
+  override getItems() { this.count("getItems"); return super.getItems(); }
+  override getFields() { this.count("getFields"); return super.getFields(); }
+  getRequestedMaxFrequency() { this.count("getRequestedMaxFrequency"); return this.maxFrequency; }
+  setRequestedMaxFrequency(value: string) { this.maxFrequency = value; }
+  isActive() { this.count("isActive"); return true; }
+  isSubscribed() { this.count("isSubscribed"); return true; }
+  getKeyPosition() {
+    this.count("getKeyPosition");
+    if (this.mode !== "COMMAND") throw new Error("IllegalStateException: not a COMMAND Subscription");
+    return 2;
+  }
+  getCommandPosition() {
+    this.count("getCommandPosition");
+    if (this.mode !== "COMMAND") throw new Error("IllegalStateException: not a COMMAND Subscription");
+    return 1;
+  }
+}
+
+describe("per-update subscription metadata", () => {
+  function setup(mode: string) {
+    const messages: CaptureMessage[] = [];
+    const host = { LightstreamerClient: OfficialShapedClient, Subscription: CountingSubscription };
+    installLightstreamerInstrumentation(host as unknown as LightstreamerHost, (message) => messages.push(message as CaptureMessage));
+    const client = new host.LightstreamerClient();
+    const subscription = new host.Subscription(mode);
+    client.subscribe(subscription);
+    subscription.addListener({ onItemUpdate: () => undefined });
+    const updates = () => messages.filter(({ kind }) => kind === "item-update");
+    return { subscription, updates };
+  }
+
+  it("reuses configuration across updates and never calls throwing COMMAND getters outside COMMAND mode", () => {
+    const { subscription, updates } = setup("MERGE");
+    const before = { ...subscription.calls };
+    for (let index = 0; index < 50; index++) subscription.dispatch(itemUpdate(String(index)));
+
+    expect(updates()).toHaveLength(50);
+    expect(subscription.calls.getKeyPosition ?? 0).toBe(0);
+    expect(subscription.calls.getCommandPosition ?? 0).toBe(0);
+    expect((subscription.calls.getMode ?? 0) - (before.getMode ?? 0)).toBeLessThanOrEqual(1);
+    expect((subscription.calls.getItems ?? 0) - (before.getItems ?? 0)).toBeLessThanOrEqual(1);
+    // Activity state stays live on every delivery.
+    expect((subscription.calls.isActive ?? 0) - (before.isActive ?? 0)).toBe(50);
+    expect(updates()[49]?.payload.subscription).toMatchObject({
+      id: "subscription-1",
+      mode: "MERGE",
+      items: ["orders"],
+      fields: ["price"],
+      active: true,
+      subscribed: true,
+      listenerCount: 1
+    });
+    expect(updates()[49]?.payload.subscription).not.toHaveProperty("keyPosition");
+    expect(updates()[49]?.payload.raw).not.toHaveProperty("subscriptionMetadataErrors");
+  });
+
+  it("reports cached COMMAND positions and refreshes configuration after a public setter", () => {
+    const { subscription, updates } = setup("COMMAND");
+    subscription.dispatch(itemUpdate("1"));
+    subscription.dispatch(itemUpdate("2"));
+    subscription.setRequestedMaxFrequency("5");
+    subscription.dispatch(itemUpdate("3"));
+
+    expect(updates().map(({ payload }) => (payload.subscription as Record<string, unknown>).requestedMaxFrequency))
+      .toEqual(["unlimited", "unlimited", "5"]);
+    expect(updates()[0]?.payload.subscription).toMatchObject({ keyPosition: 2, commandPosition: 1 });
+    expect(updates()[2]?.payload.subscription).toMatchObject({ keyPosition: 2, commandPosition: 1 });
+  });
+});

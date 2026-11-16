@@ -245,6 +245,8 @@ Captured subscription callbacks are listed in `CALLBACKS_TO_CAPTURE`:
 - `onUnsubscription`
 - `onSubscriptionError`
 
+Each captured callback carries the Subscription's metadata. Per-update callbacks reuse a per-Subscription cache of configuration getters (mode, items, fields, schema, adapters, selector, requested snapshot, buffer size, and frequency) and COMMAND key/command positions. The cache is discarded on `client.subscribe()`, `client.unsubscribe()`, `onSubscription`, `onUnsubscription`, `onSubscriptionError`, and any public configuration setter call. `isActive()`, `isSubscribed()`, and the listener count stay live for every update. `getKeyPosition()` and `getCommandPosition()` are read only for COMMAND or unknown modes, because the official client throws `IllegalStateException` otherwise.
+
 Callback names are mapped to capture kinds by `callbackToKind()`. For `onItemUpdate`, `readItemUpdatePayload()` extracts:
 
 - `item.name` from `getItemName()`
