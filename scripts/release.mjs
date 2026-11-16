@@ -84,8 +84,9 @@ function checkedSource(expected) {
   if (!shaPattern.test(expected??"") || expected!==head || (process.env.GITHUB_SHA && process.env.GITHUB_SHA!==head)) throw new Error("Expected source commit does not match checked-out HEAD and GITHUB_SHA.");
   return head;
 }
+/** @returns {{ chrome: boolean, firefox: boolean, npm: boolean }} */
 function intent() {
-  const result={};
+  const result={chrome:false,firefox:false,npm:false};
   for (const channel of ["chrome","firefox","npm"]) {
     const value=process.env[`RELEASE_PUBLISH_${channel.toUpperCase()}`]??"false";
     if (!["true","false"].includes(value)) throw new Error(`RELEASE_PUBLISH_${channel.toUpperCase()} must be true or false.`);

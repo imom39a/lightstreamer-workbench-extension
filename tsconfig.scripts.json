@@ -1,0 +1,23 @@
+// Type-checks the Node release, packaging and verification tooling in scripts/.
+// - DOM libs cover callbacks passed to Playwright/CDP `evaluate`, which run in the page.
+// - Node test contracts (*.test.mjs) use intentionally partial fakes and run under
+//   `npm run test:scripts`; they are not type-checked here.
+// - A few measurement/visual harnesses opt out with a file-level `@ts-nocheck`
+//   comment that explains why.
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.mjs", "scripts/**/*.d.mts"],
+  "exclude": ["scripts/**/*.test.mjs"]
+}

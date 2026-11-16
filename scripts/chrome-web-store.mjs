@@ -132,6 +132,9 @@ async function cancelSubmission(options) {
   console.log("Active submission canceled.");
 }
 
+/**
+ * @param {{ accessToken: string, body?: BodyInit, contentType?: string, method: string, url: string }} request
+ */
 async function apiRequest({ accessToken, body, contentType, method, url }) {
   const headers = {
     Authorization: `Bearer ${accessToken}`

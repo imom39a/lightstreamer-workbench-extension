@@ -312,6 +312,11 @@ function positiveInteger(name, fallback) {
   return value;
 }
 
+/**
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {{ allowFailure?: boolean, stdio?: import("node:child_process").StdioOptions, quietDryRun?: boolean, env?: NodeJS.ProcessEnv }} [options]
+ */
 function runProcess(
   executable,
   args,

@@ -72,9 +72,9 @@ try {
   });
 
   await new Promise((resolveServer) => {
-    server.listen(0, "127.0.0.1", resolveServer);
+    server.listen(0, "127.0.0.1", () => resolveServer(undefined));
   });
-  const { port } = server.address();
+  const { port } = /** @type {import("node:net").AddressInfo} */ (server.address());
 
   for (const screenshot of screenshots) {
     const url = `http://127.0.0.1:${port}/index.html?scene=${encodeURIComponent(screenshot.scene)}`;
@@ -538,11 +538,11 @@ async function runChromeScreenshot(url, outputPath) {
     context = await chromium.launchPersistentContext(profileDir, {
       executablePath: chromePath,
       headless: true,
-      args: chromeTestArguments({
+      args: [...chromeTestArguments({
         headless: true,
         disableNativeOcclusion: true,
         additional: ["--disable-gpu", "--force-device-scale-factor=1", "--run-all-compositor-stages-before-draw"]
-      })
+      })]
     });
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 800 });

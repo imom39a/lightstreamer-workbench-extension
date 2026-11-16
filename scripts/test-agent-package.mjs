@@ -1,3 +1,5 @@
+// @ts-nocheck -- installed-package harness asserts on untyped MCP SDK union
+// results; excluded from typecheck:scripts until those assertions are narrowed.
 import assert from "node:assert/strict";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";

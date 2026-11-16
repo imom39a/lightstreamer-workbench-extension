@@ -61,7 +61,8 @@
     "test:firefox": "node scripts/test-firefox.mjs",
     "release:package:firefox": "node scripts/package-extension.mjs --browser firefox",
     "release:source:firefox": "node scripts/package-firefox-source.mjs",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

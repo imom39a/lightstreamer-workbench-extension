@@ -36,7 +36,7 @@ for (const directory of ["reference", "current", "diff", "contact-sheets"]) {
 const browser = await chromium.launch({
   executablePath: await resolveChromeExecutable(),
   headless: true,
-  args: chromeTestArguments({ headless: true })
+  args: [...chromeTestArguments({ headless: true })]
 });
 const results = [];
 try {
