@@ -559,6 +559,13 @@ active owner, preserves unknown newer schemas, and never reads, exports,
 projects, or replays abandoned Evidence. A new Panel Session starts with a new
 empty Event History; there is no cross-session recovery.
 
+Because each journal database is named after its own random Panel Session
+identity, the journal schema has no in-place migrations: opening a database
+left at an older schema version deletes and recreates its stores (schema v8
+dropped the unused `searchTokens` projection index), and only v3 exact search
+rows are written or read. The ownership lock name keeps a fixed version so a
+schema bump never changes which lock the guarded sweep contends on.
+
 Each successful `clear()` is an exact History Interval cut. Already accepted
 work settles before the prior interval is erased; post-cut offers belong only to
 the new interval. A failed Clear leaves the proven prior interval active and

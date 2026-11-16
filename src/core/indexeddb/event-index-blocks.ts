@@ -39,13 +39,13 @@ export type SearchIndexRowsProjection = SearchProjection & {
 
 export type SearchIndexRowsFacetColumn = {
   facet: string;
-  values: Array<TypedFacetValue | SearchIndexRowsFacetValueV2>;
+  values: SearchIndexRowsFacetValueV2[];
   /** Zero means absent; positive values address the one-based dictionary. */
   codes: Uint16Array;
 };
 
-/** Version two derives facet and identity from the containing column. A label
- * is stored only when it differs from the displayed value. */
+/** Compact facet values derive facet and identity from the containing column.
+ * A label is stored only when it differs from the displayed value. */
 export type SearchIndexRowsFacetValueV2 = Readonly<{ type: string; value: string; label?: string }>;
 
 /** Exact search-only rows live at the negative key beside the positive Bloom
@@ -55,13 +55,13 @@ export type SearchIndexRowsBlock = {
   intervalId: string;
   firstSequence: number;
   lastSequence: number;
-  version: 1 | 2 | 3;
-  /** Present in v1/v2 only. */
-  texts?: string[];
-  /** V3 stores each normalized whitespace-delimited token once per block. */
-  textDictionary?: string[];
-  textOffsets?: Uint32Array;
-  textCodes?: Uint16Array | Uint32Array;
+  /** Only v3 rows are written; each Panel Session creates its own database,
+   * so earlier row formats are never read. */
+  version: 3;
+  /** Each normalized whitespace-delimited token is stored once per block. */
+  textDictionary: string[];
+  textOffsets: Uint32Array;
+  textCodes: Uint16Array | Uint32Array;
   eventIds: string[];
   timestamps: Float64Array;
   /** Checkpoints are zero; observable Evidence rows are one. */
@@ -326,65 +326,6 @@ function rowsFacetCodeBytesChecksum(hash: number, codes: Uint16Array, maximumCod
   return hash;
 }
 
-function rowsChecksumV1(block: Omit<SearchIndexRowsBlock, "checksum">): number {
-  let hash = rowsTextChecksum(0x811c9dc5, String(block.sequence));
-  hash = rowsTextChecksum(hash, block.intervalId);
-  hash = rowsTextChecksum(hash, String(block.firstSequence));
-  hash = rowsTextChecksum(hash, String(block.lastSequence));
-  hash = Math.imul(hash ^ block.version, 0x01000193);
-  const texts = block.texts!;
-  hash = Math.imul(hash ^ texts.length, 0x01000193);
-  for (const value of texts) hash = rowsTextChecksum(hash, value);
-  hash = Math.imul(hash ^ block.eventIds.length, 0x01000193);
-  for (const value of block.eventIds) hash = rowsTextChecksum(hash, value);
-  hash = rowsBytesChecksum(hash, block.timestamps);
-  hash = rowsBytesChecksum(hash, block.evidence);
-  hash = Math.imul(hash ^ block.facets.length, 0x01000193);
-  for (const column of block.facets) {
-    hash = rowsTextChecksum(hash, column.facet);
-    hash = Math.imul(hash ^ column.values.length, 0x01000193);
-    for (const inputValue of column.values) {
-      const value = inputValue as TypedFacetValue;
-      hash = rowsTextChecksum(hash, value.facet);
-      hash = rowsTextChecksum(hash, value.type);
-      hash = rowsTextChecksum(hash, value.value);
-      hash = rowsTextChecksum(hash, value.label);
-      hash = rowsTextChecksum(hash, value.identity);
-    }
-    hash = rowsBytesChecksum(hash, column.codes);
-  }
-  return hash >>> 0;
-}
-
-function rowsChecksumV2(block: Omit<SearchIndexRowsBlock, "checksum">): number {
-  let hash = rowsTextChecksum(0x811c9dc5, String(block.sequence));
-  hash = rowsTextChecksum(hash, block.intervalId);
-  hash = rowsTextChecksum(hash, String(block.firstSequence));
-  hash = rowsTextChecksum(hash, String(block.lastSequence));
-  hash = Math.imul(hash ^ block.version, 0x01000193);
-  const texts = block.texts!;
-  hash = Math.imul(hash ^ texts.length, 0x01000193);
-  for (const value of texts) hash = rowsTextChecksum(hash, value);
-  hash = Math.imul(hash ^ block.eventIds.length, 0x01000193);
-  for (const value of block.eventIds) hash = rowsTextChecksum(hash, value);
-  hash = rowsBytesChecksum(hash, block.timestamps);
-  hash = rowsBytesChecksum(hash, block.evidence);
-  hash = Math.imul(hash ^ block.facets.length, 0x01000193);
-  for (const column of block.facets) {
-    hash = rowsTextChecksum(hash, column.facet);
-    hash = Math.imul(hash ^ column.values.length, 0x01000193);
-    for (const inputValue of column.values) {
-      const value = inputValue as SearchIndexRowsFacetValueV2;
-      hash = rowsTextChecksum(hash, value.type);
-      hash = rowsTextChecksum(hash, value.value);
-      hash = Math.imul(hash ^ (value.label === undefined ? 0 : 1), 0x01000193);
-      if (value.label !== undefined) hash = rowsTextChecksum(hash, value.label);
-    }
-    hash = rowsBytesChecksum(hash, column.codes);
-  }
-  return hash >>> 0;
-}
-
 function rowsChecksumV3(block: Omit<SearchIndexRowsBlock, "checksum">): number {
   let hash = rowsTextChecksum(0x811c9dc5, String(block.sequence));
   hash = rowsTextChecksum(hash, block.intervalId);
@@ -424,20 +365,15 @@ function rowsChecksumV3(block: Omit<SearchIndexRowsBlock, "checksum">): number {
 }
 
 export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
-  const version = input && typeof input === "object" ? Reflect.get(input, "version") : undefined;
-  const textKeys = version === 3 ? ["textDictionary", "textOffsets", "textCodes"] : ["texts"];
-  exactKeys(input, ["sequence", "intervalId", "firstSequence", "lastSequence", "version", ...textKeys, "eventIds", "timestamps", "evidence", "facets", "checksum"]);
+  exactKeys(input, ["sequence", "intervalId", "firstSequence", "lastSequence", "version", "textDictionary", "textOffsets", "textCodes", "eventIds", "timestamps", "evidence", "facets", "checksum"]);
   const block = input as SearchIndexRowsBlock;
   const length = block.lastSequence - block.firstSequence + 1;
-  const validTextRows = block.version === 3
-    ? Array.isArray(block.textDictionary)
-      && typedArray(block.textOffsets, "Uint32Array", length + 1)
-      && ArrayBuffer.isView(block.textCodes)
-      && (Object.prototype.toString.call(block.textCodes) === "[object Uint16Array]" || Object.prototype.toString.call(block.textCodes) === "[object Uint32Array]")
-      && block.textOffsets![0] === 0 && block.textOffsets![length] === block.textCodes!.length
-    : (block.version === 1 || block.version === 2)
-      && Array.isArray(block.texts) && block.texts.length === length && block.texts.every(value => typeof value === "string");
-  if ((block.version !== 1 && block.version !== 2 && block.version !== 3) || typeof block.intervalId !== "string" || !block.intervalId
+  const validTextRows = Array.isArray(block.textDictionary)
+    && typedArray(block.textOffsets, "Uint32Array", length + 1)
+    && ArrayBuffer.isView(block.textCodes)
+    && (Object.prototype.toString.call(block.textCodes) === "[object Uint16Array]" || Object.prototype.toString.call(block.textCodes) === "[object Uint32Array]")
+    && block.textOffsets[0] === 0 && block.textOffsets[length] === block.textCodes.length;
+  if (block.version !== 3 || typeof block.intervalId !== "string" || !block.intervalId
     || !Number.isSafeInteger(block.sequence) || block.sequence >= 0
     || indexBlockStart(block.firstSequence) !== -block.sequence || indexBlockStart(block.lastSequence) !== -block.sequence
     || !Number.isSafeInteger(length) || length < 1 || length > EVENT_INDEX_BLOCK_SIZE
@@ -445,16 +381,13 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
     || !Array.isArray(block.eventIds) || block.eventIds.length !== length || block.eventIds.some(value => typeof value !== "string" || !value)
     || !typedArray(block.timestamps, "Float64Array", length) || !typedArray(block.evidence, "Uint8Array", length)
     || !Array.isArray(block.facets)) throw new Error("Corrupt exact search index block.");
-  if (block.version === 3) {
-    const offsets = block.textOffsets!;
-    for (let row = 0; row < length; row++) {
-      if (offsets[row + 1]! < offsets[row]!
-        || (block.evidence[row] === 0 && offsets[row + 1] !== offsets[row])) throw new Error("Corrupt exact search token offsets.");
-    }
+  const offsets = block.textOffsets;
+  for (let row = 0; row < length; row++) {
+    if (offsets[row + 1]! < offsets[row]!
+      || (block.evidence[row] === 0 && offsets[row + 1] !== offsets[row])) throw new Error("Corrupt exact search token offsets.");
   }
   for (let row = 0; row < length; row++) {
-    if (!Number.isFinite(block.timestamps[row]) || (block.evidence[row] !== 0 && block.evidence[row] !== 1)
-      || (block.evidence[row] === 0 && block.version !== 3 && block.texts![row] !== "")) throw new Error("Corrupt exact search row.");
+    if (!Number.isFinite(block.timestamps[row]) || (block.evidence[row] !== 0 && block.evidence[row] !== 1)) throw new Error("Corrupt exact search row.");
   }
   const facets = new Set<string>();
   for (const column of block.facets) {
@@ -463,33 +396,22 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
       || !Array.isArray(column.values) || column.values.length < 1 || column.values.length > length
       || !typedArray(column.codes, "Uint16Array", length)) throw new Error("Corrupt exact search facet column.");
     facets.add(column.facet);
-    const identities = block.version === 1 ? new Set<string>() : undefined;
-    const valuesByType = block.version === 1 ? undefined : new Map<string, Set<string>>();
+    const valuesByType = new Map<string, Set<string>>();
     for (const inputValue of column.values) {
-      if (block.version === 1) {
-        const identity = readRowsFacetValue(inputValue, column.facet).identity;
-        if (identities!.has(identity)) throw new Error("Duplicate exact search facet value.");
-        identities!.add(identity);
-      } else {
-        exactKeys(inputValue, inputValue && typeof inputValue === "object" && "label" in inputValue
-          ? ["type", "value", "label"] : ["type", "value"]);
-        const value = inputValue as SearchIndexRowsFacetValueV2;
-        if (typeof value.type !== "string" || typeof value.value !== "string"
-          || ("label" in value && (typeof value.label !== "string" || value.label === value.value))) {
-          throw new Error("Corrupt compact exact search facet value.");
-        }
-        let values = valuesByType!.get(value.type);
-        if (!values) { values = new Set<string>(); valuesByType!.set(value.type, values); }
-        if (values.has(value.value)) throw new Error("Duplicate exact search facet value.");
-        values.add(value.value);
+      exactKeys(inputValue, inputValue && typeof inputValue === "object" && "label" in inputValue
+        ? ["type", "value", "label"] : ["type", "value"]);
+      const value = inputValue as SearchIndexRowsFacetValueV2;
+      if (typeof value.type !== "string" || typeof value.value !== "string"
+        || ("label" in value && (typeof value.label !== "string" || value.label === value.value))) {
+        throw new Error("Corrupt compact exact search facet value.");
       }
-    }
-    if (block.version !== 3) {
-      for (const code of column.codes) if (code > column.values.length) throw new Error("Corrupt exact search facet code.");
+      let values = valuesByType.get(value.type);
+      if (!values) { values = new Set<string>(); valuesByType.set(value.type, values); }
+      if (values.has(value.value)) throw new Error("Duplicate exact search facet value.");
+      values.add(value.value);
     }
   }
-  const expectedChecksum = block.version === 1 ? rowsChecksumV1(block)
-    : block.version === 2 ? rowsChecksumV2(block) : rowsChecksumV3(block);
+  const expectedChecksum = rowsChecksumV3(block);
   if (!Number.isInteger(block.checksum) || block.checksum < 0 || block.checksum > 0xffff_ffff || block.checksum !== expectedChecksum) {
     throw new Error("Corrupt exact search index checksum.");
   }
@@ -499,10 +421,9 @@ export function readSearchIndexRowsBlock(input: unknown): SearchIndexRowsBlock {
 /** Reconstruct a row's canonical normalized text from its block-local tokens. */
 export function searchIndexRowText(block: SearchIndexRowsBlock, rowIndex: number): string {
   if (!Number.isSafeInteger(rowIndex) || rowIndex < 0 || rowIndex >= block.eventIds.length) throw new Error("Invalid exact search row offset.");
-  if (block.version !== 3) return block.texts![rowIndex]!;
-  const offsets = block.textOffsets!;
-  const dictionary = block.textDictionary!;
-  const codes = block.textCodes!;
+  const offsets = block.textOffsets;
+  const dictionary = block.textDictionary;
+  const codes = block.textCodes;
   const tokens: string[] = [];
   for (let offset = offsets[rowIndex]!; offset < offsets[rowIndex + 1]!; offset++) tokens.push(dictionary[codes[offset]!]!);
   return tokens.join(" ");
@@ -516,9 +437,6 @@ export function searchIndexRowText(block: SearchIndexRowsBlock, rowIndex: number
 export function searchIndexRowTextMatcher(block: SearchIndexRowsBlock, query: string, normalizeQuery = true): (rowIndex: number) => boolean {
   const needle = normalizeQuery ? normalizeEvidenceSearchText(query) : query;
   if (!needle) return () => true;
-  if (block.version !== 3) {
-    return rowIndex => searchIndexRowText(block, rowIndex).includes(needle);
-  }
   if (!needle.includes(" ")) {
     const dictionary = block.textDictionary!;
     const matchesToken = new Uint8Array(dictionary.length);
@@ -575,9 +493,7 @@ export function searchIndexRowFacets(block: SearchIndexRowsBlock, rowIndex: numb
     const code = column.codes[rowIndex]!;
     if (code !== 0) {
       const value = column.values[code - 1]!;
-      result[column.facet] = block.version === 1
-        ? value as TypedFacetValue
-        : typedFacetValue(column.facet, value.type, value.value, value.label ?? value.value);
+      result[column.facet] = typedFacetValue(column.facet, value.type, value.value, value.label ?? value.value);
     }
   }
   return result;
@@ -585,9 +501,7 @@ export function searchIndexRowFacets(block: SearchIndexRowsBlock, rowIndex: numb
 
 /** Reconstruct typed identities for block-level predicate evaluation. */
 export function searchIndexRowFacetValues(block: SearchIndexRowsBlock, column: SearchIndexRowsFacetColumn): readonly TypedFacetValue[] {
-  return block.version === 1
-    ? column.values as TypedFacetValue[]
-    : column.values.map(value => typedFacetValue(column.facet, value.type, value.value, value.label ?? value.value));
+  return column.values.map(value => typedFacetValue(column.facet, value.type, value.value, value.label ?? value.value));
 }
 
 function buildRowsBlock(projections: readonly SearchIndexRowsProjection[]): SearchIndexRowsBlock {

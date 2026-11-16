@@ -490,7 +490,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await reopened.close();
   });
 
-  it("backfills projections only while upgrading an old-schema journal", async () => {
+  it("starts empty instead of backfilling projections from an old-schema journal", async () => {
     const panelSessionId = `filter-impl-08-old-schema-migration-${Date.now()}`;
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const name = authoritativeEventDatabaseName(panelSessionId);
@@ -524,8 +524,12 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     database.close();
 
     const durable = await createIndexedDbEventHistory({ panelSessionId });
+    expect(durable.storage.mode).toBe("indexeddb");
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
-    expect(result).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "legacy" } }] } } });
+    expect(result).toMatchObject({ ok: true, value: { page: { evidence: [] }, totals: { matching: 0 } } });
+    await durable.offer(event("fresh", 10_001, "alpha")).settled;
+    const fresh = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(fresh).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "fresh", sequence: 1 } }] } } });
     await durable.close();
   });
 

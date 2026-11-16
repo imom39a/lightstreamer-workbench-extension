@@ -17,9 +17,9 @@ import {
 } from "./event-history-capacity";
 import {
   AUTHORITATIVE_EVENT_CONTROL_KEY,
-  AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY,
   AUTHORITATIVE_EVENT_STORE_NAMES,
   AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+  AUTHORITATIVE_EVENT_OWNERSHIP_LOCK_VERSION,
   authoritativeEventDatabaseRuntime,
   authoritativeEventDatabaseName,
   AUTHORITATIVE_EVENT_DB_NAME_PREFIX,
@@ -147,7 +147,6 @@ type QueryProjection = {
   timestamp: number;
   summary: string;
   searchText: string;
-  searchTokens: string[];
   facets: Readonly<Record<string, unknown>>;
 };
 
@@ -383,7 +382,7 @@ export async function createIndexedDbEventHistory(
   return history;
 }
 
-const AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}`;
+const AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_OWNERSHIP_LOCK_VERSION}`;
 const AUTHORITATIVE_EVENT_DATABASE_LEGACY_NAME_RE = /^lsew-history-(.+)$/;
 
 function authoritativeOwnershipLockName(databaseName: string): string {
@@ -2318,7 +2317,7 @@ async function validateExactSearchRows(store: IDBObjectStore, control: ControlRe
       const cursor = request.result;
       if (!cursor) { resolve(); return; }
       // Test runtimes may not expose IDBKeyRange, in which case the helper
-      // returns no range and this cursor also sees the migration marker and
+      // returns no range and this cursor also sees the positive-key
       // Bloom blocks. Exact rows occupy only negative numeric keys.
       if (typeof cursor.key !== "number" || cursor.key >= 0) {
         cursor.continue();
@@ -2339,12 +2338,6 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
   const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readonly");
   try {
     const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
-    const migration = await requestToPromise<unknown>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).get(AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY), "checking query index migration");
-    if (migration !== undefined) {
-      assertExactKeys(migration as object, ["sequence", "migrationVersion"]);
-      if ((migration as { sequence: unknown }).sequence !== AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY
-        || (migration as { migrationVersion: unknown }).migrationVersion !== AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) throw new Error("Invalid query index migration marker.");
-    }
     const durableRetentionEntries = await validateJournalRecords(
       panelSessionId,
       control,
@@ -2354,9 +2347,6 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     );
     await validateExactSearchRows(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks), control);
     await transactionDone(transaction, "loading Event History");
-    if (database.queryProjectionMigrationRequired || migration !== undefined) {
-      await ensureQueryProjections(database, control, panelSessionId);
-    }
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
       await writeControl(database, createControl(panelSessionId, interval, "RUNNING", null, 1, null, null, 0, 0, 0));
@@ -2408,82 +2398,6 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     };
   } catch (error) {
     try { transaction.abort(); } catch { /* the transaction may already be complete */ }
-    throw error;
-  }
-}
-
-async function ensureQueryProjections(database: AuthoritativeEventDatabase, control: ControlRecord | undefined, panelSessionId: string): Promise<void> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections, AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks], "readwrite");
-  const completed = transactionDone(transaction, `migrating query projections for ${panelSessionId}`, AUTHORITATIVE_EVENT_HISTORY_COMMIT_TRANSACTION_TIMEOUT_MS);
-  void completed.catch(() => undefined);
-  try {
-    if (!control || control.retainedCount === 0) {
-      transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks).delete(AUTHORITATIVE_EVENT_QUERY_MIGRATION_KEY);
-      await completed;
-      return;
-    }
-    const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
-    const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
-    await new Promise<void>((resolve, reject) => {
-      const request = projections.openCursor();
-      request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor) { resolve(); return; }
-        try {
-          const projection = cursor.value as QueryProjection;
-          if (!Array.isArray(projection.searchTokens) || projection.searchTokens.length > 0) {
-            projections.put({ ...projection, searchTokens: [] });
-          }
-          cursor.continue();
-        } catch (error) { reject(error); }
-      };
-    });
-    const evidenceCount = await requestToPromise<number>(evidence.count(), "checking query projection migration state");
-    const projectionCount = await requestToPromise<number>(projections.count(), "checking query projection migration state");
-    if (projectionCount < evidenceCount) {
-      await new Promise<void>((resolve, reject) => {
-        const request = evidence.openCursor();
-        request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
-        request.onsuccess = () => {
-          const cursor = request.result;
-          if (!cursor) { resolve(); return; }
-          try {
-            const record = cursor.value as EvidenceRecord;
-            const get = projections.get(record.sequence);
-            get.onerror = () => reject(get.error ?? new Error("Query projection migration failed."));
-            get.onsuccess = () => {
-              try {
-                if (get.result === undefined) projections.put(queryProjection(deserializeJournalEvidenceCandidate(record.replayPayload), record.intervalId, record.sequence));
-                cursor.continue();
-              } catch (error) { reject(error); }
-            };
-          } catch (error) { reject(error); }
-        };
-      });
-    }
-    const searchBlocks = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.searchBlocks);
-    searchBlocks.clear();
-    await new Promise<void>((resolve, reject) => {
-      let pending: QueryProjection[] = [];
-      const flush = () => { appendSearchIndexBlocks(searchBlocks, pending); pending = []; };
-      const request = projections.openCursor();
-      request.onerror = () => reject(request.error ?? new Error("Find block migration failed."));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        try {
-          if (!cursor) { flush(); resolve(); return; }
-          const projection = cursor.value as QueryProjection;
-          if (pending.length && indexBlockStart(pending[0]!.sequence) !== indexBlockStart(projection.sequence)) flush();
-          pending.push(projection);
-          cursor.continue();
-        } catch (error) { reject(error); }
-      };
-    });
-    await completed;
-  } catch (error) {
-    try { transaction.abort(); } catch { /* Migration may already have aborted. */ }
-    await completed.catch(() => undefined);
     throw error;
   }
 }
@@ -3294,11 +3208,10 @@ function findRecordsWithinFilter(
 }
 
 function validateQueryProjection(projection: QueryProjection, intervalId: string, expectedSequence?: number): void {
-  assertExactKeys(projection, ["eventId", "facets", "intervalId", "searchText", "searchTokens", "sequence", "summary", "timestamp"]);
+  assertExactKeys(projection, ["eventId", "facets", "intervalId", "searchText", "sequence", "summary", "timestamp"]);
   if (projection.intervalId !== intervalId || typeof projection.eventId !== "string" || projection.eventId.length === 0
     || !Number.isSafeInteger(projection.sequence) || projection.sequence < 1 || (expectedSequence !== undefined && projection.sequence !== expectedSequence) || !Number.isFinite(projection.timestamp)
-    || typeof projection.summary !== "string" || typeof projection.searchText !== "string" || !Array.isArray(projection.searchTokens)
-    || projection.searchTokens.some((token) => typeof token !== "string" || token.length === 0)
+    || typeof projection.summary !== "string" || typeof projection.searchText !== "string"
     || projection.facets === null || typeof projection.facets !== "object" || Array.isArray(projection.facets)
     || Object.entries(projection.facets).some(([key, value]) => key.length === 0 || !isValidProjectionValue(value))) {
     throw new Error("The query projection is missing or corrupt.");
@@ -4149,7 +4062,7 @@ function queryProjection(candidate: EvidenceCandidate, intervalId: string, seque
   const identity: EvidenceIdentity = { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence, eventId: candidate.id };
   if (candidate.kind === "topology-checkpoint") {
     const searchText = journalCandidateSearchText(candidate);
-    return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText, searchTokens: [], facets: {} };
+    return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText, facets: {} };
   }
   const context = { identity, pageId: intervalId, listenerOwner: identity.ownerId, summary: candidate.kind };
   return queryProjectionWithExtraction(candidate, intervalId, sequence, context, extractEvidenceFacets(candidate, context));
@@ -4168,7 +4081,6 @@ function queryProjectionWithExtraction(
     timestamp: candidate.timestamp,
     summary: candidate.kind,
     searchText,
-    searchTokens: [],
     facets: extracted.facets
   };
 }
@@ -4557,12 +4469,6 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
       if (count > 0 || postingCount > 0 || aggregateCount > 0) throw new Error("Evidence or derived facet residue exists without a history control record.");
       return [];
     });
-  }
-  if ((control as { recordVersion?: unknown }).recordVersion === 1) {
-    throw new Error("The Event History recordVersion 1 is legacy and is not recovered across Panel Sessions.");
-  }
-  if ((control as { recordVersion?: unknown }).recordVersion === 2) {
-    throw new Error("The Event History recordVersion 2 lacks durable terminal state and is not recovered across Panel Sessions.");
   }
   assertExactKeys(control, ["accountedBytes", "committedEvidenceBoundary", "interval", "key", "nextSequence", "panelSessionId", "phase", "recordVersion", "retainedCount", "retainedRange", "replayPayloadBytes", "schemaVersion", "terminal"]);
   if (control.key !== AUTHORITATIVE_EVENT_CONTROL_KEY || control.schemaVersion !== 2 || control.recordVersion !== 3 || control.panelSessionId !== panelSessionId) {

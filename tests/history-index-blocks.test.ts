@@ -221,7 +221,7 @@ describe("bounded history indexes", () => {
     expect(() => groupSearchRowsProjections([exactProjection(1, { timestamp: Number.NaN })])).toThrow();
   });
 
-  it("reads legacy checksums unchanged and writes version-three text with compact facet dictionaries", () => {
+  it("writes version-three text with compact facet dictionaries and rejects pre-v3 row formats", () => {
     const block = groupSearchRowsProjections([exactProjection(1, {
       searchText: " AB😀C café\t東京 ", facets: { key: typedFacetValue("key", "string", "7", "Seven") }
     })])[0]!;
@@ -243,28 +243,26 @@ describe("bounded history indexes", () => {
     offsetViewBlock.facets[0]!.codes = nonzeroOffsetView(block.facets[0]!.codes) as Uint16Array;
     expect(readSearchIndexRowsBlock(offsetViewBlock).checksum).toBe(1_469_945_097);
     expect(block.facets[0]!.values).toEqual([{ type: "string", value: "7", label: "Seven" }]);
-    const legacyV1: SearchIndexRowsBlock = {
+    const versionThree = readSearchIndexRowsBlock(structuredClone(block));
+    expect(searchIndexRowText(versionThree, 0)).toBe(normalizeEvidenceSearchText(" AB😀C café\t東京 "));
+    expect(searchIndexRowTextMatcher(versionThree, "C CAFÉ 東")(0)).toBe(true);
+    expect(searchIndexRowFacets(versionThree, 0)).toEqual({ key: typedFacetValue("key", "string", "7", "Seven") });
+    // Golden v1/v2 rows from earlier writers. Every Panel Session creates its
+    // own database, so these formats are never read and are rejected.
+    const legacyV1 = {
       sequence: block.sequence, intervalId: block.intervalId, firstSequence: block.firstSequence, lastSequence: block.lastSequence,
       version: 1, texts: [normalizeEvidenceSearchText(" AB😀C café\t東京 ")], eventIds: [...block.eventIds],
       timestamps: block.timestamps.slice(), evidence: block.evidence.slice(),
       facets: [{ facet: "key", values: [typedFacetValue("key", "string", "7", "Seven")], codes: block.facets[0]!.codes.slice() }],
       checksum: 414_961_847
     };
-    const roundTripped = readSearchIndexRowsBlock(structuredClone(legacyV1));
-    expect(legacyV1.checksum).toBe(414_961_847);
-    expect(searchIndexRowText(roundTripped, 0)).toBe(normalizeEvidenceSearchText(" AB😀C café\t東京 "));
-    expect(searchIndexRowFacets(roundTripped, 0)).toEqual({ key: typedFacetValue("key", "string", "7", "Seven") });
-    // Golden output from the v2 writer at 89078cf; do not recompute its checksum
-    // with the current implementation when checking reader compatibility.
-    const legacyV2: SearchIndexRowsBlock = {
+    expect(() => readSearchIndexRowsBlock(structuredClone(legacyV1))).toThrow();
+    const legacyV2 = {
       ...legacyV1, version: 2,
       facets: [{ facet: "key", values: [{ type: "string", value: "7", label: "Seven" }], codes: new Uint16Array([1]) }],
       checksum: 2_489_303_862
     };
-    const versionTwo = readSearchIndexRowsBlock(structuredClone(legacyV2));
-    expect(searchIndexRowText(versionTwo, 0)).toBe("ab😀c café 東京");
-    expect(searchIndexRowTextMatcher(versionTwo, "C CAFÉ 東")(0)).toBe(true);
-    expect(searchIndexRowFacets(versionTwo, 0)).toEqual({ key: typedFacetValue("key", "string", "7", "Seven") });
+    expect(() => readSearchIndexRowsBlock(structuredClone(legacyV2))).toThrow();
   });
 
   it("keeps legacy Bloom-only input valid and exposes partial exact coverage after a legacy append", async () => {
