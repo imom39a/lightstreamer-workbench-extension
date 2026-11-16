@@ -65,10 +65,10 @@ try {
   bundleSha256 = createHash("sha256").update(bundledSource).digest("hex");
   await writeFile(join(output, "compiled-harness.js"), bundledSource);
   await writeFile(join(output, "bundle-provenance.json"), `${JSON.stringify({ ...sourceAtBundle, bundleSha256 }, null, 2)}\n`);
-  await new Promise((accept, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", accept); });
+  await new Promise((accept, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => accept(undefined)); });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Search performance server did not expose a TCP address.");
-  browser = await chromium.launch({ executablePath, headless: true, args: chromeTestArguments({ headless: true, disableNativeOcclusion: true }) });
+  browser = await chromium.launch({ executablePath, headless: true, args: [...chromeTestArguments({ headless: true, disableNativeOcclusion: true })] });
   for (const adapter of adapters) {
     const context = await browser.newContext();
     const page = await context.newPage();

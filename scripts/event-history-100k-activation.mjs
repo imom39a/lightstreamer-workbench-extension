@@ -72,7 +72,7 @@ try {
   await mkdir(outputDir, { recursive: true });
   await new Promise((resolvePromise, rejectPromise) => {
     server.once("error", rejectPromise);
-    server.listen(0, "127.0.0.1", resolvePromise);
+    server.listen(0, "127.0.0.1", () => resolvePromise(undefined));
   });
   address = server.address();
   if (!address || typeof address === "string") throw new Error("Activation server did not expose a TCP address.");
@@ -97,7 +97,7 @@ try {
           colorScheme: sample % 2 === 0 ? "light" : "dark",
           // launchPersistentContext(profile) owns the unique user-data-dir;
           // Playwright rejects a duplicate --user-data-dir in args.
-          args: chromeTestArguments({
+          args: [...chromeTestArguments({
             headless,
             visibleCft151Override,
             purpose: VISIBLE_CFT151_OVERRIDE_PURPOSE,
@@ -108,7 +108,7 @@ try {
               `--disable-extensions-except=${extensionPath}`,
               `--load-extension=${extensionPath}`
             ]
-          })
+          })]
         });
         const page = context.pages()[0] ?? await context.newPage();
         page.setDefaultTimeout(Math.min(1_800_000, remainingMs()));
@@ -121,12 +121,12 @@ try {
           `${workload}/${sample} page load`
         );
         await runWithinDeadline(
-          () => page.waitForFunction(() => Boolean(window.__LSEW_HISTORY_100K_ACTIVATION__)),
+          () => page.waitForFunction(() => Boolean(/** @type {any} */ (window).__LSEW_HISTORY_100K_ACTIVATION__)),
           `${workload}/${sample} harness readiness`
         );
         const cell = await runWithinDeadline(
           () => page.evaluate(async ({ workload: selectedWorkload, sample: selectedSample }) => {
-            return window.__LSEW_HISTORY_100K_ACTIVATION__?.run(selectedWorkload, selectedSample);
+            return /** @type {any} */ (window).__LSEW_HISTORY_100K_ACTIVATION__?.run(selectedWorkload, selectedSample);
           }, { workload, sample }),
           `${workload}/${sample} activation`
         );

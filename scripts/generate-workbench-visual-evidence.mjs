@@ -83,7 +83,7 @@ try {
   browser = await chromium.launch({
     executablePath: await resolveChromeExecutable(),
     headless: true,
-    args: chromeTestArguments({ headless: true, disableNativeOcclusion: true })
+    args: [...chromeTestArguments({ headless: true, disableNativeOcclusion: true })]
   });
   const results = [];
   for (const scenario of scenarios) {
@@ -625,7 +625,7 @@ async function captureProduction(runningBrowser, scenario, productionOverride = 
     if (scenario.id.startsWith("search-") || scenario.production.setup === "retained-find" || scenario.production.setup.startsWith("scenario") || scenario.production.setup.startsWith("activity") || isLocalInjectionSetup(scenario.production.setup) || isServerInjectionScenario(scenario.production.scenario) || isReadabilitySetup(scenario.production.setup) || isIntegratedDiagnosticSetup(scenario.production.setup) || isStorageHeadroomSetup(scenario.production.setup) || isHistoryFooterSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
-        const result = await window.axe.run(document, { resultTypes: ["violations"] });
+        const result = await /** @type {any} */ (window).axe.run(document, { resultTypes: ["violations"] });
         return result.violations
           .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
           .map((violation) => ({ id: violation.id, impact: violation.impact, help: violation.help, targets: violation.nodes.map(({ target }) => target) }));
@@ -1051,7 +1051,7 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
       await search.fill("no-retained-capture-can-match-this");
       await captures.getByText("No captured updates match", { exact: false }).waitFor();
     } else if (setup === "scenario-capture-read-failure") {
-      await page.evaluate(() => window.__closeWorkbenchScenarioHistory());
+      await page.evaluate(() => /** @type {any} */ (window).__closeWorkbenchScenarioHistory());
       await captures.getByRole("button", { name: "Refresh captures", exact: true }).click();
       await captures.getByRole("alert").waitFor();
     } else {
@@ -1098,8 +1098,8 @@ async function prepareProductionState(page, setup, storageMode = "scenario") {
   }
   if (setup === "scenario-hidden-pause") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-    await page.evaluate(() => window.__setWorkbenchVisible(false));
-    await page.evaluate(() => window.__setWorkbenchVisible(true));
+    await page.evaluate(() => /** @type {any} */ (window).__setWorkbenchVisible(false));
+    await page.evaluate(() => /** @type {any} */ (window).__setWorkbenchVisible(true));
     await scenario.getByRole("button", { name: "Resume" }).waitFor();
     return;
   }

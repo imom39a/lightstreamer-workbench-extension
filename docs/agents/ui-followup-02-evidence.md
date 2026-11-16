@@ -91,7 +91,7 @@ is evidence for review, not approval to rewrite tracked baselines.
 - `npm run build` — PASS; MV3 CSP and shipped extension assets verified.
 - `npm test` — PASS; 107 ordinary files / 1,307 tests, then 13 serialized
   IndexedDB files / 219 passed and 1 skipped.
-- `npx vitest run tests/workbench-visual-evidence-runner.test.ts tests/history-100k-06-storage-headroom.test.ts --no-file-parallelism --maxWorkers=1` — PASS; 14 tests.
+- `npx vitest run tests/workbench-visual-evidence-runner.test.ts tests/event-history-storage-headroom.test.ts --no-file-parallelism --maxWorkers=1` — PASS; 14 tests.
 - `CI=1 npm run test:ui -- tests/ui/workbench.spec.ts --grep 'low storage headroom|mixed-size footer'` — PASS; 2 tests, headless.
 - `npm run test:ui:visual -- --grep storage-headroom` — PASS; 5 captures with
   zero browser diagnostics, zero serious/critical axe violations, and focus

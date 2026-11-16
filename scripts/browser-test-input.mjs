@@ -11,6 +11,10 @@ export function prepareFirefoxTestInput(options) {
   return prepareBrowserTestInput({ ...options, browser: "firefox" });
 }
 
+/**
+ * @typedef {{ extensionDir: string, needsBuild: boolean, environment: NodeJS.ProcessEnv, dispose: () => Promise<void> }} BrowserTestInput
+ */
+/** @returns {Promise<BrowserTestInput>} */
 async function prepareBrowserTestInput({ rootDir, environment = process.env, dryRun = false, browser }) {
   const directoryKey = browser === "chrome" ? "LSEW_EXTENSION_DIR" : "LSEW_FIREFOX_DIST";
   const env = { ...environment, LSEW_PROJECT_ROOT: rootDir, LSEW_ANALYTICS_DISABLED: "1" };

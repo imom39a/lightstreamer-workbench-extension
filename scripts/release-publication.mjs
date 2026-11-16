@@ -157,6 +157,11 @@ async function accepted(path, receipt, operation, state) {
   delete receipt.attention;
   await saveReceipt(path, receipt);
 }
+/**
+ * @param {any} request
+ * @param {string} url
+ * @param {{ method?: string, headers?: Record<string, string>, body?: any, allowMissing?: boolean }} [options]
+ */
 async function jsonRequest(request, url, { method = "GET", headers = {}, body, allowMissing = false } = {}) {
   let response;
   try { response = await request(url, { method, headers, body, redirect: "error", signal: AbortSignal.timeout(15_000) }); }
@@ -254,6 +259,10 @@ function chromeObservation(status, version) {
   return { kind, version, remoteState: revision.state, state, audience: revision.state === "PUBLISHED_TO_TESTERS" ? "testers" : "public" };
 }
 
+/**
+ * @param {{ release: any, receipt: any, receiptPath: string, request: any, runNpm?: any, env?: NodeJS.ProcessEnv,
+ *   readOnly?: boolean, visibilityAttempts?: number, delay?: () => Promise<unknown> }} options
+ */
 async function submitNpm({ release, receipt, receiptPath, request, runNpm, env, readOnly = false, visibilityAttempts = 31, delay = waitForRegistry }) {
   if (!Number.isInteger(visibilityAttempts) || visibilityAttempts < 1 || visibilityAttempts > 31) throw publicError("RELEASE_NPM_RETRY_BUDGET", "npm visibility needs 1–31 bounded attempts.");
   const entry = release.manifest.mcp;

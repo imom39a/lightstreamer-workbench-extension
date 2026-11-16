@@ -1,3 +1,5 @@
+// @ts-nocheck -- visual-evidence generator mixes string/number CLI options and
+// page-side globals; excluded from typecheck:scripts until they are typed.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

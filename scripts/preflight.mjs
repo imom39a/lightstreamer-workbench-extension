@@ -23,7 +23,7 @@ export function createPreflightPlan(paths, { release = false } = {}) {
   if (groups.docs) checks.push({ id: "docs", args: ["run", "docs:check"] });
   if (groups.site) checks.push({ id: "site", args: ["run", "test:site"] });
   if (groups.runtime) {
-    for (const command of ["test:scripts", "typecheck", "test:release", "build", "build:firefox"]) checks.push({ id: command, args: ["run", command] });
+    for (const command of ["lint", "test:scripts", "typecheck", "typecheck:scripts", "test:release", "build", "build:firefox"]) checks.push({ id: command, args: ["run", command] });
     checks.push({ id: "chrome-package", args: ["run", "release:zip", "--", "--skip-typecheck", "--skip-tests", "--skip-build"] });
     checks.push({ id: "firefox-package", args: ["run", "release:package:firefox", "--", "--skip-typecheck", "--skip-tests", "--skip-build"] });
   }

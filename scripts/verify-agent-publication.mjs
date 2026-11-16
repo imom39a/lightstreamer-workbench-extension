@@ -6,6 +6,15 @@ import { pathToFileURL } from "node:url";
 // npm scans new publications before exposing them, typically for five minutes
 // and sometimes fifteen or more. Allow fifteen minutes between bounded requests.
 // Retry visibility only; a visible artifact must match the tested source/digest.
+/**
+ * @param {any} expected
+ * @param {{
+ *   request?: (url: string, init?: RequestInit) => Promise<any>,
+ *   delay?: () => Promise<unknown>,
+ *   attempts?: number,
+ *   onPending?: (attempt: number) => void
+ * }} [options]
+ */
 export async function verifyPublishedAgent(expected, {
   request = fetch,
   delay = () => new Promise(resolveDelay => setTimeout(resolveDelay, 30_000)),

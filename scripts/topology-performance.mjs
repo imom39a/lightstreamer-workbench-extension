@@ -60,7 +60,7 @@ async function runTopologyPerformanceGate() {
           additional: ["--remote-debugging-port=0", "--window-size=1440,1000"]
         }),
         harnessUrl
-      ]),
+      ],
       {
         cwd: rootDir,
         env: process.env,
@@ -203,7 +203,7 @@ async function startHarnessServer(directory) {
   });
   await new Promise((resolvePromise, rejectPromise) => {
     httpServer.once("error", rejectPromise);
-    httpServer.listen(0, "127.0.0.1", resolvePromise);
+    httpServer.listen(0, "127.0.0.1", () => resolvePromise(undefined));
   });
   return httpServer;
 }

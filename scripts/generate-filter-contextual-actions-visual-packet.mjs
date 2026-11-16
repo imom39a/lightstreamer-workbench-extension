@@ -36,7 +36,7 @@ for (const directory of ["reference", "current", "diff", "contact-sheets"]) {
 const browser = await chromium.launch({
   executablePath: await resolveChromeExecutable(),
   headless: true,
-  args: chromeTestArguments({ headless: true })
+  args: [...chromeTestArguments({ headless: true })]
 });
 const results = [];
 try {
@@ -71,7 +71,7 @@ try {
   const manifest = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
-    command: "node scripts/generate-filter-impl-14-visual-packet.mjs",
+    command: "node scripts/generate-filter-contextual-actions-visual-packet.mjs",
     browser: await browser.version(),
     browserPolicy: "fresh Playwright-owned temporary profile; chromeTestArguments() with mock keychain, basic password store, sync/sign-in/profile onboarding suppression",
     classification: "Material UI",

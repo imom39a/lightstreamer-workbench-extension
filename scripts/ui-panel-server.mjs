@@ -22,7 +22,7 @@ try {
   const port = Number(process.env.LSEW_UI_PORT ?? 4173);
   await new Promise((resolvePromise, rejectPromise) => {
     server.once("error", rejectPromise);
-    server.listen(port, "127.0.0.1", resolvePromise);
+    server.listen(port, "127.0.0.1", () => resolvePromise(undefined));
   });
   console.log(`Workbench panel scenario server listening on http://127.0.0.1:${port}`);
   await new Promise(() => {});

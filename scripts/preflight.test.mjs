@@ -35,7 +35,7 @@ test("runtime and packaged companion changes require both browser integration bo
     const plan = createPreflightPlan([path]);
     assert.deepEqual(plan.groups, { docs: true, site: false, runtime: true, companion: true, panel: true, fixture: true }, path);
     const commands = plan.checks.map(check => check.args[1]);
-    for (const required of ["typecheck", "test:release", "build", "build:firefox", "release:zip", "release:package:firefox", "agent:test:package", "agent:test:extension", "test:ui", "agent:test:browser", "test:firefox"]) {
+    for (const required of ["lint", "typecheck", "typecheck:scripts", "test:release", "build", "build:firefox", "release:zip", "release:package:firefox", "agent:test:package", "agent:test:extension", "test:ui", "agent:test:browser", "test:firefox"]) {
       assert(commands.includes(required), `${path} requires ${required}`);
     }
   }
