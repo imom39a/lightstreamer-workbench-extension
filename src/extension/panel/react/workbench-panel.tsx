@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import {
   type WorkbenchCommand,
@@ -23,7 +23,6 @@ import {
   type TypedFilterValue
 } from "../../../core/filter-algebra";
 import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filter-actions";
-import type { LightstreamerEventEnvelope } from "../../../core/event-envelope";
 import { renderTopologyHtmlReport } from "../topology-html-report";
 import { UNAVAILABLE_ANALYTICS, type AnalyticsClient } from "../../analytics/client";
 import { AgentAccessStatus } from "./agent-access";
@@ -40,6 +39,13 @@ import { EVIDENCE_CODE_DEFINITIONS, evidenceStreamPresentation } from "../eviden
 import { DiagnosticDetails } from "./diagnostic-details";
 import { SessionOperations } from "./session-operations";
 import { ScopeSearch } from "./scope-search";
+import { ScopeTree, type ScopeTreeActions } from "./scope-tree";
+import { EvidenceCodes, EvidenceRow, FindText, type EvidencePayloadMode, type EvidenceRowActions } from "./evidence-row";
+import {
+  CONTEXT_MAX_SIZE, CONTEXT_MIN_HEIGHT, CONTEXT_MIN_WIDTH, EVIDENCE_MIN_WIDTH, EVIDENCE_ROW_HEIGHT, EVIDENCE_STACK_BUDGET,
+  PERSISTENT_CHROME_HEIGHT, SCOPE_FALLBACK_VIEWPORT_ROWS, SCOPE_MAX_WIDTH, SCOPE_MAX_WINDOW_SIZE, SCOPE_MIN_WIDTH,
+  SCOPE_NODE_HEIGHT, SCOPE_WINDOW_OVERSCAN, SPLITTER_SIZE, clamp, classifyGeometry, decideGeometry, type WorkbenchGeometry
+} from "./workbench-geometry";
 
 import "./workbench-panel.css";
 
@@ -57,15 +63,6 @@ const LazyServerInjectionDocument = lazy(async () => {
 });
 
 export type WorkbenchPanelProps = { runtime: WorkbenchRuntime; analytics?: AnalyticsClient; agentConnection?: AgentConnection };
-
-type ScopeNode = WorkbenchSnapshot["scope"]["nodes"][number];
-type ScopeTreeEntry = { node: ScopeNode; index: number };
-type ScopeTreeActions = {
-  scroll(scrollTop: number): void;
-  focus(scopeId: string): void;
-  commit(scopeId: string): void;
-  key(event: ReactKeyboardEvent<HTMLButtonElement>, node: ScopeNode): void;
-};
 
 function SelectedUpdateDetails({
   update
@@ -87,253 +84,7 @@ function SelectedUpdateDetails({
   </section>;
 }
 
-const ScopeTreeRow = memo(function ScopeTreeRow({
-  node,
-  index,
-  siblingPosition,
-  hasChildren,
-  collapsed,
-  focused,
-  nodeRefs,
-  actionsRef
-}: {
-  node: ScopeNode;
-  index: number;
-  siblingPosition: { position: number; size: number } | undefined;
-  hasChildren: boolean;
-  collapsed: boolean;
-  focused: boolean;
-  nodeRefs: { current: Map<string, HTMLButtonElement> };
-  actionsRef: { current: ScopeTreeActions };
-}): JSX.Element {
-  return (
-    <button
-      className="workbench-react__scope-node workbench-react__scope-node--windowed"
-      role="treeitem"
-      aria-level={node.depth + 1}
-      aria-posinset={siblingPosition?.position}
-      aria-setsize={siblingPosition?.size}
-      aria-selected={node.selected}
-      aria-current={node.selected ? "true" : undefined}
-      data-retired={node.retired || undefined}
-      data-scope-id={node.id}
-      aria-expanded={hasChildren ? !collapsed : undefined}
-      tabIndex={focused ? 0 : -1}
-      style={{
-        top: `${index * SCOPE_NODE_HEIGHT}px`,
-        "--workbench-scope-indent": `${node.depth * 10}px`
-      } as CSSProperties}
-      ref={(element) => {
-        if (element) nodeRefs.current.set(node.id, element);
-        else nodeRefs.current.delete(node.id);
-      }}
-      onClick={() => {
-        actionsRef.current.focus(node.id);
-        actionsRef.current.commit(node.id);
-      }}
-      onFocus={() => actionsRef.current.focus(node.id)}
-      onKeyDown={(event) => actionsRef.current.key(event, node)}
-    >
-      <span className="workbench-react__scope-type">{scopeKindLabel(node.kind)}</span>
-      <strong className="workbench-react__scope-identity" title={node.label}>{node.label}</strong>
-      <em className="workbench-react__scope-state">{lifecycleLabel(node.lifecycle)}</em>
-      {node.detail ? <span className="workbench-react__scope-facts" title={node.detail}>{node.detail}</span> : null}
-    </button>
-  );
-});
 
-const ScopeTree = memo(function ScopeTree({
-  logicalNodeCount,
-  visibleNodeCount,
-  entries,
-  logicalHeight,
-  childrenByParent,
-  siblingPositionById,
-  collapsedIds,
-  focusId,
-  onDomFocusChange,
-  treeRef,
-  nodeRefs,
-  actionsRef
-}: {
-  logicalNodeCount: number;
-  visibleNodeCount: number;
-  entries: readonly ScopeTreeEntry[];
-  logicalHeight: number;
-  childrenByParent: ReadonlyMap<
-    string | null,
-    readonly WorkbenchSnapshot["scope"]["structure"][number][]
-  >;
-  siblingPositionById: ReadonlyMap<string, { position: number; size: number }>;
-  collapsedIds: ReadonlySet<string>;
-  focusId: string | null;
-  onDomFocusChange(hasFocus: boolean): void;
-  treeRef: { current: HTMLDivElement | null };
-  nodeRefs: { current: Map<string, HTMLButtonElement> };
-  actionsRef: { current: ScopeTreeActions };
-}): JSX.Element {
-  return (
-    <div
-      className="workbench-react__scope-tree"
-      role="tree"
-      aria-label={`Runtime Scope tree · ${logicalNodeCount.toLocaleString()} nodes`}
-      data-logical-node-count={logicalNodeCount}
-      data-visible-node-count={visibleNodeCount}
-      data-mounted-node-count={entries.length}
-      ref={treeRef}
-      onScroll={(event) => actionsRef.current.scroll(event.currentTarget.scrollTop)}
-      onFocusCapture={() => onDomFocusChange(true)}
-      onBlurCapture={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) onDomFocusChange(false);
-      }}
-    >
-      <div
-        className="workbench-react__scope-tree-window"
-        role="presentation"
-        style={{ height: `${logicalHeight}px` }}
-      >
-        {entries.map(({ node, index }) => {
-          const siblingPosition = siblingPositionById.get(node.id);
-          const hasChildren = (childrenByParent.get(node.id)?.length ?? 0) > 0;
-          return (
-            <ScopeTreeRow
-              key={node.id}
-              node={node}
-              index={index}
-              siblingPosition={siblingPosition}
-              hasChildren={hasChildren}
-              collapsed={collapsedIds.has(node.id)}
-              focused={node.id === focusId}
-              nodeRefs={nodeRefs}
-              actionsRef={actionsRef}
-            />
-          );
-        })}
-      </div>
-    </div>
-  );
-});
-
-type EvidenceRowActions = { select(eventId: string): void };
-
-type EvidencePayloadMode = "readable" | "raw";
-
-const evidenceCodeDefinitionByCode = new Map(EVIDENCE_CODE_DEFINITIONS.map((definition) => [definition.code, definition]));
-
-function EvidenceCodes({
-  open,
-  onOpenChange
-}: Readonly<{
-  open: boolean;
-  onOpenChange(open: boolean): void;
-}>): JSX.Element {
-  const trigger = useRef<HTMLElement>(null);
-  const close = () => {
-    onOpenChange(false);
-    window.requestAnimationFrame(() => trigger.current?.focus());
-  };
-  const definitionsFor = (family: "tlcp" | "workbench") => EVIDENCE_CODE_DEFINITIONS.filter((definition) => definition.family === family);
-  return <details
-    className="workbench-react__evidence-codes"
-    open={open}
-    onToggle={(event) => onOpenChange(event.currentTarget.open)}
-    onKeyDown={(event) => {
-      if (event.key !== "Escape" || !open) return;
-      event.preventDefault();
-      event.stopPropagation();
-      close();
-    }}
-  >
-    <summary ref={trigger} aria-label="Codes">Codes</summary>
-    <section role="dialog" aria-label="Evidence codes" aria-modal="false">
-      <header><strong>Evidence codes</strong><button type="button" onClick={close}>Close</button></header>
-      <p>Operations shown in the Evidence stream.</p>
-      {(["tlcp", "workbench"] as const).map((family) => <section key={family} aria-label={family === "tlcp" ? "Lightstreamer TLCP" : "Workbench capture lifecycle"}>
-        <h3>{family === "tlcp" ? "Lightstreamer TLCP" : "Workbench capture lifecycle"}</h3>
-        <dl>{definitionsFor(family).map((definition) => <div key={definition.code}>
-          <dt>{definition.code}</dt><dd><strong>{definition.label}</strong> · {definition.description}</dd>
-        </div>)}</dl>
-      </section>)}
-      <p className="workbench-react__evidence-code-notes"><code>U</code> marks an update; <code>ADD</code> and <code>DELETE</code> mark COMMAND operations; <code>S</code> marks a snapshot. <strong>LOCAL</strong> is a Local injection; <code>R</code> is runtime Evidence and <code>W</code> is Workbench Evidence.</p>
-    </section>
-  </details>;
-}
-
-function FindText({ text, query }: { text: string; query: string }): JSX.Element {
-  const words = query.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return <>{text}</>;
-  const expression = words.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
-  const parts = text.split(new RegExp(`(${expression})`, "giu"));
-  return <>{parts.map((part, index) => index % 2 ? <mark className="workbench-react__search-hit" key={index}>{part}</mark> : part)}</>;
-}
-
-const EvidenceRow = memo(function EvidenceRow({
-  event,
-  selected,
-  findPosition,
-  findQuery,
-  rowRefs,
-  actionsRef,
-  payloadMode
-}: {
-  event: WorkbenchSnapshot["evidence"]["events"][number];
-  selected: boolean;
-  findPosition: string | null;
-  findQuery: string;
-  rowRefs: { current: Map<string, HTMLButtonElement> };
-  actionsRef: { current: EvidenceRowActions };
-  payloadMode: EvidencePayloadMode;
-}): JSX.Element {
-  // Retained Evidence is canonical in production. Recovery envelopes can be incomplete;
-  // render those honestly as an unknown operation instead of inventing an Item Update.
-  const presentationEvent = typeof event.raw?.kind === "string"
-    ? event
-    : { ...event, raw: { ...event.raw, kind: "__unknown__" as LightstreamerEventEnvelope["kind"] } };
-  const presentation = evidenceStreamPresentation(presentationEvent, payloadMode);
-  const definition = evidenceCodeDefinitionByCode.get(presentation.code);
-  const identity = presentation.identity ?? event.object;
-  const qualifiers = [
-    event.command === "ADD" || event.command === "DELETE" ? event.command : null,
-    event.phase === "SNAPSHOT" ? "S" : null
-  ].filter((value): value is string => value !== null);
-  const provenance = event.source === "LOCAL" ? "LOCAL" : event.source === "RUNTIME" ? "R" : event.source === "WORKBENCH" ? "W" : null;
-  const sequence = event.sequence === null ? "No retained sequence" : `retained sequence ${event.sequence}`;
-  const dataSummary = presentation.previewTruncated
-    ? "payload preview truncated; complete payload is in Context"
-    : Object.keys(presentation.data.fields).length ? `payload fields ${Object.keys(presentation.data.fields).join(", ")}` : "no payload fields";
-  const ariaLabel = `${event.id}; ${presentation.code}${definition ? ` ${definition.label}` : ""}; ${event.command ?? "no COMMAND operation"}; ${identity}; ${dataSummary}; ${event.source} Evidence; ${event.phase} phase; ${event.time}; ${sequence}.`;
-  return (
-    <button
-      type="button"
-      className="workbench-react__evidence-row"
-      role="row"
-      data-evidence-id={event.id}
-      data-evidence-sequence={event.sequence ?? undefined}
-      data-evidence-source={event.source}
-      data-evidence-code={presentation.code}
-      data-find-current={findPosition ? true : undefined}
-      aria-selected={selected}
-      aria-current={findPosition ? "true" : undefined}
-      aria-label={ariaLabel}
-      title={`${event.id} · ${event.kind} · ${event.source} · ${event.phase} · ${event.time} · ${sequence}`}
-      tabIndex={-1}
-      ref={(element) => {
-        if (element) rowRefs.current.set(event.id, element);
-        else rowRefs.current.delete(event.id);
-      }}
-      onClick={() => actionsRef.current.select(event.id)}
-    >
-      <span className="workbench-react__evidence-op" role="gridcell" title={definition?.description ?? presentation.code}>
-        <b>{presentation.code}</b>{qualifiers.map((qualifier) => <small key={qualifier}>{qualifier}</small>)}{provenance ? <em>{provenance}</em> : null}{findPosition ? <small className="workbench-react__find-match" title={findPosition}>Find</small> : null}
-      </span>
-      <span className="workbench-react__evidence-key" role="gridcell" title={identity}><FindText text={identity} query={findQuery} /></span>
-      <span className="workbench-react__evidence-data" role="gridcell" title={presentation.jsonString}>
-        {presentation.data.decodedJsonFields.length ? <span className="workbench-react__json-string-marker">JSON string</span> : null}
-        <code><FindText text={presentation.jsonString} query={findQuery} /></code>{presentation.previewTruncated ? <small>Preview truncated · complete payload in Context</small> : null}
-      </span>
-    </button>
-  );
-});
 
 function dispatch(runtime: WorkbenchRuntime, command: WorkbenchCommand): void {
   runtime.dispatch(command);
@@ -403,66 +154,6 @@ function downloadText(filename: string, text: string, type: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-type WorkbenchGeometry = "wide" | "normal" | "shallow" | "compact";
-
-const SCOPE_MIN_WIDTH = 216;
-const SCOPE_MAX_WIDTH = 420;
-const EVIDENCE_MIN_WIDTH = 520;
-const EVIDENCE_MIN_HEIGHT = 220;
-const EVIDENCE_STACK_BUDGET = 244;
-const CONTEXT_MIN_WIDTH = 320;
-const CONTEXT_MIN_HEIGHT = 210;
-const CONTEXT_MAX_SIZE = 520;
-const SPLITTER_SIZE = 6;
-const PERSISTENT_CHROME_HEIGHT = 90;
-const NORMAL_MIN_WIDTH = 700;
-const NORMAL_MIN_HEIGHT = PERSISTENT_CHROME_HEIGHT + EVIDENCE_MIN_HEIGHT + CONTEXT_MIN_HEIGHT + SPLITTER_SIZE;
-const SHALLOW_MIN_WIDTH = EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE;
-const WIDE_MIN_WIDTH = Math.max(1120, SCOPE_MIN_WIDTH + EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE * 2);
-const GEOMETRY_HYSTERESIS = 32;
-const SCOPE_NODE_HEIGHT = 58;
-const EVIDENCE_ROW_HEIGHT = 30;
-const SCOPE_WINDOW_OVERSCAN = 8;
-const SCOPE_FALLBACK_VIEWPORT_ROWS = 48;
-const SCOPE_MAX_WINDOW_SIZE = 127;
-
-function classifyGeometry(width: number, height: number): WorkbenchGeometry {
-  if (width >= WIDE_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT) return "wide";
-  if (width >= NORMAL_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT) return "normal";
-  if (width >= SHALLOW_MIN_WIDTH) return "shallow";
-  return "compact";
-}
-
-function geometryFits(geometry: WorkbenchGeometry, width: number, height: number): boolean {
-  if (geometry === "wide") return width >= WIDE_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT;
-  if (geometry === "normal") return width >= NORMAL_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT;
-  if (geometry === "shallow") return width >= SHALLOW_MIN_WIDTH;
-  return true;
-}
-
-function decideGeometry(width: number, height: number, previous?: WorkbenchGeometry): WorkbenchGeometry {
-  if (!previous) return classifyGeometry(width, height);
-  if (!geometryFits(previous, width, height)) return classifyGeometry(width, height);
-  if (previous === "wide") return "wide";
-  if (width >= WIDE_MIN_WIDTH + GEOMETRY_HYSTERESIS && height >= NORMAL_MIN_HEIGHT + GEOMETRY_HYSTERESIS) return "wide";
-  if (previous === "normal") return "normal";
-  if (width >= NORMAL_MIN_WIDTH + GEOMETRY_HYSTERESIS && height >= NORMAL_MIN_HEIGHT + GEOMETRY_HYSTERESIS) return "normal";
-  if (previous === "shallow") return "shallow";
-  if (width >= SHALLOW_MIN_WIDTH + GEOMETRY_HYSTERESIS) return "shallow";
-  return "compact";
-}
-
-function lifecycleLabel(lifecycle: WorkbenchSnapshot["scope"]["nodes"][number]["lifecycle"]): string {
-  return `${lifecycle.slice(0, 1).toUpperCase()}${lifecycle.slice(1)}`;
-}
-
-function scopeKindLabel(kind: WorkbenchSnapshot["scope"]["nodes"][number]["kind"]): string {
-  return `${kind.slice(0, 1).toUpperCase()}${kind.slice(1)}`;
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(Math.max(value, minimum), maximum);
-}
 
 /** React presentation for the Slice 1 read-only Scoped Evidence Workspace. */
 export function WorkbenchPanel({ runtime, analytics = UNAVAILABLE_ANALYTICS, agentConnection }: WorkbenchPanelProps): JSX.Element {
